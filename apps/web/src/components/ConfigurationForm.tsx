@@ -31,10 +31,10 @@ export function ConfigurationForm({ saved, initialValues, onSave, onFeedback, va
     return true
   }
 
-  function save(event: FormEvent): void {
+  async function save(event: FormEvent): Promise<void> {
     event.preventDefault()
     if (!check()) return
-    const response = onSave(values)
+    const response = await onSave(values)
     if (!response.ok) {
       setResult({ success: false, message: response.error })
       return

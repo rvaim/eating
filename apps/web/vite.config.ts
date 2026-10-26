@@ -16,6 +16,7 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5180,
     strictPort: true,
+    proxy: { '/api': { target: `http://127.0.0.1:${process.env.EATING_HOST_PORT ?? '5181'}` } },
     fs: { allow: [repositoryRoot] },
   },
   preview: { host: '127.0.0.1', port: 4180, strictPort: true },

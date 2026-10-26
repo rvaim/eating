@@ -21,6 +21,12 @@ export function App({ workspace }: { readonly workspace: PlatformWorkspace }) {
   const [feedback, setFeedback] = useState<string | null>(null)
 
   useEffect(() => {
+    void workspace.refresh()
+    const timer = window.setInterval(() => { if (!document.hidden) void workspace.refresh() }, 3000)
+    return () => window.clearInterval(timer)
+  }, [workspace])
+
+  useEffect(() => {
     const update = () => setRoute(readRoute())
     window.addEventListener('hashchange', update)
     return () => window.removeEventListener('hashchange', update)
@@ -50,13 +56,13 @@ export function App({ workspace }: { readonly workspace: PlatformWorkspace }) {
         <a className={`global-nav-item ${route.page === 'overview' ? 'is-selected' : ''}`} href="#overview" aria-current={route.page === 'overview' ? 'page' : undefined}><LayoutDashboard size={19} /><span>概览</span></a>
         <a className={`global-nav-item ${route.page === 'robots' ? 'is-selected' : ''}`} href="#robots" aria-current={route.page === 'robots' ? 'page' : undefined}><Bot size={20} /><span>机器人</span></a>
       </nav>
-      <div className="global-sidebar-footer"><CircleUserRound size={22} /><div><strong>我的工作区</strong><span>本地验证版 <span className="version-label">0.1</span></span></div></div>
+      <div className="global-sidebar-footer"><CircleUserRound size={22} /><div><strong>我的工作区</strong><span>Eating <span className="version-label">0.2</span></span></div></div>
     </aside>
     <div className="app-main">
       <header className="page-header"><div><h1>{route.page === 'overview' ? '概览' : '机器人'}</h1><p>{route.page === 'overview' ? '看看 Eating 的工作区，准备下一次连接。' : '管理通讯平台，以及各插件提供的配置。'}</p></div>
         <button className="button button-secondary" onClick={() => setCatalogOpen(current => !current)} aria-expanded={catalogOpen}><Plus size={17} />注册插件</button>
       </header>
-      {snapshot.storageError && <div className="storage-alert" role="alert"><TriangleAlert size={19} /><p>{snapshot.storageError} <strong>当前仅供浏览，操作不会覆盖原记录。</strong></p></div>}
+      {snapshot.storageError && <div className="storage-alert" role="alert"><TriangleAlert size={19} /><p>{snapshot.storageError} <strong>最近状态可能已过期，请检查后台服务。</strong></p></div>}
       {snapshot.unavailableIds.length > 0 && <div className="storage-alert"><TriangleAlert size={18} /><p>有 {snapshot.unavailableIds.length} 个历史插件不在此版本中，它们的配置已保留。</p></div>}
       {catalogOpen && <div className="catalog-container"><PluginCatalog workspace={workspace} snapshot={snapshot} onClose={() => setCatalogOpen(false)} onFeedback={setFeedback} onRegistered={plugin => { navigate('robots', plugin.id); setFeedback(`${plugin.name} 已注册`) }} /></div>}
       {route.page === 'overview' ? <Overview snapshot={snapshot} onRobots={id => navigate('robots', id ?? null)} onRegister={() => { setCatalogOpen(true); window.scrollTo({ top: 0, behavior: 'instant' }) }} /> : <Robots workspace={workspace} snapshot={snapshot} selectedId={route.pluginId} onSelect={selectPlugin} onRegister={() => { setCatalogOpen(true); window.scrollTo({ top: 0, behavior: 'instant' }) }} onFeedback={setFeedback} />}

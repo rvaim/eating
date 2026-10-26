@@ -18,5 +18,5 @@
       "@eating/plugin-core": ["./packages/plugin-core/src/index.ts"]
     }
   },
-  "include": ["apps/web", "packages", "plugins", "tests", "vitest.config.ts", "playwright.config.ts"]
+  "include": ["apps/web", "packages", "plugins", "services", "tests", "scripts", "vitest.config.ts", "playwright.config.ts"]
 }

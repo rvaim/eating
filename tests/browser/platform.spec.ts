@@ -1,90 +1,139 @@
 import { test, expect } from '@playwright/test'
+import { mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { EatingHost } from '../../services/host/src/app'
+import qqEntry from '../../plugins/qq/server'
+import { startOneBotFixture } from '../fixtures/onebot'
 
-const storageKey = 'Eating.prototype.workspace.v1'
+const builtDirectory = fileURLToPath(new URL('../../dist/', import.meta.url))
 
-test('两层导航与插件自己的字段独立，配置保存可刷新恢复', async ({ page }) => {
-  await page.goto('/')
-  await expect(page.getByRole('heading', { name: '概览', exact: true })).toBeVisible()
-  await page.getByRole('link', { name: '机器人', exact: true }).click()
-  const platforms = page.getByRole('navigation', { name: '平台分类', exact: true })
-  await expect(platforms.getByRole('button', { name: 'QQ', exact: true })).toBeVisible()
-  await platforms.getByRole('button', { name: 'QQ', exact: true }).click()
-  await page.getByLabel('显示名称', { exact: true }).fill('我保存的 QQ')
-  await page.getByLabel('连接地址', { exact: true }).fill('not-a-url')
-  await page.getByRole('button', { name: '保存配置', exact: true }).click()
-  await expect(page.getByText(/请填写有效的 ws \/ wss 地址/)).toBeVisible()
-  await page.getByLabel('连接地址', { exact: true }).fill('ws://127.0.0.1:3001')
-  await page.getByRole('button', { name: '保存配置', exact: true }).click()
-  await expect(page.getByText('配置已保存在此浏览器中，尚未连接真实平台。')).toBeVisible()
-  await page.reload()
-  await expect(page.getByLabel('显示名称', { exact: true })).toHaveValue('我保存的 QQ')
-  await platforms.getByRole('button', { name: '飞书', exact: true }).click()
-  await expect(page.getByLabel('应用 ID', { exact: true })).toBeVisible()
-  await expect(page.getByLabel('连接地址', { exact: true })).toHaveCount(0)
-  await expect(page.getByLabel('显示名称', { exact: true })).not.toHaveValue('我保存的 QQ')
-})
+test.describe('正式 QQ 平台与 OneBot v11', () => {
+  let directory: string
+  let host: EatingHost
+  let url: string
+  let onebot: Awaited<ReturnType<typeof startOneBotFixture>>
 
-test('注册微信立即出现分类和自有面板，移除只影响本插件且保留配置', async ({ page }) => {
-  await page.goto('/#robots/qq')
-  await page.getByLabel('显示名称', { exact: true }).fill('保留 QQ 配置')
-  await page.getByRole('button', { name: '保存配置', exact: true }).click()
-  await page.getByRole('button', { name: '注册插件', exact: true }).first().click()
-  await page.getByRole('button', { name: '注册微信插件', exact: true }).click()
-  const platforms = page.getByRole('navigation', { name: '平台分类', exact: true })
-  await expect(platforms.getByRole('button', { name: '微信', exact: true })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '微信', exact: true })).toBeVisible()
-  await expect(page.getByLabel('服务地址', { exact: true })).toBeVisible()
-  await platforms.getByRole('button', { name: '飞书', exact: true }).click()
-  await page.getByRole('button', { name: '移除插件', exact: true }).click()
-  await page.getByRole('button', { name: '确认移除', exact: true }).click()
-  await expect(platforms.getByRole('button', { name: '飞书', exact: true })).toHaveCount(0)
-  await expect(platforms.getByRole('button', { name: 'QQ', exact: true })).toBeVisible()
-  await expect(platforms.getByRole('button', { name: '微信', exact: true })).toBeVisible()
-  await platforms.getByRole('button', { name: 'QQ', exact: true }).click()
-  await expect(page.getByLabel('显示名称', { exact: true })).toHaveValue('保留 QQ 配置')
-  await page.getByRole('button', { name: '移除插件', exact: true }).click()
-  await page.getByRole('button', { name: '确认移除', exact: true }).click()
-  await page.getByRole('button', { name: '注册插件', exact: true }).first().click()
-  await page.getByRole('button', { name: '注册QQ插件', exact: true }).click()
-  await expect(page.getByLabel('显示名称', { exact: true })).toHaveValue('保留 QQ 配置')
-})
+  test.beforeEach(async () => {
+    directory = await realpath(await mkdtemp(join(tmpdir(), 'Eating_browser_')))
+    onebot = await startOneBotFixture({ accessToken: 'browser-fixture-secret', onRequest: request => request.action.startsWith('send_') && request.params.message === 'delay-for-unknown' })
+    host = new EatingHost({ dataDirectory: directory, entries: [qqEntry], port: 0, allowedUiOrigins: [], staticDirectory: builtDirectory })
+    url = await host.listen()
+  })
+  test.afterEach(async () => {
+    await host?.close()
+    await onebot?.close()
+    const target = await realpath(directory)
+    if (target !== resolve(directory) || !target.startsWith((await realpath(tmpdir())) + '/Eating_browser_')) throw new Error('Unexpected test directory')
+    await rm(target, { recursive: true })
+  })
 
-test('全部移除仍有可用空状态，取消移除不改变分类', async ({ page }) => {
-  await page.goto('/#robots/qq')
-  await page.getByRole('button', { name: '移除插件', exact: true }).click()
-  await page.getByRole('button', { name: '取消', exact: true }).click()
-  await expect(page.getByRole('button', { name: '移除插件', exact: true })).toBeFocused()
-  await expect(page.getByRole('heading', { name: 'QQ', exact: true })).toBeVisible()
-  for (const name of ['QQ', '飞书']) {
-    await page.getByRole('navigation', { name: '平台分类' }).getByRole('button', { name, exact: true }).click()
+  async function configure(page: import('@playwright/test').Page) {
+    await page.goto(`${url}/#robots/qq`)
+    await page.getByLabel('显示名称', { exact: true }).fill('正式 QQ 连接')
+    await page.getByLabel('OneBot 地址', { exact: true }).fill(onebot.endpoint)
+    await page.getByLabel('Bearer 访问令牌', { exact: true }).fill('browser-fixture-secret')
+    await page.getByRole('button', { name: '保存配置', exact: true }).click()
+    await expect(page.getByText('配置已保存到 Eating Host。旧连接已断开，点击“连接 OneBot”核验账号与状态。')).toBeVisible()
+  }
+  async function connect(page: import('@playwright/test').Page) {
+    await page.getByRole('button', { name: '连接 OneBot', exact: true }).click()
+    await expect(page.getByText('账号：本地协议测试账号（123456789）')).toBeVisible()
+  }
+
+  test('仅有正式 QQ，保存到实例文件且刷新不回显令牌', async ({ page }) => {
+    await configure(page)
+    const classes = page.getByRole('navigation', { name: '平台分类', exact: true })
+    await expect(classes.getByRole('button', { name: 'QQ', exact: true })).toBeVisible()
+    await expect(classes.getByRole('button', { name: '飞书', exact: true })).toHaveCount(0)
+    await expect(classes.getByRole('button', { name: '微信', exact: true })).toHaveCount(0)
+    await expect(page.getByText(/本地示例|示例插件|demo/i)).toHaveCount(0)
+    const index = JSON.parse(await readFile(join(directory, 'bot/qq-bot/accounts.json'), 'utf8')) as { defaultInstanceId: string; instances: unknown[] }
+    expect(index.instances).toHaveLength(1)
+    const path = join(directory, 'bot/qq-bot/accounts', index.defaultInstanceId, 'config.json')
+    const config = JSON.parse(await readFile(path, 'utf8')) as { configuration: { accessToken: string; endpoint: string } }
+    expect(config.configuration.accessToken).toBe('browser-fixture-secret')
+    expect(config.configuration.endpoint).toBe(onebot.endpoint)
+    expect(await readdir(join(directory, 'bot/qq-bot/accounts'))).toEqual([index.defaultInstanceId])
+    await page.reload()
+    await expect(page.getByLabel('显示名称', { exact: true })).toHaveValue('正式 QQ 连接')
+    await expect(page.getByLabel('Bearer 访问令牌', { exact: true })).toHaveValue('')
+    await expect(page.getByText(path, { exact: true })).toBeVisible()
+    await connect(page)
+    await page.getByRole('button', { name: '断开连接', exact: true }).click()
+    await expect(page.getByRole('tabpanel', { name: '连接配置', exact: true }).getByText('QQ 的 OneBot 连接已断开。')).toBeVisible()
+  })
+
+  test('功能面板调用真实工具，发送必须确认且只发到协议夹具', async ({ page }) => {
+    await configure(page); await connect(page)
+    await page.getByRole('tab', { name: '功能测试', exact: true }).click()
+    await page.getByRole('button', { name: '执行测试', exact: true }).click()
+    await expect(page.getByText('QQ 功能测试已完成，请查看真实返回结果。')).toBeVisible()
+    await page.getByLabel('测试功能', { exact: true }).selectOption('qq_send_private_message')
+    await page.getByLabel('收件人 QQ 号（必填）', { exact: true }).fill('987654321')
+    await page.getByLabel('消息内容（必填）', { exact: true }).fill('测试夹具消息，不发送到真人')
+    await expect(page.getByRole('button', { name: '执行测试', exact: true })).toBeDisabled()
+    await page.getByRole('checkbox', { name: '我已核对目标和内容，确认执行此次真实发送。', exact: true }).check()
+    await page.getByRole('button', { name: '执行测试', exact: true }).click()
+    await expect.poll(() => onebot.requests.filter(request => request.action === 'send_private_msg').length).toBe(1)
+    expect(onebot.requests.find(request => request.action === 'send_private_msg')?.params).toMatchObject({ user_id: 987654321, message: '测试夹具消息，不发送到真人', auto_escape: true })
+    await expect(page.getByRole('checkbox', { name: '我已核对目标和内容，确认执行此次真实发送。', exact: true })).not.toBeChecked()
+  })
+
+  test('消息持久化、去重和 Harness 未接入状态可见，MCP 令牌按需读取', async ({ page }) => {
+    await configure(page); await connect(page)
+    const event = { time: 1, self_id: 123456789, post_type: 'message', message_type: 'private', sub_type: 'friend',
+      message_id: 456, user_id: 987654321, message: [{ type: 'text', data: { text: '真实协议输入测试' } }], raw_message: '真实协议输入测试', sender: { nickname: '协议夹具联系人' } }
+    onebot.emitEvent(event); onebot.emitEvent(event)
+    await page.getByRole('tab', { name: '消息记录', exact: true }).click()
+    await expect(page.getByText('真实协议输入测试', { exact: true })).toBeVisible()
+    await expect(page.locator('.qq-message-list > li')).toHaveCount(1)
+    await expect(page.locator('.qq-message-list').getByText('等待投递', { exact: true })).toBeVisible()
+    await page.getByRole('tab', { name: 'MCP 能力', exact: true }).click()
+    await expect(page.getByText('Harness 消息接口尚未接入', { exact: true })).toBeVisible()
+    await expect(page.getByText('QQ 空间发布', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '查看 / 复制 MCP 配置', exact: true }).click()
+    await expect(page.getByLabel('MCP 连接配置', { exact: true })).toContainText('/mcp/qq')
+    await page.getByRole('tab', { name: '消息记录', exact: true }).click()
+    await expect(page.getByLabel('MCP 连接配置', { exact: true })).toHaveCount(0)
+    await page.getByRole('tab', { name: 'MCP 能力', exact: true }).click()
+    await expect(page.getByLabel('MCP 连接配置', { exact: true })).toHaveCount(0)
+  })
+
+  test('发送超时明确未知，显式复用请求 ID 不重复发送', async ({ page }) => {
+    await configure(page)
+    await page.getByLabel('请求超时', { exact: true }).fill('1000')
+    await page.getByRole('button', { name: '保存配置', exact: true }).click()
+    await connect(page)
+    await page.getByRole('tab', { name: '功能测试', exact: true }).click()
+    await page.getByLabel('测试功能', { exact: true }).selectOption('qq_send_private_message')
+    await page.getByLabel('收件人 QQ 号（必填）', { exact: true }).fill('987654321')
+    await page.getByLabel('消息内容（必填）', { exact: true }).fill('delay-for-unknown')
+    const before = await page.getByLabel('请求 ID（必填）', { exact: true }).inputValue()
+    await page.getByRole('checkbox', { name: '我已核对目标和内容，确认执行此次真实发送。', exact: true }).check()
+    await page.getByRole('button', { name: '执行测试', exact: true }).click()
+    await expect(page.getByRole('heading', { name: '上次动作结果未知', exact: true })).toBeVisible()
+    await expect(page.getByLabel('请求 ID（必填）', { exact: true })).toHaveValue(before)
+    await page.getByRole('checkbox', { name: '我已核查真实状态，理解上次动作仍可能已执行。', exact: true }).check()
+    await page.getByRole('checkbox', { name: '我已核对目标和内容，确认执行此次真实发送。', exact: true }).check()
+    await page.getByRole('button', { name: '重试原请求（复用 ID）', exact: true }).click()
+    await expect.poll(() => onebot.requests.filter(request => request.action === 'send_private_msg').length).toBe(1)
+    await expect(page.getByLabel('请求 ID（必填）', { exact: true })).toHaveValue(before)
+  })
+
+  test('窄屏功能面板与停用保留配置均可操作', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await configure(page)
+    await page.getByRole('tab', { name: '功能测试', exact: true }).click()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.getByRole('tab', { name: '连接配置', exact: true }).click()
     await page.getByRole('button', { name: '移除插件', exact: true }).click()
     await page.getByRole('button', { name: '确认移除', exact: true }).click()
-  }
-  await expect(page.getByRole('heading', { name: '从一个连接开始' })).toBeVisible()
-  await page.getByRole('button', { name: '注册示例插件', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '注册示例插件', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '注册QQ插件', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'QQ', exact: true })).toBeVisible()
-})
-
-test('损坏存储只读显示，不覆盖原记录', async ({ page }) => {
-  await page.addInitScript(key => localStorage.setItem(key, '{broken'), storageKey)
-  await page.goto('/#robots/qq')
-  await expect(page.getByRole('alert').filter({ hasText: '本地配置格式不兼容' })).toBeVisible()
-  await page.getByRole('button', { name: '保存配置', exact: true }).click()
-  await expect(page.getByText(/请修复存储记录或权限后重新加载工作区/)).toBeVisible()
-  expect(await page.evaluate(key => localStorage.getItem(key), storageKey)).toBe('{broken')
-})
-
-test('窄屏两层导航可用且页面没有横向溢出', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto('/#robots/qq')
-  await expect(page.getByLabel('显示名称', { exact: true })).toBeVisible()
-  const platforms = page.getByRole('navigation', { name: '平台分类' })
-  await platforms.getByRole('button', { name: '飞书', exact: true }).click()
-  await expect(page.getByLabel('应用 ID', { exact: true })).toBeVisible()
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
-  await page.getByRole('link', { name: '概览', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '概览', exact: true })).toBeVisible()
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await expect(page.getByRole('heading', { name: '从一个连接开始', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '查看平台插件', exact: true }).click()
+    await page.getByRole('button', { name: '注册QQ插件', exact: true }).click()
+    await expect(page.getByLabel('显示名称', { exact: true })).toHaveValue('正式 QQ 连接')
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  })
 })

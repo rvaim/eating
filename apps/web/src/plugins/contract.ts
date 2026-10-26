@@ -14,8 +14,9 @@ export type WorkspaceActionResult =
 export interface PluginPanelProps {
   readonly saved: SavedConfiguration | undefined
   readonly initialValues: PluginConfiguration
-  readonly onSave: (values: PluginConfiguration) => WorkspaceActionResult
+  readonly onSave: (values: PluginConfiguration) => WorkspaceActionResult | Promise<WorkspaceActionResult>
   readonly onFeedback: (message: string) => void
+  readonly onRefresh?: () => Promise<void>
 }
 
 /** Frontend contribution only. Real connector services will have a separate entry. */

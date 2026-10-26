@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowRight, Check, ChevronRight, Info, Layers, Link2Off, Plug, Plus, Trash2 } from 'lucide-react'
+import { ArrowRight, Check, ChevronRight, Info, Layers, Plug, Plus, Trash2 } from 'lucide-react'
+import { PlatformStatus } from '../components/PlatformStatus'
 import type { CommunicationPlugin } from '../plugins/contract'
 import type { PlatformWorkspace, WorkspaceSnapshot } from '../state/workspace'
 import { PanelBoundary } from '../components/PanelBoundary'
@@ -16,12 +17,12 @@ export function Robots({ workspace, snapshot, selectedId, onSelect, onRegister, 
   const directoryHeading = useRef<HTMLHeadingElement>(null)
   const focusDirectory = useRef(false)
   useEffect(() => {
-    if (selectedId && !selected) onSelect(null)
+    if (snapshot.ready && !snapshot.storageError && selectedId && !selected) onSelect(null)
     if (!selected && focusDirectory.current) {
       directoryHeading.current?.focus()
       focusDirectory.current = false
     }
-  }, [selectedId, selected, onSelect])
+  }, [selectedId, selected, onSelect, snapshot.ready, snapshot.storageError])
 
   return <div className="robot-workspace">
     <aside className="platform-sidebar" aria-label="机器人平台分类">
@@ -37,7 +38,7 @@ export function Robots({ workspace, snapshot, selectedId, onSelect, onRegister, 
       <div className="platform-sidebar-footer"><Plug size={17} /><p>分类与配置面板<br />由各平台插件提供。</p></div>
     </aside>
     <main id="main-content" className="robot-content">
-      {selected ? <PluginDetails key={selected.id} plugin={selected} snapshot={snapshot} workspace={workspace} onFeedback={onFeedback} onRemoved={() => { focusDirectory.current = true; onSelect(null) }} /> : <PlatformDirectory snapshot={snapshot} headingRef={directoryHeading} onSelect={onSelect} onRegister={onRegister} />}
+      {!snapshot.ready ? <p className="qq-loading" role="status">正在读取平台状态…</p> : selected ? <PluginDetails key={selected.id} plugin={selected} snapshot={snapshot} workspace={workspace} onFeedback={onFeedback} onRemoved={() => { focusDirectory.current = true; onSelect(null) }} /> : <PlatformDirectory snapshot={snapshot} headingRef={directoryHeading} onSelect={onSelect} onRegister={onRegister} />}
     </main>
   </div>
 }
@@ -51,19 +52,19 @@ function PlatformDirectory({ snapshot, headingRef, onSelect, onRegister }: {
   return <section>
     <div className="panel-title-row"><h2 ref={headingRef} tabIndex={-1}>全部平台</h2><span className="count-label">{snapshot.plugins.length} 个已注册</span></div>
     <p className="panel-description">选择一个平台，打开它自己的配置面板。</p>
-    {snapshot.plugins.length === 0 ? <div className="empty-state directory-empty"><Plug size={32} /><h3>从一个连接开始</h3><p>注册一个示例插件，它的名称和配置面板会自动出现在这里。</p><button className="button button-primary" onClick={onRegister}><Plus size={16} />注册示例插件</button></div> : <div className="directory-list">
+    {snapshot.plugins.length === 0 ? <div className="empty-state directory-empty"><Plug size={32} /><h3>从一个连接开始</h3><p>启用一个已安装的平台插件，它的配置与功能面板会出现在这里。</p><button className="button button-primary" onClick={onRegister}><Plus size={16} />查看平台插件</button></div> : <div className="directory-list">
       {snapshot.plugins.map(plugin => {
         const Icon = plugin.icon
         const saved = snapshot.configurations[plugin.id]
         return <div key={plugin.id} className="directory-row">
           <div className="platform-symbol" style={{ color: plugin.brandColor }}><Icon size={26} /></div>
-          <div className="directory-copy"><h3>{plugin.name}<span className="version-label">v{plugin.version}</span></h3><p>{plugin.description}</p><small>{saved ? `配置已保存 · ${plugin.summary(saved.values)}` : '等待配置 · 本地示例插件'}</small></div>
-          <div className="directory-actions"><span className="status-badge"><Link2Off size={12} />未连接</span><button className="button button-secondary" onClick={() => onSelect(plugin.id)} aria-label={`打开${plugin.name}配置`}>配置<ArrowRight size={15} /></button></div>
+          <div className="directory-copy"><h3>{plugin.name}<span className="version-label">v{plugin.version}</span></h3><p>{plugin.description}</p><small>{saved ? `配置已保存 · ${plugin.summary(saved.values)}` : '等待配置'}</small></div>
+          <div className="directory-actions"><PlatformStatus status={snapshot.statuses[plugin.id]} stale={Boolean(snapshot.storageError)} /><button className="button button-secondary" onClick={() => onSelect(plugin.id)} aria-label={`打开${plugin.name}配置`}>配置<ArrowRight size={15} /></button></div>
         </div>
       })}
-      <button className="register-row" onClick={onRegister}><Plus size={20} /><span>添加一个通讯平台<small>从随附示例中注册，配置由插件自己提供。</small></span><ArrowRight size={17} /></button>
+      <button className="register-row" onClick={onRegister}><Plus size={20} /><span>添加一个通讯平台<small>从已安装插件中启用，配置与功能由插件提供。</small></span><ArrowRight size={17} /></button>
     </div>}
-    <div className="directory-footnote"><Info size={16} /><p>当前平台均为本地示例。保存配置与连接真实平台是两个独立状态。</p></div>
+    <div className="directory-footnote"><Info size={16} /><p>平台配置由 Host 保存。连接需通过协议端身份与健康核验，消息保存不等于 Harness 已处理。</p></div>
   </section>
 }
 
@@ -87,19 +88,18 @@ function PluginDetails({ plugin, snapshot, workspace, onFeedback, onRemoved }: {
   }, [confirming])
 
   return <article className="plugin-details">
-    <div className="panel-title-row"><h2>{plugin.name}</h2><span className="status-badge"><Link2Off size={12} />未连接</span></div>
-    <p className="panel-description">此配置面板由 <strong>{plugin.name} 插件</strong>提供。</p>
-    <div className="example-notice"><Info size={17} /><p>本地示例，不连接真实平台。<span>配置只保存在此浏览器，请勿填写真实密钥。</span></p></div>
-    <PanelBoundary key={plugin.id}><Panel saved={snapshot.configurations[plugin.id]} initialValues={plugin.initialValues} onSave={values => workspace.save(plugin.id, values)} onFeedback={onFeedback} /></PanelBoundary>
+    <div className="panel-title-row"><h2>{plugin.name}</h2><PlatformStatus status={snapshot.statuses[plugin.id]} stale={Boolean(snapshot.storageError)} /></div>
+    <p className="panel-description">连接、消息和工具由 {plugin.name} 插件独立管理。</p>
+    <PanelBoundary key={plugin.id}><Panel saved={snapshot.configurations[plugin.id]} initialValues={plugin.initialValues} onSave={values => workspace.save(plugin.id, values)} onFeedback={onFeedback} onRefresh={() => workspace.refresh()} /></PanelBoundary>
     <section className="plugin-information" aria-label="插件信息与移除">
-      <div><h3>{plugin.name} 示例插件<span className="version-label">v{plugin.version}</span></h3><p>移除后撤销此平台入口，保留已保存配置。</p></div>
+      <div><h3>{plugin.name} 插件<span className="version-label">v{plugin.version}</span></h3><p>停用会断开连接并撤销工具入口，保留账号配置与消息记录。</p></div>
       {!confirming && <button ref={removeTrigger} className="text-button remove-trigger" onClick={() => setConfirming(true)}><Trash2 size={15} />移除插件</button>}
     </section>
     {confirming && <div className="remove-confirmation" role="group" aria-label={`确认移除${plugin.name}插件`}>
-      <div><strong>确定移除 {plugin.name} 插件？</strong><p>其他平台不受影响。重新注册后可以继续使用已保存配置。</p></div>
-      <div className="confirmation-actions"><button className="button button-secondary" onClick={() => { setConfirming(false); setRemoveError(null) }}>取消</button><button className="button button-danger" ref={confirmButton} onClick={() => {
-        const result = workspace.remove(plugin.id)
-        if (result.ok) { onFeedback(`${plugin.name} 已移除，已保存配置保留`); onRemoved() }
+      <div><strong>确定停用 {plugin.name} 插件？</strong><p>当前连接会断开，工具入口撤销。账号配置与消息保留，其他平台不受影响。</p></div>
+      <div className="confirmation-actions"><button className="button button-secondary" onClick={() => { setConfirming(false); setRemoveError(null) }}>取消</button><button className="button button-danger" ref={confirmButton} onClick={async () => {
+        const result = await workspace.remove(plugin.id)
+        if (result.ok) { onFeedback(`${plugin.name} 已停用，配置与消息保留`); onRemoved() }
         else setRemoveError(result.error)
       }}><Check size={15} />确认移除</button></div>
       {removeError && <p className="field-error" role="alert">{removeError}</p>}

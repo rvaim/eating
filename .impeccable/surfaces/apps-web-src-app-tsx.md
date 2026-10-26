@@ -1,0 +1,32 @@
+---
+version: 1
+slug: "apps-web-src-app-tsx"
+primary_target: "apps/web/src/App.tsx"
+related_targets: ["apps/web/src/styles.css","apps/web/src/pages/Robots.tsx","apps/web/src/pages/Overview.tsx"]
+---
+
+# Eating 首版界面约定
+
+范围：React 本地网页验证，概览与机器人管理。用户为个人设备上的 Eating 主人；成功是找到平台、修改/保存配置、独立注册/移除模块。Operate 模式，直接实现，不生成最终产品位图。
+
+负责人已在中文方案页选择“浅色标签”候选，固定预览为 .impeccable/mocks/decision/labels.html。选择回执 optionId=labels、buildPath=code；以其布局、配色、字阶与密度为基准，补充响应式和真实交互。没有选择黑白数据场，先前英文页面误操作不作为视觉确认。
+
+## Direction contract
+
+THESIS：界面以真实配置任务为中心，宿主只提供两层导航与插件挂载，不把平台管理做成营销数据看板。
+
+OWN-WORLD：浅灰主栏 #f3f4f2、白色内容 #ffffff、深墨字 #252b29、稳健绿 #3c745c；系统无衬线中文、细分隔、小圆角和正常密度。按钮、输入和导航统一状态。
+
+STORY：主人先在概览了解本地已注册/已配置/未接入状态，再进入机器人，从插件目录选择平台，修改其自有配置；登记微信或移除飞书后分类立即对应变化。
+
+FIRST VIEWPORT：桌面约200px全局侧栏，只有概览/机器人；机器人头部含注册入口，下方约208px页内分类与右侧配置工作区。QQ 配置主体在第一屏，字段在清晰标签列后，插件信息和移除操作独立于保存区。状态不编造在线、消息或模型活动。
+
+FORM：生活收纳系统的分类标签，原候选排序1，用户选择 pick；seed:5415be133812f15c。保留深浅中性层级与绿色选中，注册/移除时目录即时更新为本界面唯一状态节奏，不做页面入场动画。
+
+FINISH：unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+
+## 交互与边界
+
+全中文按钮、焦点可见，页面路由可回退；移动端将全局栏折叠为图标导航并让页内分类可横向浏览。插件表单具备校验/保存/失败/本地验证。移除操作需明确确认，只撤销注册且保留配置；全部移除显示可重新注册的空状态。加载失败只显示该插件的错误入口。
+
+示例模块随代码提供，不下载未知可执行包。所有平台显示示例/未接入，配置保存只代表浏览器持久化。本次不实现 Cordis 后台、真实 Harness、账号登录或 Tauri。

@@ -4,13 +4,14 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve, extname, sep } from 'node:path'
 import type { BackendPlugin, BackendPluginEntry, HostPluginContext, JsonObject } from '@eating/plugin-sdk'
-import { PlatformError, isJsonObject } from '@eating/plugin-sdk'
+import { PlatformError, isJsonObject, validateDeliverySettings } from '@eating/plugin-sdk'
 import { HostStore } from './store'
 import { HarnessGateway } from './harness'
 import { acquireWorkspaceLock } from './lock'
 import { persistedEnabledIds } from './discovery'
 import { failedPlugin } from './failed-plugin'
 import { createPluginMcpHandler } from './mcp'
+import { servePluginLogStream } from './plugin-log-stream'
 import { SESSION_COOKIE, getBearer, json, readJson, requireSession, safeError, sameSecret, secret, validateLocalRequest } from './security'
 
 export interface HostOptions {
@@ -29,6 +30,7 @@ export class EatingHost {
   private readonly plugins = new Map<string, BackendPlugin>()
   private readonly entries = new Map<string, BackendPluginEntry>()
   private readonly enabled = new Set<string>()
+  private readonly logStreams = new Map<string, Set<() => void>>()
   private readonly mcp = new Map<string, ReturnType<typeof createPluginMcpHandler>>()
   private readonly ownerSession = secret()
   private readonly csrf = secret()
@@ -58,7 +60,7 @@ export class EatingHost {
           recordEvent: (pluginId, key, event, harnessEvent, metadata) => {
             if (pluginId !== entry.id) throw new PlatformError('PLUGIN_SCOPE_VIOLATION', '插件不能写入其他平台事件。', 403)
             const result = this.store.recordEvent(pluginId, key, event, harnessEvent, metadata)
-            if (result.inserted && harnessEvent) this.harness.notify()
+            if (result.inserted && harnessEvent && result.queued !== false) this.harness.notify()
             return result
           },
           listMessages: (pluginId, filters) => {
@@ -104,7 +106,7 @@ export class EatingHost {
   getWorkspace(): JsonObject {
     return { protocolVersion: 1, registeredIds: [...this.enabled],
       plugins: [...this.plugins.values()].map(plugin => ({ id: plugin.id, name: plugin.name, version: plugin.version,
-        enabled: this.enabled.has(plugin.id), configuration: plugin.getPublicConfiguration(), frontend: this.frontendContribution(plugin.id),
+        enabled: this.enabled.has(plugin.id), logsSupported: Boolean(plugin.logs), logViewerCount: this.logStreams.get(plugin.id)?.size ?? 0, configuration: plugin.getPublicConfiguration(), frontend: this.frontendContribution(plugin.id),
         status: plugin.getStatus(), capabilities: plugin.capabilities, tools: plugin.tools })),
       harness: this.harness.getStatus(),
     } as unknown as JsonObject
@@ -134,6 +136,37 @@ export class EatingHost {
         requireSession(request, this.ownerSession)
         if (request.method !== 'GET' && !sameSecret(typeof request.headers['x-eating-csrf'] === 'string' ? request.headers['x-eating-csrf'] : undefined, this.csrf)) throw new PlatformError('INVALID_CSRF_TOKEN', '管理请求校验失败，请刷新页面。', 403)
         if (pathname === '/api/workspace' && request.method === 'GET') { json(response, 200, this.getWorkspace()); return }
+        if (pathname === '/api/settings' || pathname === '/api/settings/queue/clear') {
+          if (pathname === '/api/settings' && request.method === 'GET') { json(response, 200, this.store.getDeliverySettingsSnapshot()); return }
+          if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '设置操作仅支持 GET 或 POST。', 405)
+          const body = await readJson(request)
+          if (!isJsonObject(body) || typeof body.expectedRevision !== 'number' || !Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 0) throw new PlatformError('INVALID_SETTINGS_REQUEST', '设置请求缺少有效版本，请重新读取设置。')
+          if (pathname.endsWith('/clear')) {
+            if (body.confirmed !== true) throw new PlatformError('QUEUE_CLEAR_CONFIRMATION_REQUIRED', '请明确确认清空尚未投递及结果待核对的消息。', 409)
+            if (body.expectedRevision !== this.store.getDeliverySettingsSnapshot().revision) throw new PlatformError('SETTINGS_REVISION_CONFLICT', '设置已被其他页面修改，请重新读取。', 409)
+            const result = this.store.clearDeliveryQueue()
+            this.harness.reconfigure()
+            json(response, 200, result); return
+          }
+          const result = this.store.updateDeliverySettings(validateDeliverySettings(body.values), body.expectedRevision)
+          this.harness.reconfigure()
+          json(response, 200, result); return
+        }
+        const logMatch = /^\/api\/plugins\/([a-z][a-z0-9-]*)\/logs\/stream$/.exec(pathname)
+        if (logMatch) {
+          if (request.method !== 'GET') throw new PlatformError('METHOD_NOT_ALLOWED', '实时日志需使用 GET。', 405)
+          const id = logMatch[1]!
+          const plugin = this.requirePlugin(id, true)
+          if (this.mutations.has(id)) throw new PlatformError('PLUGIN_BUSY', '插件正在变更，暂不能打开实时日志。', 409)
+          if (!plugin.logs) throw new PlatformError('PLUGIN_LOGS_UNSUPPORTED', '此插件未提供实时日志。', 404)
+          const streams = this.logStreams.get(id) ?? new Set<() => void>()
+          if (streams.size >= 8) throw new PlatformError('TOO_MANY_LOG_VIEWERS', '此插件已打开过多日志页面，请先关闭其他页面。', 429)
+          this.logStreams.set(id, streams)
+          let stop: () => void = () => {}
+          stop = servePluginLogStream(request, response, plugin.logs, () => { streams.delete(stop); if (!streams.size) this.logStreams.delete(id) })
+          if (!response.destroyed && !response.writableEnded) streams.add(stop)
+          return
+        }
         const match = /^\/api\/plugins\/([a-z][a-z0-9-]*)\/(configuration|connect|disconnect|enable|disable|invoke|mcp-registration)$/.exec(pathname)
         if (!match) throw new PlatformError('NOT_FOUND', '接口不存在。', 404)
         const id = match[1]!
@@ -196,6 +229,8 @@ export class EatingHost {
     const next = new Set(this.enabled)
     if (enabled) next.add(id)
     else {
+      for (const stop of this.logStreams.get(id) ?? []) stop()
+      this.logStreams.delete(id)
       await this.plugins.get(id)?.disconnect()
       await this.mcp.get(id)?.close()
       this.mcp.delete(id)
@@ -243,6 +278,8 @@ export class EatingHost {
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
+    for (const streams of this.logStreams.values()) for (const stop of streams) stop()
+    this.logStreams.clear()
     const stopped = new Promise<void>(resolveClose => this.server.listening ? this.server.close(() => resolveClose()) : resolveClose())
     this.server.closeIdleConnections()
     await Promise.allSettled([...this.plugins.values()].map(plugin => plugin.dispose()))

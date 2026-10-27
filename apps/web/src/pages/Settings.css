@@ -1,0 +1,73 @@
+.settings-workspace { min-width: 0; }
+.settings-content { min-width: 0; }
+.settings-title-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 16px 20px; }
+.settings-title-row > div { min-width: 0; }
+.settings-read-button { flex-shrink: 0; }
+.settings-retention-note { display: flex; align-items: flex-start; gap: 9px; max-width: 920px; margin: 23px 0 27px; padding: 12px 0; border-top: 1px solid var(--color-line); border-bottom: 1px solid var(--color-line); color: var(--color-muted); font-size: 12px; overflow-wrap: anywhere; }
+.settings-retention-note svg { margin-top: 2px; color: var(--color-primary); }
+.settings-read-state { padding: 12px 0 28px; color: var(--color-muted); font-size: 13px; }
+.settings-notice { max-width: 920px; margin: 0 0 24px; font-size: 13px; overflow-wrap: anywhere; }
+.settings-notice-error { color: var(--color-danger); }
+.settings-notice-success { color: var(--color-primary-hover); }
+.settings-notice-info { color: var(--color-muted); }
+.settings-form { max-width: 920px; }
+.settings-form-section + .settings-form-section { margin-top: 32px; padding-top: 25px; border-top: 1px solid var(--color-line); }
+.settings-form-section .section-heading { margin-bottom: 23px; }
+.settings-form-section .section-heading p { max-width: 65ch; }
+.settings-field { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 0 24px; margin-bottom: 23px; }
+.settings-field > label { padding-top: 9px; font-size: 13px; font-weight: 550; }
+.settings-field-content { min-width: 0; }
+.settings-field input, .settings-field select { width: 100%; min-width: 0; max-width: 670px; height: 42px; padding: 8px 12px; border: 1px solid #849289; border-radius: 5px; background: var(--color-surface); color: var(--color-ink); font-size: 13px; }
+.settings-field input:hover, .settings-field select:hover { border-color: #6e8776; }
+.settings-field input:focus, .settings-field select:focus { border-color: var(--color-primary); }
+.settings-field input:disabled, .settings-field select:disabled { background: #f5f7f3; color: var(--color-muted); cursor: not-allowed; }
+.settings-field.is-invalid input, .settings-field.is-invalid select { border-color: #b64a4a; }
+.settings-number-input { display: flex; align-items: center; width: 240px; max-width: 100%; gap: 10px; }
+.settings-number-input input { flex: 1; font-variant-numeric: tabular-nums; }
+.settings-number-input > span { flex-shrink: 0; min-width: 24px; color: var(--color-muted); font-size: 12px; }
+.settings-field-hint, .settings-field-error { max-width: 65ch; margin-top: 6px; font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
+.settings-field-hint { color: var(--color-muted); }
+.settings-field-error { color: #aa3838; }
+.settings-storage-risk { max-width: 65ch; margin-top: 8px; color: #7b581c; font-size: 12px; overflow-wrap: anywhere; }
+.settings-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 28px; padding: 22px 0 0 156px; border-top: 1px solid var(--color-line); }
+.settings-save-state { color: var(--color-muted); font-size: 11px; }
+.settings-inline-confirmation { display: flex; flex-direction: column; gap: 14px; margin-top: 19px; padding: 18px; border: 1px solid #e5d2cc; border-radius: var(--radius); background: #fdf9f7; color: #77625d; font-size: 12px; overflow-wrap: anywhere; }
+.settings-confirm-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.settings-confirm-checkbox { display: flex; align-items: flex-start; gap: 9px; color: var(--color-ink); font-size: 13px; cursor: pointer; }
+.settings-confirm-checkbox input { flex-shrink: 0; width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--color-primary); }
+.settings-queue-status { max-width: 920px; margin-top: 38px; padding-top: 25px; border-top: 1px solid var(--color-line); }
+.settings-queue-status .section-heading { margin-bottom: 12px; }
+.settings-stat-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 28px; margin: 0; }
+.settings-stat-list > div { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; min-width: 0; padding: 10px 0; border-bottom: 1px solid var(--color-line); font-size: 12px; }
+.settings-stat-list dt { flex-shrink: 0; color: var(--color-muted); }
+.settings-stat-list dd { min-width: 0; margin: 0; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.settings-clear-section { max-width: 920px; margin-top: 32px; padding-top: 23px; border-top: 1px solid var(--color-line); }
+.settings-clear-heading { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px 24px; }
+.settings-clear-heading > div { flex: 1; min-width: 200px; }
+.settings-clear-heading p { max-width: 65ch; margin-top: 5px; color: var(--color-muted); font-size: 12px; }
+.settings-clear-trigger { flex-shrink: 0; color: #77726b; padding-top: 0; }
+.settings-clear-trigger:hover { color: var(--color-danger); }
+@media (max-width: 1100px) {
+  .settings-field { grid-template-columns: 112px minmax(0, 1fr); column-gap: 16px; }
+  .settings-actions { padding-left: 128px; }
+  .settings-stat-list { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 850px) {
+  .settings-field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 20px; }
+  .settings-field > label { padding-top: 0; }
+  .settings-actions { padding-left: 0; }
+}
+@media (max-width: 600px) {
+  .settings-title-row { gap: 14px; }
+  .settings-read-button { min-height: 40px; }
+  .settings-retention-note { margin-top: 20px; font-size: 11px; }
+  .settings-sidebar nav { flex-wrap: wrap; overflow: visible; }
+  .settings-sidebar .platform-nav-item { min-height: 40px; }
+  .settings-actions { gap: 8px; }
+  .settings-save-state { flex-basis: 100%; margin-top: 3px; }
+  .settings-inline-confirmation { padding: 15px; }
+  .settings-confirm-actions .button { white-space: normal; }
+  .settings-stat-list > div { gap: 10px; }
+  .settings-clear-heading > div { min-width: 0; flex-basis: 100%; }
+  .settings-clear-trigger { min-height: 40px; }
+}

@@ -46,7 +46,7 @@ function deferred<T>() {
   return { promise, resolve: resolveValue }
 }
 
-describe('HostStore durable messages', () => {
+describe('HostStore outstanding delivery queue', () => {
   it('persists settings and deduplicates messages across a close/reopen without replacing the original', () => {
     const { open, close } = fixture()
     const first = open()
@@ -61,7 +61,7 @@ describe('HostStore durable messages', () => {
     expect(reopened.getSetting('test:display-name')).toBe('Saved name')
     expect(reopened.getSetting('missing')).toBeNull()
     expect(reopened.recordEvent('test-platform', 'incoming-001', { raw_message: 'late' }, event())).toEqual({ inserted: false, eventId: original.eventId })
-    expect(reopened.listMessages('test-platform')).toEqual([expect.objectContaining({ eventId: original.eventId, text: 'hello', raw: { raw_message: 'original' }, harnessStatus: 'pending' })])
+    expect(reopened.listMessages('test-platform')).toEqual([expect.objectContaining({ eventId: original.eventId, text: 'hello', raw: {}, harnessStatus: 'pending' })])
     expect(reopened.listMessages('other-platform')).toHaveLength(1)
   })
 
@@ -85,7 +85,7 @@ describe('HostStore durable messages', () => {
     store.recordEvent('test-platform', 'instance-two', {}, { ...event('same-conversation', 'second instance'), instanceId: 'test-instance-two' })
     store.recordEvent('test-platform', 'local-only', {}, null, { conversationId: 'same-conversation', text: 'second instance local', instanceId: 'test-instance-two' })
     expect(store.listMessages('test-platform', { conversationId: 'same-conversation', instanceId: 'test-instance-one' }).map(message => message.text)).toEqual(['first instance'])
-    expect(store.listMessages('test-platform', { conversationId: 'same-conversation', instanceId: 'test-instance-two' }).map(message => message.text)).toEqual(['second instance local', 'second instance'])
+    expect(store.listMessages('test-platform', { conversationId: 'same-conversation', instanceId: 'test-instance-two' }).map(message => message.text)).toEqual(['second instance'])
     expect(store.listMessages('test-platform', { instanceId: 'missing-instance' })).toEqual([])
   })
 
@@ -99,7 +99,7 @@ describe('HostStore durable messages', () => {
     close(store)
     const reopened = open()
     expect(reopened.pendingHarnessEvents()).toHaveLength(1)
-    expect(reopened.listMessages('test-platform', { conversationId: 'local-conversation' })[0]).toMatchObject({ text: 'local only', harnessStatus: 'not-forwarded' })
+    expect(reopened.listMessages('test-platform', { conversationId: 'local-conversation' })).toEqual([])
     expect(reopened.listMessages('test-platform', { conversationId: event().conversationId })[0]).toMatchObject({ harnessStatus: 'pending' })
   })
 
@@ -107,7 +107,7 @@ describe('HostStore durable messages', () => {
     const { open, close } = fixture()
     const store = open()
     const recorded = store.recordEvent('test-platform', 'interrupted-delivery', {}, event())
-    store.markHarnessDelivery(recorded.eventId, 'delivering')
+    store.markHarnessDeliveryBatch([recorded.eventId], 'delivering')
     close(store)
     const reopened = open()
     expect(reopened.listMessages('test-platform')[0]?.harnessStatus).toBe('uncertain')

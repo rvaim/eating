@@ -6,6 +6,7 @@ import { OneBotClient } from './backend/onebot'
 import { qqTools, validateToolInput } from './backend/operations'
 import { QQConfigurationFile } from './backend/config-file'
 import { QQAccountRegistry } from './backend/accounts'
+import { LiveLogChannel } from './backend/live-logs'
 
 const initialConfiguration: OneBotConfig = { displayName: 'QQ', endpoint: '', accessToken: '', autoConnect: false,
   forwardToHarness: true, receiveGroups: true, timeoutMs: 10000 }
@@ -49,7 +50,8 @@ function parseConfiguration(input: unknown, previous: OneBotConfig): OneBotConfi
 class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly name = 'QQ'
-  readonly version = '0.2.0'
+  readonly version = '0.4.0'
+  readonly logs = new LiveLogChannel()
   readonly tools = qqTools
   readonly capabilities = [
     { id: 'onebot.v11.forward-websocket', name: 'OneBot v11 正向 WebSocket', support: 'supported' as const, description: '统一端点接收事件并调用标准 API，支持 Bearer 认证与有限重连。' },
@@ -98,22 +100,16 @@ class QQPlugin implements BackendPlugin {
     await this.client.connect(this.configuration)
   }
   async disconnect(): Promise<void> { await this.client.disconnect() }
-  async dispose(): Promise<void> { await this.client.dispose() }
+  async dispose(): Promise<void> {
+    try { await this.client.dispose() }
+    finally { this.logs.dispose() }
+  }
 
   async invoke(name: string, input: unknown, requestId: string): Promise<JsonValue> {
     const tool = this.tools.find(entry => entry.name === name)
     if (!tool) throw new PlatformError('TOOL_NOT_FOUND', '此 QQ 功能未提供。', 404, 'not-sent')
     const params = validateToolInput(tool, input)
     if (params.instance_id !== undefined && params.instance_id !== this.instanceId) throw new PlatformError('ACCOUNT_INSTANCE_NOT_ACTIVE', '此账号实例当前未启用。本版本只支持默认账号，未自动切换。', 409, 'not-sent')
-    if (name === 'qq_list_received_messages') {
-      const messages = this.context.listMessages(this.id, {
-        instanceId: this.instanceId,
-        ...(typeof params.conversation_id === 'string' ? { conversationId: params.conversation_id } : {}),
-        ...(typeof params.limit === 'number' ? { limit: params.limit } : {}),
-        ...(typeof params.before === 'number' ? { before: params.before } : {}),
-      })
-      return JSON.parse(JSON.stringify({ messages })) as JsonValue
-    }
     const map: Record<string, string> = { qq_get_login_info: 'get_login_info', qq_get_status: 'get_status', qq_get_version_info: 'get_version_info',
       qq_get_friend_list: 'get_friend_list', qq_get_group_list: 'get_group_list', qq_get_message: 'get_msg',
       qq_send_private_message: 'send_private_msg', qq_send_group_message: 'send_group_msg', qq_delete_message: 'delete_msg' }
@@ -155,7 +151,15 @@ class QQPlugin implements BackendPlugin {
     const harness: HarnessEvent | null = shouldForward ? { protocolVersion: 1, eventId, pluginId: this.id, instanceId: this.instanceId,
       platform: 'qq', accountId, conversationId, senderId, receivedAt,
       source: { trust: 'external', kind }, content: event.message ?? '', text } : null
-    this.context.recordEvent(this.id, key, event, harness, { conversationId, text, instanceId: this.instanceId })
+    const { inserted, admission } = this.context.recordEvent(this.id, key, event, harness, { conversationId, text, instanceId: this.instanceId })
+    if (inserted) this.logs.publish(() => {
+      const token = this.configuration.accessToken
+      const preview = token ? text.split(token).join('[已隐藏令牌]') : text
+      return { id: eventId, timestamp: receivedAt, level: 'info', event: 'message.received', message: preview.slice(0, 500),
+        metadata: { kind, accountId, instanceId: this.instanceId, conversationId, senderId, messageId,
+          queueAdmission: admission ?? (shouldForward ? 'queued' : 'not-forwarded'),
+          ...(kind === 'group' ? { groupId: targetId } : {}) } }
+    })
   }
 }
 

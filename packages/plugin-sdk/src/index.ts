@@ -44,17 +44,99 @@ export interface HarnessEvent {
   readonly text: string
 }
 
-/** Acceptance is distinct from model consumption or external actions. */
+export interface DeliverySettings {
+  readonly storageMode: 'persistent' | 'memory'
+  readonly maxQueuedMessages: number
+  readonly maxQueuedBytes: number
+  readonly overflowPolicy: 'reject-new' | 'drop-oldest'
+  readonly quietWindowMs: number
+  readonly maxWaitMs: number
+  readonly maxBatchMessages: number
+  readonly batchTargetBytes: number
+  readonly deliveryTimeoutMs: number
+  readonly retryIntervalMs: number
+  readonly maxDeliveryAttempts: number
+}
+
+export const DEFAULT_DELIVERY_SETTINGS: DeliverySettings = Object.freeze({
+  storageMode: 'persistent', maxQueuedMessages: 1000, maxQueuedBytes: 10 * 1024 * 1024,
+  overflowPolicy: 'reject-new', quietWindowMs: 500, maxWaitMs: 2000,
+  maxBatchMessages: 10, batchTargetBytes: 32 * 1024, deliveryTimeoutMs: 15000,
+  retryIntervalMs: 10000, maxDeliveryAttempts: 5,
+})
+
+export interface DeliveryQueueStats {
+  readonly storageMode: DeliverySettings['storageMode']
+  readonly pending: number
+  readonly delivering: number
+  readonly uncertain: number
+  readonly queuedMessages: number
+  readonly queuedBytes: number
+  readonly accepted: number
+  readonly rejected: number
+  readonly discarded: number
+  readonly dedupIdentifiers: number
+  readonly overCapacity: boolean
+  readonly lastQueueError: string | null
+}
+
+export interface DeliverySettingsSnapshot {
+  readonly protocolVersion: 1
+  readonly revision: number
+  readonly values: DeliverySettings
+  readonly queue: DeliveryQueueStats
+}
+
+export interface HarnessDeliveryBatch {
+  readonly protocolVersion: 1
+  readonly batchId: string
+  readonly conversationId: string
+  readonly createdAt: string
+  readonly reason: 'quiet-window' | 'max-wait' | 'max-messages' | 'target-bytes'
+  readonly events: readonly HarnessEvent[]
+}
+
+/** durable=true transfers ownership; it still does not mean model consumption. */
+export interface HarnessDeliveryReceipt {
+  readonly accepted: boolean
+  readonly durable?: boolean
+  readonly receiptId?: string
+}
+
 export interface HarnessMessageSink {
   readonly id: string
-  deliver(event: HarnessEvent, signal: AbortSignal): Promise<{ readonly accepted: boolean; readonly receiptId?: string }>
+  deliver?(event: HarnessEvent, signal: AbortSignal): Promise<HarnessDeliveryReceipt>
+  deliverBatch?(batch: HarnessDeliveryBatch, signal: AbortSignal): Promise<HarnessDeliveryReceipt>
+}
+
+export function validateDeliverySettings(input: unknown): DeliverySettings {
+  if (!isJsonObject(input)) throw new PlatformError('INVALID_DELIVERY_SETTINGS', '消息投递设置必须为对象。')
+  const keys = Object.keys(DEFAULT_DELIVERY_SETTINGS)
+  if (Object.keys(input).length !== keys.length || Object.keys(input).some(key => !keys.includes(key))) throw new PlatformError('INVALID_DELIVERY_SETTINGS', '消息投递设置字段不完整或包含未知项。')
+  if (!['persistent', 'memory'].includes(String(input.storageMode)) || !['reject-new', 'drop-oldest'].includes(String(input.overflowPolicy))) throw new PlatformError('INVALID_DELIVERY_SETTINGS', '队列存储方式或溢出处理无效。')
+  const ranges: Readonly<Record<string, readonly [number, number]>> = {
+    maxQueuedMessages: [1, 100000], maxQueuedBytes: [1024, 100 * 1024 * 1024],
+    quietWindowMs: [0, 60000], maxWaitMs: [1, 300000], maxBatchMessages: [1, 200],
+    batchTargetBytes: [256, 4 * 1024 * 1024], deliveryTimeoutMs: [100, 120000],
+    retryIntervalMs: [100, 300000], maxDeliveryAttempts: [1, 20],
+  }
+  const labels: Readonly<Record<string, string>> = { maxQueuedMessages: '队列消息上限', maxQueuedBytes: '队列容量上限', quietWindowMs: '聚合静默时间', maxWaitMs: '最长聚合等待时间', maxBatchMessages: '单批消息上限', batchTargetBytes: '批次目标大小', deliveryTimeoutMs: '投递超时', retryIntervalMs: '拒收重试间隔', maxDeliveryAttempts: '最大投递尝试次数' }
+  for (const [key, [minimum, maximum]] of Object.entries(ranges)) {
+    const value = input[key]
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) throw new PlatformError('INVALID_DELIVERY_SETTINGS', `${labels[key] ?? '设置项'}需为 ${minimum} 至 ${maximum} 范围内的整数。`)
+  }
+  if (Number(input.maxWaitMs) < Number(input.quietWindowMs)) throw new PlatformError('INVALID_DELIVERY_SETTINGS', '最长聚合等待时间不能小于聚合静默时间。')
+  if (Number(input.maxBatchMessages) > Number(input.maxQueuedMessages)) throw new PlatformError('INVALID_DELIVERY_SETTINGS', '单批消息上限不能大于队列消息上限。')
+  if (Number(input.batchTargetBytes) > Number(input.maxQueuedBytes)) throw new PlatformError('INVALID_DELIVERY_SETTINGS', '批次目标大小不能大于队列容量上限。')
+  return Object.freeze({ ...input }) as unknown as DeliverySettings
 }
 
 export interface HostPluginContext {
   readonly dataDirectory: string
   getSetting(key: string): string | null
   setSetting(key: string, value: string): void
-  recordEvent(pluginId: string, deduplicationKey: string, event: JsonObject, harnessEvent: HarnessEvent | null, metadata?: { readonly conversationId: string; readonly text: string; readonly instanceId?: string }): { readonly inserted: boolean; readonly eventId: string }
+  recordEvent(pluginId: string, deduplicationKey: string, event: JsonObject, harnessEvent: HarnessEvent | null, metadata?: { readonly conversationId: string; readonly text: string; readonly instanceId?: string }): { readonly inserted: boolean; readonly eventId: string; readonly queued?: boolean; readonly admission?: 'queued' | 'not-forwarded' | 'rejected' }
+  /** Diagnostic view of outstanding delivery only; never a chat archive. */
   listMessages(pluginId: string, options: { readonly conversationId?: string; readonly limit?: number; readonly before?: number; readonly instanceId?: string }): readonly StoredMessage[]
   executeIdempotent(pluginId: string, action: string, params: JsonObject, requestId: string, execute: () => Promise<JsonValue>, scope?: { readonly instanceId: string; readonly accountId: string }): Promise<JsonValue>
 }
@@ -71,7 +153,22 @@ export interface StoredMessage {
   readonly harnessStatus: 'not-forwarded' | 'pending' | 'delivering' | 'accepted' | 'uncertain'
 }
 
+export interface PluginLogEntry {
+  readonly id: string
+  readonly timestamp: string
+  readonly level: 'info' | 'warn' | 'error'
+  readonly event: string
+  readonly message: string
+  readonly metadata?: JsonObject
+}
+
+/** No replay or retention: events exist only while a viewer subscribes. */
+export interface PluginLogSource {
+  subscribe(listener: (entry: PluginLogEntry) => void): () => void
+}
+
 export interface BackendPlugin {
+  readonly logs?: PluginLogSource
   readonly id: string
   readonly name: string
   readonly version: string

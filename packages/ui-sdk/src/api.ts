@@ -1,3 +1,6 @@
+import { isJsonObject } from '@eating/plugin-sdk'
+import type { PluginLogEntry } from '@eating/plugin-sdk'
+
 export class HostApiError extends Error {
   constructor(readonly code: string, message: string, readonly outcome: string = 'failed') { super(message); this.name = 'HostApiError' }
 }
@@ -15,7 +18,9 @@ async function initialize(): Promise<string> {
 }
 
 export async function hostRequest<T>(path: string, options: { method?: 'GET' | 'POST'; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
+  if (options.signal?.aborted) throw new HostApiError('REQUEST_CANCELLED', '请求已取消，未发送。', 'not-sent')
   const csrfToken = await initialize()
+  if (options.signal?.aborted) throw new HostApiError('REQUEST_CANCELLED', '请求已取消，未发送。', 'not-sent')
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 65000)
   const abort = () => controller.abort()
@@ -37,5 +42,80 @@ export async function hostRequest<T>(path: string, options: { method?: 'GET' | '
   } finally {
     clearTimeout(timeout)
     options.signal?.removeEventListener('abort', abort)
+  }
+}
+
+export type PluginLogStreamState = 'connecting' | 'connected' | 'reconnecting' | 'closed'
+export interface PluginLogHandlers {
+  readonly onEntry: (entry: PluginLogEntry) => void
+  readonly onState?: (state: PluginLogStreamState) => void
+  readonly onError?: (error: HostApiError) => void
+}
+
+function parseLogEntry(value: unknown): PluginLogEntry {
+  if (!isJsonObject(value) || typeof value.id !== 'string' || !value.id || value.id.length > 128
+    || typeof value.timestamp !== 'string' || !Number.isFinite(Date.parse(value.timestamp))
+    || !['info', 'warn', 'error'].includes(String(value.level)) || typeof value.event !== 'string' || value.event.length > 100
+    || typeof value.message !== 'string' || value.message.length > 2000
+    || value.metadata !== undefined && !isJsonObject(value.metadata)) throw new HostApiError('INVALID_LOG_ENTRY', '实时日志格式不兼容，请检查插件和 Host 版本。')
+  return value as unknown as PluginLogEntry
+}
+
+/** A transient live stream. No history, browser storage or background polling. */
+export function subscribePluginLogs(pluginId: string, handlers: PluginLogHandlers): () => void {
+  if (!/^[a-z][a-z0-9-]*$/.test(pluginId)) throw new HostApiError('INVALID_PLUGIN_ID', '插件标识无效。', 'not-sent')
+  let disposed = false
+  let source: EventSource | null = null
+  let retry: ReturnType<typeof setTimeout> | undefined
+  const reconnect = () => {
+    if (disposed || retry) return
+    handlers.onState?.('reconnecting')
+    retry = setTimeout(() => { retry = undefined; initialization = null; void connect(true) }, 2000)
+  }
+  async function connect(reconnecting = false): Promise<void> {
+    if (disposed) return
+    handlers.onState?.(reconnecting ? 'reconnecting' : 'connecting')
+    try { await initialize() }
+    catch {
+      if (disposed) return
+      handlers.onError?.(new HostApiError('LOG_STREAM_UNAVAILABLE', '无法连接日志服务，正在重试。'))
+      reconnect(); return
+    }
+    if (disposed) return
+    let current: EventSource
+    try { current = new EventSource(`/api/plugins/${encodeURIComponent(pluginId)}/logs/stream`) }
+    catch {
+      handlers.onError?.(new HostApiError('LOG_STREAM_UNAVAILABLE', '无法建立实时日志连接，正在重试。'))
+      reconnect(); return
+    }
+    source = current
+    current.onopen = () => { if (!disposed && source === current) handlers.onState?.('connected') }
+    current.addEventListener('log', event => {
+      if (disposed || source !== current) return
+      let entry: PluginLogEntry
+      try {
+        if (typeof event.data !== 'string' || event.data.length > 16384) throw new Error('size')
+        entry = parseLogEntry(JSON.parse(event.data))
+      } catch {
+        current.close(); source = null
+        handlers.onState?.('closed')
+        handlers.onError?.(new HostApiError('INVALID_LOG_ENTRY', '日志数据不兼容，已停止订阅。请重新打开页签或升级插件。'))
+        return
+      }
+      handlers.onEntry(entry)
+    })
+    current.onerror = () => {
+      if (disposed || source !== current) return
+      current.close(); source = null
+      reconnect()
+    }
+  }
+  void connect()
+  return () => {
+    if (disposed) return
+    disposed = true
+    if (retry) clearTimeout(retry)
+    retry = undefined
+    source?.close(); source = null
   }
 }

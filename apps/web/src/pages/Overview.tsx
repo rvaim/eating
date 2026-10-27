@@ -9,6 +9,7 @@ export function Overview({ snapshot, onRobots, onRegister }: {
 }) {
   const configured = snapshot.plugins.filter(plugin => Boolean(snapshot.configurations[plugin.id]))
   const connected = snapshot.plugins.filter(plugin => snapshot.statuses[plugin.id]?.state === 'connected')
+  const deliveryError = typeof snapshot.harness.lastError === 'string' ? snapshot.harness.lastError : typeof snapshot.harness.lastQueueError === 'string' ? snapshot.harness.lastQueueError : null
   return <main id="main-content" className="overview-content">
     <section className="welcome-section">
       <div><h2>连接 Eating 与世界。</h2><p>管理通讯连接、查看消息与工具，让每个平台各司其职。</p><button className="button button-primary" onClick={() => onRobots()}>管理机器人<ArrowRight size={16} /></button></div>
@@ -37,10 +38,13 @@ export function Overview({ snapshot, onRobots, onRegister }: {
     </section>
     <div className="overview-bottom">
       <section className="activity-section" aria-labelledby="activity-title"><div className="section-title-row"><h2 id="activity-title">Harness 消息投递</h2><span className="subtle">接口已预留</span></div>
-        <p className="subtle">{snapshot.harness.state === 'attached' ? '主要接收者已接入。' : '尚未注册 Harness 接收者，外部消息在 Host 持久保存并等待投递。'}</p>
-        <p className="delivery-counts">待投递 <strong>{String(snapshot.harness.pending ?? 0)}</strong><span>已接受 <strong>{String(snapshot.harness.accepted ?? 0)}</strong></span><span>结果待核对 <strong>{String(snapshot.harness.uncertain ?? 0)}</strong></span></p>
+        <p className="subtle">{snapshot.harness.state === 'attached' ? '主要接收者已接入。' : '尚未注册 Harness 接收者，消息仅在有上限的待投递队列中暂存。'}</p>
+        <p className="delivery-counts">待投递 <strong>{String(snapshot.harness.pending ?? 0)}</strong><span>已可靠交接 <strong>{String(snapshot.harness.accepted ?? 0)}</strong></span><span>结果待核对 <strong>{String(snapshot.harness.uncertain ?? 0)}</strong></span></p>
+        <p className="subtle">未入队 {String(snapshot.harness.rejected ?? 0)} 条 · 按策略移除 {String(snapshot.harness.discarded ?? 0)} 条</p>
+        {deliveryError && <p className="subtle" role="alert">{deliveryError}</p>}
+        <a className="text-button" href="#settings/queue">管理待投递队列 <ArrowRight size={14} /></a>
       </section>
-      <aside className="version-note"><h3>数据与运行环境</h3><p>配置保存到 EATING_HOME，默认 ~/.eating；机器人实例独立存储，停用不会删除配置或消息。</p><span>Eating · 正式开发版本 0.2</span></aside>
+      <aside className="version-note"><h3>数据与运行环境</h3><p>配置保存到 EATING_HOME，默认 ~/.eating；账号配置独立保存。Eating 不保留聊天历史，待投递队列的存储方式和容量可在设置中选择。</p><span>Eating · 正式开发版本 0.3</span></aside>
     </div>
   </main>
 }

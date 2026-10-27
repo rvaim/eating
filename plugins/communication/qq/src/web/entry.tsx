@@ -16,7 +16,7 @@ function validate(values: PluginConfiguration): ConfigurationValidation {
 
 const plugin: CommunicationPlugin = {
   id: 'qq', name: 'QQ', description: '通过真实 OneBot v11 连接 QQ，接收消息并提供独立 MCP 工具。',
-  version: '0.2.0', apiVersion: 1, kind: 'communication', order: 10,
+  version: '0.4.0', apiVersion: 1, kind: 'communication', order: 10,
   icon: MessageCircle, brandColor: '#3876b6', defaultRegistered: true,
   initialValues: { displayName: 'QQ', endpoint: '', autoConnect: false, forwardToHarness: true, receiveGroups: true, timeoutMs: '10000' },
   validate, summary: values => typeof values.displayName === 'string' && values.displayName.trim() ? values.displayName : 'QQ 配置', Panel: QQPanel,

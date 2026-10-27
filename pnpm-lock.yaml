@@ -119,6 +119,9 @@ importers:
       '@eating/plugin-core':
         specifier: workspace:^
         version: link:../plugin-core
+      '@eating/plugin-sdk':
+        specifier: workspace:^
+        version: link:../plugin-sdk
       lucide-react:
         specifier: ^1.61.0
         version: 1.61.0(@types/react@19.3.0)(react@19.3.1)

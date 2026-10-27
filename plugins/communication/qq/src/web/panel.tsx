@@ -5,15 +5,17 @@ import { AlertCircle, Check, Copy, RefreshCw } from 'lucide-react'
 import { HostApiError, hostRequest } from '@eating/ui-sdk'
 import type { PluginPanelProps } from '@eating/ui-sdk'
 import { isJsonObject } from '@eating/plugin-sdk'
-import type { ConnectionStatus, JsonObject, JsonValue, PluginCapability, PluginToolDefinition, StoredMessage } from '@eating/plugin-sdk'
+import type { ConnectionStatus, JsonObject, JsonValue, PluginCapability, PluginToolDefinition } from '@eating/plugin-sdk'
 import './panel.css'
+import { LiveLogs } from './live-logs'
 
-type Tab = 'configuration' | 'tests' | 'messages' | 'mcp'
+type Tab = 'configuration' | 'tests' | 'mcp' | 'live-logs'
 type PublicConfiguration = Omit<OneBotConfig, 'accessToken'> & { tokenConfigured: boolean; instanceId?: string; configurationPath?: string; dataDirectory?: string }
 type Draft = Omit<OneBotConfig, 'timeoutMs'> & { timeoutMs: string; clearAccessToken: boolean }
 interface QQWorkspacePlugin {
   id: string
   enabled: boolean
+  logsSupported?: boolean
   configuration: JsonObject
   status: ConnectionStatus
   capabilities: PluginCapability[]
@@ -39,14 +41,11 @@ interface McpRegistration { transport: 'streamable-http'; url: string; headers: 
 type QQPanelProps = PluginPanelProps & { onRefresh?: () => Promise<void> }
 
 const tabs: { id: Tab; title: string }[] = [
-  { id: 'configuration', title: '连接配置' }, { id: 'tests', title: '功能测试' },
-  { id: 'messages', title: '消息记录' }, { id: 'mcp', title: 'MCP 能力' },
+  { id: 'configuration', title: '连接配置' }, { id: 'live-logs', title: '实时日志' }, { id: 'tests', title: '功能测试' },
+  { id: 'mcp', title: 'MCP 能力' },
 ]
 const connectionLabels: Record<ConnectionStatus['state'], string> = {
   unconfigured: '尚未配置', disconnected: '已断开', connecting: '正在连接', connected: '已连接', reconnecting: '正在重连', error: '连接失败',
-}
-const harnessLabels: Record<StoredMessage['harnessStatus'], string> = {
-  'not-forwarded': '未转交', pending: '等待投递', delivering: '正在投递', accepted: 'Harness 已接收', uncertain: '投递结果未知',
 }
 const argumentLabels: Record<string, string> = {
   user_id: '收件人 QQ 号', group_id: '目标群号', message: '消息内容', message_id: '消息 ID',
@@ -269,8 +268,8 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
             <input id={id('timeoutMs')} type="number" min={1000} max={60000} step={1} inputMode="numeric" aria-describedby={describedBy('timeoutMs')} aria-invalid={Boolean(fieldErrors.timeoutMs)} value={draft.timeoutMs} onChange={event => updateDraft('timeoutMs', event.target.value)} />
           </FormField>
           <label className="check-field"><input type="checkbox" checked={draft.autoConnect} onChange={event => updateDraft('autoConnect', event.target.checked)} /><span><strong>Host 启动时自动连接</strong><small>保存配置会先断开旧连接；本次保存后仍需手动连接。</small></span></label>
-          <label className="check-field"><input type="checkbox" checked={draft.forwardToHarness} onChange={event => updateDraft('forwardToHarness', event.target.checked)} /><span><strong>将接收的消息转交 Harness</strong><small>尚未接入 Harness 时，消息保存在后台等待投递；这不代表 Agent 已读。</small></span></label>
-          <label className="check-field"><input type="checkbox" checked={draft.receiveGroups} onChange={event => updateDraft('receiveGroups', event.target.checked)} /><span><strong>群消息转交 Harness</strong><small>仅影响群消息的转交范围；协议端收到的消息仍会保存在本地记录中。</small></span></label>
+          <label className="check-field"><input type="checkbox" checked={draft.forwardToHarness} onChange={event => updateDraft('forwardToHarness', event.target.checked)} /><span><strong>将接收的消息转交 Harness</strong><small>尚未接入 Harness 时进入有上限的队列等待投递；存储方式和容量在全局设置中配置。</small></span></label>
+          <label className="check-field"><input type="checkbox" checked={draft.receiveGroups} onChange={event => updateDraft('receiveGroups', event.target.checked)} /><span><strong>群消息转交 Harness</strong><small>仅影响新群消息是否入队；关闭后不保留其正文，实时日志仍按页面可见性启用。</small></span></label>
         </fieldset>
         <div className="form-actions"><button type="submit" className="button button-primary" disabled={busy}>{mutation === 'save' ? '正在保存…' : '保存配置'}</button>
           <button type="button" className="button button-secondary" disabled={busy || dirty || !saved?.endpoint || plugin?.enabled !== true || ['connected', 'connecting', 'reconnecting'].includes(plugin.status.state)} onClick={() => void mutate('connect')}>{mutation === 'connect' ? '正在核验连接…' : '连接 OneBot'}</button>
@@ -282,11 +281,11 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
       <ErrorNotice failure={configurationFailure} />
       {saved && (saved.instanceId || saved.configurationPath || saved.dataDirectory) && <dl className="qq-paths">{saved.instanceId && <div><dt>账号实例</dt><dd>{saved.instanceId}（本版仅使用当前默认实例，与实际 QQ 号独立）</dd></div>}{saved.configurationPath && <div><dt>配置文件</dt><dd>{saved.configurationPath}</dd></div>}{saved.dataDirectory && <div><dt>插件数据目录</dt><dd>{saved.dataDirectory}</dd></div>}</dl>}
     </section>
+    <section hidden={tab !== 'live-logs'} role="tabpanel" id={`${prefix}-panel-live-logs`} aria-labelledby={`${prefix}-tab-live-logs`}>
+      <LiveLogs active={tab === 'live-logs'} enabled={plugin?.enabled === true} available={plugin?.logsSupported === true} />
+    </section>
     <section hidden={tab !== 'tests'} role="tabpanel" id={`${prefix}-panel-tests`} aria-labelledby={`${prefix}-tab-tests`}>
       <ToolTester tools={plugin?.tools ?? []} enabled={plugin?.enabled === true} mutationBusy={mutation !== null} actionLock={actionLock} onBusy={setTesting} onFeedback={onFeedback} />
-    </section>
-    <section hidden={tab !== 'messages'} role="tabpanel" id={`${prefix}-panel-messages`} aria-labelledby={`${prefix}-tab-messages`}>
-      <MessageLog active={tab === 'messages'} enabled={plugin?.enabled === true} onFeedback={onFeedback} />
     </section>
     <section hidden={tab !== 'mcp'} role="tabpanel" id={`${prefix}-panel-mcp`} aria-labelledby={`${prefix}-tab-mcp`}>
       <McpCapabilities active={tab === 'mcp'} enabled={plugin?.enabled === true} capabilities={plugin?.capabilities ?? []} harness={workspace?.harness} onFeedback={onFeedback} />
@@ -428,7 +427,7 @@ function ToolTester({ tools, enabled, mutationBusy, actionLock, onBusy, onFeedba
       <ErrorNotice failure={validationFailure} />
       <div className="qq-actions"><button className="button button-primary" type="submit" disabled={blocked || !enabled || (hasSideEffect && !confirmed)}>{pending ? '正在执行…' : '执行测试'}</button><span className="qq-request-id">本次请求 ID：{requestId}</span></div>
     </form>}
-    {unknown && execution && <div className="qq-unknown" role="alert"><h4>上次动作结果未知</h4><p>保留了原请求 ID、参数与错误。请先查看消息记录或协议端真实状态；相同 ID 的重试用于查询或复用原执行记录，不保证原动作未发生。</p>
+    {unknown && execution && <div className="qq-unknown" role="alert"><h4>上次动作结果未知</h4><p>保留了原请求 ID、参数与错误。请先核查协议端真实状态；相同 ID 的重试用于查询或复用原执行记录，不保证原动作未发生。</p>
       <label className="qq-check"><input type="checkbox" checked={unknownReviewed} disabled={pending} onChange={event => setUnknownReviewed(event.target.checked)} /><span>我已核查真实状态，理解上次动作仍可能已执行。</span></label>
       <div className="qq-actions"><button type="button" className="button button-secondary" disabled={!unknownReviewed || pending || mutationBusy || !enabled || ((!execution.tool.readOnly || execution.tool.destructive) && !confirmed)} onClick={() => void execute(execution)}>重试原请求（复用 ID）</button>
         <button type="button" className="button button-secondary" disabled={!unknownReviewed || pending || mutationBusy} onClick={allowNewRequest}>确认后创建新请求</button></div><p className="qq-help">需要修改参数时，先明确创建新请求；发送或撤回仍需再次勾选确认。</p>
@@ -443,60 +442,6 @@ function ExecutionResult({ execution, onFeedback }: { execution: Execution; onFe
     <JsonPreview label="请求与结果 JSON" value={{ name: execution.tool.name, requestId: execution.requestId, arguments: execution.arguments, startedAt: execution.startedAt,
       ...(execution.pending ? { state: 'pending' } : execution.failure ? { error: execution.failure } : { result: execution.result }) }} onFeedback={onFeedback} />
   </div>
-}
-
-function MessageLog({ active, enabled, onFeedback }: { active: boolean; enabled: boolean; onFeedback: (message: string) => void }) {
-  const prefix = useId()
-  const [conversationId, setConversationId] = useState('')
-  const [messages, setMessages] = useState<StoredMessage[]>([])
-  const [loaded, setLoaded] = useState(false)
-  const [pending, setPending] = useState(false)
-  const [failure, setFailure] = useState<Failure | null>(null)
-  const [loadedAt, setLoadedAt] = useState<string | null>(null)
-  const controllerRef = useRef<AbortController | null>(null)
-  const generation = useRef(0)
-  const alive = useRef(false)
-  const filterRef = useRef(conversationId)
-  filterRef.current = conversationId
-  const load = useCallback(async () => {
-    if (controllerRef.current) return
-    const controller = new AbortController(); controllerRef.current = controller
-    const currentGeneration = ++generation.current
-    setPending(true)
-    try {
-      const response = await hostRequest<InvokeResult>('/plugins/qq/invoke', { method: 'POST', signal: controller.signal, body: {
-        name: 'qq_list_received_messages', arguments: { limit: 50, ...(filterRef.current.trim() ? { conversation_id: filterRef.current.trim() } : {}) }, requestId: crypto.randomUUID(),
-      } })
-      if (!alive.current || controller.signal.aborted || generation.current !== currentGeneration) return
-      if (!isJsonObject(response.result) || !Array.isArray(response.result.messages)) throw new Error('Host 消息记录响应格式不兼容。')
-      setMessages(response.result.messages as unknown as StoredMessage[]); setLoaded(true); setFailure(null); setLoadedAt(new Date().toISOString())
-    } catch (error) {
-      if (alive.current && !controller.signal.aborted && generation.current === currentGeneration) setFailure(failureFrom(error))
-    } finally {
-      if (controllerRef.current === controller) controllerRef.current = null
-      if (alive.current && generation.current === currentGeneration) setPending(false)
-    }
-  }, [])
-  useEffect(() => { alive.current = true; return () => { alive.current = false; ++generation.current; controllerRef.current?.abort(); controllerRef.current = null } }, [])
-  useEffect(() => {
-    if (!active) { ++generation.current; controllerRef.current?.abort(); controllerRef.current = null; setPending(false) }
-  }, [active])
-  useEffect(() => { if (active && enabled && !loaded && !failure) void load() }, [active, enabled, loaded, failure, load])
-
-  return <>
-    <div className="section-heading"><h3>消息记录</h3><p>读取 Eating 后台实际保存的最近 50 条接收记录，断开 QQ 连接后仍可查看。此处不是 QQ 的完整历史。</p></div>
-    <form className="qq-message-filter" onSubmit={event => { event.preventDefault(); void load() }}><label htmlFor={`${prefix}-conversation`}>会话 ID（选填）</label><div><input id={`${prefix}-conversation`} disabled={pending} value={conversationId} maxLength={200} autoComplete="off" spellCheck={false} onChange={event => setConversationId(event.target.value)} /><button type="submit" className="button button-secondary" disabled={pending || !enabled}><RefreshCw size={14} aria-hidden="true" />{pending ? '正在读取…' : '刷新记录'}</button></div></form>
-    <ErrorNotice failure={failure} />
-    {loadedAt && <p className="qq-help">读取时间：{dateLabel(loadedAt)} · 共 {messages.length} 条。Harness 已接收仅表示接收接口确认，不代表 Agent 已读。</p>}
-    {!loaded && pending && <p className="qq-loading" role="status">正在读取真实消息记录…</p>}
-    {loaded && !messages.length && <div className="qq-empty"><strong>还没有接收记录</strong><p>连接已登录的 OneBot 协议端后，收到的实际消息会显示在这里。也可以清空会话筛选后刷新。</p></div>}
-    <ol className="qq-message-list">{messages.map(message => <li key={message.eventId}>
-      <div className="qq-message-heading"><strong>{message.conversationId || '未提供会话 ID'}</strong><span className="status-badge">{harnessLabels[message.harnessStatus] ?? message.harnessStatus}</span></div>
-      <p className="qq-message-text">{message.text || '此消息没有可提取的文本，请查看原始事件。'}</p>
-      <dl className="qq-message-meta"><div><dt>接收时间</dt><dd><time dateTime={message.receivedAt}>{dateLabel(message.receivedAt)}</time></dd></div><div><dt>消息序号</dt><dd>{message.sequence}</dd></div><div><dt>发送者原始字段</dt><dd>{pretty(message.raw.sender ?? message.raw.user_id ?? null)}</dd></div></dl>
-      <details><summary>查看原始事件与投递状态</summary><JsonPreview label="消息原始记录" value={message} onFeedback={onFeedback} /></details>
-    </li>)}</ol>
-  </>
 }
 
 function McpCapabilities({ active, enabled, capabilities, harness, onFeedback }: { active: boolean; enabled: boolean; capabilities: PluginCapability[]; harness?: Workspace['harness']; onFeedback: (message: string) => void }) {

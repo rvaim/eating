@@ -1,3 +1,4 @@
+import { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { lstat, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { request } from 'node:http'
@@ -144,6 +145,78 @@ afterEach(async () => {
 })
 
 describe('real Eating Host → QQ OneBot → SQLite → authenticated MCP', () => {
+  it('applies authenticated settings atomically and rejects stale revisions or invalid values', async () => {
+    const context = await createHost()
+    expect((await http(context.url, '/api/settings')).status).toBe(401)
+    const initial = await context.api('/api/settings')
+    expect(initial.status).toBe(200)
+    expect(initial.body).toMatchObject({ protocolVersion: 1, revision: 0, values: { storageMode: 'persistent', quietWindowMs: 500, maxWaitMs: 2000 }, queue: { queuedMessages: 0 } })
+    const values = { ...object(initial.body.values), quietWindowMs: 800, maxWaitMs: 2500 }
+    expect((await http(context.url, '/api/settings', { method: 'POST', headers: { Cookie: context.cookie }, body: { expectedRevision: 0, values } })).status).toBe(403)
+    const saved = await context.api('/api/settings', { method: 'POST', body: { expectedRevision: 0, values } })
+    expect(saved.status).toBe(200)
+    expect(saved.body).toMatchObject({ revision: 1, values: { quietWindowMs: 800, maxWaitMs: 2500 } })
+    const stale = await context.api('/api/settings', { method: 'POST', body: { expectedRevision: 0, values } })
+    expect(stale.status).toBe(409)
+    expect(object(stale.body.error).code).toBe('DELIVERY_SETTINGS_CONFLICT')
+    const invalid = await context.api('/api/settings', { method: 'POST', body: { expectedRevision: 1, values: { ...values, maxWaitMs: 1 } } })
+    expect(invalid.status).toBe(400)
+    expect((await context.api('/api/settings')).body).toMatchObject({ revision: 1, values: { quietWindowMs: 800, maxWaitMs: 2500 } })
+    await context.host.close()
+    const reopened = await createHost(context.home)
+    expect((await reopened.api('/api/settings')).body).toMatchObject({ revision: 1, values: { quietWindowMs: 800, maxWaitMs: 2500 } })
+  })
+
+  it('keeps memory-mode bodies out of SQLite and loses only outstanding RAM deliveries on restart', async () => {
+    const context = await configuredHost()
+    const initial = (await context.api('/api/settings')).body
+    expect((await context.api('/api/settings', { method: 'POST', body: { expectedRevision: initial.revision!, values: { ...object(initial.values), storageMode: 'memory' } } })).status).toBe(200)
+    await connectHost(context)
+    context.fixture.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id: 61001, message: 'only-in-ram', raw_message: 'only-in-ram' })
+    await vi.waitFor(() => expect(context.host.store.getDeliverySettingsSnapshot().queue.queuedMessages).toBe(1))
+    const inspection = new DatabaseSync(context.host.store.databasePath, { readOnly: true })
+    try { expect(inspection.prepare('SELECT COUNT(*) AS count FROM delivery_queue').get()?.count).toBe(0) }
+    finally { inspection.close() }
+    await context.host.close()
+    const reopened = await createHost(context.home)
+    expect((await reopened.api('/api/settings')).body).toMatchObject({ values: { storageMode: 'memory' }, queue: { queuedMessages: 0, queuedBytes: 0 } })
+  })
+
+  it('reports capacity rejection without storing the rejected body or disabling active QQ reception', async () => {
+    const context = await configuredHost()
+    const initial = (await context.api('/api/settings')).body
+    expect((await context.api('/api/settings', { method: 'POST', body: { expectedRevision: initial.revision!, values: { ...object(initial.values), maxQueuedMessages: 1, maxBatchMessages: 1 } } })).status).toBe(200)
+    await connectHost(context)
+    for (const [message_id, message] of [[62001, 'accepted-to-queue'], [62002, 'rejected-from-queue']] as const) context.fixture.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id, message })
+    await vi.waitFor(() => expect(context.host.store.getDeliverySettingsSnapshot().queue.rejected).toBe(1))
+    expect(context.host.store.getQueuedHarnessEvents().map(item => item.event.text)).toEqual(['accepted-to-queue'])
+    const workspace = (await context.api('/api/workspace')).body
+    expect(object(pluginFrom(workspace).status).state).toBe('connected')
+    expect(object(workspace.harness)).toMatchObject({ pending: 1, rejected: 1 })
+    expect((await context.api('/api/settings')).body).toMatchObject({ queue: { queuedMessages: 1, rejected: 1 } })
+  })
+
+  it('requires explicit queue clearing and refuses to clear a delivery already in flight', async () => {
+    const context = await configuredHost()
+    const initial = (await context.api('/api/settings')).body
+    expect((await context.api('/api/settings', { method: 'POST', body: { expectedRevision: initial.revision!, values: { ...object(initial.values), quietWindowMs: 0 } } })).status).toBe(200)
+    await connectHost(context)
+    const send = (message_id: number) => context.fixture.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id, message: 'pending-clear-test' })
+    send(63001)
+    await vi.waitFor(() => expect(context.host.store.getDeliverySettingsSnapshot().queue.queuedMessages).toBe(1))
+    expect((await context.api('/api/settings/queue/clear', { method: 'POST', body: { expectedRevision: 1 } })).status).toBe(409)
+    const clear = await context.api('/api/settings/queue/clear', { method: 'POST', body: { expectedRevision: 1, confirmed: true } })
+    expect(clear.status).toBe(200)
+    expect(clear.body).toMatchObject({ queue: { queuedMessages: 0, discarded: 1 } })
+    send(63002)
+    await vi.waitFor(() => expect(context.host.store.getDeliverySettingsSnapshot().queue.queuedMessages).toBe(1))
+    const detach = context.host.harness.register({ id: 'clear-test', deliverBatch: async () => new Promise(() => {}) })
+    await vi.waitFor(() => expect(context.host.store.getDeliverySettingsSnapshot().queue.delivering).toBe(1))
+    expect((await context.api('/api/settings/queue/clear', { method: 'POST', body: { expectedRevision: 1, confirmed: true } })).status).toBe(409)
+    expect(context.host.store.getDeliverySettingsSnapshot().queue.delivering).toBe(1)
+    detach()
+  })
+
   it('bootstraps the owner, saves per-instance credentials privately, connects health and exposes actual MCP tools', async () => {
     const context = await configuredHost()
     const workspace = await context.api('/api/workspace')
@@ -189,7 +262,7 @@ describe('real Eating Host → QQ OneBot → SQLite → authenticated MCP', () =
     expect(context.fixture.requests.filter(entry => entry.action === 'send_private_msg')).toHaveLength(0)
   })
 
-  it('deduplicates inbound events in SQLite and keeps unconsumed Harness messages pending and locally queryable', async () => {
+  it('deduplicates outstanding deliveries without exposing a local chat history tool', async () => {
     const context = await configuredHost()
     await connectHost(context)
     const event = { post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321,
@@ -198,19 +271,17 @@ describe('real Eating Host → QQ OneBot → SQLite → authenticated MCP', () =
     context.fixture.emitEvent(event)
     await vi.waitFor(() => expect(context.host.store.listMessages('qq')).toHaveLength(1))
     expect(context.host.store.listMessages('qq')[0]).toMatchObject({
-      conversationId: 'qq:123456789:private:987654321', text: '集成链路消息', harnessStatus: 'pending', raw: event,
+      conversationId: 'qq:123456789:private:987654321', text: '集成链路消息', harnessStatus: 'pending', raw: {},
     })
     expect(context.host.harness.getStatus()).toMatchObject({ state: 'not-attached', pending: 1, accepted: 0, uncertain: 0 })
     const read = await context.api('/api/plugins/qq/invoke', { method: 'POST', body: invokeBody('qq_list_received_messages', {
       conversation_id: 'qq:123456789:private:987654321', limit: 10,
     }) })
-    expect(read.status).toBe(200)
-    expect(object(read.body.result).messages).toHaveLength(1)
+    expect(read.status).toBe(404)
+    expect(object(read.body.error).code).toBe('TOOL_NOT_FOUND')
     expect(context.fixture.requests).toHaveLength(2)
     const { client } = await mcpClient(context)
-    const localRead = await client.callTool({ name: 'qq_list_received_messages', arguments: {} })
-    expect(localRead.isError).toBe(false)
-    expect(object(object(localRead.structuredContent).result).messages).toHaveLength(1)
+    expect((await client.listTools()).tools.map(tool => tool.name)).not.toContain('qq_list_received_messages')
     const oldInstance = object(pluginFrom((await context.api('/api/workspace')).body).configuration).instanceId
     await context.host.close()
     const restarted = await createHost(context.home)

@@ -64,7 +64,7 @@ function PlatformDirectory({ snapshot, headingRef, onSelect, onRegister }: {
       })}
       <button className="register-row" onClick={onRegister}><Plus size={20} /><span>添加一个通讯平台<small>从已安装插件中启用，配置与功能由插件提供。</small></span><ArrowRight size={17} /></button>
     </div>}
-    <div className="directory-footnote"><Info size={16} /><p>平台配置由 Host 保存。连接需通过协议端身份与健康核验，消息保存不等于 Harness 已处理。</p></div>
+    <div className="directory-footnote"><Info size={16} /><p>平台配置由 Host 保存。连接需通过协议端身份与健康核验，消息入队不等于 Harness 已处理。</p></div>
   </section>
 }
 
@@ -92,14 +92,14 @@ function PluginDetails({ plugin, snapshot, workspace, onFeedback, onRemoved }: {
     <p className="panel-description">连接、消息和工具由 {plugin.name} 插件独立管理。</p>
     <PanelBoundary key={plugin.id}><Panel saved={snapshot.configurations[plugin.id]} initialValues={plugin.initialValues} onSave={values => workspace.save(plugin.id, values)} onFeedback={onFeedback} onRefresh={() => workspace.refresh()} /></PanelBoundary>
     <section className="plugin-information" aria-label="插件信息与移除">
-      <div><h3>{plugin.name} 插件<span className="version-label">v{plugin.version}</span></h3><p>停用会断开连接并撤销工具入口，保留账号配置与消息记录。</p></div>
+      <div><h3>{plugin.name} 插件<span className="version-label">v{plugin.version}</span></h3><p>停用会断开连接并撤销工具入口，保留账号配置；待投递消息由全局队列管理。</p></div>
       {!confirming && <button ref={removeTrigger} className="text-button remove-trigger" onClick={() => setConfirming(true)}><Trash2 size={15} />移除插件</button>}
     </section>
     {confirming && <div className="remove-confirmation" role="group" aria-label={`确认移除${plugin.name}插件`}>
-      <div><strong>确定停用 {plugin.name} 插件？</strong><p>当前连接会断开，工具入口撤销。账号配置与消息保留，其他平台不受影响。</p></div>
+      <div><strong>确定停用 {plugin.name} 插件？</strong><p>当前连接会断开，工具入口撤销。账号配置保留，待投递队列不受此操作影响，其他平台不受影响。</p></div>
       <div className="confirmation-actions"><button className="button button-secondary" onClick={() => { setConfirming(false); setRemoveError(null) }}>取消</button><button className="button button-danger" ref={confirmButton} onClick={async () => {
         const result = await workspace.remove(plugin.id)
-        if (result.ok) { onFeedback(`${plugin.name} 已停用，配置与消息保留`); onRemoved() }
+        if (result.ok) { onFeedback(`${plugin.name} 已停用，账号配置保留`); onRemoved() }
         else setRemoveError(result.error)
       }}><Check size={15} />确认移除</button></div>
       {removeError && <p className="field-error" role="alert">{removeError}</p>}

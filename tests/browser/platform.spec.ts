@@ -84,21 +84,19 @@ test.describe('正式 QQ 平台与 OneBot v11', () => {
     await expect(page.getByRole('checkbox', { name: '我已核对目标和内容，确认执行此次真实发送。', exact: true })).not.toBeChecked()
   })
 
-  test('消息持久化、去重和 Harness 未接入状态可见，MCP 令牌按需读取', async ({ page }) => {
+  test('无聊天历史入口，待投递去重且MCP令牌按需读取', async ({ page }) => {
     await configure(page); await connect(page)
     const event = { time: 1, self_id: 123456789, post_type: 'message', message_type: 'private', sub_type: 'friend',
       message_id: 456, user_id: 987654321, message: [{ type: 'text', data: { text: '真实协议输入测试' } }], raw_message: '真实协议输入测试', sender: { nickname: '协议夹具联系人' } }
     onebot.emitEvent(event); onebot.emitEvent(event)
-    await page.getByRole('tab', { name: '消息记录', exact: true }).click()
-    await expect(page.getByText('真实协议输入测试', { exact: true })).toBeVisible()
-    await expect(page.locator('.qq-message-list > li')).toHaveCount(1)
-    await expect(page.locator('.qq-message-list').getByText('等待投递', { exact: true })).toBeVisible()
+    await expect.poll(() => host.store.getDeliverySettingsSnapshot().queue.pending).toBe(1)
+    await expect(page.getByRole('tab', { name: '消息记录', exact: true })).toHaveCount(0)
     await page.getByRole('tab', { name: 'MCP 能力', exact: true }).click()
     await expect(page.getByText('Harness 消息接口尚未接入', { exact: true })).toBeVisible()
     await expect(page.getByText('QQ 空间发布', { exact: true })).toBeVisible()
     await page.getByRole('button', { name: '查看 / 复制 MCP 配置', exact: true }).click()
     await expect(page.getByLabel('MCP 连接配置', { exact: true })).toContainText('/mcp/qq')
-    await page.getByRole('tab', { name: '消息记录', exact: true }).click()
+    await page.getByRole('tab', { name: '实时日志', exact: true }).click()
     await expect(page.getByLabel('MCP 连接配置', { exact: true })).toHaveCount(0)
     await page.getByRole('tab', { name: 'MCP 能力', exact: true }).click()
     await expect(page.getByLabel('MCP 连接配置', { exact: true })).toHaveCount(0)
@@ -146,8 +144,8 @@ test.describe('正式 QQ 平台与 OneBot v11', () => {
     await cp(fileURLToPath(new URL('../../plugins/communication/qq/dist/', import.meta.url)), source, { recursive: true })
     const manifestPath = join(source, 'eating-plugin.json')
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { version: string; integrity: Record<string, string> }
-    manifest.version = '0.2.1+local'
-    for (const [name, before, after] of [['server.mjs', 'version = "0.2.0"', 'version = "0.2.1+local"'], ['ui/index.js', 'version:"0.2.0"', 'version:"0.2.1+local"']]) {
+    manifest.version = '0.4.1+local'
+    for (const [name, before, after] of [['server.mjs', 'version = "0.4.0"', 'version = "0.4.1+local"'], ['ui/index.js', 'version:"0.4.0"', 'version:"0.4.1+local"']]) {
       const path = join(source, name!)
       const text = await readFile(path, 'utf8')
       expect(text).toContain(before!)
@@ -160,7 +158,7 @@ test.describe('正式 QQ 平台与 OneBot v11', () => {
     url = await host.listen()
     await page.goto(`${url}/#robots/qq`)
     await expect(page.getByRole('tab', { name: '连接配置', exact: true })).toBeVisible()
-    await expect(page.getByText('v0.2.1+local', { exact: true })).toBeVisible()
+    await expect(page.getByText('v0.4.1+local', { exact: true })).toBeVisible()
     await expect(page.getByLabel('OneBot 地址', { exact: true })).toBeVisible()
   })
 
@@ -171,6 +169,152 @@ test.describe('正式 QQ 平台与 OneBot v11', () => {
     await expect(page.getByRole('navigation', { name: '平台分类', exact: true }).getByRole('button', { name: 'QQ', exact: true })).toBeVisible()
     await expect(page.locator('.storage-error')).toHaveCount(0)
     await expect(page.getByRole('button', { name: '移除插件', exact: true })).toBeVisible()
+  })
+
+  test('实时日志自动到达并在浏览器内限量保留，不修改账号配置', async ({ page }) => {
+    const streamRequests: string[] = []
+    page.on('request', request => { if (request.url().endsWith('/logs/stream')) streamRequests.push(request.url()) })
+    await configure(page); await connect(page)
+    const index = JSON.parse(await readFile(join(directory, 'bot/qq-bot/accounts.json'), 'utf8')) as { defaultInstanceId: string }
+    const accountDirectory = join(directory, 'bot/qq-bot/accounts', index.defaultInstanceId)
+    const configPath = join(accountDirectory, 'config.json')
+    const configBefore = await readFile(configPath, 'utf8')
+    const event = (id: number, text: string) => ({ post_type: 'message', message_type: 'private', self_id: 123456789,
+      user_id: 987654321, message_id: id, message: [{ type: 'text', data: { text } }], raw_message: text })
+    onebot.emitEvent(event(40000, '没有打开日志页时的消息'))
+    await expect.poll(() => host.store.listMessages('qq').length).toBe(1)
+    expect(streamRequests).toHaveLength(0)
+    await page.getByRole('tab', { name: '实时日志', exact: true }).click()
+    await expect(page.getByText('实时接收中', { exact: true })).toBeVisible()
+    const log = page.getByRole('log')
+    await expect(log.getByText('没有打开日志页时的消息', { exact: true })).toHaveCount(0)
+    const first = event(40001, '无需点击刷新就能看到的消息')
+    onebot.emitEvent(first); onebot.emitEvent(first)
+    await expect(log.getByText('无需点击刷新就能看到的消息', { exact: true })).toBeVisible()
+    await expect(log.getByRole('listitem')).toHaveCount(1)
+    await expect(page.getByLabel('保留条数', { exact: true })).toHaveValue('100')
+    for (let start = 0; start < 110; start += 10) {
+      for (let i = start; i < start + 10; i++) onebot.emitEvent(event(41000 + i, `实时日志条目 ${i}`))
+      await expect(log.getByText(`实时日志条目 ${start + 9}`, { exact: true })).toBeVisible()
+    }
+    await expect(log.getByRole('listitem')).toHaveCount(100)
+    await expect(log.getByText('实时日志条目 9', { exact: true })).toHaveCount(0)
+    await page.getByLabel('保留条数', { exact: true }).selectOption('50')
+    await expect(log.getByRole('listitem')).toHaveCount(50)
+    await page.getByLabel('保留条数', { exact: true }).selectOption('200')
+    await expect(log.getByRole('listitem')).toHaveCount(50)
+    expect(await readFile(configPath, 'utf8')).toBe(configBefore)
+    expect(await readdir(accountDirectory)).toEqual(['config.json'])
+    expect(streamRequests).toHaveLength(1)
+  })
+
+  test('隐藏或离开日志页立即退订清空，正常QQ接收继续', async ({ page }) => {
+    const streams = new Set<import('@playwright/test').Request>()
+    page.on('request', request => { if (request.url().endsWith('/logs/stream')) streams.add(request) })
+    page.on('requestfinished', request => streams.delete(request))
+    page.on('requestfailed', request => streams.delete(request))
+    await configure(page); await connect(page)
+    await page.getByRole('tab', { name: '实时日志', exact: true }).click()
+    await expect(page.getByText('实时接收中', { exact: true })).toBeVisible()
+    const event = (id: number, text: string) => ({ post_type: 'message', message_type: 'group', self_id: 123456789,
+      group_id: 123456, user_id: 987654321, message_id: id, message: text, raw_message: text })
+    onebot.emitEvent(event(50000, '可见页面收到'))
+    await expect(page.getByRole('log').getByText('可见页面收到', { exact: true })).toBeVisible()
+    await expect.poll(() => streams.size).toBe(1)
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')) })
+    await expect.poll(() => streams.size).toBe(0)
+    onebot.emitEvent(event(50001, '页面隐藏时仍正常入库'))
+    await expect.poll(() => host.store.listMessages('qq').length).toBe(2)
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')) })
+    await expect(page.getByText('实时接收中', { exact: true })).toBeVisible()
+    await expect(page.getByRole('log').getByRole('listitem')).toHaveCount(0)
+    onebot.emitEvent(event(50002, '重新可见后的新消息'))
+    await expect(page.getByRole('log').getByText('重新可见后的新消息', { exact: true })).toBeVisible()
+    await page.getByRole('tab', { name: '连接配置', exact: true }).click()
+    await expect.poll(() => streams.size).toBe(0)
+    onebot.emitEvent(event(50003, '离开日志页仍正常入库'))
+    await expect.poll(() => host.store.listMessages('qq').length).toBe(4)
+    await page.getByRole('tab', { name: '实时日志', exact: true }).click()
+    await expect(page.getByText('实时接收中', { exact: true })).toBeVisible()
+    await expect(page.getByRole('log').getByRole('listitem')).toHaveCount(0)
+    await page.close()
+    await expect.poll(() => {
+      const plugins = host.getWorkspace().plugins as Array<{ logViewerCount: number }>
+      return plugins[0]?.logViewerCount
+    }).toBe(0)
+  })
+
+  test('设置侧栏分类保留草稿，保存后参数与存储方式实际生效', async ({ page }) => {
+    await page.goto(`${url}/#overview`)
+    await page.getByRole('link', { name: '设置', exact: true }).click()
+    await expect(page.getByLabel('聚合静默时间', { exact: true })).toHaveValue('500')
+    await page.getByLabel('聚合静默时间', { exact: true }).fill('800')
+    await page.getByLabel('最长聚合等待时间', { exact: true }).fill('2500')
+    const categories = page.getByRole('navigation', { name: '设置分类', exact: true })
+    await categories.getByRole('button', { name: '队列与存储', exact: true }).click()
+    await page.getByLabel('队列存储方式', { exact: true }).selectOption('memory')
+    await page.getByLabel('队列消息上限', { exact: true }).fill('500')
+    await categories.getByRole('button', { name: '消息投递', exact: true }).click()
+    await expect(page.getByLabel('聚合静默时间', { exact: true })).toHaveValue('800')
+    await page.getByRole('button', { name: '保存设置', exact: true }).click()
+    await expect(page.locator('.settings-notice-success')).toContainText('设置已保存并应用')
+    expect(host.store.getDeliverySettingsSnapshot()).toMatchObject({ revision: 1, values: { quietWindowMs: 800, maxWaitMs: 2500, storageMode: 'memory', maxQueuedMessages: 500 } })
+    await categories.getByRole('button', { name: '队列与存储', exact: true }).click()
+    await page.reload()
+    await expect(page.getByLabel('队列存储方式', { exact: true })).toHaveValue('memory')
+    await expect(page.getByLabel('队列消息上限', { exact: true })).toHaveValue('500')
+    await page.setViewportSize({ width: 390, height: 844 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await categories.getByRole('button', { name: '消息投递', exact: true }).click()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  })
+
+  test('设置冲突保留原草稿，明确放弃后才能读取新版本，禁止隐式覆盖', async ({ page }) => {
+    let reads = 0
+    page.on('request', request => { if (request.method() === 'GET' && request.url().endsWith('/api/settings')) reads++ })
+    await page.goto(`${url}/#settings/delivery`)
+    await expect(page.getByLabel('聚合静默时间', { exact: true })).toHaveValue('500')
+    await page.getByLabel('聚合静默时间', { exact: true }).fill('750')
+    const bootstrap = await page.request.get(`${url}/api/bootstrap`)
+    const { csrfToken } = await bootstrap.json() as { csrfToken: string }
+    const current = host.store.getDeliverySettingsSnapshot()
+    const external = await page.request.post(`${url}/api/settings`, { headers: { 'X-Eating-Csrf': csrfToken }, data: { expectedRevision: current.revision, values: { ...current.values, maxWaitMs: 5000 } } })
+    expect(external.status()).toBe(200)
+    await page.getByRole('button', { name: '保存设置', exact: true }).click()
+    await expect(page.locator('.settings-notice-error')).toContainText('原草稿已保留')
+    await expect(page.getByLabel('聚合静默时间', { exact: true })).toHaveValue('750')
+    await expect(page.getByRole('button', { name: '保存设置', exact: true })).toBeDisabled()
+    const before = reads
+    await page.getByRole('button', { name: '重新读取设置', exact: true }).click()
+    await expect(page.getByRole('button', { name: '放弃未保存修改并重新读取', exact: true })).toBeVisible()
+    expect(reads).toBe(before)
+    await page.getByRole('button', { name: '继续编辑', exact: true }).click()
+    await expect(page.getByLabel('聚合静默时间', { exact: true })).toHaveValue('750')
+    await page.getByRole('button', { name: '重新读取设置', exact: true }).click()
+    await page.getByRole('button', { name: '放弃未保存修改并重新读取', exact: true }).click()
+    await expect(page.getByLabel('聚合静默时间', { exact: true })).toHaveValue('500')
+    await expect(page.getByLabel('最长聚合等待时间', { exact: true })).toHaveValue('5000')
+    expect(reads).toBe(before + 1)
+    await expect(page.getByRole('button', { name: '保存设置', exact: true })).toBeDisabled()
+  })
+
+  test('清空队列必须明确确认，仅删除待投递正文并保留账号配置', async ({ page }) => {
+    await configure(page); await connect(page)
+    const index = JSON.parse(await readFile(join(directory, 'bot/qq-bot/accounts.json'), 'utf8')) as { defaultInstanceId: string }
+    const configPath = join(directory, 'bot/qq-bot/accounts', index.defaultInstanceId, 'config.json')
+    const before = await readFile(configPath, 'utf8')
+    onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id: 64001, message: '待投递清理测试' })
+    await expect.poll(() => host.store.getDeliverySettingsSnapshot().queue.queuedMessages).toBe(1)
+    await page.getByRole('link', { name: '设置', exact: true }).click()
+    await page.getByRole('navigation', { name: '设置分类', exact: true }).getByRole('button', { name: '队列与存储', exact: true }).click()
+    await page.getByRole('button', { name: '清空队列', exact: true }).click()
+    await expect(page.getByRole('button', { name: '确认清空队列', exact: true })).toBeDisabled()
+    expect(host.store.getDeliverySettingsSnapshot().queue.queuedMessages).toBe(1)
+    await page.getByRole('checkbox', { name: '我已了解，确认清除这些正文', exact: true }).check()
+    await page.getByRole('button', { name: '确认清空队列', exact: true }).click()
+    await expect(page.locator('.settings-notice-success')).toContainText('队列已清空')
+    expect(host.store.getDeliverySettingsSnapshot().queue).toMatchObject({ queuedMessages: 0, queuedBytes: 0, discarded: 1 })
+    expect(await readFile(configPath, 'utf8')).toBe(before)
   })
 
   test('窄屏功能面板与停用保留配置均可操作', async ({ page }) => {

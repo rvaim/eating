@@ -1,62 +1,73 @@
 # Eating QQ 与平台能力架构
 
-状态：正式 QQ 插件 0.2 的协议/Host/MCP/浏览器证据保留；当前已按[单仓独立包方案](工程结构与插件发布.md)完成重组，产物加载与安装流程于 2026-10-27 完成回归，见[重组报告](../reports/2026-10-26-单仓独立包重组报告.md)。真实用户 QQ 账号尚未连接。产品不再提供飞书/微信占位模块，测试协议端仅在测试目录。
+状态：当前为应用 0.3.0、公开 SDK 1.2.0、QQ 0.4.0，`apiVersion: 1`。本轮移除聊天历史，落地可配置临时队列与会话聚合；最终完整构建/严格类型、Vitest 387/387、浏览器 13/13 通过。真实迁移与安装已完成，未交接信封和账号配置/发送账本标识保持；实际 API 确认 QQ connected、设置读取 200，Harness 仍 not-attached。产品无飞书/微信占位模块，测试协议端只在测试目录。
 
 ## 职责与数据流
 
 ```mermaid
 flowchart TB
     OB[用户已登录的 OneBot v11 端] <--> QQ[QQ 插件：正向 WS 与事件/API]
-    QQ --> Inbox[Host SQLite：接收去重与待投递]
-    Inbox --> HG[HarnessMessageSink 预留边界]
+    QQ --> Admit[Host：哈希去重与容量准入]
+    Admit --> Queue[临时队列：本地暂存或仅内存]
+    Queue --> HG[按会话聚合与可靠交接]
     HG --> H[未来选定 Harness]
-    H --> MCP[每插件独立 MCP：Bearer + Streamable HTTP]
-    UI[QQ 自有配置/测试/消息/MCP 面板] --> API[Host 受控管理 API]
+    H --> MCP[QQ 独立 MCP：Bearer + Streamable HTTP]
+    UI[QQ 配置/日志/测试/MCP 面板] --> API[Host 受控管理 API]
+    Settings[全局设置：消息投递/队列与存储] --> API
+    API --> Queue
     API --> Tools[插件工具目录]
     MCP --> Tools
     Tools --> QQ
 ```
 
-Host 不生成 AI 回复。QQ 插件接收平台输入、验证/保留来源并交给持久接口；尚无 Harness 接收者时保持 pending。MCP 是让 Harness 主动调用工具的通道，与输入消息推送是两个方向，不因为 MCP 可用就声称 Agent 已感知。
+Host 不生成 AI 回复。QQ 验证平台标识、保持外部来源后，将规范化信封交给 Host；无实际 Harness 接收者时保持有界临时待投递。MCP 是让 Harness 主动调用工具的反向通道，MCP 可用不代表模型已接收输入。Eating 不另建认知循环、聊天库或长期人生记忆。
 
 ## 插槽与功能目录
 
-[公开后台 SDK](../../packages/plugin-sdk/src/index.ts)定义后台入口、能力/工具、连接状态、消息信封和接收者接口；[公开界面 SDK](../../packages/ui-sdk/src/index.ts)提供面板契约与受控 API 客户端。插件前后端分别注册，[QQ 后台](../../plugins/communication/qq/src/server.ts)、[QQ 面板](../../plugins/communication/qq/src/web/panel.tsx)拥有协议与专属[配置类型](../../plugins/communication/qq/src/config.ts)，通用 SDK 不含 `OneBotConfig`。
+[公开后台 SDK](../../packages/plugin-sdk/src/index.ts)定义插件入口、能力/工具、连接状态、信封、投递设置、批次与回执；[公开界面 SDK](../../packages/ui-sdk/src/index.ts)定义面板与受控请求、日志订阅。QQ 拥有自己的[后台](../../plugins/communication/qq/src/server.ts)、[面板](../../plugins/communication/qq/src/web/panel.tsx)与 [OneBot 配置](../../plugins/communication/qq/src/config.ts)，公共 SDK 不混入专用配置。
 
-QQ 以 `@eating/plugin-qq` `0.2.0` 独立构建，Host 按已安装产物加载后台，Web 动态加载 Host 提供的界面资源并共享公开 SDK/React 宿主实例。面板不引用 Web 应用私有源码，主程序不静态捆 QQ；包与安装边界见[工程结构](工程结构与插件发布.md)。
+QQ 独立构建 `@eating/plugin-qq` 0.4.0，Host 按已安装产物加载，Web 动态导入并共享公开 SDK/React 宿主实例。面板不引用应用私有源码，Host 不静态编入 QQ；安装边界见[工程结构](工程结构与插件发布.md)。
 
-[工具目录](../../plugins/communication/qq/src/backend/operations.ts)是 MCP tools/list 和测试面板参数的共同来源。扩展新功能时在插件内声明 schema、语义和实现；Host 不新增 QQ 条件分支。当前10项：账号、状态、版本、好友、群、单消息、Eating已收消息、私聊发送、群发送、撤回。
+[工具目录](../../plugins/communication/qq/src/backend/operations.ts)是 MCP 与测试面板共同来源，当前 9 项：账号、状态、版本、好友、群、单条消息、私聊发送、群发送、撤回。单条消息调用 OneBot `get_msg`，查询范围由协议端决定。本轮删除 Eating 本地历史工具和页面，不保留历史兼容入口。新功能须在插件目录声明真实 schema、语义和实现，不在 Host 增加 QQ 条件分支。
 
-本版发送为纯文本，显式 `auto_escape=true`，不把任意 CQ 码当普通文本执行。图片/复杂消息段的发送、群管理、QQ空间发布/评论需后续真实能力扩展；不用任意 action 透传绕过目录与权限。
+发送仍为纯文本，显式 `auto_escape=true`。图片/复杂消息段发送、群管理、QQ 空间需后续真实扩展，不提供任意 action 透传绕过工具目录。
 
-## 连接与事件
+## 连接与接收
 
-OneBot v11 正向统一端点承载 API 和事件。Bearer 只在请求头，不放 URL；拒绝 URL 账号密码、查询令牌、独立 `/api`/`/event` 和重定向。实际 `get_login_info` 加 `get_status` 在线/健康核验后才显示 connected。
+正向统一 OneBot WebSocket 同时承载 API/事件。Bearer 只在请求头，拒绝 URL 账号密码、查询令牌、分离 `/api`/`/event` 与重定向。实际 `get_login_info` 和 `get_status` 在线/健康核验通过才显示 connected。
 
-每次请求 UUID echo，乱序可关联；限载荷/未决数量、超时、有限退避和存活检查。手动断开不自动复活。副作用超时/断链/异步ACK保留unknown，不自动重发。后台异常和事件保存失败可见，不吞掉后假装成功。
+请求用 UUID echo 关联乱序返回，限制载荷与未决数，采用超时、有限退避和存活检查；手动断开不自动复活。副作用超时、断链或异步 ACK 视为 unknown，不盲目重发。
 
-收到私聊/群消息先持久化；稳定去重键包括本地实例、实际QQ号、会话目标与原message_id。外部sender始终外部来源，正文不能冒充主人。群转交开关只控制是否加入Harness待投递，不表示协议端不再收到群消息。
+接收去重键包括本地实例、实际账号、私聊/群目标、原 message_id，只保留其哈希。消息外部 sender 和正文不能升级为主人权限。转交开关决定是否创建 Harness 信封；不转交时不保存正文或原始事件。准入失败返回明确 rejected，并计数/报告 `lastQueueError`；QQ 在有日志查看者时仍可发布新接收事件与 `queueAdmission`，不把拒收伪装成队列成功。
 
-## 账号与存储
+## 临时队列与设置
 
-本版仅一个默认实例；插件身份 `qq`、稳定本地实例 UUID、实际登录QQ号分别记录。目录、索引和后续多账号边界见[数据规范](../technical/数据目录与账号实例.md)。
+全局“设置”提供“消息投递”“队列与存储”，配置存 Host settings 与 revision，不写进 QQ config。默认 persistent、1000 条、10 MiB、reject-new；聚合静默 500 ms、最长 2000 ms、每批 10 条、目标 32 KiB、超时 15 秒、拒收间隔 10 秒、最多 5 次。实际页面中文名称与操作见[使用说明](../operations/QQ配置与功能测试.md)。
 
-消息查询按实例隔离；发送幂等范围为插件+实例+实际QQ号+request_id。相同键同参数重用已知结果；不同参数拒绝；未知结果不重做。进程中断后running转unknown，不假装平台未发送。
+只有 outstanding 的规范化 Harness JSON 持正文，不存 OneBot raw 或另列 text。persistent 用 SQLite 暂存并支持重启恢复，memory 只在 RAM、Host 退出后丢失；运行中切换事务迁移现有队列，失败保持原模式与内容。容量统计全部 pending/delivering/uncertain 的 UTF-8 JSON 字节，不能当作整个数据库文件上限。快照在持久模式只聚合 SQL 元数据，避免周期读取大正文。
 
-## Host 与 MCP
+reject-new 保现有队列，拒收计数与错误可见；drop-oldest 只移最旧 pending，保护 delivering/uncertain；超大单条先拒。缩容无法满足保护条件时整次 409，不部分丢弃；revision 冲突同样 409。清空由用户勾选确认，含在途消息时 409，成功仅删除未交接正文、累计 discarded，保留去重和发送账本。
 
-管理API使用本地会话/CSRF，Host/Origin与请求体检查；MCP独立插件Bearer，只绑定回环。官方SDK提供真实初始化、工具列表与调用。每POST为stateless通道，不虚构会话；停用撤销通道和新调用，已发出的平台动作不能靠HTTP断开撤销。
+短期去重只存哈希与回执小元数据，24 小时、常态合计不超过 10000 个；SQLite 连清理也失败时，旧磁盘加内存后备最多 20000 个。旧库迁移保全所有未交接信封，清除终态历史与重复正文，原库一次压缩、不新建聊天备份；旧 backlog 超默认容量仍保留并提示。详见[数据规范](../technical/数据目录与账号实例.md)。
 
-工具日常使用遵循已批准能力，不默认每次主人审批；功能测试面板的真实发送/撤回额外要求手动确认。MCP并未注册到任何真实Harness，界面明确显示这一事实。身份权限/OS隔离仍有后续工程边界，不将TypeScript命名空间称为恶意插件沙箱。
+## 聚合与可靠交接
 
-## Harness 消息预留
+按 `conversationId` 聚合，不跨会话。静默计时随同会话新消息重置，最长等待从首条入队固定；达到条数或目标字节提前，单条大于软目标时独立投递。`deliverBatch` 传递结构化批次，保留旧 `deliver` 时按事件逐条调用，不承诺一次模型请求。
 
-`HarnessMessageSink.deliver(event, signal)` 接受结构化协议版本、稳定eventId、pluginId/instanceId/accountId、conversationId、sender、接收时间和外部来源。唯一主接收者可注册，未知结果转uncertain不盲投；明确未接受可有限重试；accepted只是接收确认。
+只有 `accepted === true`、`durable === true`、非空 `receiptId` 且本地确认提交成功，才能删除正文并记可靠交接；不表示模型消费。明确拒收才按设置有限重试，超时、异常、缺凭据、中断和重试耗尽转 uncertain 保留待核对，不自动补投。唯一主接收者边界和后续适配责任见[Harness 设计](Harness适配.md)。
 
-未来适配器须提供恢复核对和真正模型准入证据，接口仍可按需求修改。当前没有AI推理或第二套意图引擎。
+## 实例、动作与日志
 
-## 验证与限制
+本版只有一个默认实例，插件 ID、稳定本地实例 UUID、实际账号分别记录。发送账本按插件+实例+实际账号+request_id 隔离；同键同参数复用持久结果，改参数拒绝，进程中断 running 转 unknown。移除历史与清空队列都不删除动作账本。
 
-重组前正式 QQ 阶段 215 项单元/集成及 5 浏览器场景已通过，含真实官方 MCP 客户端与回环 OneBot 夹具、SQLite 重开与中断恢复；本轮独立包另行完成完整构建/严格 TS、Vitest 280/280、Playwright 8/8、四包独立 pack 和仓库外安装/MCP/升级/删除构建源后重启/卸载数据保持，见[重组报告](../reports/2026-10-26-单仓独立包重组报告.md)。没有向真人发送，没有验证真实协议实现或账号、WSS证书部署、反向WS、多账号并行、QQ空间、远端暴露或桌面打包。
+QQ 四个页签为连接配置、实时日志、功能测试、MCP 能力。日志仅可见页签按需订阅，50/100/200/500/1000 条只存浏览器内存，默认 100；隐藏/离开/关闭/停用后 viewer 归零并清空，不落盘、不缓存、不补发。无查看者不执行日志源 factory 或日志计时器；正常 WebSocket 和队列准入独立运行。
 
-使用方法见[配置与功能测试](../operations/QQ配置与功能测试.md)，官方依据见[协议核对](../research/QQ协议与MCP核对.md)。
+Host 日志 SSE 沿用 ownerSession/Host/Origin 与会话校验，最多 8 个 viewer、背压断开、15 秒注释心跳并清理。仅记录已验证标识、明确群号和最多 500 字纯文本预览；预览替换当前 OneBot 令牌，不承诺通用秘密识别。
+
+## Host、MCP 与验证范围
+
+管理 API 使用本地会话/CSRF、Host/Origin 和请求体校验；MCP 使用插件独立 Bearer，只绑定回环，官方 SDK 提供初始化、工具列表与调用。停用撤销新通道与调用，已发出动作不能靠 HTTP 断开撤销。已批准普通工具调用不逐次审批，功能测试真实发送/撤回额外手动确认。MCP 未自动注册到实际 Harness，逻辑隔离不等于 OS 沙箱。
+
+本轮最终完整构建/严格类型、Vitest 16 文件 387/387、浏览器 13/13 已通过；存储 41 与 Gateway 49 合计 90 项获限定 PASS，设置 API 12、界面 SDK 客户端 5 及设置冲突并发独立只读复核通过。Gateway 新增 16 项真实 SQLite 回归验证本地 ack/状态提交失败只重试本地，不重复 sink；注销双失败无后台计时器，重接/显式通知恢复，关闭有限退出。4 张桌面/390px 设置截图已实际读取检查，pageerror=0、无溢出、历史页签 0、MCP 9；真实迁移、QQ 0.4.0 安装与 connected/设置 200 已核验，见[本轮报告](../reports/2026-10-27-投递设置与无历史队列验证报告.md)。自动测试只用临时数据、协议夹具和独立 sink，没有向真人发测试消息。
+
+正式 QQ 215/5、重组 280/8 与日志 321/10 均为历史阶段结果，原报告不重写。真实 Harness/DSH 插件、反向 WS、多账号并行、QQ 空间、远程暴露、桌面包与跨平台仍未完成。协议依据见[核对记录](../research/QQ协议与MCP核对.md)。

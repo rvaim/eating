@@ -1,0 +1,17 @@
+{
+  "name": "@eating/host",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.9.0" },
+  "scripts": {
+    "dev": "node --import tsx src/main.ts",
+    "start": "node dist/main.mjs",
+    "build": "node ../../scripts/build.mjs host"
+  },
+  "dependencies": {
+    "@eating/plugin-sdk": "workspace:^",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "zod": "4.6.7"
+  }
+}

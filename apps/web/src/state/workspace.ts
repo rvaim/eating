@@ -1,11 +1,12 @@
 import type { ActivityEntry, PluginConfiguration, SavedConfiguration } from '@eating/plugin-core'
-import type { ConnectionStatus, JsonObject } from '../../../../packages/platform-contract/src/index'
-import type { CommunicationPlugin, WorkspaceActionResult } from '../plugins/contract'
-import { hostRequest } from '../lib/api'
+import type { ConnectionStatus, JsonObject } from '@eating/plugin-sdk'
+import type { CommunicationPlugin, WorkspaceActionResult } from '@eating/ui-sdk'
+import { hostRequest } from '@eating/ui-sdk'
+import type { InstalledFrontendContribution } from '../plugins/catalog'
 
 interface HostWorkspaceResponse {
   readonly registeredIds: readonly string[]
-  readonly plugins: readonly { readonly id: string; readonly configuration: JsonObject; readonly status: ConnectionStatus }[]
+  readonly plugins: readonly (InstalledFrontendContribution & { readonly configuration: JsonObject; readonly status: ConnectionStatus })[]
   readonly harness: JsonObject
 }
 
@@ -21,14 +22,15 @@ export interface WorkspaceSnapshot {
 }
 
 export class PlatformWorkspace {
-  readonly catalog: readonly CommunicationPlugin[]
+  catalog: readonly CommunicationPlugin[]
   private readonly listeners = new Set<() => void>()
   private generation = 0
   private mutation = false
   private snapshot: WorkspaceSnapshot = Object.freeze({ plugins: [], configurations: {}, activity: [], storageError: null,
     unavailableIds: [], statuses: {}, harness: { state: 'not-attached', pending: 0 }, ready: false })
 
-  constructor(catalog: readonly CommunicationPlugin[], private readonly request: typeof hostRequest = hostRequest) {
+  constructor(catalog: readonly CommunicationPlugin[], private readonly request: typeof hostRequest = hostRequest,
+    private readonly loadCatalog?: (entries: readonly InstalledFrontendContribution[]) => Promise<readonly CommunicationPlugin[]>) {
     this.catalog = Object.freeze([...catalog].sort((a, b) => a.order - b.order))
   }
 
@@ -39,7 +41,9 @@ export class PlatformWorkspace {
     const generation = ++this.generation
     try {
       const response = await this.request<HostWorkspaceResponse>('/workspace')
+      const catalog = this.loadCatalog ? await this.loadCatalog(response.plugins) : this.catalog
       if (generation !== this.generation) return
+      this.catalog = Object.freeze([...catalog])
       const available = new Map(response.plugins.map(plugin => [plugin.id, plugin]))
       const registered = new Set(response.registeredIds)
       const configurations: Record<string, SavedConfiguration> = {}

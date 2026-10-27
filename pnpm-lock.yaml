@@ -8,6 +8,15 @@ importers:
 
   .:
     dependencies:
+      '@eating/plugin-core':
+        specifier: workspace:^
+        version: link:packages/plugin-core
+      '@eating/plugin-sdk':
+        specifier: workspace:^
+        version: link:packages/plugin-sdk
+      '@eating/ui-sdk':
+        specifier: workspace:^
+        version: link:packages/ui-sdk
       '@modelcontextprotocol/sdk':
         specifier: 1.32.2
         version: 1.32.2(zod@4.6.7)
@@ -48,6 +57,9 @@ importers:
       '@vitejs/plugin-react':
         specifier: 6.1.2
         version: 6.1.2(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(tsx@4.23.15))
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -57,6 +69,83 @@ importers:
       vitest:
         specifier: 5.0.5
         version: 5.0.5(@types/node@26.6.5)(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(tsx@4.23.15))
+
+  apps/host:
+    dependencies:
+      '@eating/plugin-sdk':
+        specifier: workspace:^
+        version: link:../../packages/plugin-sdk
+      '@modelcontextprotocol/sdk':
+        specifier: 1.32.2
+        version: 1.32.2(zod@4.6.7)
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
+
+  apps/web:
+    dependencies:
+      '@eating/plugin-core':
+        specifier: workspace:^
+        version: link:../../packages/plugin-core
+      '@eating/plugin-sdk':
+        specifier: workspace:^
+        version: link:../../packages/plugin-sdk
+      '@eating/ui-sdk':
+        specifier: workspace:^
+        version: link:../../packages/ui-sdk
+      lucide-react:
+        specifier: 1.61.0
+        version: 1.61.0(@types/react@19.3.0)(react@19.3.1)
+      react:
+        specifier: 19.3.1
+        version: 19.3.1
+      react-dom:
+        specifier: 19.3.1
+        version: 19.3.1(react@19.3.1)
+    devDependencies:
+      '@vitejs/plugin-react':
+        specifier: 6.1.2
+        version: 6.1.2(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(tsx@4.23.15))
+      vite:
+        specifier: 8.3.5
+        version: 8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(tsx@4.23.15)
+
+  packages/plugin-core: {}
+
+  packages/plugin-sdk: {}
+
+  packages/ui-sdk:
+    dependencies:
+      '@eating/plugin-core':
+        specifier: workspace:^
+        version: link:../plugin-core
+      lucide-react:
+        specifier: ^1.61.0
+        version: 1.61.0(@types/react@19.3.0)(react@19.3.1)
+      react:
+        specifier: ^19.3.1
+        version: 19.3.1
+
+  plugins/communication/qq:
+    dependencies:
+      '@eating/plugin-core':
+        specifier: workspace:^
+        version: link:../../../packages/plugin-core
+      '@eating/plugin-sdk':
+        specifier: workspace:^
+        version: link:../../../packages/plugin-sdk
+      '@eating/ui-sdk':
+        specifier: workspace:^
+        version: link:../../../packages/ui-sdk
+      lucide-react:
+        specifier: ^1.61.0
+        version: 1.61.0(@types/react@19.3.0)(react@19.3.1)
+      react:
+        specifier: ^19.3.1
+        version: 19.3.1
+      ws:
+        specifier: 8.22.0
+        version: 8.22.0
 
 packages:
 

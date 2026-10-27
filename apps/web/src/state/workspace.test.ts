@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { MessageCircle } from 'lucide-react'
-import type { CommunicationPlugin } from '../plugins/contract'
-import type { hostRequest } from '../lib/api'
+import type { CommunicationPlugin } from '@eating/ui-sdk'
+import type { hostRequest } from '@eating/ui-sdk'
 import { PlatformWorkspace } from './workspace'
 
 const plugin: CommunicationPlugin = { id: 'qq', name: 'QQ', description: '平台', version: '0.2.0', apiVersion: 1,

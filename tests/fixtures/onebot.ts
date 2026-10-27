@@ -3,7 +3,7 @@ import type { IncomingHttpHeaders } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import WebSocket, { WebSocketServer } from 'ws'
 import type { VerifyClientCallbackSync } from 'ws'
-import type { JsonObject, JsonValue } from '../../packages/platform-contract/src/index.ts'
+import type { JsonObject, JsonValue } from '@eating/plugin-sdk'
 
 export interface OneBotFixtureRequest {
   readonly action: string

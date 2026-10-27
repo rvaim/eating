@@ -8,15 +8,21 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dev:web": "vite --config apps/web/vite.config.ts --host 127.0.0.1",
-    "host": "node --import tsx services/host/src/main.ts",
-    "start": "node --import tsx services/host/src/main.ts",
-    "build": "tsc --noEmit && vite build --config apps/web/vite.config.ts",
+    "host": "node --import tsx apps/host/src/main.ts",
+    "start": "node apps/host/dist/main.mjs",
+    "build": "node scripts/build.mjs",
+    "build:host": "node scripts/build.mjs host",
+    "build:plugin": "node scripts/build.mjs plugin plugins/communication/qq",
+    "plugin": "node --import tsx apps/host/src/plugin-cli.ts",
     "preview": "vite preview --config apps/web/vite.config.ts --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@eating/plugin-sdk": "workspace:^",
+    "@eating/ui-sdk": "workspace:^",
+    "@eating/plugin-core": "workspace:^",
     "lucide-react": "1.61.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
@@ -26,6 +32,7 @@
     "tsx": "4.23.15"
   },
   "devDependencies": {
+    "esbuild": "0.28.2",
     "@playwright/test": "1.64.1",
     "@types/node": "26.6.5",
     "@types/ws": "8.18.2",

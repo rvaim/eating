@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowRight, Check, ChevronRight, Info, Layers, Plug, Plus, Trash2 } from 'lucide-react'
 import { PlatformStatus } from '../components/PlatformStatus'
-import type { CommunicationPlugin } from '../plugins/contract'
+import type { CommunicationPlugin } from '@eating/ui-sdk'
 import type { PlatformWorkspace, WorkspaceSnapshot } from '../state/workspace'
 import { PanelBoundary } from '../components/PanelBoundary'
 

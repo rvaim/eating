@@ -1,6 +1,6 @@
 # Eating QQ 与平台能力架构
 
-状态：正式 QQ 插件0.2已实现，协议/Host/MCP/浏览器集成已验证；真实用户 QQ 账号尚未连接。产品不再提供飞书/微信占位模块。测试协议端仅在测试目录。
+状态：正式 QQ 插件 0.2 的协议/Host/MCP/浏览器证据保留；当前已按[单仓独立包方案](工程结构与插件发布.md)完成重组，产物加载与安装流程于 2026-10-27 完成回归，见[重组报告](../reports/2026-10-26-单仓独立包重组报告.md)。真实用户 QQ 账号尚未连接。产品不再提供飞书/微信占位模块，测试协议端仅在测试目录。
 
 ## 职责与数据流
 
@@ -21,9 +21,11 @@ Host 不生成 AI 回复。QQ 插件接收平台输入、验证/保留来源并�
 
 ## 插槽与功能目录
 
-[平台契约](../../packages/platform-contract/src/index.ts)定义后台入口、能力/工具、连接状态、消息信封和接收者接口。插件前端/后台分别注册；[QQ 后台](../../plugins/qq/server.ts)、[QQ 面板](../../plugins/qq/panel.tsx)拥有协议与专属配置。
+[公开后台 SDK](../../packages/plugin-sdk/src/index.ts)定义后台入口、能力/工具、连接状态、消息信封和接收者接口；[公开界面 SDK](../../packages/ui-sdk/src/index.ts)提供面板契约与受控 API 客户端。插件前后端分别注册，[QQ 后台](../../plugins/communication/qq/src/server.ts)、[QQ 面板](../../plugins/communication/qq/src/web/panel.tsx)拥有协议与专属[配置类型](../../plugins/communication/qq/src/config.ts)，通用 SDK 不含 `OneBotConfig`。
 
-[工具目录](../../plugins/qq/backend/operations.ts)是 MCP tools/list 和测试面板参数的共同来源。扩展新功能时在插件内声明 schema、语义和实现；Host 不新增 QQ 条件分支。当前10项：账号、状态、版本、好友、群、单消息、Eating已收消息、私聊发送、群发送、撤回。
+QQ 以 `@eating/plugin-qq` `0.2.0` 独立构建，Host 按已安装产物加载后台，Web 动态加载 Host 提供的界面资源并共享公开 SDK/React 宿主实例。面板不引用 Web 应用私有源码，主程序不静态捆 QQ；包与安装边界见[工程结构](工程结构与插件发布.md)。
+
+[工具目录](../../plugins/communication/qq/src/backend/operations.ts)是 MCP tools/list 和测试面板参数的共同来源。扩展新功能时在插件内声明 schema、语义和实现；Host 不新增 QQ 条件分支。当前10项：账号、状态、版本、好友、群、单消息、Eating已收消息、私聊发送、群发送、撤回。
 
 本版发送为纯文本，显式 `auto_escape=true`，不把任意 CQ 码当普通文本执行。图片/复杂消息段的发送、群管理、QQ空间发布/评论需后续真实能力扩展；不用任意 action 透传绕过目录与权限。
 
@@ -55,6 +57,6 @@ OneBot v11 正向统一端点承载 API 和事件。Bearer 只在请求头，不
 
 ## 验证与限制
 
-215项单元/集成及5浏览器场景已通过，含真实官方MCP客户端与回环OneBot夹具、SQLite重开与中断恢复。没有向真人发送，没有验证真实协议实现或账号、WSS证书部署、反向WS、多账号并行、QQ空间、远端暴露或桌面打包。
+重组前正式 QQ 阶段 215 项单元/集成及 5 浏览器场景已通过，含真实官方 MCP 客户端与回环 OneBot 夹具、SQLite 重开与中断恢复；本轮独立包另行完成完整构建/严格 TS、Vitest 280/280、Playwright 8/8、四包独立 pack 和仓库外安装/MCP/升级/删除构建源后重启/卸载数据保持，见[重组报告](../reports/2026-10-26-单仓独立包重组报告.md)。没有向真人发送，没有验证真实协议实现或账号、WSS证书部署、反向WS、多账号并行、QQ空间、远端暴露或桌面打包。
 
 使用方法见[配置与功能测试](../operations/QQ配置与功能测试.md)，官方依据见[协议核对](../research/QQ协议与MCP核对.md)。

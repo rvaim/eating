@@ -1,0 +1,19 @@
+{
+  "name": "@eating/web",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@eating/plugin-core": "workspace:^",
+    "@eating/plugin-sdk": "workspace:^",
+    "@eating/ui-sdk": "workspace:^",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "lucide-react": "1.61.0"
+  },
+  "devDependencies": { "@vitejs/plugin-react": "6.1.2", "vite": "8.3.5" }
+}

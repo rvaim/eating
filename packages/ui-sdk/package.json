@@ -1,0 +1,11 @@
+{
+  "name": "@eating/ui-sdk",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Eating 插件管理面板公开接口与受控API客户端",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist"],
+  "scripts": { "build": "node ../../scripts/build.mjs sdk" },
+  "dependencies": { "@eating/plugin-core": "workspace:^" },
+  "peerDependencies": { "react": "^19.3.1", "lucide-react": "^1.61.0" }
+}

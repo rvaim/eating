@@ -1,6 +1,6 @@
-export { PluginRegistry, PluginRegistrationError, validateManifest } from './registry'
-export type { PluginManifest } from './registry'
-export { PREFERENCES_KEY, readPreferences, writePreferences } from './persistence'
+export { PluginRegistry, PluginRegistrationError, validateManifest } from './registry.js'
+export type { PluginManifest } from './registry.js'
+export { PREFERENCES_KEY, readPreferences, writePreferences } from './persistence.js'
 export type {
   PluginConfiguration,
   ConfigurationValue,
@@ -9,4 +9,4 @@ export type {
   WorkspacePreferences,
   StoragePort,
   StorageResult,
-} from './persistence'
+} from './persistence.js'

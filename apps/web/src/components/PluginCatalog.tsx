@@ -1,5 +1,5 @@
 import { Check, Plus, Puzzle, X } from 'lucide-react'
-import type { CommunicationPlugin } from '../plugins/contract'
+import type { CommunicationPlugin } from '@eating/ui-sdk'
 import type { PlatformWorkspace, WorkspaceSnapshot } from '../state/workspace'
 
 interface CatalogProps {

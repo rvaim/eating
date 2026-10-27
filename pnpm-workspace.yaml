@@ -1,2 +1,8 @@
+packages:
+  - apps/*
+  - packages/*
+  - plugins/communication/*
+  - plugins/harness/*
+
 allowBuilds:
   esbuild: true

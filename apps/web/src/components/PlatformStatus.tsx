@@ -1,4 +1,4 @@
-import type { ConnectionStatus } from '../../../../packages/platform-contract/src/index'
+import type { ConnectionStatus } from '@eating/plugin-sdk'
 import { Circle, Link2, Link2Off, LoaderCircle, TriangleAlert } from 'lucide-react'
 
 export function PlatformStatus({ status, stale = false }: { readonly status?: ConnectionStatus; readonly stale?: boolean }) {

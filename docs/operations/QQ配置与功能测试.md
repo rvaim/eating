@@ -2,25 +2,64 @@
 
 当前功能是正式 QQ 插件，不使用演示连接器。需要你已有一个登录QQ、开启OneBot v11的协议端；Eating本身不实现QQ登录协议。
 
-## 启动
+## 构建与首次安装
 
-要求普通 Node.js >=24.9.0、pnpm11.28.5：
+要求普通 Node.js >=24.9.0、pnpm 11.28.5。主程序与 QQ 独立构建、按产物安装；Host 不会扫描仓库源码自动提供 QQ。先准备构建产物：
 
 ```bash
 pnpm install --frozen-lockfile
+pnpm build
+```
+
+根 `pnpm build` 分别构建 SDK、QQ 与 Host/Web。**安装前停止使用目标数据根的 Host**，再从本地产物目录安装：
+
+```bash
+pnpm plugin install plugins/communication/qq/dist
+pnpm plugin list
+```
+
+默认数据根为 `~/.eating`；自定义时，安装 CLI 与 Host 必须使用相同的 `EATING_HOME`。安装器检查 SDK/API 兼容、前后端资源哈希并通过暂存发布，校验或索引提交前失败保留旧版本；索引提交后的目录 fsync 失败返回 unknown 并保留已激活版本。安装后的插件代码与账号配置分开，目录与边界见[工程结构与插件发布](../architecture/工程结构与插件发布.md)。本轮不从第三方市场下载，不执行真实 npm 发布。
+
+## 启动
+
+安装完成后，开发联合启动：
+
+```bash
 pnpm dev
 ```
 
-开发前端 http://127.0.0.1:5180/，Host http://127.0.0.1:5181/。默认数据根 `~/.eating`，可用环境变量 `EATING_HOME` 指向另一目录。当前服务已启动，未配置协议端前不会发起连接。
+开发前端为 [Eating](http://127.0.0.1:5180/)，Host 为 [5181](http://127.0.0.1:5181/)。未配置协议端前不会发起账号连接。2026-10-27 主流程已按新目录启动联合服务，默认数据根安装 QQ 0.2.0，原 bot 数据保持；5180/5181 四页签与安装资源已实际检查，未配置真人 OneBot。
 
-运行构建版本：
+生产运行已构建的 Host：
 
 ```bash
-pnpm build
-pnpm start
+node apps/host/dist/main.mjs
 ```
 
-Host同时提供构建页面与API/MCP，打开5181即可。端口变更可设EATING_HOST_PORT；开发前端代理跟随同值，不能单改一侧。
+Host 同源提供 Web 页面、API/MCP 和已安装插件界面资源，打开 5181 即可。端口可设 `EATING_HOST_PORT`，开发代理跟随同值，不能单改一侧。纯 Vite 预览不提供 Host 能力。
+
+## 升级与卸载
+
+升级只更新目标插件，需停止 Host。已有公开 SDK 构建产物时，可只重新构建 QQ，再安装新产物：
+
+```bash
+pnpm build:plugin
+pnpm plugin install plugins/communication/qq/dist
+pnpm plugin list
+```
+
+完成后按上文重启 Host 才激活新版本。代码按 `plugins/<pluginId>/versions/<version>` 保存，由 `plugins/installed.json` 选择激活；索引提交前失败保旧；提交后目录同步失败返回 unknown 并保留已激活版本，先核对实际索引，不能通过覆盖账号配置修复代码升级。本轮不提供运行中热更新或零中断升级。
+
+卸载同样先停止 Host，再执行：
+
+```bash
+pnpm plugin uninstall qq
+pnpm plugin list
+```
+
+重启后 QQ 的后台、页面与工具/MCP 入口不再注册；`bot/qq-bot` 账号配置、Host 消息与未决动作保留。卸载代码与删除账号数据分别处理。页面中的“停用/恢复”是运行状态操作，与 CLI 安装/卸载不同。
+
+以上入口已由主流程完成构建、安装、升级、卸载与浏览器回归；2026-10-27 的 280 项单元/集成与 8 项浏览器、四包 pack 和仓库外产物证据见[重组报告](../reports/2026-10-26-单仓独立包重组报告.md)。真实用户账号联调仍未执行。
 
 ## 连接配置
 

@@ -26,7 +26,7 @@ export function validateManifest(manifest: PluginManifest): void {
     !manifest.name.trim() ||
     manifest.name.length > 40 ||
     !manifest.description.trim() ||
-    !/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(manifest.version)
+    ! /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*)?$/.test(manifest.version)
   ) {
     throw new PluginRegistrationError('invalid-manifest', '插件声明不完整，无法注册。')
   }

@@ -1,10 +1,12 @@
 import { test, expect } from '@playwright/test'
-import { mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises'
+import { cp, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { EatingHost } from '../../services/host/src/app'
-import qqEntry from '../../plugins/qq/server'
+import { EatingHost } from '../../apps/host/src/app'
+import { createInstalledHost } from '../../apps/host/src/installed-host'
+import { installPluginPackage } from '../../apps/host/src/plugin-installation'
 import { startOneBotFixture } from '../fixtures/onebot'
 
 const builtDirectory = fileURLToPath(new URL('../../dist/', import.meta.url))
@@ -18,7 +20,8 @@ test.describe('正式 QQ 平台与 OneBot v11', () => {
   test.beforeEach(async () => {
     directory = await realpath(await mkdtemp(join(tmpdir(), 'Eating_browser_')))
     onebot = await startOneBotFixture({ accessToken: 'browser-fixture-secret', onRequest: request => request.action.startsWith('send_') && request.params.message === 'delay-for-unknown' })
-    host = new EatingHost({ dataDirectory: directory, entries: [qqEntry], port: 0, allowedUiOrigins: [], staticDirectory: builtDirectory })
+    await installPluginPackage(directory, fileURLToPath(new URL('../../plugins/communication/qq/dist/', import.meta.url)))
+    host = await createInstalledHost({ dataDirectory: directory, port: 0, allowedUiOrigins: [], staticDirectory: builtDirectory })
     url = await host.listen()
   })
   test.afterEach(async () => {
@@ -120,6 +123,54 @@ test.describe('正式 QQ 平台与 OneBot v11', () => {
     await page.getByRole('button', { name: '重试原请求（复用 ID）', exact: true }).click()
     await expect.poll(() => onebot.requests.filter(request => request.action === 'send_private_msg').length).toBe(1)
     await expect(page.getByLabel('请求 ID（必填）', { exact: true })).toHaveValue(before)
+  })
+
+  test('配置损坏保持插件局部错误，已安装面板仍可打开', async ({ page }) => {
+    await host.close()
+    const index = JSON.parse(await readFile(join(directory, 'bot/qq-bot/accounts.json'), 'utf8')) as { defaultInstanceId: string }
+    const config = join(directory, 'bot/qq-bot/accounts', index.defaultInstanceId, 'config.json')
+    await writeFile(config, '{broken')
+    host = await createInstalledHost({ dataDirectory: directory, port: 0, allowedUiOrigins: [], staticDirectory: builtDirectory })
+    url = await host.listen()
+    await page.goto(`${url}/#robots/qq`)
+    await expect(page.getByRole('tab', { name: '连接配置', exact: true })).toBeVisible()
+    await expect(page.getByLabel('OneBot 地址', { exact: true })).toBeVisible()
+    await expect(page.getByText('QQ 配置格式损坏或版本不兼容，未覆盖原文件。', { exact: true })).toBeVisible()
+    await expect(page.locator('.storage-error')).toHaveCount(0)
+    expect(await readFile(config, 'utf8')).toBe('{broken')
+  })
+
+  test('合法SemVer构建元数据版本能加载独立前端', async ({ page }) => {
+    await host.close()
+    const source = join(directory, 'upgrade-source')
+    await cp(fileURLToPath(new URL('../../plugins/communication/qq/dist/', import.meta.url)), source, { recursive: true })
+    const manifestPath = join(source, 'eating-plugin.json')
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { version: string; integrity: Record<string, string> }
+    manifest.version = '0.2.1+local'
+    for (const [name, before, after] of [['server.mjs', 'version = "0.2.0"', 'version = "0.2.1+local"'], ['ui/index.js', 'version:"0.2.0"', 'version:"0.2.1+local"']]) {
+      const path = join(source, name!)
+      const text = await readFile(path, 'utf8')
+      expect(text).toContain(before!)
+      await writeFile(path, text.replace(before!, after!))
+      manifest.integrity[name!] = createHash('sha256').update(await readFile(path)).digest('hex')
+    }
+    await writeFile(manifestPath, JSON.stringify(manifest))
+    await installPluginPackage(directory, source)
+    host = await createInstalledHost({ dataDirectory: directory, port: 0, allowedUiOrigins: [], staticDirectory: builtDirectory })
+    url = await host.listen()
+    await page.goto(`${url}/#robots/qq`)
+    await expect(page.getByRole('tab', { name: '连接配置', exact: true })).toBeVisible()
+    await expect(page.getByText('v0.2.1+local', { exact: true })).toBeVisible()
+    await expect(page.getByLabel('OneBot 地址', { exact: true })).toBeVisible()
+  })
+
+  test('面板资源失败局限于插件，通用目录仍可管理', async ({ page }) => {
+    await page.route('**/plugins/qq/*/ui/index.js', route => route.abort())
+    await page.goto(`${url}/#robots/qq`)
+    await expect(page.getByRole('alert').getByText('此插件的管理面板加载失败，请检查安装包并重启 Host。其他插件仍可使用。', { exact: true })).toBeVisible()
+    await expect(page.getByRole('navigation', { name: '平台分类', exact: true }).getByRole('button', { name: 'QQ', exact: true })).toBeVisible()
+    await expect(page.locator('.storage-error')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '移除插件', exact: true })).toBeVisible()
   })
 
   test('窄屏功能面板与停用保留配置均可操作', async ({ page }) => {

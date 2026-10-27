@@ -1,0 +1,9 @@
+{
+  "name": "@eating/plugin-core",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Eating 平台注册及纯数据类型",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist"],
+  "scripts": { "build": "node ../../scripts/build.mjs sdk" }
+}

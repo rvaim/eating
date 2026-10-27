@@ -2,7 +2,7 @@ import { useId, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { Check, Info, Save, ShieldCheck } from 'lucide-react'
 import type { PluginConfiguration } from '@eating/plugin-core'
-import type { ConfigurationValidation, PluginPanelProps } from '../plugins/contract'
+import type { ConfigurationValidation, PluginPanelProps } from '@eating/ui-sdk'
 
 interface ConfigurationFormProps extends PluginPanelProps {
   readonly title: string

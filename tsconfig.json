@@ -15,8 +15,11 @@
     "allowImportingTsExtensions": true,
     "types": ["vite/client", "node"],
     "paths": {
-      "@eating/plugin-core": ["./packages/plugin-core/src/index.ts"]
+      "@eating/plugin-core": ["./packages/plugin-core/src/index.ts"],
+      "@eating/plugin-sdk": ["./packages/plugin-sdk/src/index.ts"],
+      "@eating/ui-sdk": ["./packages/ui-sdk/src/index.ts"]
     }
   },
-  "include": ["apps/web", "packages", "plugins", "services", "tests", "scripts", "vitest.config.ts", "playwright.config.ts"]
+  "include": ["apps", "packages", "plugins", "tests", "scripts", "vitest.config.ts", "playwright.config.ts"],
+  "exclude": ["**/dist/**", "node_modules"]
 }

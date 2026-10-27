@@ -10,13 +10,19 @@ export default defineConfig({
   resolve: {
     alias: {
       '@eating/plugin-core': fileURLToPath(new URL('../../packages/plugin-core/src/index.ts', import.meta.url)),
+      '@eating/plugin-sdk': fileURLToPath(new URL('../../packages/plugin-sdk/src/index.ts', import.meta.url)),
+      '@eating/ui-sdk': fileURLToPath(new URL('../../packages/ui-sdk/src/index.ts', import.meta.url)),
     },
   },
   server: {
     host: '127.0.0.1',
     port: 5180,
     strictPort: true,
-    proxy: { '/api': { target: `http://127.0.0.1:${process.env.EATING_HOST_PORT ?? '5181'}` } },
+    proxy: {
+      '/api': { target: `http://127.0.0.1:${process.env.EATING_HOST_PORT ?? '5181'}` },
+      '/plugins': { target: `http://127.0.0.1:${process.env.EATING_HOST_PORT ?? '5181'}` },
+      '/_eating/runtime': { target: `http://127.0.0.1:${process.env.EATING_HOST_PORT ?? '5181'}` },
+    },
     fs: { allow: [repositoryRoot] },
   },
   preview: { host: '127.0.0.1', port: 4180, strictPort: true },

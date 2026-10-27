@@ -2,16 +2,19 @@ import type { OneBotConfig } from '../config'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent, MutableRefObject, ReactNode } from 'react'
 import { AlertCircle, Check, Copy, RefreshCw } from 'lucide-react'
-import { HostApiError, hostRequest } from '@eating/ui-sdk'
+import { formatNumber, getErrorMessage, HostApiError, hostRequest, translate, useI18n } from '@eating/ui-sdk'
 import type { PluginPanelProps } from '@eating/ui-sdk'
 import { isJsonObject } from '@eating/plugin-sdk'
 import type { ConnectionStatus, JsonObject, JsonValue, PluginCapability, PluginToolDefinition } from '@eating/plugin-sdk'
 import './panel.css'
+import { capabilityDescription, capabilityTitle, parameterDescription, parameterLabel, toolDescription, toolTitle } from './i18n'
+import type { QQMessage, QQTranslationKey } from './i18n'
 import { LiveLogs } from './live-logs'
 
 type Tab = 'configuration' | 'tests' | 'mcp' | 'live-logs'
 type PublicConfiguration = Omit<OneBotConfig, 'accessToken'> & { tokenConfigured: boolean; instanceId?: string; configurationPath?: string; dataDirectory?: string }
 type Draft = Omit<OneBotConfig, 'timeoutMs'> & { timeoutMs: string; clearAccessToken: boolean }
+type FieldErrors = Record<string, QQMessage | undefined>
 interface QQWorkspacePlugin {
   id: string
   enabled: boolean
@@ -27,7 +30,7 @@ interface Workspace {
   harness: { state: 'not-attached' | 'attached'; pending: number; accepted: number; uncertain: number }
 }
 interface InvokeResult { ok: true; requestId: string; result: JsonValue }
-interface Failure { message: string; code: string; outcome: string }
+interface Failure { message: string; code: string; outcome: string; messageKey?: QQTranslationKey; fallbackKey?: QQTranslationKey }
 interface Execution {
   tool: PluginToolDefinition
   requestId: string
@@ -40,27 +43,23 @@ interface Execution {
 interface McpRegistration { transport: 'streamable-http'; url: string; headers: { Authorization: string }; note: string }
 type QQPanelProps = PluginPanelProps & { onRefresh?: () => Promise<void> }
 
-const tabs: { id: Tab; title: string }[] = [
-  { id: 'configuration', title: '连接配置' }, { id: 'live-logs', title: '实时日志' }, { id: 'tests', title: '功能测试' },
-  { id: 'mcp', title: 'MCP 能力' },
+const tabs: { id: Tab; title: QQTranslationKey }[] = [
+  { id: 'configuration', title: 'tabs.configuration' }, { id: 'live-logs', title: 'tabs.logs' }, { id: 'tests', title: 'tabs.tests' },
+  { id: 'mcp', title: 'tabs.mcp' },
 ]
-const connectionLabels: Record<ConnectionStatus['state'], string> = {
-  unconfigured: '尚未配置', disconnected: '已断开', connecting: '正在连接', connected: '已连接', reconnecting: '正在重连', error: '连接失败',
-}
-const argumentLabels: Record<string, string> = {
-  user_id: '收件人 QQ 号', group_id: '目标群号', message: '消息内容', message_id: '消息 ID',
-  request_id: '请求 ID', instance_id: '账号实例 ID', conversation_id: '会话 ID', limit: '读取条数', before: '早于消息序号',
-}
 
-function failureFrom(error: unknown): Failure {
-  if (error instanceof HostApiError) return { message: error.message, code: error.code, outcome: error.outcome }
-  return { message: error instanceof Error ? error.message : '操作失败，请检查 Eating Host。', code: 'UNEXPECTED_ERROR', outcome: 'unknown' }
+function failureFrom(error: unknown, fallbackKey: QQTranslationKey = 'error.operationFailed'): Failure {
+  if (error instanceof HostApiError) return { message: error.message, code: error.code, outcome: error.outcome, fallbackKey }
+  return { message: error instanceof Error ? error.message : '', code: 'UNEXPECTED_ERROR', outcome: 'unknown', fallbackKey }
+}
+function localFailure(code: string, messageKey: QQTranslationKey): Failure {
+  return { message: '', code, outcome: 'not-sent', messageKey }
 }
 function pretty(value: unknown): string { return JSON.stringify(value, null, 2) ?? 'null' }
-function dateLabel(value: string | null): string {
-  if (!value) return '暂无'
-  const date = new Date(value)
-  return Number.isNaN(date.valueOf()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+function messageLabel(message: QQMessage | undefined, field?: string): string | undefined {
+  if (!message) return undefined
+  const params = Object.fromEntries(Object.entries(message.params ?? {}).map(([key, value]) => [key, typeof value === 'number' ? formatNumber(value) : value]))
+  return translate('qq', message.key, { ...params, field })
 }
 function publicConfiguration(value: JsonObject): PublicConfiguration {
   return {
@@ -83,17 +82,23 @@ function disconnectedStatus(): ConnectionStatus {
 }
 
 function ErrorNotice({ failure }: { failure: Failure | null }) {
+  const { t } = useI18n('qq')
   if (!failure) return null
-  return <div className="qq-error" role="alert"><AlertCircle size={16} aria-hidden="true" /><div><p>{failure.message}</p><small>错误代码：{failure.code}{failure.outcome === 'unknown' ? ' · 执行结果未知，请先核查真实状态。' : ''}</small></div></div>
+  const message = failure.messageKey ? t(failure.messageKey) : getErrorMessage(failure, t(failure.fallbackKey ?? 'error.operationFailed'))
+  return <div className="qq-error" role="alert"><AlertCircle size={16} aria-hidden="true" /><div><p>{message}</p>
+    {failure.outcome === 'unknown' && <p>{t('error.unknownOutcome')}</p>}
+    <details><summary>{t('error.details')}</summary><small>{t('error.code', { code: failure.code })}</small>{failure.message && <p>{failure.message}</p>}</details>
+  </div></div>
 }
 function JsonPreview({ label, value, onFeedback }: { label: string; value: unknown; onFeedback: (message: string) => void }) {
+  const { t } = useI18n('qq')
   const [copyFailure, setCopyFailure] = useState<Failure | null>(null)
   const text = pretty(value)
   async function copy() {
-    try { await navigator.clipboard.writeText(text); setCopyFailure(null); onFeedback(`${label}已复制。`) }
-    catch { setCopyFailure({ message: '复制失败，可选中下方内容手动复制。', code: 'CLIPBOARD_UNAVAILABLE', outcome: 'not-sent' }) }
+    try { await navigator.clipboard.writeText(text); setCopyFailure(null); onFeedback(t('copy.done', { label })) }
+    catch { setCopyFailure(localFailure('CLIPBOARD_UNAVAILABLE', 'error.copy')) }
   }
-  return <div className="qq-json"><div className="qq-json-heading"><strong>{label}</strong><button type="button" className="text-button" onClick={() => void copy()}><Copy size={14} aria-hidden="true" />复制</button></div><pre tabIndex={0} aria-label={label}>{text}</pre><ErrorNotice failure={copyFailure} /></div>
+  return <div className="qq-json"><div className="qq-json-heading"><strong>{label}</strong><button type="button" className="text-button" onClick={() => void copy()}><Copy size={14} aria-hidden="true" />{t('action.copy')}</button></div><pre tabIndex={0} aria-label={label}>{text}</pre><ErrorNotice failure={copyFailure} /></div>
 }
 function FormField({ id, label, hint, error, children }: { id: string; label: string; hint?: string; error?: string; children: ReactNode }) {
   return <div className={`field${error ? ' field-invalid' : ''}`}><label htmlFor={id}>{label}</label>{children}
@@ -102,6 +107,7 @@ function FormField({ id, label, hint, error, children }: { id: string; label: st
 }
 
 export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
+  const { t, formatNumber, formatDateTime } = useI18n('qq')
   const prefix = useId()
   const [tab, setTab] = useState<Tab>('configuration')
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
@@ -112,8 +118,8 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
   const [loading, setLoading] = useState(true)
   const [refreshFailure, setRefreshFailure] = useState<Failure | null>(null)
   const [configurationFailure, setConfigurationFailure] = useState<Failure | null>(null)
-  const [configurationResult, setConfigurationResult] = useState('')
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
+  const [configurationResult, setConfigurationResult] = useState<{ key: QQTranslationKey; state?: ConnectionStatus['state'] } | null>(null)
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [mutation, setMutation] = useState<'save' | 'connect' | 'disconnect' | null>(null)
   const [testing, setTesting] = useState(false)
   const actionLock = useRef(false)
@@ -135,13 +141,13 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
     try {
       const response = await hostRequest<Workspace>('/workspace', { signal: controller.signal })
       if (!mounted.current || controller.signal.aborted || generation !== workspaceGeneration.current) return
-      if (response.protocolVersion !== 1 || !Array.isArray(response.plugins)) throw new Error('Host 工作区响应不兼容，请检查前后台版本。')
+      if (response.protocolVersion !== 1 || !Array.isArray(response.plugins)) { setRefreshFailure(localFailure('INVALID_HOST_RESPONSE', 'error.workspaceIncompatible')); return }
       const qq = response.plugins.find(entry => entry.id === 'qq')
-      if (!qq) throw new Error('Host 未加载 QQ 插件，请检查后台插件注册。')
+      if (!qq) { setRefreshFailure(localFailure('PLUGIN_NOT_FOUND', 'error.pluginNotLoaded')); return }
       setWorkspace(response); setPlugin(qq); setRefreshFailure(null)
       if (!dirtyRef.current) setDraft(makeDraft(publicConfiguration(qq.configuration)))
     } catch (error) {
-      if (mounted.current && !controller.signal.aborted && generation === workspaceGeneration.current) setRefreshFailure(failureFrom(error))
+      if (mounted.current && !controller.signal.aborted && generation === workspaceGeneration.current) setRefreshFailure(failureFrom(error, 'error.refreshFailed'))
     } finally {
       if (mounted.current && generation === workspaceGeneration.current) setLoading(false)
       if (workspaceController.current === controller) workspaceController.current = null
@@ -164,19 +170,19 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
   function updateDraft<K extends keyof Draft>(key: K, value: Draft[K]) {
     setDraft(current => current ? { ...current, [key]: value } : current)
     dirtyRef.current = true; setDirty(true)
-    setFieldErrors(current => ({ ...current, [key]: '' }))
+    setFieldErrors(current => ({ ...current, [key]: undefined }))
   }
-  function validateDraft(value: Draft): Record<string, string> {
-    const errors: Record<string, string> = {}
-    if (!value.displayName.trim() || value.displayName.trim().length > 40) errors.displayName = '显示名称需为 1 至 40 个字符。'
+  function validateDraft(value: Draft): FieldErrors {
+    const errors: FieldErrors = {}
+    if (!value.displayName.trim() || value.displayName.trim().length > 40) errors.displayName = { key: 'validation.displayName' }
     try {
       const endpoint = new URL(value.endpoint.trim())
-      if (!['ws:', 'wss:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) errors.endpoint = '请填写 ws:// 或 wss:// 地址，不要包含账号、令牌、查询参数或片段。'
-      else if (/\/(?:api|event)\/?$/.test(endpoint.pathname)) errors.endpoint = '请使用同时提供 API 和事件的统一端点，不使用 /api 或 /event。'
-    } catch { errors.endpoint = '请填写有效的 OneBot WebSocket 地址。' }
+      if (!['ws:', 'wss:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) errors.endpoint = { key: 'validation.endpointFormat' }
+      else if (/\/(?:api|event)\/?$/.test(endpoint.pathname)) errors.endpoint = { key: 'validation.endpointUnified' }
+    } catch { errors.endpoint = { key: 'validation.endpoint' } }
     const timeout = Number(value.timeoutMs)
-    if (!value.timeoutMs.trim() || !Number.isInteger(timeout) || timeout < 1000 || timeout > 60000) errors.timeoutMs = '请求超时需为 1000 至 60000 毫秒的整数。'
-    if (value.accessToken.length > 4096 || /[\r\n]/.test(value.accessToken)) errors.accessToken = '访问令牌不能包含换行，长度不能超过 4096。'
+    if (!value.timeoutMs.trim() || !Number.isInteger(timeout) || timeout < 1000 || timeout > 60000) errors.timeoutMs = { key: 'validation.timeout', params: { min: 1000, max: 60000 } }
+    if (value.accessToken.length > 4096 || /[\r\n]/.test(value.accessToken)) errors.accessToken = { key: 'validation.token', params: { max: 4096 } }
     return errors
   }
   async function mutate(operation: 'save' | 'connect' | 'disconnect') {
@@ -184,12 +190,12 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
     if (operation === 'save') {
       const errors = validateDraft(draft)
       setFieldErrors(errors)
-      if (Object.keys(errors).length) { setConfigurationFailure({ code: 'INVALID_CONFIGURATION', message: '请修正配置字段后再保存。', outcome: 'not-sent' }); return }
+      if (Object.keys(errors).length) { setConfigurationFailure(localFailure('INVALID_CONFIGURATION', 'error.fixConfiguration')); return }
     }
     if (operation === 'connect' && dirtyRef.current) {
-      setConfigurationFailure({ code: 'UNSAVED_CONFIGURATION', message: '请先保存当前更改，再使用已保存的配置连接。', outcome: 'not-sent' }); return
+      setConfigurationFailure(localFailure('UNSAVED_CONFIGURATION', 'error.unsavedConfiguration')); return
     }
-    actionLock.current = true; setMutation(operation); setConfigurationResult('')
+    actionLock.current = true; setMutation(operation); setConfigurationResult(null)
     ++workspaceGeneration.current; workspaceController.current?.abort()
     const controller = new AbortController()
     mutationController.current = controller
@@ -204,18 +210,18 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
         if (!mounted.current || controller.signal.aborted) return
         setDraft(makeDraft(publicConfiguration(response))); dirtyRef.current = false; setDirty(false)
         setPlugin(current => current ? { ...current, configuration: response, status: disconnectedStatus() } : current)
-        setConfigurationResult('配置已保存到 Eating Host。旧连接已断开，点击“连接 OneBot”核验账号与状态。')
-        feedbackRef.current('QQ 配置已保存，尚未重新连接。')
+        setConfigurationResult({ key: 'config.saved' })
+        feedbackRef.current(t('config.savedFeedback'))
       } else {
         const status = await hostRequest<ConnectionStatus>(`/plugins/qq/${operation}`, { method: 'POST', body: {}, signal: controller.signal })
         if (!mounted.current || controller.signal.aborted) return
         setPlugin(current => current ? { ...current, status } : current)
-        const message = operation === 'connect' ? `OneBot 核验结果：${connectionLabels[status.state]}。` : 'QQ 的 OneBot 连接已断开。'
-        setConfigurationResult(message); feedbackRef.current(message)
+        const result = operation === 'connect' ? { key: 'config.connectedResult' as const, state: status.state } : { key: 'config.disconnectedResult' as const }
+        setConfigurationResult(result); feedbackRef.current(t(result.key, { state: t(`connection.${status.state}`) }))
       }
       setConfigurationFailure(null)
       try { await refreshRef.current?.() }
-      catch (error) { if (mounted.current) setConfigurationFailure({ ...failureFrom(error), message: '操作已完成，但宿主列表刷新失败。请使用“刷新状态”更新。' }) }
+      catch (error) { if (mounted.current) setConfigurationFailure({ ...failureFrom(error), messageKey: 'error.refreshAfterAction' }) }
     } catch (error) {
       if (mounted.current && !controller.signal.aborted) setConfigurationFailure(failureFrom(error))
     } finally {
@@ -241,45 +247,45 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
   const describedBy = (name: string) => `${id(name)}-hint${fieldErrors[name] ? ` ${id(name)}-error` : ''}`
 
   return <div className="qq-panel">
-    <div className="qq-connection-strip"><div><strong>{plugin ? connectionLabels[plugin.status.state] : '正在读取后台状态'}</strong>
-      {plugin?.status.accountId && <span>账号：{plugin.status.accountName || 'QQ'}（{plugin.status.accountId}）</span>}
-      {plugin?.status.lastEventAt && <span>最近事件：{dateLabel(plugin.status.lastEventAt)}</span>}
-    </div><button className="text-button" type="button" disabled={busy} onClick={() => void refreshWorkspace()}><RefreshCw size={14} aria-hidden="true" />刷新状态</button></div>
-    {plugin?.status.lastError && <ErrorNotice failure={{ message: plugin.status.lastError, code: 'ONEBOT_CONNECTION_ERROR', outcome: 'failed' }} />}
+    <div className="qq-connection-strip"><div><strong>{plugin ? t(`connection.${plugin.status.state}`) : t('connection.loading')}</strong>
+      {plugin?.status.accountId && <span>{t('connection.account', { name: plugin.status.accountName || 'QQ', id: plugin.status.accountId })}</span>}
+      {plugin?.status.lastEventAt && <span>{t('connection.lastEvent', { time: formatDateTime(plugin.status.lastEventAt) })}</span>}
+    </div><button className="text-button" type="button" disabled={busy} onClick={() => void refreshWorkspace()}><RefreshCw size={14} aria-hidden="true" />{t('action.refresh')}</button></div>
+    {plugin?.status.lastError && <ErrorNotice failure={{ message: plugin.status.lastError, code: 'ONEBOT_CONNECTION_ERROR', outcome: 'failed', messageKey: 'error.connection' }} />}
     <ErrorNotice failure={refreshFailure} />
-    {refreshFailure && !plugin && <button className="button button-secondary" type="button" onClick={() => void refreshWorkspace()}>重新读取后台</button>}
-    <div className="qq-tabs" role="tablist" aria-label="QQ 插件功能">{tabs.map((item, index) => <button key={item.id} type="button" role="tab" id={`${prefix}-tab-${item.id}`} aria-selected={tab === item.id} aria-controls={`${prefix}-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1} onClick={() => setTab(item.id)} onKeyDown={event => switchTab(event, index)}>{item.title}</button>)}</div>
-    {loading && <p className="qq-loading" role="status">正在读取 Eating Host 中的 QQ 配置与能力…</p>}
+    {refreshFailure && !plugin && <button className="button button-secondary" type="button" onClick={() => void refreshWorkspace()}>{t('action.reload')}</button>}
+    <div className="qq-tabs" role="tablist" aria-label={t('tabs.label')}>{tabs.map((item, index) => <button key={item.id} type="button" role="tab" id={`${prefix}-tab-${item.id}`} aria-selected={tab === item.id} aria-controls={`${prefix}-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1} onClick={() => setTab(item.id)} onKeyDown={event => switchTab(event, index)}>{t(item.title)}</button>)}</div>
+    {loading && <p className="qq-loading" role="status">{t('loading.configuration')}</p>}
     <section hidden={tab !== 'configuration'} role="tabpanel" id={`${prefix}-panel-configuration`} aria-labelledby={`${prefix}-tab-configuration`}>
-      <div className="section-heading"><h3>连接配置</h3><p>使用 OneBot v11 正向统一 WebSocket 端点。请先在协议端登录 QQ，Eating 的连接操作不会替你登录账号。</p></div>
+      <div className="section-heading"><h3>{t('tabs.configuration')}</h3><p>{t('config.description')}</p></div>
       {draft && <form className="form-fields" noValidate onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void mutate('save') }}>
         <fieldset className="qq-fieldset" disabled={busy}>
-          <FormField id={id('displayName')} label="显示名称" hint="用于在 Eating 中识别此 QQ 配置。" error={fieldErrors.displayName}>
+          <FormField id={id('displayName')} label={t('config.displayName.label')} hint={t('config.displayName.help')} error={messageLabel(fieldErrors.displayName)}>
             <input id={id('displayName')} aria-describedby={describedBy('displayName')} aria-invalid={Boolean(fieldErrors.displayName)} value={draft.displayName} maxLength={40} autoComplete="off" onChange={event => updateDraft('displayName', event.target.value)} />
           </FormField>
-          <FormField id={id('endpoint')} label="OneBot 地址" hint="例如 ws://127.0.0.1:3001。此版本不使用 /api、/event 分离端点或反向 WebSocket。" error={fieldErrors.endpoint}>
-            <input id={id('endpoint')} type="url" aria-describedby={describedBy('endpoint')} aria-invalid={Boolean(fieldErrors.endpoint)} value={draft.endpoint} placeholder="ws://127.0.0.1:3001" autoComplete="off" spellCheck={false} onChange={event => updateDraft('endpoint', event.target.value)} />
+          <FormField id={id('endpoint')} label={t('config.endpoint.label')} hint={t('config.endpoint.help')} error={messageLabel(fieldErrors.endpoint)}>
+            <input id={id('endpoint')} type="url" aria-describedby={describedBy('endpoint')} aria-invalid={Boolean(fieldErrors.endpoint)} value={draft.endpoint} placeholder={t('config.endpoint.placeholder')} autoComplete="off" spellCheck={false} onChange={event => updateDraft('endpoint', event.target.value)} />
           </FormField>
-          <FormField id={id('accessToken')} label="Bearer 访问令牌" hint={`${saved?.tokenConfigured ? '后台已配置令牌。' : '后台尚未配置令牌。'}只写入，不回显；留空保留原值。`} error={fieldErrors.accessToken}>
+          <FormField id={id('accessToken')} label={t('config.token.label')} hint={t(saved?.tokenConfigured ? 'config.token.configuredHelp' : 'config.token.emptyHelp')} error={messageLabel(fieldErrors.accessToken)}>
             <input id={id('accessToken')} type="password" aria-describedby={describedBy('accessToken')} aria-invalid={Boolean(fieldErrors.accessToken)} value={draft.accessToken} disabled={draft.clearAccessToken} maxLength={4096} autoComplete="new-password" spellCheck={false} onChange={event => updateDraft('accessToken', event.target.value)} />
           </FormField>
-          <label className="check-field qq-compact-check"><input type="checkbox" checked={draft.clearAccessToken} onChange={event => updateDraft('clearAccessToken', event.target.checked)} /><span><strong>清除已保存的访问令牌</strong><small>只有勾选此项并保存才会清除。请确认协议端允许无令牌连接。</small></span></label>
-          <FormField id={id('timeoutMs')} label="请求超时" hint="单位为毫秒，范围 1000–60000。超时不代表真实动作未发生。" error={fieldErrors.timeoutMs}>
+          <label className="check-field qq-compact-check"><input type="checkbox" checked={draft.clearAccessToken} onChange={event => updateDraft('clearAccessToken', event.target.checked)} /><span><strong>{t('config.token.clear')}</strong><small>{t('config.token.clearHelp')}</small></span></label>
+          <FormField id={id('timeoutMs')} label={t('config.timeout.label')} hint={t('config.timeout.help', { min: formatNumber(1000), max: formatNumber(60000) })} error={messageLabel(fieldErrors.timeoutMs)}>
             <input id={id('timeoutMs')} type="number" min={1000} max={60000} step={1} inputMode="numeric" aria-describedby={describedBy('timeoutMs')} aria-invalid={Boolean(fieldErrors.timeoutMs)} value={draft.timeoutMs} onChange={event => updateDraft('timeoutMs', event.target.value)} />
           </FormField>
-          <label className="check-field"><input type="checkbox" checked={draft.autoConnect} onChange={event => updateDraft('autoConnect', event.target.checked)} /><span><strong>Host 启动时自动连接</strong><small>保存配置会先断开旧连接；本次保存后仍需手动连接。</small></span></label>
-          <label className="check-field"><input type="checkbox" checked={draft.forwardToHarness} onChange={event => updateDraft('forwardToHarness', event.target.checked)} /><span><strong>将接收的消息转交 Harness</strong><small>尚未接入 Harness 时进入有上限的队列等待投递；存储方式和容量在全局设置中配置。</small></span></label>
-          <label className="check-field"><input type="checkbox" checked={draft.receiveGroups} onChange={event => updateDraft('receiveGroups', event.target.checked)} /><span><strong>群消息转交 Harness</strong><small>仅影响新群消息是否入队；关闭后不保留其正文，实时日志仍按页面可见性启用。</small></span></label>
+          <label className="check-field"><input type="checkbox" checked={draft.autoConnect} onChange={event => updateDraft('autoConnect', event.target.checked)} /><span><strong>{t('config.autoConnect.label')}</strong><small>{t('config.autoConnect.help')}</small></span></label>
+          <label className="check-field"><input type="checkbox" checked={draft.forwardToHarness} onChange={event => updateDraft('forwardToHarness', event.target.checked)} /><span><strong>{t('config.forward.label')}</strong><small>{t('config.forward.help')}</small></span></label>
+          <label className="check-field"><input type="checkbox" checked={draft.receiveGroups} onChange={event => updateDraft('receiveGroups', event.target.checked)} /><span><strong>{t('config.groups.label')}</strong><small>{t('config.groups.help')}</small></span></label>
         </fieldset>
-        <div className="form-actions"><button type="submit" className="button button-primary" disabled={busy}>{mutation === 'save' ? '正在保存…' : '保存配置'}</button>
-          <button type="button" className="button button-secondary" disabled={busy || dirty || !saved?.endpoint || plugin?.enabled !== true || ['connected', 'connecting', 'reconnecting'].includes(plugin.status.state)} onClick={() => void mutate('connect')}>{mutation === 'connect' ? '正在核验连接…' : '连接 OneBot'}</button>
-          <button type="button" className="button button-secondary" disabled={busy || !plugin || !['connected', 'connecting', 'reconnecting', 'error'].includes(plugin.status.state)} onClick={() => void mutate('disconnect')}>{mutation === 'disconnect' ? '正在断开…' : '断开连接'}</button>
-          <span className="save-indicator">{dirty ? '有未保存更改，请先保存后连接' : saved?.endpoint ? '使用后台已保存配置' : '请先配置 OneBot 地址'}</span>
+        <div className="form-actions"><button type="submit" className="button button-primary" disabled={busy}>{t(mutation === 'save' ? 'action.saving' : 'action.save')}</button>
+          <button type="button" className="button button-secondary" disabled={busy || dirty || !saved?.endpoint || plugin?.enabled !== true || ['connected', 'connecting', 'reconnecting'].includes(plugin.status.state)} onClick={() => void mutate('connect')}>{t(mutation === 'connect' ? 'action.connecting' : 'action.connect')}</button>
+          <button type="button" className="button button-secondary" disabled={busy || !plugin || !['connected', 'connecting', 'reconnecting', 'error'].includes(plugin.status.state)} onClick={() => void mutate('disconnect')}>{t(mutation === 'disconnect' ? 'action.disconnecting' : 'action.disconnect')}</button>
+          <span className="save-indicator">{t(dirty ? 'config.dirty' : saved?.endpoint ? 'config.savedDraft' : 'config.needsEndpoint')}</span>
         </div>
       </form>}
-      {configurationResult && <p className="qq-operation-result" role="status"><Check size={15} aria-hidden="true" />{configurationResult}</p>}
+      {configurationResult && <p className="qq-operation-result" role="status"><Check size={15} aria-hidden="true" />{t(configurationResult.key, { state: configurationResult.state ? t(`connection.${configurationResult.state}`) : undefined })}</p>}
       <ErrorNotice failure={configurationFailure} />
-      {saved && (saved.instanceId || saved.configurationPath || saved.dataDirectory) && <dl className="qq-paths">{saved.instanceId && <div><dt>账号实例</dt><dd>{saved.instanceId}（本版仅使用当前默认实例，与实际 QQ 号独立）</dd></div>}{saved.configurationPath && <div><dt>配置文件</dt><dd>{saved.configurationPath}</dd></div>}{saved.dataDirectory && <div><dt>插件数据目录</dt><dd>{saved.dataDirectory}</dd></div>}</dl>}
+      {saved && (saved.instanceId || saved.configurationPath || saved.dataDirectory) && <details className="qq-location-details"><summary>{t('config.locations')}</summary><dl className="qq-paths">{saved.instanceId && <div><dt>{t('config.instance')}</dt><dd>{saved.instanceId}</dd></div>}{saved.configurationPath && <div><dt>{t('config.configurationPath')}</dt><dd>{saved.configurationPath}</dd></div>}{saved.dataDirectory && <div><dt>{t('config.dataDirectory')}</dt><dd>{saved.dataDirectory}</dd></div>}</dl></details>}
     </section>
     <section hidden={tab !== 'live-logs'} role="tabpanel" id={`${prefix}-panel-live-logs`} aria-labelledby={`${prefix}-tab-live-logs`}>
       <LiveLogs active={tab === 'live-logs'} enabled={plugin?.enabled === true} available={plugin?.logsSupported === true} />
@@ -300,27 +306,32 @@ function schemaFields(tool: PluginToolDefinition | undefined): SchemaField[] {
   return Object.entries(tool.inputSchema.properties).filter((entry): entry is [string, JsonObject] => isJsonObject(entry[1]))
     .map(([key, schema]) => ({ key, schema, required: required.includes(key) }))
 }
-function parseArguments(fields: SchemaField[], values: Record<string, string>, requestId: string): { arguments: JsonObject; errors: Record<string, string> } {
+function parseArguments(fields: SchemaField[], values: Record<string, string>, requestId: string): { arguments: JsonObject; errors: FieldErrors } {
   const args: JsonObject = {}
-  const errors: Record<string, string> = {}
+  const errors: FieldErrors = {}
   for (const { key, schema, required } of fields) {
     if (key === 'request_id') { args[key] = requestId; continue }
     const value = values[key] ?? ''
-    const label = typeof schema.title === 'string' ? schema.title : argumentLabels[key] ?? key
     if (!value && !required) continue
-    if (!value && required) { errors[key] = `请填写${label}。`; continue }
+    if (!value && required) { errors[key] = { key: 'validation.required' }; continue }
     if (schema.type === 'integer') {
       const number = Number(value)
-      if (!value.trim() || !Number.isSafeInteger(number) || (typeof schema.minimum === 'number' && number < schema.minimum) || (typeof schema.maximum === 'number' && number > schema.maximum)) errors[key] = `请填写范围内的整数${typeof schema.minimum === 'number' ? `，最小 ${schema.minimum}` : ''}${typeof schema.maximum === 'number' ? `，最大 ${schema.maximum}` : ''}。`
-      else args[key] = number
+      if (!value.trim() || !Number.isSafeInteger(number) || (typeof schema.minimum === 'number' && number < schema.minimum) || (typeof schema.maximum === 'number' && number > schema.maximum)) {
+        errors[key] = typeof schema.minimum === 'number' && typeof schema.maximum === 'number' ? { key: 'validation.integerRange', params: { min: schema.minimum, max: schema.maximum } }
+          : typeof schema.minimum === 'number' ? { key: 'validation.integerMin', params: { min: schema.minimum } }
+          : typeof schema.maximum === 'number' ? { key: 'validation.integerMax', params: { max: schema.maximum } } : { key: 'validation.integer' }
+      } else args[key] = number
     } else if (schema.type === 'string') {
-      if ((typeof schema.minLength === 'number' && value.length < schema.minLength) || (typeof schema.maxLength === 'number' && value.length > schema.maxLength)) errors[key] = `${label}长度需在${typeof schema.minLength === 'number' ? schema.minLength : 0}至${typeof schema.maxLength === 'number' ? schema.maxLength : '不限'}个字符之间。`
-      else if (typeof schema.pattern === 'string') {
-        try { if (!new RegExp(schema.pattern).test(value)) errors[key] = `${label}格式不正确，请根据参数说明填写。` }
-        catch { errors[key] = '后台参数规则无效，请检查 QQ 插件版本。' }
+      if ((typeof schema.minLength === 'number' && value.length < schema.minLength) || (typeof schema.maxLength === 'number' && value.length > schema.maxLength)) {
+        errors[key] = typeof schema.minLength === 'number' && typeof schema.maxLength === 'number' ? { key: 'validation.lengthRange', params: { min: schema.minLength, max: schema.maxLength } }
+          : typeof schema.minLength === 'number' ? { key: 'validation.lengthMin', params: { min: schema.minLength } }
+          : { key: 'validation.lengthMax', params: { max: typeof schema.maxLength === 'number' ? schema.maxLength : 0 } }
+      } else if (typeof schema.pattern === 'string') {
+        try { if (!new RegExp(schema.pattern).test(value)) errors[key] = { key: 'validation.pattern' } }
+        catch { errors[key] = { key: 'validation.ruleInvalid' } }
       }
       args[key] = value
-    } else errors[key] = '此参数类型尚未提供表单，请检查 QQ 插件版本。'
+    } else errors[key] = { key: 'validation.typeUnavailable' }
   }
   return { arguments: args, errors }
 }
@@ -328,6 +339,7 @@ function parseArguments(fields: SchemaField[], values: Record<string, string>, r
 function ToolTester({ tools, enabled, mutationBusy, actionLock, onBusy, onFeedback }: {
   tools: PluginToolDefinition[]; enabled: boolean; mutationBusy: boolean; actionLock: MutableRefObject<boolean>; onBusy: (value: boolean) => void; onFeedback: (message: string) => void
 }) {
+  const { t, formatNumber } = useI18n('qq')
   const prefix = useId()
   const [toolName, setToolName] = useState('qq_get_login_info')
   const tool = tools.find(item => item.name === toolName) ?? tools.find(item => item.readOnly) ?? tools[0]
@@ -337,7 +349,7 @@ function ToolTester({ tools, enabled, mutationBusy, actionLock, onBusy, onFeedba
   const [confirmed, setConfirmed] = useState(false)
   const [unknownReviewed, setUnknownReviewed] = useState(false)
   const [pending, setPending] = useState(false)
-  const [errors, setErrors] = useState<Record<string, string>>({})
+  const [errors, setErrors] = useState<FieldErrors>({})
   const [validationFailure, setValidationFailure] = useState<Failure | null>(null)
   const [execution, setExecution] = useState<Execution | null>(null)
   const [history, setHistory] = useState<Execution[]>([])
@@ -352,7 +364,7 @@ function ToolTester({ tools, enabled, mutationBusy, actionLock, onBusy, onFeedba
 
   function updateField(key: string, value: string) {
     setValues(current => ({ ...current, [key]: value })); setRequestId(crypto.randomUUID()); setConfirmed(false)
-    setErrors(current => ({ ...current, [key]: '' }))
+    setErrors(current => ({ ...current, [key]: undefined }))
   }
   async function execute(retry?: Execution) {
     const selected = retry?.tool ?? tool
@@ -360,9 +372,9 @@ function ToolTester({ tools, enabled, mutationBusy, actionLock, onBusy, onFeedba
     if (unknown && !retry) return
     const input = retry ? { arguments: retry.arguments, errors: {} } : parseArguments(fields, values, requestId)
     setErrors(input.errors)
-    if (Object.keys(input.errors).length) { setValidationFailure({ code: 'INVALID_INPUT', message: '请修正测试参数后再执行。', outcome: 'not-sent' }); return }
+    if (Object.keys(input.errors).length) { setValidationFailure(localFailure('INVALID_INPUT', 'error.fixTestInput')); return }
     if ((!selected.readOnly || selected.destructive) && (!confirmed || (retry && !unknownReviewed))) {
-      setValidationFailure({ code: 'ACTION_CONFIRMATION_REQUIRED', message: '请核对目标和参数，并勾选真实动作确认。', outcome: 'not-sent' }); return
+      setValidationFailure(localFailure('ACTION_CONFIRMATION_REQUIRED', 'error.confirmAction')); return
     }
     if (retry && !unknownReviewed) return
     const run: Execution = { tool: selected, requestId: retry?.requestId ?? requestId, arguments: input.arguments, startedAt: new Date().toISOString(), pending: true }
@@ -379,7 +391,7 @@ function ToolTester({ tools, enabled, mutationBusy, actionLock, onBusy, onFeedba
       } })
       if (!alive.current || currentGeneration !== generation.current || controller.signal.aborted) return
       setExecution({ ...run, pending: false, result: response.result }); setRequestId(crypto.randomUUID())
-      onFeedback('QQ 功能测试已完成，请查看真实返回结果。')
+      onFeedback(t('tests.completeFeedback'))
     } catch (error) {
       if (!alive.current || currentGeneration !== generation.current || controller.signal.aborted) return
       const failure = failureFrom(error)
@@ -398,53 +410,56 @@ function ToolTester({ tools, enabled, mutationBusy, actionLock, onBusy, onFeedba
   }
 
   return <>
-    <div className="section-heading"><h3>功能测试</h3><p>工具与参数来自 QQ 后台能力目录。默认只读查询账号；所有发送与撤回都需要逐次确认。</p></div>
-    {!tools.length ? <p className="qq-empty">尚未读取到 QQ 工具，请先确认 Eating Host 正常运行。</p> : <form noValidate onSubmit={event => { event.preventDefault(); void execute() }}>
+    <div className="section-heading"><h3>{t('tabs.tests')}</h3><p>{t('tests.description')}</p></div>
+    {!tools.length ? <p className="qq-empty">{t('tests.empty')}</p> : <form noValidate onSubmit={event => { event.preventDefault(); void execute() }}>
       <fieldset className="qq-fieldset" disabled={blocked || !enabled}>
-        <FormField id={`${prefix}-tool`} label="测试功能" hint="只读功能也可能包含账号、好友或群资料，请仅在可信环境查看。">
+        <FormField id={`${prefix}-tool`} label={t('tests.tool.label')} hint={t('tests.tool.help')}>
           <select id={`${prefix}-tool`} aria-describedby={`${prefix}-tool-hint`} value={tool?.name ?? ''} onChange={event => {
             setToolName(event.target.value); setValues({}); setRequestId(crypto.randomUUID()); setConfirmed(false); setErrors({}); setValidationFailure(null)
-          }}>{tools.map(item => <option key={item.name} value={item.name}>{item.title}{!item.readOnly || item.destructive ? ' · 真实动作' : ' · 只读'}</option>)}</select>
+          }}>{tools.map(item => <option key={item.name} value={item.name}>{t(!item.readOnly || item.destructive ? 'tests.tool.action' : 'tests.tool.readOnly', { title: toolTitle(item) })}</option>)}</select>
         </FormField>
-        {tool && <p className="qq-tool-description">{tool.description}</p>}
+        {tool && <p className="qq-tool-description">{toolDescription(tool)}</p>}
         {fields.map(({ key, schema, required }) => {
           const fieldId = `${prefix}-arg-${key}`
-          const label = `${typeof schema.title === 'string' ? schema.title : argumentLabels[key] ?? key}${required ? '（必填）' : '（选填）'}`
-          const hint = key === 'request_id' ? '由 Eating 生成；结果未知时重试复用原值，不能自行改写。' : typeof schema.description === 'string' ? schema.description : key
+          const fieldLabel = parameterLabel(tool, key, schema)
+          const label = t(required ? 'tests.field.required' : 'tests.field.optional', { label: fieldLabel })
+          const hint = parameterDescription(tool, key, schema, { max: typeof schema.maxLength === 'number' ? formatNumber(schema.maxLength) : undefined })
           const attributes = { id: fieldId, 'aria-describedby': `${fieldId}-hint${errors[key] ? ` ${fieldId}-error` : ''}`, 'aria-invalid': Boolean(errors[key]) }
-          return <FormField key={key} id={fieldId} label={label} hint={hint} error={errors[key]}>
+          return <FormField key={key} id={fieldId} label={label} hint={hint} error={messageLabel(errors[key], fieldLabel)}>
             {key === 'request_id' ? <input {...attributes} value={requestId} readOnly className="input-readonly" /> : key === 'message' ?
               <textarea {...attributes} value={values[key] ?? ''} rows={5} maxLength={typeof schema.maxLength === 'number' ? schema.maxLength : undefined} onChange={event => updateField(key, event.target.value)} /> :
               <input {...attributes} type={schema.type === 'integer' ? 'number' : 'text'} inputMode={schema.type === 'integer' ? 'numeric' : undefined} min={typeof schema.minimum === 'number' ? schema.minimum : undefined} max={typeof schema.maximum === 'number' ? schema.maximum : undefined} step={schema.type === 'integer' ? 1 : undefined} maxLength={typeof schema.maxLength === 'number' ? schema.maxLength : undefined} value={values[key] ?? ''} autoComplete="off" spellCheck={false} onChange={event => updateField(key, event.target.value)} />}
           </FormField>
         })}
-        {!fields.length && <p className="qq-no-arguments">此功能无需参数。</p>}
+        {!fields.length && <p className="qq-no-arguments">{t('tests.noArguments')}</p>}
       </fieldset>
-      {hasSideEffect && <div className="qq-confirmation"><strong>{tool?.destructive ? '此操作会撤回真实消息' : '此操作会发送真实 QQ 消息'}</strong><p>请核对以下目标和内容。Eating 不会自动重试此动作。</p>
-        <dl className="qq-target-preview">{Object.entries(unknown && execution ? execution.arguments : parsed.arguments).filter(([key]) => key !== 'request_id').map(([key, value]) => <div key={key}><dt>{argumentLabels[key] ?? key}</dt><dd>{typeof value === 'string' ? value : pretty(value)}</dd></div>)}</dl>
-        <label className="qq-check"><input type="checkbox" disabled={pending || mutationBusy || !enabled} checked={confirmed} onChange={event => setConfirmed(event.target.checked)} /><span>我已核对目标和内容，确认执行此次真实{tool?.destructive ? '撤回' : '发送'}。</span></label>
+      {hasSideEffect && <div className="qq-confirmation"><strong>{t(tool?.destructive ? 'tests.confirmDelete.title' : 'tests.confirmSend.title')}</strong><p>{t('tests.confirm.help')}</p>
+        <dl className="qq-target-preview">{Object.entries(unknown && execution ? execution.arguments : parsed.arguments).filter(([key]) => key !== 'request_id').map(([key, value]) => <div key={key}><dt>{parameterLabel(tool, key, fields.find(field => field.key === key)?.schema)}</dt><dd>{typeof value === 'string' ? value : pretty(value)}</dd></div>)}</dl>
+        <label className="qq-check"><input type="checkbox" disabled={pending || mutationBusy || !enabled} checked={confirmed} onChange={event => setConfirmed(event.target.checked)} /><span>{t(tool?.destructive ? 'tests.confirmDelete.label' : 'tests.confirmSend.label')}</span></label>
       </div>}
       <ErrorNotice failure={validationFailure} />
-      <div className="qq-actions"><button className="button button-primary" type="submit" disabled={blocked || !enabled || (hasSideEffect && !confirmed)}>{pending ? '正在执行…' : '执行测试'}</button><span className="qq-request-id">本次请求 ID：{requestId}</span></div>
+      <div className="qq-actions"><button className="button button-primary" type="submit" disabled={blocked || !enabled || (hasSideEffect && !confirmed)}>{t(pending ? 'action.running' : 'action.runTest')}</button><span className="qq-request-id">{t('tests.requestId', { id: requestId })}</span></div>
     </form>}
-    {unknown && execution && <div className="qq-unknown" role="alert"><h4>上次动作结果未知</h4><p>保留了原请求 ID、参数与错误。请先核查协议端真实状态；相同 ID 的重试用于查询或复用原执行记录，不保证原动作未发生。</p>
-      <label className="qq-check"><input type="checkbox" checked={unknownReviewed} disabled={pending} onChange={event => setUnknownReviewed(event.target.checked)} /><span>我已核查真实状态，理解上次动作仍可能已执行。</span></label>
-      <div className="qq-actions"><button type="button" className="button button-secondary" disabled={!unknownReviewed || pending || mutationBusy || !enabled || ((!execution.tool.readOnly || execution.tool.destructive) && !confirmed)} onClick={() => void execute(execution)}>重试原请求（复用 ID）</button>
-        <button type="button" className="button button-secondary" disabled={!unknownReviewed || pending || mutationBusy} onClick={allowNewRequest}>确认后创建新请求</button></div><p className="qq-help">需要修改参数时，先明确创建新请求；发送或撤回仍需再次勾选确认。</p>
+    {unknown && execution && <div className="qq-unknown" role="alert"><h4>{t('tests.unknown.title')}</h4><p>{t('tests.unknown.help')}</p>
+      <label className="qq-check"><input type="checkbox" checked={unknownReviewed} disabled={pending} onChange={event => setUnknownReviewed(event.target.checked)} /><span>{t('tests.unknown.reviewed')}</span></label>
+      <div className="qq-actions"><button type="button" className="button button-secondary" disabled={!unknownReviewed || pending || mutationBusy || !enabled || ((!execution.tool.readOnly || execution.tool.destructive) && !confirmed)} onClick={() => void execute(execution)}>{t('action.retryRequest')}</button>
+        <button type="button" className="button button-secondary" disabled={!unknownReviewed || pending || mutationBusy} onClick={allowNewRequest}>{t('action.newRequest')}</button></div><p className="qq-help">{t('tests.unknown.newRequestHelp')}</p>
     </div>}
     {execution && <ExecutionResult execution={execution} onFeedback={onFeedback} />}
-    {history.length > 0 && <details className="qq-history"><summary>本次打开面板的执行记录（{history.length}）</summary>{[...history].reverse().map((item, index) => <ExecutionResult key={`${item.requestId}-${item.startedAt}-${index}`} execution={item} onFeedback={onFeedback} />)}</details>}
+    {history.length > 0 && <details className="qq-history"><summary>{t('tests.history', { count: history.length, value: formatNumber(history.length) })}</summary>{[...history].reverse().map((item, index) => <ExecutionResult key={`${item.requestId}-${item.startedAt}-${index}`} execution={item} onFeedback={onFeedback} />)}</details>}
   </>
 }
 function ExecutionResult({ execution, onFeedback }: { execution: Execution; onFeedback: (message: string) => void }) {
-  return <div className="qq-execution"><div className="qq-execution-heading"><strong>{execution.tool.title}</strong><span>{execution.pending ? '执行中，请勿重复点击' : execution.failure ? execution.failure.outcome === 'unknown' ? '结果未知' : '执行失败' : '执行完成'}</span></div>
-    <p className="qq-help">{dateLabel(execution.startedAt)} · 请求 ID：{execution.requestId}</p><ErrorNotice failure={execution.failure ?? null} />
-    <JsonPreview label="请求与结果 JSON" value={{ name: execution.tool.name, requestId: execution.requestId, arguments: execution.arguments, startedAt: execution.startedAt,
-      ...(execution.pending ? { state: 'pending' } : execution.failure ? { error: execution.failure } : { result: execution.result }) }} onFeedback={onFeedback} />
+  const { t, formatDateTime } = useI18n('qq')
+  return <div className="qq-execution"><div className="qq-execution-heading"><strong>{toolTitle(execution.tool)}</strong><span>{t(execution.pending ? 'execution.pending' : execution.failure ? execution.failure.outcome === 'unknown' ? 'execution.unknown' : 'execution.failed' : 'execution.complete')}</span></div>
+    <p className="qq-help">{t('execution.started', { time: formatDateTime(execution.startedAt), id: execution.requestId })}</p><ErrorNotice failure={execution.failure ?? null} />
+    <JsonPreview label={t('execution.json')} value={{ name: execution.tool.name, requestId: execution.requestId, arguments: execution.arguments, startedAt: execution.startedAt,
+      ...(execution.pending ? { state: 'pending' } : execution.failure ? { error: { message: execution.failure.message, code: execution.failure.code, outcome: execution.failure.outcome } } : { result: execution.result }) }} onFeedback={onFeedback} />
   </div>
 }
 
 function McpCapabilities({ active, enabled, capabilities, harness, onFeedback }: { active: boolean; enabled: boolean; capabilities: PluginCapability[]; harness?: Workspace['harness']; onFeedback: (message: string) => void }) {
+  const { t, formatNumber } = useI18n('qq')
   const [registration, setRegistration] = useState<McpRegistration | null>(null)
   const [pending, setPending] = useState(false)
   const [failure, setFailure] = useState<Failure | null>(null)
@@ -471,12 +486,12 @@ function McpCapabilities({ active, enabled, capabilities, harness, onFeedback }:
     }
   }
   return <>
-    <div className="section-heading"><h3>MCP 能力</h3><p>QQ 插件提供独立的 Streamable HTTP MCP 入口。此面板不会自动将 MCP 注册到 Harness，请在可信 Harness 中手动配置。</p></div>
-    <div className="qq-harness-status"><strong>{harness?.state === 'attached' ? 'Harness 消息接口已接入' : 'Harness 消息接口尚未接入'}</strong><p>{harness ? `等待投递 ${harness.pending} 条 · 接口已接收 ${harness.accepted} 条 · 结果未知 ${harness.uncertain} 条` : '正在读取后台投递状态。'}。消息接口接入状态与 MCP 工具注册是两个独立事实。</p></div>
-    <div className="qq-mcp-access"><p>连接配置含 QQ 插件专属访问令牌，仅在你点击后读取与展示。请只交给可信的主 Harness。</p><div className="qq-actions"><button className="button button-secondary" type="button" disabled={pending || !enabled} onClick={() => void revealRegistration()}>{pending ? '正在读取…' : '查看 / 复制 MCP 配置'}</button>{registration && <button type="button" className="text-button" onClick={() => { ++generation.current; controllerRef.current?.abort(); controllerRef.current = null; setRegistration(null); setPending(false) }}>隐藏配置</button>}</div><ErrorNotice failure={failure} />
-      {registration && <><p className="qq-help">{registration.note} 离开此标签会隐藏令牌。</p><JsonPreview label="MCP 连接配置" value={registration} onFeedback={onFeedback} /></>}
+    <div className="section-heading"><h3>{t('tabs.mcp')}</h3><p>{t('mcp.description')}</p></div>
+    <div className="qq-harness-status"><strong>{t(harness?.state === 'attached' ? 'mcp.harnessAttached' : 'mcp.harnessDetached')}</strong><p>{harness ? t('mcp.delivery', { pending: formatNumber(harness.pending), accepted: formatNumber(harness.accepted), uncertain: formatNumber(harness.uncertain) }) : t('mcp.deliveryLoading')}</p></div>
+    <div className="qq-mcp-access"><p>{t('mcp.credentialsHelp')}</p><div className="qq-actions"><button className="button button-secondary" type="button" disabled={pending || !enabled} onClick={() => void revealRegistration()}>{t(pending ? 'action.revealingMcp' : 'action.revealMcp')}</button>{registration && <button type="button" className="text-button" onClick={() => { ++generation.current; controllerRef.current?.abort(); controllerRef.current = null; setRegistration(null); setPending(false) }}>{t('action.hideMcp')}</button>}</div><ErrorNotice failure={failure} />
+      {registration && <><p className="qq-help">{t('mcp.hideHelp')}</p><JsonPreview label={t('mcp.configuration')} value={registration} onFeedback={onFeedback} /></>}
     </div>
-    <div className="qq-capability-heading"><h3>QQ 后台能力目录</h3><p>支持状态来自插件声明；实际可执行结果仍受连接、协议端与账号权限限制。</p></div>
-    {!capabilities.length ? <p className="qq-empty">尚未读取到能力目录，请刷新后台状态。</p> : <ul className="qq-capability-list">{capabilities.map(capability => <li key={capability.id}><div><strong>{capability.name}</strong><span className="status-badge">{{ supported: '已提供', unsupported: '不支持', unknown: '待核实' }[capability.support]}</span></div><p>{capability.description}</p>{capability.toolName && <code>{capability.toolName}</code>}</li>)}</ul>}
+    <div className="qq-capability-heading"><h3>{t('capabilities.title')}</h3><p>{t('capabilities.help')}</p></div>
+    {!capabilities.length ? <p className="qq-empty">{t('capabilities.empty')}</p> : <ul className="qq-capability-list">{capabilities.map(capability => <li key={capability.id}><div><strong>{capabilityTitle(capability)}</strong><span className="status-badge">{t(`capabilities.${capability.support}`)}</span></div><p>{capabilityDescription(capability)}</p>{capability.toolName && <code>{capability.toolName}</code>}</li>)}</ul>}
   </>
 }

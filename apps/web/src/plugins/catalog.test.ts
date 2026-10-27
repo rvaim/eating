@@ -1,7 +1,8 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { BrainCircuit, MessageCircle } from 'lucide-react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { setLocale } from '@eating/ui-sdk'
 import type { ManagedPlugin } from '@eating/ui-sdk'
 import { PlatformWorkspace } from '../state/workspace'
 import type { WorkspaceSnapshot } from '../state/workspace'
@@ -20,6 +21,8 @@ const snapshot: WorkspaceSnapshot = { plugins: [qq, harness], configurations: { 
   'other-harness': { values: { endpoint: 'http://fixture', model: 'fixture' }, savedAt: '' } }, activity: [], storageError: null,
   unavailableIds: [], statuses: { qq: connected, 'other-harness': connected }, harness: { state: 'attached', pending: 0 }, ready: true }
 
+afterEach(() => setLocale('zh-CN'))
+
 describe('按真实插件类型组织管理界面', () => {
   it('失败 Harness 与缺少前端的 Harness 都保留类型，旧 QQ 缺 kind 仍是通讯', async () => {
     const catalog = await loadPluginCatalog([
@@ -28,7 +31,13 @@ describe('按真实插件类型组织管理界面', () => {
       { id: 'headless-harness', kind: 'harness', name: '无前端 Harness', version: '0.1.0' },
     ])
     expect(catalog.map(plugin => [plugin.id, plugin.kind])).toEqual([['qq', 'communication'], ['other-harness', 'harness'], ['headless-harness', 'harness']])
-    expect(renderToStaticMarkup(createElement(catalog[1]!.Panel, { saved: undefined, initialValues: {}, onSave: () => ({ ok: true as const }), onFeedback: vi.fn() }))).toContain('此插件的管理面板加载失败')
+    const renderFailure = () => renderToStaticMarkup(createElement(catalog[1]!.Panel, { saved: undefined, initialValues: {}, onSave: () => ({ ok: true as const }), onFeedback: vi.fn() }))
+    expect(renderFailure()).toContain('此插件的配置面板无法加载')
+    setLocale('en-US')
+    expect(renderFailure()).toContain('This plugin’s settings panel could not load')
+    expect(catalog[1]!.description).toContain('This plugin’s settings panel could not load')
+    expect(catalog[1]!.summary({})).toContain('This plugin’s settings panel could not load')
+    expect(catalog[1]!.kind).toBe('harness')
   })
 
   it('机器人目录只含通讯，Harness 目录只含已启用 Harness 并支持非 DSH 实现', () => {
@@ -48,9 +57,10 @@ describe('按真实插件类型组织管理界面', () => {
     expect(overview).toContain('1 个已启用')
     expect(overview).toContain('1 个已配置')
     expect(overview).toContain('1 个已连接')
-    expect(overview).toContain('已接入')
+    expect(overview).toContain('AI 状态')
+    expect(overview).toContain('AI 已连接，可接收消息。')
     expect(overview).not.toContain('另一 Harness')
-    expect(render({ ...snapshot, harness: { state: 'not-attached' } })).toContain('尚未接入')
+    expect(render({ ...snapshot, harness: { state: 'not-attached' } })).toContain('尚未连接')
     expect(render({ ...snapshot, storageError: 'Host 离线' })).toContain('状态待确认')
   })
 

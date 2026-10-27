@@ -1,5 +1,6 @@
 import { isJsonObject } from '@eating/plugin-sdk'
 import type { PluginLogEntry } from '@eating/plugin-sdk'
+import { translate } from './i18n.js'
 
 export class HostApiError extends Error {
   constructor(readonly code: string, message: string, readonly outcome: string = 'failed') { super(message); this.name = 'HostApiError' }
@@ -9,18 +10,18 @@ let initialization: Promise<string> | null = null
 
 async function initialize(): Promise<string> {
   if (!initialization) initialization = fetch('/api/bootstrap', { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(5000) }).then(async response => {
-    if (!response.ok) throw new HostApiError('HOST_UNAVAILABLE', 'Eating Host 不可用，请确认后台服务已启动。')
+    if (!response.ok) throw new HostApiError('HOST_UNAVAILABLE', translate('common', 'errors.HOST_UNAVAILABLE'))
     const value = await response.json() as { csrfToken?: unknown }
-    if (typeof value.csrfToken !== 'string') throw new HostApiError('INVALID_HOST_RESPONSE', 'Host 初始化响应不兼容。')
+    if (typeof value.csrfToken !== 'string') throw new HostApiError('INVALID_HOST_RESPONSE', translate('common', 'errors.INVALID_HOST_RESPONSE'))
     return value.csrfToken
   }).catch(error => { initialization = null; throw error })
   return initialization
 }
 
 export async function hostRequest<T>(path: string, options: { method?: 'GET' | 'POST'; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
-  if (options.signal?.aborted) throw new HostApiError('REQUEST_CANCELLED', '请求已取消，未发送。', 'not-sent')
+  if (options.signal?.aborted) throw new HostApiError('REQUEST_CANCELLED', translate('common', 'errors.REQUEST_CANCELLED'), 'not-sent')
   const csrfToken = await initialize()
-  if (options.signal?.aborted) throw new HostApiError('REQUEST_CANCELLED', '请求已取消，未发送。', 'not-sent')
+  if (options.signal?.aborted) throw new HostApiError('REQUEST_CANCELLED', translate('common', 'errors.REQUEST_CANCELLED'), 'not-sent')
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 65000)
   const abort = () => controller.abort()
@@ -32,13 +33,13 @@ export async function hostRequest<T>(path: string, options: { method?: 'GET' | '
     const result = await response.json() as { error?: { code?: string; message?: string; outcome?: string } }
     if (!response.ok) {
       if (response.status === 401 || result.error?.code === 'INVALID_CSRF_TOKEN') initialization = null
-      throw new HostApiError(result.error?.code ?? 'HOST_ERROR', result.error?.message ?? 'Host 请求失败。', result.error?.outcome)
+      throw new HostApiError(result.error?.code ?? 'HOST_ERROR', result.error?.message ?? translate('common', 'errors.HOST_ERROR'), result.error?.outcome)
     }
     return result as T
   } catch (error) {
     if (error instanceof HostApiError) throw error
-    if (controller.signal.aborted) throw new HostApiError('REQUEST_INTERRUPTED', '请求中断，动作可能已经发送。请先查询真实状态，不要直接重试。', 'unknown')
-    throw new HostApiError('HOST_UNAVAILABLE', '无法连接 Eating Host，请检查后台运行状态。', 'unknown')
+    if (controller.signal.aborted) throw new HostApiError('REQUEST_INTERRUPTED', translate('common', 'errors.REQUEST_INTERRUPTED'), 'unknown')
+    throw new HostApiError('HOST_UNAVAILABLE', translate('common', 'errors.HOST_UNAVAILABLE'), 'unknown')
   } finally {
     clearTimeout(timeout)
     options.signal?.removeEventListener('abort', abort)
@@ -57,13 +58,13 @@ function parseLogEntry(value: unknown): PluginLogEntry {
     || typeof value.timestamp !== 'string' || !Number.isFinite(Date.parse(value.timestamp))
     || !['info', 'warn', 'error'].includes(String(value.level)) || typeof value.event !== 'string' || value.event.length > 100
     || typeof value.message !== 'string' || value.message.length > 2000
-    || value.metadata !== undefined && !isJsonObject(value.metadata)) throw new HostApiError('INVALID_LOG_ENTRY', '实时日志格式不兼容，请检查插件和 Host 版本。')
+    || value.metadata !== undefined && !isJsonObject(value.metadata)) throw new HostApiError('INVALID_LOG_ENTRY', translate('common', 'errors.INVALID_LOG_ENTRY'))
   return value as unknown as PluginLogEntry
 }
 
 /** A transient live stream. No history, browser storage or background polling. */
 export function subscribePluginLogs(pluginId: string, handlers: PluginLogHandlers): () => void {
-  if (!/^[a-z][a-z0-9-]*$/.test(pluginId)) throw new HostApiError('INVALID_PLUGIN_ID', '插件标识无效。', 'not-sent')
+  if (!/^[a-z][a-z0-9-]*$/.test(pluginId)) throw new HostApiError('INVALID_PLUGIN_ID', translate('common', 'errors.INVALID_PLUGIN_ID'), 'not-sent')
   let disposed = false
   let source: EventSource | null = null
   let retry: ReturnType<typeof setTimeout> | undefined
@@ -78,14 +79,14 @@ export function subscribePluginLogs(pluginId: string, handlers: PluginLogHandler
     try { await initialize() }
     catch {
       if (disposed) return
-      handlers.onError?.(new HostApiError('LOG_STREAM_UNAVAILABLE', '无法连接日志服务，正在重试。'))
+      handlers.onError?.(new HostApiError('LOG_STREAM_UNAVAILABLE', translate('common', 'errors.LOG_STREAM_UNAVAILABLE')))
       reconnect(); return
     }
     if (disposed) return
     let current: EventSource
     try { current = new EventSource(`/api/plugins/${encodeURIComponent(pluginId)}/logs/stream`) }
     catch {
-      handlers.onError?.(new HostApiError('LOG_STREAM_UNAVAILABLE', '无法建立实时日志连接，正在重试。'))
+      handlers.onError?.(new HostApiError('LOG_STREAM_UNAVAILABLE', translate('common', 'errors.LOG_STREAM_UNAVAILABLE')))
       reconnect(); return
     }
     source = current
@@ -99,7 +100,7 @@ export function subscribePluginLogs(pluginId: string, handlers: PluginLogHandler
       } catch {
         current.close(); source = null
         handlers.onState?.('closed')
-        handlers.onError?.(new HostApiError('INVALID_LOG_ENTRY', '日志数据不兼容，已停止订阅。请重新打开页签或升级插件。'))
+        handlers.onError?.(new HostApiError('INVALID_LOG_ENTRY', translate('common', 'errors.INVALID_LOG_ENTRY')))
         return
       }
       handlers.onEntry(entry)

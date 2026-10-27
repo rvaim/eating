@@ -83,7 +83,7 @@ test.describe('提示词与人格的真实持久编辑', () => {
     await page.getByRole('link', { name: '提示词管理', exact: true }).click()
     await expect(bodyEditor(page)).toBeVisible()
     const entries = [
-      { id: 'main', label: '主Agent提示词', body: '主提示词独立草稿 {{当前时间}}' },
+      { id: 'main', label: '通用提示词', body: '主提示词独立草稿 {{当前时间}}' },
       { id: 'group', label: '群聊提示词', body: '群聊独立草稿 {{消息数量}}' },
       { id: 'private', label: '私聊提示词', body: '私聊独立草稿 {{消息内容}}' },
     ] as const
@@ -159,7 +159,7 @@ test.describe('提示词与人格的真实持久编辑', () => {
     await editor.press('ControlOrMeta+z')
     await expect(editor).toHaveText(groupBefore, { useInnerText: true })
     await expect(editor).not.toContainText('主文档专属草稿')
-    await promptNav(page).getByRole('button', { name: '主Agent提示词', exact: true }).click()
+    await promptNav(page).getByRole('button', { name: '通用提示词', exact: true }).click()
     await expect(editor).toHaveText('主文档专属草稿')
     await editor.press('ControlOrMeta+z')
     await expect(editor).toHaveText('主文档专属草稿')
@@ -188,7 +188,7 @@ test.describe('提示词与人格的真实持久编辑', () => {
     await expect(bodyEditor(page, true)).toHaveText(second.persona.body)
     await bodyEditor(page, true).fill('人格乙未保存的修改')
     await expect(page.getByRole('button', { name: '启用人格', exact: true })).toBeDisabled()
-    await expect(page.getByText('请先保存修改，再启用人格，避免启用旧版本。', { exact: true })).toBeVisible()
+    await expect(page.getByText('请先保存修改，再启用人格。', { exact: true })).toBeVisible()
     await bodyEditor(page, true).fill(second.persona.body)
     await page.getByRole('button', { name: '启用人格', exact: true }).click()
     await expect.poll(async () => (await snapshot(page)).activePersonaId).toBe(second.persona.id)
@@ -226,7 +226,7 @@ test.describe('提示词与人格的真实持久编辑', () => {
     const conflicting = page.waitForResponse(response => response.request().method() === 'POST' && response.url() === `${url}/api/prompts/main`)
     await page.getByRole('button', { name: '保存提示词', exact: true }).click()
     expect((await conflicting).status()).toBe(409)
-    await expect(page.locator('.authoring-result.authoring-notice-error')).toContainText('原草稿与保存版本已保留')
+    await expect(page.locator('.authoring-result.authoring-notice-error')).toContainText('草稿与保存版本已保留')
     await expect(bodyEditor(page)).toHaveText('本地草稿需要保留 {{当前时间}}')
     await expect(page.getByRole('button', { name: '保存提示词', exact: true })).toBeDisabled()
     expect(revisions).toEqual([original.revision])

@@ -3,7 +3,7 @@
   "id": "dsh",
   "name": "DeepSeek Harness",
   "description": "由独立 DSH 主会话处理通讯消息，自主决定是否调用已授权工具回复。",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "kind": "harness",
   "apiVersion": 1,
   "storageDirectory": "dsh",

@@ -1,53 +1,64 @@
 import { ArrowRight, Check, CircleDashed, Plug, Plus } from 'lucide-react'
+import { getErrorMessage, useI18n } from '@eating/ui-sdk'
+import '../i18n/app'
 import type { WorkspaceSnapshot } from '../state/workspace'
 import { PlatformStatus } from '../components/PlatformStatus'
+
+function messageCount(snapshot: WorkspaceSnapshot, key: string): number {
+  const value = snapshot.harness[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
 
 export function Overview({ snapshot, onRobots, onRegister }: {
   readonly snapshot: WorkspaceSnapshot
   readonly onRobots: (id?: string) => void
   readonly onRegister: () => void
 }) {
+  const { t, formatNumber } = useI18n('app')
   const communication = snapshot.plugins.filter(plugin => plugin.kind === 'communication')
   const configured = communication.filter(plugin => Boolean(snapshot.configurations[plugin.id]))
   const connected = communication.filter(plugin => snapshot.statuses[plugin.id]?.state === 'connected')
   const harnessAttached = snapshot.harness.state === 'attached'
-  const harnessLabel = !snapshot.ready ? '正在读取' : snapshot.storageError ? '状态待确认' : harnessAttached ? '已接入' : '尚未接入'
-  const deliveryError = typeof snapshot.harness.lastError === 'string' ? snapshot.harness.lastError : typeof snapshot.harness.lastQueueError === 'string' ? snapshot.harness.lastQueueError : null
+  const harnessLabel = !snapshot.ready ? t('overview.loadingStatus') : snapshot.storageError ? t('status.stale') : t(harnessAttached ? 'overview.aiConnected' : 'overview.aiDisconnected')
+  const countLabel = (key: string, count: number) => t(key, { count, total: formatNumber(count) })
+  const connectionDescription = !snapshot.ready ? t('overview.loading') : snapshot.storageError ? t('workspace.loadError') : communication.length === 0 ? t('overview.connectionsEmpty') : connected.length === 0 ? t('overview.connectionsNeeded') : countLabel('overview.connectionsReady', connected.length)
+  const deliveryError = snapshot.harness.lastError ?? snapshot.harness.lastQueueError
   return <main id="main-content" className="overview-content">
     <section className="welcome-section">
-      <div><h2>连接 Eating 与世界。</h2><p>管理通讯连接、查看消息与工具，让每个平台各司其职。</p><button className="button button-primary" onClick={() => onRobots()}>管理机器人<ArrowRight size={16} /></button></div>
+      <div><h2>{t('overview.connectionsTitle')}</h2><p>{connectionDescription}</p><button className="button button-primary" onClick={() => onRobots()}>{t('overview.manageConnections')}<ArrowRight size={16} /></button></div>
       <div className="welcome-illustration" aria-hidden="true"><Plug size={50} strokeWidth={1.2} /><span className="connection-line" /><div className="illustration-socket"><CircleDashed size={32} strokeWidth={1.3} /></div></div>
     </section>
-    <section className="workspace-facts" aria-label="当前工作区状态">
-      <div><span>通讯插件</span><strong>{communication.length} 个已启用</strong></div>
-      <div><span>账号配置</span><strong>{configured.length} 个已配置</strong></div>
-      <div><span>协议连接</span><strong>{snapshot.storageError ? '状态待确认' : `${connected.length} 个已连接`}</strong></div>
-      <div><span>认知运行时</span><strong className="fact-muted">{harnessLabel}</strong></div>
+    <section className="workspace-facts" aria-label={t('overview.summaryLabel')}>
+      <div><span>{t('overview.communicationPlugins')}</span><strong>{countLabel('count.enabled', communication.length)}</strong></div>
+      <div><span>{t('overview.accountSettings')}</span><strong>{countLabel('count.configured', configured.length)}</strong></div>
+      <div><span>{t('overview.connectionsTitle')}</span><strong>{snapshot.storageError ? t('status.stale') : countLabel('count.connected', connected.length)}</strong></div>
+      <div><span>{t('overview.aiStatus')}</span><strong className="fact-muted">{harnessLabel}</strong></div>
     </section>
     <section className="overview-platforms" aria-labelledby="overview-platforms-title">
-      <div className="section-title-row"><div><h2 id="overview-platforms-title">通讯平台</h2><p>连接、消息、MCP 与功能测试由各插件管理。</p></div><button className="text-button" onClick={onRegister}><Plus size={16} />平台插件</button></div>
-      {!snapshot.ready ? <p className="loading-line" role="status">正在读取 Host 状态…</p> : communication.length === 0 ? <div className="empty-state"><Plug size={28} /><h3>还没有启用通讯插件</h3><p>启用已安装的平台插件后，就可以配置账号和测试功能。</p><button className="button button-secondary" onClick={onRegister}>查看平台插件</button></div> : <div className="platform-list">
+      <div className="section-title-row"><div><h2 id="overview-platforms-title">{t('overview.accountsTitle')}</h2></div><button className="text-button" onClick={onRegister}><Plus size={16} />{t('overview.addConnection')}</button></div>
+      {!snapshot.ready ? <p className="loading-line" role="status">{t('overview.loading')}</p> : communication.length === 0 ? <div className="empty-state"><Plug size={28} /><h3>{t('overview.noConnections')}</h3><p>{t('overview.emptyDescription')}</p><button className="button button-secondary" onClick={onRegister}>{t('overview.addConnection')}</button></div> : <div className="platform-list">
         {communication.map(plugin => {
           const Icon = plugin.icon
           const saved = snapshot.configurations[plugin.id]
-          return <button className="platform-list-row" key={plugin.id} onClick={() => onRobots(plugin.id)} aria-label={`配置${plugin.name}`}>
+          return <button className="platform-list-row" key={plugin.id} onClick={() => onRobots(plugin.id)} aria-label={t('overview.openConfiguration', { name: plugin.name })}>
             <span className="platform-symbol" style={{ color: plugin.brandColor }}><Icon size={23} /></span>
             <span className="platform-row-copy"><strong>{plugin.name}</strong><small>{saved ? plugin.summary(saved.values) : plugin.description}</small></span>
-            <span className="row-configuration">{saved ? <><Check size={14} />配置已保存</> : '等待配置'}</span>
+            <span className="row-configuration">{saved ? <><Check size={14} />{t('overview.configurationSaved')}</> : t('overview.configurationNeeded')}</span>
             <PlatformStatus status={snapshot.statuses[plugin.id]} stale={Boolean(snapshot.storageError)} /><ArrowRight className="row-arrow" size={17} />
           </button>
         })}
       </div>}
     </section>
     <div className="overview-bottom">
-      <section className="activity-section" aria-labelledby="activity-title"><div className="section-title-row"><h2 id="activity-title">Harness 消息投递</h2><a className="text-button" href="#harness">管理 Harness<ArrowRight size={14} /></a></div>
-        <p className="subtle">{!snapshot.ready ? '正在读取 Host 投递状态…' : snapshot.storageError ? '最近投递状态可能已过期，请检查 Host。' : harnessAttached ? '主要接收者已接入。' : '尚未注册 Harness 接收者，消息仅在有上限的待投递队列中暂存。'}</p>
-        <p className="delivery-counts">待投递 <strong>{String(snapshot.harness.pending ?? 0)}</strong><span>已可靠交接 <strong>{String(snapshot.harness.accepted ?? 0)}</strong></span><span>结果待核对 <strong>{String(snapshot.harness.uncertain ?? 0)}</strong></span></p>
-        <p className="subtle">未入队 {String(snapshot.harness.rejected ?? 0)} 条 · 按策略移除 {String(snapshot.harness.discarded ?? 0)} 条</p>
-        {deliveryError && <p className="subtle" role="alert">{deliveryError}</p>}
-        <a className="text-button" href="#settings/queue">管理待投递队列 <ArrowRight size={14} /></a>
+      <section className="activity-section" aria-labelledby="activity-title"><div className="section-title-row"><h2 id="activity-title">{t('overview.messagesTitle')}</h2><a className="text-button" href="#harness">{t('overview.manageAI')}<ArrowRight size={14} /></a></div>
+        <p className="subtle">{!snapshot.ready ? t('overview.loadingDelivery') : snapshot.storageError ? t('overview.staleDelivery') : t(harnessAttached ? 'overview.aiReadyDescription' : 'overview.aiNeededDescription')}</p>
+        <p className="delivery-counts"><span>{t('overview.pending')} <strong>{formatNumber(messageCount(snapshot, 'pending'))}</strong></span><span>{t('overview.accepted')} <strong>{formatNumber(messageCount(snapshot, 'accepted'))}</strong></span><span>{t('overview.uncertain')} <strong>{formatNumber(messageCount(snapshot, 'uncertain'))}</strong></span></p>
+        <p className="subtle">{countLabel('overview.rejected', messageCount(snapshot, 'rejected'))}</p>
+        <p className="subtle">{countLabel('overview.discarded', messageCount(snapshot, 'discarded'))}</p>
+        {deliveryError && <p className="subtle" role="alert">{getErrorMessage(deliveryError, t('overview.deliveryError'))}</p>}
+        <a className="text-button" href="#settings/queue">{t('overview.manageQueue')}<ArrowRight size={14} /></a>
       </section>
-      <aside className="version-note"><h3>数据与运行环境</h3><p>配置保存到 EATING_HOME，默认 ~/.eating；账号配置独立保存。Eating 不保留聊天历史，待投递队列的存储方式和容量可在设置中选择。</p><span>Eating · 正式开发版本 0.5</span></aside>
+      <aside className="version-note"><h3>{t('overview.processingTitle')}</h3><p>{t('overview.acceptedDescription')}</p><p>{t('overview.processingDescription')}</p><span>Eating 0.6</span></aside>
     </div>
   </main>
 }

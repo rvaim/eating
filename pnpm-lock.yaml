@@ -137,6 +137,9 @@ importers:
       '@eating/plugin-sdk':
         specifier: workspace:^
         version: link:../plugin-sdk
+      i18next:
+        specifier: 26.5.11
+        version: 26.5.11(typescript@7.0.2)
       lucide-react:
         specifier: ^1.61.0
         version: 1.61.0(@types/react@19.3.0)(react@19.3.1)
@@ -4188,6 +4191,14 @@ packages:
   human-signals@8.0.1:
     resolution: {integrity: sha512-eKCa6bwnJhvxj14kZk5NCPc6Hb6BdsU9DZcOnmQKSnO1VKrfV0zCvtttPZUsBvjmNDn8rpcJfpwSYnHBjc95MQ==}
     engines: {node: '>=18.18.0'}
+
+  i18next@26.5.11:
+    resolution: {integrity: sha512-Wc0klBPKxqZ2tL2qdAnF8xvvnWgr1IMGSY2ikTiAvaFVbz7xiFARtkoU4RidBDw1SyziGROp0qxu6qnJ7l2Wug==}
+    peerDependencies:
+      typescript: ^5 || ^6 || ^7
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   iconv-lite@0.7.3:
     resolution: {integrity: sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ==}
@@ -9869,6 +9880,10 @@ snapshots:
       - supports-color
 
   human-signals@8.0.1: {}
+
+  i18next@26.5.11(typescript@7.0.2):
+    optionalDependencies:
+      typescript: 7.0.2
 
   iconv-lite@0.7.3:
     dependencies:

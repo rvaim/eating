@@ -1,7 +1,8 @@
 import type { ActivityEntry, PluginConfiguration, SavedConfiguration } from '@eating/plugin-core'
 import type { ConnectionStatus, JsonObject } from '@eating/plugin-sdk'
 import type { ManagedPlugin, WorkspaceActionResult } from '@eating/ui-sdk'
-import { hostRequest } from '@eating/ui-sdk'
+import { getErrorMessage, hostRequest, translate } from '@eating/ui-sdk'
+import '../i18n/app'
 import type { InstalledFrontendContribution } from '../plugins/catalog'
 
 interface HostWorkspaceResponse {
@@ -21,11 +22,18 @@ export interface WorkspaceSnapshot {
   readonly ready: boolean
 }
 
+type WorkspaceOperation = 'enable' | 'disable' | 'configuration'
+
+function actionFailure(key: string, error?: unknown): WorkspaceActionResult {
+  return { ok: false, get error() { return getErrorMessage(error, translate('app', key)) } }
+}
+
 export class PlatformWorkspace {
   catalog: readonly ManagedPlugin[]
   private readonly listeners = new Set<() => void>()
   private generation = 0
   private mutation = false
+  private storageFailure: { readonly error: unknown } | null = null
   private snapshot: WorkspaceSnapshot = Object.freeze({ plugins: [], configurations: {}, activity: [], storageError: null,
     unavailableIds: [], statuses: {}, harness: { state: 'not-attached', pending: 0 }, ready: false })
 
@@ -59,39 +67,44 @@ export class PlatformWorkspace {
           configurations[plugin.id] = { values, savedAt: typeof plugin.configuration.updatedAt === 'string' ? plugin.configuration.updatedAt : '' }
         }
       }
+      this.storageFailure = null
       this.publish({ ...this.snapshot, plugins: this.catalog.filter(plugin => registered.has(plugin.id) && available.has(plugin.id)),
         configurations, statuses, harness: response.harness, storageError: null,
         unavailableIds: response.registeredIds.filter(id => !this.catalog.some(plugin => plugin.id === id)), ready: true })
     } catch (error) {
       if (generation !== this.generation) return
-      this.publish({ ...this.snapshot, ready: true, storageError: error instanceof Error ? error.message : '无法读取 Host 状态。' })
+      this.storageFailure = { error }
+      this.publish({ ...this.snapshot, ready: true })
     }
   }
 
-  register(id: string): Promise<WorkspaceActionResult> { return this.change(id, 'enable', '启用') }
-  remove(id: string): Promise<WorkspaceActionResult> { return this.change(id, 'disable', '停用') }
+  register(id: string): Promise<WorkspaceActionResult> { return this.change(id, 'enable') }
+  remove(id: string): Promise<WorkspaceActionResult> { return this.change(id, 'disable') }
 
   async save(id: string, values: PluginConfiguration): Promise<WorkspaceActionResult> {
-    return this.change(id, 'configuration', '保存配置', values)
+    return this.change(id, 'configuration', values)
   }
 
-  private async change(id: string, operation: string, label: string, body: unknown = {}): Promise<WorkspaceActionResult> {
-    if (this.mutation) return { ok: false, error: '插件正在更新，请稍后重试。' }
-    if (!this.catalog.some(plugin => plugin.id === id)) return { ok: false, error: '插件不存在。' }
+  private async change(id: string, operation: WorkspaceOperation, body: unknown = {}): Promise<WorkspaceActionResult> {
+    if (this.mutation) return actionFailure('workspace.busyError')
+    if (!this.catalog.some(plugin => plugin.id === id)) return actionFailure('workspace.missingError')
     this.mutation = true
     try {
       await this.request(`/plugins/${encodeURIComponent(id)}/${operation}`, { method: 'POST', body })
       const plugin = this.catalog.find(entry => entry.id === id)!
-      const entry = { id: crypto.randomUUID(), pluginId: id, label: `${label} · ${plugin.name}`, at: new Date().toISOString() }
+      const entry: ActivityEntry = { id: crypto.randomUUID(), pluginId: id,
+        get label() { return translate('app', `workspace.activity.${operation}`, { name: plugin.name }) }, at: new Date().toISOString() }
       this.publish({ ...this.snapshot, activity: [entry, ...this.snapshot.activity].slice(0, 20) })
       await this.refresh()
       return { ok: true }
-    } catch (error) { return { ok: false, error: error instanceof Error ? error.message : '插件操作失败。' } }
+    } catch (error) { return actionFailure(operation === 'configuration' ? 'workspace.saveError' : 'workspace.actionError', error) }
     finally { this.mutation = false }
   }
 
   private publish(snapshot: WorkspaceSnapshot): void {
-    this.snapshot = Object.freeze(snapshot)
+    const failure = this.storageFailure
+    this.snapshot = Object.freeze({ ...snapshot,
+      get storageError() { return failure ? getErrorMessage(failure.error, translate('app', 'workspace.loadError')) : null } })
     for (const listener of [...this.listeners]) listener()
   }
 }

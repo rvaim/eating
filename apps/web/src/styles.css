@@ -180,6 +180,9 @@ h3 { font-size: 15px; font-weight: 600; }
 .row-arrow { margin-left: 8px; color: var(--color-subtle); }
 .overview-bottom { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(240px, 1fr); gap: 42px; margin-top: 32px; }
 .activity-section { min-width: 0; }
+.delivery-counts { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 12px 0; }
+.delivery-counts > span { display: inline-flex; align-items: baseline; gap: 7px; min-width: 0; }
+.delivery-counts strong { font-variant-numeric: tabular-nums; }
 .activity-section .section-title-row h2 { white-space: nowrap; }
 .activity-list { padding: 0; list-style: none; }
 .activity-list li { display: flex; align-items: center; gap: 9px; padding: 8px 0; font-size: 12px; }

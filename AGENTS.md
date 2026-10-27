@@ -93,9 +93,19 @@ TypeScript 明确类型；跨进程接口有协议版本、输入校验、结构
 
 ready、SDK排队或入箱通知不等于fsync；只有公开 `sessions.flush` 成功后原子ACK，才可给Host可靠交接回执并删除正文。忙时暂停不耗重试，恢复扫描公开持久记录、不重发未知批次，不宣称exactly-once；桥ACK元数据保持有界、不建后台日志。停用先持久disabled并撤权限，disconnect失败也不得恢复注册；通讯插件不获得Harness私有服务。运行时安装只允许owner受控管理接口、独立环境与版本/lockfile校验，不经Shell且禁安装脚本，超时/取消终止子进程。
 
-本轮完整构建/严格TypeScript、Vitest 24文件541/541、Playwright 23/23通过；两项官方SDK集成覆盖源码组合与独立安装产物/运行时、删除安装源后整Host恢复同会话。SDK集成须显式设置 `EATING_DSH_TEST_RUNTIME`，未配置时默认跳过两项，不能视作本轮完整实跑。QQ0.5.0、DSH0.1.0与专属运行时已实际部署，当前DSH仅启用目录、模型空配置未启动，原3条待投递与账号/队列/发送账本摘要保持；主人配置真实提供商后再启动与核验认证，不能把installed写成模型online。实际5180双尺寸DSH页截图已读取，pageerror0、无横向溢出；限定只读UI复核SHIP、material0、无需重采，不声称该审阅重跑541/23。证据见[本轮报告](docs/reports/2026-10-28-DSH最小Harness验证报告.md)。
+最小 DSH 阶段完整构建／严格 TypeScript、Vitest 24文件541/541、Playwright23/23及两项官方SDK实际集成已通过，QQ0.5.0／DSH0.1.0和专属运行时的旧部署证据见[DSH报告](docs/reports/2026-10-28-DSH最小Harness验证报告.md)，保留历史范围。SDK集成须显式 `EATING_DSH_TEST_RUNTIME`，默认跳过两项不能当完整实跑；模型／OneBot为回环夹具，不等于真实提供商认证。
 
-本次用户只授权上述两个前置提交，DSH阶段未另行自动提交或推送；后续提交须明确授权，按中文说明规范记录原因、内容与验证，推送另行授权。当前证据见[本轮变更](docs/changes/2026-10-28-DSH最小Harness接入.md)。
+2026-10-28负责人新指令“提交代码，然后用户面板文案别写开发需求式，支持多语言，文案不硬编码页面，改完再提交”已替代先前“DSH阶段未授权另行提交”的历史边界。第一提交 `e4f6dcd` 已真实完成；文案／多语言按本轮第二次本地中文提交交付，哈希以Git记录为准，推送仍需另行授权。当前根应用／Host／Web0.6.0、plugin-sdk1.4.0、ui-sdk1.5.0、QQ0.6.0、DSH0.2.0、apiVersion1；Host仅版本同步，官方rc.4及会话／Loop／QQ协议／发送授权／队列存储保持。
+
+本轮构建／严格检查、Vitest29文件561/561（33.64秒）、浏览器29/29（12.5秒）实际通过，两项官方SDK集成仍实跑。实际新job `bash-f61da2d5400c4291`：QQ0.6 enabled/connected，DSH0.2 enabled/unconfigured、runtime installed、ready=false、session=null、无错误，双方日志查看者0；QQ配置／账号索引／原3条队列正文／发送账本／主人配置五摘要保持。未配或启动真实模型、未消费积压或向真人发送。证据见[本轮变更](docs/changes/2026-10-28-用户文案与多语言.md)、[报告](docs/reports/2026-10-28-用户文案与多语言验证报告.md)及[状态](docs/项目状态.md)。
+
+## 用户文案与多语言
+
+面板文案必须描述用户状态、下一步和真实后果；使用资源中“添加／启用／停用插件”“通用提示词”等用词，中文“机器人”保留、英文“Connections”。开发分工和协议实现不放主要叙述，诊断／配置路径保留折叠入口；消息接收不等于处理完成、内存退出丢失、清空不可恢复、未知先核对和真实动作确认不得删掉。
+
+普通UI文案集中到模块本地app／settings／authoring／qq／dsh双语资源，完整flat semantic keys、完整句插值与复数用精确依赖 `i18next26.5.11`；按钮、aria、状态、空态、校验、错误、编辑器诊断／补全、日期数值都国际化。通过公开ui-sdk的注册／hook／翻译／locale／格式化／错误API共享 `Symbol.for('eating.ui.i18n.v1')` 服务，不私有import、不硬编码插件资源链。未知metadata原文回退，工具文案按ID做presentation，Host单catalog仍为业务来源。
+
+默认zh-CN，侧栏原生选择框提供简体中文／English；`eating.locale`只存语言偏好，无密钥，刷新保留、跨标签页同步，document lang／title／meta即时更新。locale不得进入网络effect或面板重挂key；切换不能丢草稿／selection／undo、触发POST／重启／发送或增加日志订阅。用户名称、模型名、URL、Key、消息、JSON、协议canonical中文token（如 `{{当前时间}}`）和三份默认提示词正文不得翻译或改写；主人内容／AI策略中的中文不是UI翻译遗漏。仓库面向阅读文档继续中文唯一正文，白绿令牌与工具sidecar不因本轮双语改动重设计。
 
 ## Git 提交信息约束
 
@@ -126,6 +136,6 @@ ready、SDK排队或入箱通知不等于fsync；只有公开 `sessions.flush` �
 
 按风险验证真实插件依赖/生命周期、页面撤销、运行时能力、恢复幂等、安全和跨平台。文档阶段只检查文件、证据和 Git，不启动模型或依赖安装。未运行写未验证，源码分析不算 PoC。
 
-结束检查 Git，不覆盖未授权修改，不自动提交/推送。当前前端改动至少执行 `pnpm build`、`pnpm test`；交互变化用 `pnpm test:e2e`，测试会自行启动临时Host/协议夹具并使用已构建dist，不依赖开发预览，并检查实际截图。普通Node启动开发工具；别通过改DSH签名修复原生依赖加载。
+结束检查 Git，不覆盖未授权修改；没有授权不得自动提交或推送，本轮第二次本地提交按上述明确授权执行，推送仍单独授权。当前前端改动至少执行 `pnpm build`、`pnpm test`；交互变化用 `pnpm test:e2e`，测试会自行启动临时Host/协议夹具并使用已构建dist，不依赖开发预览，并检查实际截图。普通Node启动开发工具；别通过改DSH签名修复原生依赖加载。
 
 同步原因、状态和交接，按目标、内容、文件、原因、决策、验证、未验证、问题、风险、文档与后续汇报；完整报告可写入[正式QQ报告](docs/reports/2026-10-26-QQ正式开发报告.md)，对话简洁给结果、运行地址与链接。

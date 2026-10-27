@@ -1,5 +1,7 @@
 .dsh-panel { max-width: 1050px; min-width: 0; }
-.dsh-panel p, .dsh-panel dd { overflow-wrap: anywhere; }
+.dsh-panel p, .dsh-panel dd, .dsh-panel dt, .dsh-panel summary { overflow-wrap: anywhere; }
+.dsh-panel svg { flex-shrink: 0; }
+.dsh-panel button { max-width: 100%; white-space: normal; }
 .dsh-panel button, .dsh-panel input { touch-action: manipulation; }
 .dsh-status-strip { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 17px 0 20px; }
 .dsh-status-strip > div { display: flex; flex-wrap: wrap; gap: 5px 18px; align-items: baseline; min-width: 0; }
@@ -20,6 +22,16 @@
 .dsh-error { display: flex; gap: 8px; align-items: flex-start; margin: 14px 0 18px; padding: 12px 14px; border: 1px solid #e5d2cc; border-radius: 6px; background: #fdf9f7; color: #a33434; font-size: 12px; }
 .dsh-error > svg { margin-top: 2px; }
 .dsh-error small { display: block; margin-top: 4px; font-size: 11px; overflow-wrap: anywhere; }
+.dsh-error-recovery { margin-top: 5px; }
+.dsh-error-details { margin-top: 8px; }
+.dsh-error-details summary, .dsh-file-details summary { cursor: pointer; }
+.dsh-panel summary:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.dsh-error-details p { margin-top: 7px; white-space: pre-wrap; }
+.dsh-file-details { margin-top: 18px; color: var(--color-muted); font-size: 12px; }
+.dsh-file-details .dsh-details { margin-top: 8px; padding-top: 0; border-top: 0; color: var(--color-ink); }
+.dsh-save-warning { margin: 20px 0 0; color: var(--color-muted); font-size: 12px; }
+.dsh-panel .form-actions { flex-wrap: wrap; }
+.dsh-panel .save-indicator { min-width: 0; overflow-wrap: anywhere; }
 .dsh-result { display: flex; gap: 8px; align-items: flex-start; margin-top: 16px; color: var(--color-primary-hover); font-size: 12px; }
 .dsh-result svg { margin-top: 2px; }
 .dsh-notice { display: flex; gap: 8px; align-items: flex-start; margin: 16px 0 22px; color: #526358; font-size: 12px; }

@@ -3,7 +3,8 @@ import type { FormEvent } from 'react'
 import { Check, ChevronRight, FileText, Info, Plus, Power, RefreshCw, Save, Trash2, UserRound } from 'lucide-react'
 import { analyzeTemplate } from '@eating/plugin-sdk'
 import type { AuthoringSnapshot, PersonaDocument, PersonaMutationResult, PersonaSummary, PromptDocument, PromptKind, TemplateScope } from '@eating/plugin-sdk'
-import { HostApiError, hostRequest } from '@eating/ui-sdk'
+import { HostApiError, formatDateTime, getErrorMessage, hostRequest, translate, useI18n } from '@eating/ui-sdk'
+import '../i18n/authoring'
 import { TemplateEditor } from '../components/TemplateEditor'
 import './Authoring.css'
 
@@ -14,7 +15,8 @@ export interface AuthoringProps {
   readonly onFeedback: (message: string) => void
 }
 
-type Notice = { readonly kind: 'error' | 'success' | 'info'; readonly message: string }
+type Notice = { readonly kind: 'error' | 'success' | 'info'; readonly key: string }
+  | { readonly kind: 'error'; readonly error: unknown; readonly operation: Operation }
 type Operation = 'read' | 'save' | 'activate' | 'delete'
 type Selection = { readonly key: string; readonly id: string; readonly scope: TemplateScope }
 interface Draft extends Selection {
@@ -32,16 +34,11 @@ interface RequestTicket {
 }
 
 const promptKinds: readonly PromptKind[] = ['main', 'group', 'private']
-const promptLabels: Readonly<Record<PromptKind, string>> = { main: '主Agent提示词', group: '群聊提示词', private: '私聊提示词' }
-const promptDescriptions: Readonly<Record<PromptKind, string>> = {
-  main: '管理同一 AI 的通用指引与行为约定。',
-  group: '管理群聊消息交给 AI 时使用的提示词。',
-  private: '管理私聊消息交给 AI 时使用的提示词。',
-}
+const authoringText = (key: string, params?: Record<string, string | number | boolean | null | undefined>) => translate('authoring', key, params)
 const personaIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const promptKind = (id: string | null): PromptKind => promptKinds.includes(id as PromptKind) ? id as PromptKind : 'main'
 const revisionValid = (value: number) => Number.isSafeInteger(value) && value >= 0
-const responseError = () => new HostApiError('INVALID_HOST_RESPONSE', '后台返回的提示词或人格数据不完整，请重新读取。')
+const responseError = () => new HostApiError('INVALID_HOST_RESPONSE', authoringText('error.response'))
 
 function summaryValid(value: PersonaSummary): boolean {
   return Boolean(value && typeof value.id === 'string' && personaIdPattern.test(value.id)
@@ -101,26 +98,31 @@ function needsRead(error: unknown): boolean {
 }
 
 function errorMessage(error: unknown, kind: Operation): string {
-  if (isConflict(error)) return '内容或使用状态已在其他位置更改。原草稿与保存版本已保留，请重新读取；有未保存修改时需先确认放弃。'
+  if (isConflict(error)) return authoringText('error.conflict')
   if (error instanceof HostApiError) {
-    if (error.outcome === 'unknown' && kind !== 'read') return '操作结果尚未确认。原草稿已保留，请重新读取核对真实结果后再操作。'
-    if (error.code === 'ACTIVE_PERSONA') return `${error.message} 请重新读取核对使用状态，先停用后再删除。`
-    return error.message
+    if (error.outcome === 'unknown' && kind !== 'read') return authoringText('error.unknown')
+    if (error.code === 'ACTIVE_PERSONA') return authoringText('error.activePersona')
   }
-  return kind === 'read' ? '无法读取数据，请检查后台运行状态后重新读取。' : '操作未完成，原草稿已保留，请稍后重试。'
+  return getErrorMessage(error, authoringText(kind === 'read' ? 'error.read' : 'error.mutate'))
+}
+
+function noticeMessage(notice: Notice): string {
+  return 'key' in notice ? authoringText(notice.key) : errorMessage(notice.error, notice.operation)
 }
 
 function updatedLabel(value: string | null): string {
-  if (!value) return '尚未修改'
+  if (!value) return authoringText('updated.none')
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? '更新时间不可用' : `更新于 ${date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+  return Number.isNaN(date.getTime()) ? authoringText('updated.invalid')
+    : authoringText('updated.label', { date: formatDateTime(date, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) })
 }
 
 export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringProps) {
+  const { t, formatNumber } = useI18n('authoring')
   const [snapshot, setSnapshot] = useState<AuthoringSnapshot | null>(null)
   const [drafts, setDrafts] = useState<Readonly<Record<string, Draft>>>({})
   const [operation, setOperation] = useState<{ readonly kind: Operation; readonly key: string | null } | null>({ kind: 'read', key: null })
-  const [readError, setReadError] = useState<{ readonly key: string | null; readonly message: string } | null>(null)
+  const [readError, setReadError] = useState<{ readonly key: string | null; readonly error: unknown } | null>(null)
   const [snapshotNeedsRead, setSnapshotNeedsRead] = useState(false)
   const [confirmRead, setConfirmRead] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
@@ -147,16 +149,16 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
   const currentDraft = drafts[selection.key] ?? null
   const dirty = currentDraft ? isDirty(currentDraft) : false
   const analysis = useMemo(() => currentDraft ? analyzeTemplate(currentDraft.body, currentDraft.scope) : null, [currentDraft?.body, currentDraft?.scope])
-  const bodyError = currentDraft && currentDraft.body.length > 50000 ? '内容不能超过 50000 个字符。'
-    : currentDraft && !currentDraft.body.trim() ? '内容不能为空，请填写后保存。' : null
-  const nameError = currentDraft?.scope === 'persona' && (!currentDraft.name.trim() || currentDraft.name.trim().length > 80) ? '人格名称需为 1 至 80 个字符。' : null
+  const bodyError = currentDraft && currentDraft.body.length > 50000 ? t('error.bodyLength', { limit: formatNumber(50000) })
+    : currentDraft && !currentDraft.body.trim() ? t('error.bodyEmpty') : null
+  const nameError = currentDraft?.scope === 'persona' && (!currentDraft.name.trim() || currentDraft.name.trim().length > 80) ? t('error.name') : null
   const valid = Boolean(currentDraft && !bodyError && !nameError && analysis?.valid)
   const busy = operation !== null
   const mutating = busy && operation.kind !== 'read'
   const active = Boolean(currentDraft?.saved && snapshot?.activePersonaId === currentDraft.id && mode === 'personas')
   const blocked = snapshotNeedsRead || Boolean(currentDraft?.requiresRead)
-  const currentReadError = readError && (readError.key === null || readError.key === selection.key) ? readError.message : null
-  const title = mode === 'prompts' ? promptLabels[promptKind(resolvedId)] : !snapshot ? '人格管理' : resolvedId === 'new' ? '新增人格' : currentDraft?.saved && 'name' in currentDraft.saved ? currentDraft.saved.name : snapshot.personas.find(persona => persona.id === resolvedId)?.name ?? '人格设定'
+  const currentReadError = readError && (readError.key === null || readError.key === selection.key) ? errorMessage(readError.error, 'read') : null
+  const title = mode === 'prompts' ? t(`prompt.${promptKind(resolvedId)}.title`) : !snapshot ? t('persona.title') : resolvedId === 'new' ? t('persona.new') : currentDraft?.saved && 'name' in currentDraft.saved ? currentDraft.saved.name : snapshot.personas.find(persona => persona.id === resolvedId)?.name ?? t('persona.fallbackTitle')
 
   const replaceDrafts = useCallback((next: Readonly<Record<string, Draft>>) => {
     draftsRef.current = next
@@ -184,7 +186,7 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
     if (request && request.kind !== 'read' && markUncertain) {
       requireSnapshotRead(true)
       const draft = request.key ? draftsRef.current[request.key] : null
-      if (draft) replaceDrafts({ ...draftsRef.current, [draft.key]: { ...draft, requiresRead: true, notice: { kind: 'error', message: '操作已中断，结果尚未确认。原草稿已保留，请重新读取核对后再操作。' } } })
+      if (draft) replaceDrafts({ ...draftsRef.current, [draft.key]: { ...draft, requiresRead: true, notice: { kind: 'error', key: 'error.interrupted' } } })
     }
   }, [replaceDrafts, requireSnapshotRead])
 
@@ -232,7 +234,7 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
       replaceSnapshot(next)
       requireSnapshotRead(false)
     } catch (error) {
-      if (isCurrent(ticket)) setReadError({ key: target?.key ?? null, message: errorMessage(error, 'read') })
+      if (isCurrent(ticket)) setReadError({ key: target?.key ?? null, error })
     } finally { finishRequest(ticket) }
   }, [beginRequest, finishRequest, isCurrent, replaceDrafts, replaceSnapshot, requireSnapshotRead])
 
@@ -261,7 +263,7 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
             const doc = checkPersona(await hostRequest<PersonaDocument>(`/personas/${encodeURIComponent(resolvedId)}`, { signal: ticket.controller.signal }), resolvedId)
             if (isCurrent(ticket)) replaceDrafts({ ...draftsRef.current, [key]: personaDraft(doc) })
           } catch (error) {
-            if (isCurrent(ticket)) setReadError({ key, message: errorMessage(error, 'read') })
+            if (isCurrent(ticket)) setReadError({ key, error })
           } finally { finishRequest(ticket) }
         })()
       }
@@ -317,7 +319,7 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
     try {
       let next: AuthoringSnapshot
       let savedDraft: Draft | null = null
-      let message: string
+      let messageKey: string
       if (kind === 'save' && draft.scope !== 'persona') {
         if (!draft.saved) throw responseError()
         next = checkSnapshot(await hostRequest<AuthoringSnapshot>(`/prompts/${encodeURIComponent(draft.id)}`, {
@@ -326,7 +328,7 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
         const doc = next.prompts.find(prompt => prompt.id === draft.id)
         if (!doc) throw responseError()
         savedDraft = promptDraft(doc)
-        message = '提示词已保存'
+        messageKey = 'success.promptSaved'
       } else if (kind === 'save') {
         const result = checkMutation(await hostRequest<PersonaMutationResult>(draft.saved ? `/personas/${encodeURIComponent(draft.id)}` : '/personas', {
           method: 'POST', signal: ticket.controller.signal,
@@ -335,33 +337,33 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
         next = result.snapshot
         savedDraft = personaDraft(result.persona)
         if (!draft.saved) createdId = result.persona.id
-        message = draft.saved ? '人格已保存' : '人格已保存，可单独启用'
+        messageKey = draft.saved ? 'success.personaSaved' : 'success.personaCreated'
       } else if (kind === 'activate') {
         next = checkSnapshot(await hostRequest<AuthoringSnapshot>(`/personas/${encodeURIComponent(draft.id)}/activate`, {
           method: 'POST', signal: ticket.controller.signal, body: { expectedRevision: index.revision, enabled: !currentlyActive },
         }))
-        message = currentlyActive ? '人格已停用' : '人格已设为使用中'
+        messageKey = currentlyActive ? 'success.personaDeactivated' : 'success.personaActivated'
       } else {
         if (!draft.saved) throw responseError()
         next = checkSnapshot(await hostRequest<AuthoringSnapshot>(`/personas/${encodeURIComponent(draft.id)}/delete`, {
           method: 'POST', signal: ticket.controller.signal, body: { expectedRevision: draft.saved.revision, confirmed: true },
         }))
-        message = '人格已删除'
+        messageKey = 'success.personaDeleted'
       }
       if (!isCurrent(ticket)) return
       const nextDrafts = { ...draftsRef.current }
       if (kind === 'delete') delete nextDrafts[draft.key]
       else if (savedDraft) {
-        nextDrafts[savedDraft.key] = { ...savedDraft, notice: { kind: 'success', message } }
+        nextDrafts[savedDraft.key] = { ...savedDraft, notice: { kind: 'success', key: messageKey } }
         if (createdId) nextDrafts[draft.key] = emptyPersona()
-      } else nextDrafts[draft.key] = { ...draft, notice: { kind: 'success', message } }
+      } else nextDrafts[draft.key] = { ...draft, notice: { kind: 'success', key: messageKey } }
       replaceDrafts(nextDrafts)
       replaceSnapshot(next)
-      feedback.current(message)
+      feedback.current(authoringText(messageKey))
     } catch (error) {
       if (!isCurrent(ticket)) return
       const original = draftsRef.current[draft.key] ?? draft
-      replaceDrafts({ ...draftsRef.current, [draft.key]: { ...original, requiresRead: needsRead(error) || original.requiresRead, notice: { kind: 'error', message: errorMessage(error, kind) } } })
+      replaceDrafts({ ...draftsRef.current, [draft.key]: { ...original, requiresRead: needsRead(error) || original.requiresRead, notice: { kind: 'error', error, operation: kind } } })
       if (needsRead(error)) requireSnapshotRead(true)
     } finally { finishRequest(ticket) }
     if (!mounted.current || selectedKey.current !== draft.key) return
@@ -373,33 +375,33 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
 
   return <div className="robot-workspace authoring-workspace">
     <aside className="platform-sidebar authoring-sidebar">
-      <p className="platform-nav-heading">{mode === 'prompts' ? '提示词分类' : '已保存人格'}{mode === 'personas' && snapshot && <span>{snapshot.personas.length}</span>}</p>
-      <nav aria-label={mode === 'prompts' ? '提示词分类' : '人格列表'}>
-        {mode === 'prompts' ? promptKinds.map(id => <button key={id} type="button" disabled={!snapshot || mutating} className={`platform-nav-item ${resolvedId === id ? 'is-selected' : ''}`} aria-current={resolvedId === id ? 'page' : undefined} onClick={() => choose(id)}><FileText size={18} /><span>{promptLabels[id]}</span>{resolvedId === id && <ChevronRight size={15} className="nav-chevron" />}</button>) : <>
-          {!snapshot ? <p className="authoring-sidebar-state">{busy ? '正在读取人格列表…' : '人格列表尚未读取'}</p> : snapshot.personas.length === 0 ? <p className="authoring-sidebar-state">尚未保存人格</p> : snapshot.personas.map(persona => <button key={persona.id} type="button" disabled={mutating} className={`platform-nav-item authoring-persona-item ${resolvedId === persona.id ? 'is-selected' : ''}`} aria-current={resolvedId === persona.id ? 'page' : undefined} onClick={() => choose(persona.id)}><UserRound size={18} /><span title={persona.name}>{persona.name}</span>{snapshot.activePersonaId === persona.id && <small className="authoring-active-label">使用中</small>}{drafts[`personas:${persona.id}`] && isDirty(drafts[`personas:${persona.id}`]!) && <span className="authoring-draft-mark" aria-label="有未保存修改" />}</button>)}
-          <button type="button" disabled={!snapshot || mutating} className={`platform-nav-item authoring-new-button ${snapshot && resolvedId === 'new' ? 'is-selected' : ''}`} aria-current={snapshot && resolvedId === 'new' ? 'page' : undefined} onClick={() => choose('new')}><Plus size={18} /><span>新增人格</span></button>
+      <p className="platform-nav-heading">{t(mode === 'prompts' ? 'nav.prompts' : 'nav.personas')}{mode === 'personas' && snapshot && <span>{formatNumber(snapshot.personas.length)}</span>}</p>
+      <nav aria-label={t(mode === 'prompts' ? 'nav.prompts' : 'nav.personaList')}>
+        {mode === 'prompts' ? promptKinds.map(id => <button key={id} type="button" disabled={!snapshot || mutating} className={`platform-nav-item ${resolvedId === id ? 'is-selected' : ''}`} aria-current={resolvedId === id ? 'page' : undefined} onClick={() => choose(id)}><FileText size={18} aria-hidden="true" /><span>{t(`prompt.${id}.title`)}</span>{resolvedId === id && <ChevronRight size={15} className="nav-chevron" aria-hidden="true" />}</button>) : <>
+          {!snapshot ? <p className="authoring-sidebar-state">{t(busy ? 'nav.loadingPersonas' : 'nav.personasNotLoaded')}</p> : snapshot.personas.length === 0 ? <p className="authoring-sidebar-state">{t('nav.personasEmpty')}</p> : snapshot.personas.map(persona => <button key={persona.id} type="button" disabled={mutating} className={`platform-nav-item authoring-persona-item ${resolvedId === persona.id ? 'is-selected' : ''}`} aria-current={resolvedId === persona.id ? 'page' : undefined} onClick={() => choose(persona.id)}><UserRound size={18} aria-hidden="true" /><span title={persona.name}>{persona.name}</span>{snapshot.activePersonaId === persona.id && <small className="authoring-active-label">{t('status.active')}</small>}{drafts[`personas:${persona.id}`] && isDirty(drafts[`personas:${persona.id}`]!) && <span className="authoring-draft-mark" aria-label={t('status.unsaved')} />}</button>)}
+          <button type="button" disabled={!snapshot || mutating} className={`platform-nav-item authoring-new-button ${snapshot && resolvedId === 'new' ? 'is-selected' : ''}`} aria-current={snapshot && resolvedId === 'new' ? 'page' : undefined} onClick={() => choose('new')}><Plus size={18} aria-hidden="true" /><span>{t('persona.new')}</span></button>
         </>}
       </nav>
-      <div className="platform-sidebar-footer"><Info size={17} /><p>{mode === 'prompts' ? <>各分类独立保存，<br />切换时保留本页草稿。</> : <>同一 AI 的候选配置，<br />一次仅一个生效。</>}</p></div>
+      <div className="platform-sidebar-footer"><Info size={17} aria-hidden="true" /><p>{t(mode === 'prompts' ? 'nav.promptHint' : 'nav.personaHint')}</p></div>
     </aside>
     <main id="main-content" className="robot-content authoring-content" aria-busy={busy}>
-      <div className="authoring-title-row"><div><div className="panel-title-row"><h2>{title}</h2>{active && <span className="status-badge authoring-active-badge"><Check size={12} />使用中</span>}</div><p className="panel-description">{mode === 'prompts' ? promptDescriptions[promptKind(resolvedId)] : '人格是同一 AI 的候选配置，可保存多个，也可以全部停用。'}</p></div><button ref={readTrigger} type="button" className="button button-secondary authoring-read-button" disabled={busy} onClick={requestRead}><RefreshCw size={15} />{operation?.kind === 'read' ? '正在读取…' : mode === 'prompts' ? '重新读取提示词' : '重新读取人格'}</button></div>
-      <div className="authoring-runtime-note"><Info size={16} /><p>保存内容由 Eating 持久保管。接入 Harness 后用于后续消息，编辑不会打断当前轮次。</p></div>
-      {snapshotNeedsRead && <p className="authoring-notice authoring-notice-error" role="alert">内容或操作结果需要重新核对，请点击“{mode === 'prompts' ? '重新读取提示词' : '重新读取人格'}”后继续。各文档的原草稿已保留。</p>}
-      {currentReadError && <p className="authoring-notice authoring-notice-error" role="alert">{currentReadError}{currentDraft ? ' 原草稿与保存版本均已保留。' : ''}</p>}
-      {confirmRead === selection.key && <div className="authoring-confirmation" role="group" aria-label="确认放弃当前文档修改并重新读取"><div><strong>放弃当前文档的未保存修改？</strong><p>重新读取成功后，将以后台最新内容替换当前草稿。其他文档的草稿保留；读取失败时当前草稿也会保留。</p></div><div className="authoring-confirm-actions"><button ref={readCancel} type="button" className="button button-secondary" onClick={() => { setConfirmRead(null); readTrigger.current?.focus() }}>继续编辑</button><button type="button" className="button button-danger" onClick={() => void readSnapshot(selection)}>放弃修改并重新读取</button></div></div>}
-      {!snapshot ? <p className="authoring-read-state" role="status">{busy ? '正在读取后台保存的内容…' : '读取成功后即可编辑提示词和人格。'}</p> : !currentDraft ? <p className="authoring-read-state" role="status">{busy ? '正在读取人格设定…' : '当前文档尚未读取，请重新读取或选择其他人格。'}</p> : <form className="authoring-form" onSubmit={submit}>
-        {mode === 'personas' && !currentDraft.saved && <div className="authoring-new-note"><h3>{snapshot.personas.length === 0 ? '还没有已保存的人格' : '创建一个候选人格'}</h3><p>填写名称与设定后保存。保存不会自动启用人格。</p></div>}
-        {mode === 'personas' && <div className="authoring-name-field"><label htmlFor="authoring-persona-name">人格名称</label><input id="authoring-persona-name" type="text" autoComplete="off" value={currentDraft.name} disabled={busy} aria-describedby="authoring-name-hint" aria-invalid={Boolean(nameError && (currentDraft.name || currentDraft.saved))} onChange={event => updateDraft('name', event.target.value)} /><p id="authoring-name-hint" className={nameError && (currentDraft.name || currentDraft.saved) ? 'authoring-field-error' : 'authoring-field-hint'}>{nameError && (currentDraft.name || currentDraft.saved) ? nameError : '1 至 80 个字符，用于区分同一 AI 的不同候选配置。'}</p></div>}
-        <div className="authoring-editor-heading"><h3>{mode === 'prompts' ? '提示词内容' : '人格设定'}</h3><span className={currentDraft.body.length > 50000 ? 'authoring-field-error' : ''}>{currentDraft.body.length.toLocaleString('zh-CN')} / 50,000 字符</span></div>
-        <div className="authoring-editor"><TemplateEditor docKey={currentDraft.key} scope={currentDraft.scope} value={currentDraft.body} onChange={value => updateDraft('body', value)} disabled={busy} ariaLabel={mode === 'prompts' ? '提示词内容' : '人格设定'} variables={snapshot.variables} /></div>
+      <div className="authoring-title-row"><div><div className="panel-title-row"><h2>{title}</h2>{active && <span className="status-badge authoring-active-badge"><Check size={12} aria-hidden="true" />{t('status.active')}</span>}</div><p className="panel-description">{t(mode === 'prompts' ? `prompt.${promptKind(resolvedId)}.description` : 'persona.description')}</p></div><button ref={readTrigger} type="button" className="button button-secondary authoring-read-button" disabled={busy} onClick={requestRead}><RefreshCw size={15} aria-hidden="true" />{t(operation?.kind === 'read' ? 'action.reading' : mode === 'prompts' ? 'action.readPrompt' : 'action.readPersona')}</button></div>
+      <div className="authoring-runtime-note"><Info size={16} aria-hidden="true" /><p>{t('runtimeNote')}</p></div>
+      {snapshotNeedsRead && <p className="authoring-notice authoring-notice-error" role="alert">{t(mode === 'prompts' ? 'read.requiredPrompt' : 'read.requiredPersona')}</p>}
+      {currentReadError && <p className="authoring-notice authoring-notice-error" role="alert">{currentDraft ? t('read.errorWithDraft', { message: currentReadError }) : currentReadError}</p>}
+      {confirmRead === selection.key && <div className="authoring-confirmation" role="group" aria-label={t('read.confirmLabel')}><div><strong>{t('read.confirmTitle')}</strong><p>{t('read.confirmDescription')}</p></div><div className="authoring-confirm-actions"><button ref={readCancel} type="button" className="button button-secondary" onClick={() => { setConfirmRead(null); readTrigger.current?.focus() }}>{t('action.continue')}</button><button type="button" className="button button-danger" onClick={() => void readSnapshot(selection)}>{t('read.confirmAction')}</button></div></div>}
+      {!snapshot ? <p className="authoring-read-state" role="status">{t(busy ? 'read.loading' : 'read.empty')}</p> : !currentDraft ? <p className="authoring-read-state" role="status">{t(busy ? 'read.loadingPersona' : 'read.documentEmpty')}</p> : <form className="authoring-form" onSubmit={submit}>
+        {mode === 'personas' && !currentDraft.saved && <div className="authoring-new-note"><h3>{t(snapshot.personas.length === 0 ? 'new.emptyTitle' : 'new.title')}</h3><p>{t('new.description')}</p></div>}
+        {mode === 'personas' && <div className="authoring-name-field"><label htmlFor="authoring-persona-name">{t('name.label')}</label><input id="authoring-persona-name" type="text" autoComplete="off" value={currentDraft.name} disabled={busy} aria-describedby="authoring-name-hint" aria-invalid={Boolean(nameError && (currentDraft.name || currentDraft.saved))} onChange={event => updateDraft('name', event.target.value)} /><p id="authoring-name-hint" className={nameError && (currentDraft.name || currentDraft.saved) ? 'authoring-field-error' : 'authoring-field-hint'}>{nameError && (currentDraft.name || currentDraft.saved) ? nameError : t('name.hint')}</p></div>}
+        <div className="authoring-editor-heading"><h3>{t(mode === 'prompts' ? 'body.prompt' : 'body.persona')}</h3><span className={currentDraft.body.length > 50000 ? 'authoring-field-error' : ''}>{t('body.count', { countText: formatNumber(currentDraft.body.length), limitText: formatNumber(50000) })}</span></div>
+        <div className="authoring-editor"><TemplateEditor docKey={currentDraft.key} scope={currentDraft.scope} value={currentDraft.body} onChange={value => updateDraft('body', value)} disabled={busy} ariaLabel={t(mode === 'prompts' ? 'body.prompt' : 'body.persona')} variables={snapshot.variables} /></div>
         {bodyError && (currentDraft.body.length > 0 || currentDraft.saved !== null) && <p className="authoring-field-error" role="alert">{bodyError}</p>}
-        <div className="authoring-actions"><button type="submit" className="button button-primary" disabled={busy || blocked || !valid || !dirty}><Save size={15} />{operation?.kind === 'save' ? '正在保存…' : mode === 'prompts' ? '保存提示词' : '保存人格'}</button>{mode === 'personas' && currentDraft.saved && <button type="button" className="button button-secondary" disabled={busy || blocked || !active && dirty} aria-describedby={!active && dirty ? 'authoring-activation-hint' : undefined} onClick={() => void mutate('activate')}><Power size={15} />{operation?.kind === 'activate' ? active ? '正在停用…' : '正在启用…' : active ? '停用人格' : '启用人格'}</button>}<span className="authoring-save-state">{blocked ? '等待重新读取' : !currentDraft.saved ? '尚未保存' : dirty ? '有未保存修改' : '已保存'}</span></div>
-        {mode === 'personas' && currentDraft.saved && dirty && <p id="authoring-activation-hint" className="authoring-field-hint">{active ? '正在使用已保存的版本；保存后才会更新后续消息使用的内容。' : '请先保存修改，再启用人格，避免启用旧版本。'}</p>}
-        {currentDraft.notice && <p className={`authoring-notice authoring-result authoring-notice-${currentDraft.notice.kind}`} role={currentDraft.notice.kind === 'error' ? 'alert' : 'status'}>{currentDraft.notice.message}</p>}
-        <p className="authoring-draft-hint">切换{mode === 'prompts' ? '分类' : '人格'}会保留本页各文档的未保存草稿。离开此管理页前请保存。</p>
-        {mode === 'personas' && currentDraft.saved && <section className="authoring-delete-section" aria-label="删除人格"><div><h3>删除人格</h3><p>{active ? '使用中的人格不能删除，请先停用或启用另一个已保存人格。' : '删除这个候选配置，不影响其他人格的内容与使用状态。'}{currentDraft.saved.updatedAt && <span className="authoring-updated">{updatedLabel(currentDraft.saved.updatedAt)}</span>}</p></div><button ref={deleteTrigger} type="button" className="text-button authoring-delete-trigger" disabled={busy || blocked || active} onClick={() => { setConfirmRead(null); setConfirmDelete(currentDraft.key) }}><Trash2 size={15} />删除人格</button></section>}
-        {confirmDelete === currentDraft.key && <div className="authoring-confirmation" role="group" aria-label={`确认删除人格${currentDraft.name}`}><div><strong>确定删除“{currentDraft.saved && 'name' in currentDraft.saved ? currentDraft.saved.name : currentDraft.name}”？</strong><p>删除后无法恢复{dirty ? '，此人格未保存的修改也会丢弃' : ''}。其他人格与当前使用状态保持不变。</p></div><div className="authoring-confirm-actions"><button ref={deleteCancel} type="button" className="button button-secondary" onClick={() => { setConfirmDelete(null); deleteTrigger.current?.focus() }}>取消</button><button type="button" className="button button-danger" disabled={busy || blocked || active} onClick={() => void mutate('delete')}><Trash2 size={15} />确认删除人格</button></div></div>}
+        <div className="authoring-actions"><button type="submit" className="button button-primary" disabled={busy || blocked || !valid || !dirty}><Save size={15} aria-hidden="true" />{t(operation?.kind === 'save' ? 'action.saving' : mode === 'prompts' ? 'action.savePrompt' : 'action.savePersona')}</button>{mode === 'personas' && currentDraft.saved && <button type="button" className="button button-secondary" disabled={busy || blocked || !active && dirty} aria-describedby={!active && dirty ? 'authoring-activation-hint' : undefined} onClick={() => void mutate('activate')}><Power size={15} aria-hidden="true" />{t(operation?.kind === 'activate' ? active ? 'action.deactivating' : 'action.activating' : active ? 'action.deactivate' : 'action.activate')}</button>}<span className="authoring-save-state">{t(blocked ? 'status.waitingRead' : !currentDraft.saved ? 'status.notSaved' : dirty ? 'status.unsaved' : 'status.saved')}</span></div>
+        {mode === 'personas' && currentDraft.saved && dirty && <p id="authoring-activation-hint" className="authoring-field-hint">{t(active ? 'activation.activeDirty' : 'activation.inactiveDirty')}</p>}
+        {currentDraft.notice && <p className={`authoring-notice authoring-result authoring-notice-${currentDraft.notice.kind}`} role={currentDraft.notice.kind === 'error' ? 'alert' : 'status'}>{noticeMessage(currentDraft.notice)}</p>}
+        <p className="authoring-draft-hint">{t(mode === 'prompts' ? 'draft.promptHint' : 'draft.personaHint')}</p>
+        {mode === 'personas' && currentDraft.saved && <section className="authoring-delete-section" aria-label={t('delete.title')}><div><h3>{t('delete.title')}</h3><p>{t(active ? 'delete.activeHint' : 'delete.hint')}{currentDraft.saved.updatedAt && <span className="authoring-updated">{updatedLabel(currentDraft.saved.updatedAt)}</span>}</p></div><button ref={deleteTrigger} type="button" className="text-button authoring-delete-trigger" disabled={busy || blocked || active} onClick={() => { setConfirmRead(null); setConfirmDelete(currentDraft.key) }}><Trash2 size={15} aria-hidden="true" />{t('delete.title')}</button></section>}
+        {confirmDelete === currentDraft.key && <div className="authoring-confirmation" role="group" aria-label={t('delete.confirmLabel', { name: currentDraft.name })}><div><strong>{t('delete.confirmTitle', { name: currentDraft.saved && 'name' in currentDraft.saved ? currentDraft.saved.name : currentDraft.name })}</strong><p>{t(dirty ? 'delete.confirmDirtyDescription' : 'delete.confirmDescription')}</p></div><div className="authoring-confirm-actions"><button ref={deleteCancel} type="button" className="button button-secondary" onClick={() => { setConfirmDelete(null); deleteTrigger.current?.focus() }}>{t('action.cancel')}</button><button type="button" className="button button-danger" disabled={busy || blocked || active} onClick={() => void mutate('delete')}><Trash2 size={15} aria-hidden="true" />{t('delete.confirmAction')}</button></div></div>}
       </form>}
     </main>
   </div>

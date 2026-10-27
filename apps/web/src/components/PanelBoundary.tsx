@@ -1,21 +1,28 @@
 import { Component } from 'react'
 import type { ErrorInfo, ReactNode } from 'react'
 import { AlertCircle, RotateCcw } from 'lucide-react'
+import { useI18n } from '@eating/ui-sdk'
+import '../i18n/app'
+
+function PanelError({ onRetry }: { readonly onRetry: () => void }) {
+  const { t } = useI18n('app')
+  return <section className="panel-error" role="alert">
+    <AlertCircle size={24} /><h3>{t('panel.errorTitle')}</h3>
+    <p>{t('panel.errorDescription')}</p>
+    <button className="button button-secondary" onClick={onRetry}><RotateCcw size={16} />{t('panel.retry')}</button>
+  </section>
+}
 
 export class PanelBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false }
 
   static getDerivedStateFromError() { return { failed: true } }
   componentDidCatch(_error: Error, _info: ErrorInfo) {
-    // The failed module remains removable; private configuration is never logged.
+    // Private configuration is never logged when a panel fails.
   }
 
   render() {
-    if (this.state.failed) return <section className="panel-error" role="alert">
-      <AlertCircle size={24} /><h3>这个配置面板暂时无法打开</h3>
-      <p>其他平台仍可使用。你可以重试，或移除此插件后重新注册。</p>
-      <button className="button button-secondary" onClick={() => this.setState({ failed: false })}><RotateCcw size={16} />重新加载面板</button>
-    </section>
+    if (this.state.failed) return <PanelError onRetry={() => this.setState({ failed: false })} />
     return this.props.children
   }
 }

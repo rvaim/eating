@@ -1,7 +1,9 @@
 import { createElement } from 'react'
 import { Plug } from 'lucide-react'
 import { validateManifest } from '@eating/plugin-core'
+import { translate, useI18n } from '@eating/ui-sdk'
 import type { ManagedPlugin } from '@eating/ui-sdk'
+import '../i18n/app'
 
 export interface InstalledFrontendContribution {
   readonly id: string
@@ -11,48 +13,52 @@ export interface InstalledFrontendContribution {
   readonly frontend?: { readonly entry: string; readonly style: string } | null
 }
 const loaded = new Map<string, Promise<ManagedPlugin>>()
-const loadFailure = '此插件的管理面板加载失败，请检查安装包并重启 Host。其他插件仍可使用。'
+
+function FailedPluginPanel() {
+  const { t } = useI18n('app')
+  return createElement('p', { role: 'alert' }, t('catalog.loadError'))
+}
 
 function failedContribution(entry: InstalledFrontendContribution): ManagedPlugin {
-  return { id: entry.id, name: entry.name ?? entry.id, description: loadFailure, version: entry.version ?? '0.0.0', apiVersion: 1,
+  return { id: entry.id, name: entry.name ?? entry.id, get description() { return translate('app', 'catalog.loadError') }, version: entry.version ?? '0.0.0', apiVersion: 1,
     kind: entry.kind ?? 'communication', order: 100000, icon: Plug, brandColor: '#65736b', defaultRegistered: true,
-    initialValues: {}, validate: () => ({ valid: false, errors: {} }), summary: () => loadFailure,
-    Panel: () => createElement('p', { role: 'alert' }, loadFailure) }
+    initialValues: {}, validate: () => ({ valid: false, errors: {} }), summary: () => translate('app', 'catalog.loadError'),
+    Panel: FailedPluginPanel }
 }
 
 export async function loadPluginCatalog(entries: readonly InstalledFrontendContribution[]): Promise<readonly ManagedPlugin[]> {
   const plugins = await Promise.all(entries.map(async entry => {
     try {
       const frontend = entry.frontend
-      if (!frontend) throw new Error('此插件没有可用的管理面板。')
+      if (!frontend) throw new Error(translate('app', 'catalog.error.missingFrontend'))
       // IDs and SemVer are validated by Host; use the same literal path representation.
       const expected = `/plugins/${entry.id}/${entry.version ?? ''}/`
-      if (!frontend.entry.startsWith(expected) || !frontend.style.startsWith(expected)) throw new Error('插件页面入口不属于已安装版本。')
+      if (!frontend.entry.startsWith(expected) || !frontend.style.startsWith(expected)) throw new Error(translate('app', 'catalog.error.invalidEntry'))
       let loading = loaded.get(frontend.entry)
       if (!loading) {
         const stylesheet = document.createElement('link')
         stylesheet.rel = 'stylesheet'; stylesheet.href = frontend.style
         loading = (async () => {
           await new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error('插件样式加载超时。')), 5000)
+            const timer = setTimeout(() => reject(new Error(translate('app', 'catalog.error.stylesheetTimeout'))), 5000)
             stylesheet.onload = () => { clearTimeout(timer); resolve() }
-            stylesheet.onerror = () => { clearTimeout(timer); reject(new Error('插件样式加载失败。')) }
+            stylesheet.onerror = () => { clearTimeout(timer); reject(new Error(translate('app', 'catalog.error.stylesheetFailed'))) }
             document.head.append(stylesheet)
           })
           const module = await import(/* @vite-ignore */ frontend.entry) as { default?: ManagedPlugin }
           const plugin = module.default
           if (!plugin || plugin.id !== entry.id || plugin.version !== entry.version || typeof plugin.Panel !== 'function'
-            || plugin.kind !== (entry.kind ?? 'communication')) throw new Error('已安装插件面板与清单不兼容。')
+            || plugin.kind !== (entry.kind ?? 'communication')) throw new Error(translate('app', 'catalog.error.incompatible'))
           validateManifest(plugin)
           return plugin
         })().catch(error => { stylesheet.remove(); loaded.delete(frontend.entry); throw error })
         loaded.set(frontend.entry, loading)
       }
       const plugin = await loading
-      if (plugin.kind !== (entry.kind ?? 'communication')) throw new Error('插件页面类型与 Host 声明不一致。')
+      if (plugin.kind !== (entry.kind ?? 'communication')) throw new Error(translate('app', 'catalog.error.kindMismatch'))
       return plugin
     } catch { return failedContribution(entry) }
   }))
-  if (new Set(plugins.map(plugin => plugin.id)).size !== plugins.length) throw new Error('插件页面存在重复标识。')
+  if (new Set(plugins.map(plugin => plugin.id)).size !== plugins.length) throw new Error(translate('app', 'catalog.error.duplicate'))
   return plugins.sort((a, b) => a.order - b.order)
 }

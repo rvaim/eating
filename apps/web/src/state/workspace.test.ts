@@ -37,7 +37,7 @@ describe('正式 Host 工作区', () => {
     await workspace.refresh()
     mock.mockRejectedValueOnce(new Error('Host 离线'))
     await workspace.refresh()
-    expect(workspace.getSnapshot().storageError).toBe('Host 离线')
+    expect(workspace.getSnapshot().storageError).toBe('无法读取最新状态，请确认 Eating 正在运行后重试。')
     expect(workspace.getSnapshot().plugins).toHaveLength(1)
   })
 
@@ -68,7 +68,7 @@ describe('正式 Host 工作区', () => {
     const workspace = new PlatformWorkspace([plugin], request)
     await workspace.refresh()
     mock.mockRejectedValueOnce(new Error('磁盘不可写'))
-    expect(await workspace.save('qq', { endpoint: 'ws://invalid' })).toEqual({ ok: false, error: '磁盘不可写' })
+    expect(await workspace.save('qq', { endpoint: 'ws://invalid' })).toEqual({ ok: false, error: '配置未能保存，请检查输入和存储空间后重试。' })
     expect(workspace.getSnapshot().activity).toHaveLength(0)
     expect(workspace.getSnapshot().configurations.qq?.values.endpoint).toBe('ws://127.0.0.1:3001')
   })

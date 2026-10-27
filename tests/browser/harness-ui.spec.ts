@@ -50,13 +50,13 @@ test.describe('Harness 独立面板与泛型目录', () => {
 
   async function open(page: Page) {
     await page.goto(`${url}/#harness/dsh`)
-    await expect(page.getByLabel('API 地址', { exact: true })).toBeVisible()
+    await expect(page.getByLabel('API 基础地址', { exact: true })).toBeVisible()
   }
   async function save(page: Page) {
     const response = page.waitForResponse(response => response.url() === `${url}/api/plugins/dsh/configuration` && response.request().method() === 'POST')
     await page.getByRole('button', { name: '保存配置', exact: true }).click()
     expect((await response).status()).toBe(200)
-    await expect(page.getByText('配置已保存，运行时已停止。启动 Harness 将使用已保存配置。', { exact: true })).toBeVisible()
+    await expect(page.getByText('配置已保存，运行已停止。需要时请重新启动 Harness。', { exact: true })).toBeVisible()
   }
   async function json(route: Route, value: unknown, status = 200) {
     await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) })
@@ -67,10 +67,10 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await expect(page.getByRole('navigation', { name: 'Harness 分类', exact: true }).getByRole('button', { name: 'QQ', exact: true })).toHaveCount(0)
     await expect(page.getByRole('button', { name: '启动 Harness', exact: true })).toBeDisabled()
     await expect(page.getByText('待配置', { exact: true }).first()).toBeVisible()
-    await expect(page.getByLabel('API 地址', { exact: true })).toHaveValue('')
+    await expect(page.getByLabel('API 基础地址', { exact: true })).toHaveValue('')
     await save(page)
     await expect(page.getByRole('button', { name: '启动 Harness', exact: true })).toBeDisabled()
-    await page.getByLabel('API 地址', { exact: true }).fill('https://api.example.test/v1')
+    await page.getByLabel('API 基础地址', { exact: true }).fill('https://api.example.test/v1')
     await page.getByLabel('模型名称', { exact: true }).fill('fixture-model')
     await page.getByLabel('API Key', { exact: true }).fill('ui-fixture-key')
     await save(page)
@@ -93,7 +93,7 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await page.setViewportSize({ width: 1440, height: 1000 })
     await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }))
     await page.screenshot({ path: testInfo.outputPath('harness-desktop.png'), fullPage: true })
-    await page.getByRole('button', { name: '注册插件', exact: true }).click()
+    await page.getByRole('button', { name: '添加插件', exact: true }).click()
     const catalog = page.getByRole('region', { name: '已安装插件', exact: true })
     await expect(catalog.getByRole('heading', { name: 'QQ', exact: false })).toBeVisible()
     await expect(catalog.getByRole('heading', { name: 'DeepSeek Harness', exact: false })).toBeVisible()
@@ -104,7 +104,7 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await expect(page.getByRole('navigation', { name: '平台分类', exact: true }).getByRole('button', { name: 'DeepSeek Harness', exact: true })).toHaveCount(0)
     await page.getByRole('link', { name: '概览', exact: true }).click()
     await expect(page.getByText('1 个已启用', { exact: true })).toBeVisible()
-    await expect(page.getByText('尚未接入', { exact: true })).toBeVisible()
+    await expect(page.getByText('尚未连接', { exact: true })).toBeVisible()
   })
 
   test('界面状态夹具：异步安装、启动停止与未知结果不重复提交，390px可操作', async ({ page }, testInfo) => {
@@ -149,7 +149,7 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await expect(page.getByRole('button', { name: '正在安装…', exact: true })).toBeDisabled()
     await expect(page.getByRole('button', { name: '启动 Harness', exact: true })).toBeDisabled()
     installation.release()
-    await expect(page.getByText('界面夹具：正在安装', { exact: true })).toBeVisible()
+    await expect(page.getByText('正在安装运行时，请稍候…', { exact: true })).toBeVisible()
     runtime.installing = false; runtime.installed = true; runtime.progress = null
     await page.getByRole('button', { name: '刷新状态', exact: true }).click()
     await expect(page.getByRole('button', { name: '启动 Harness', exact: true })).toBeEnabled()
@@ -170,7 +170,7 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await expect.poll(() => disconnectCount).toBe(1)
     unknown = true
     await page.getByRole('button', { name: '启动 Harness', exact: true }).click()
-    await expect(page.getByText('界面夹具：启动结果未知', { exact: true })).toBeVisible()
+    await expect(page.getByText('操作未完成，请刷新状态后重试。', { exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: '启动 Harness', exact: true })).toBeDisabled()
     await expect(page.getByRole('button', { name: '我已核对当前状态', exact: true })).toBeEnabled()
     expect(connectCount).toBe(2)
@@ -203,7 +203,7 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await page.getByRole('link', { name: '提示词管理', exact: true }).click()
     await expect(page.getByRole('textbox', { name: '提示词内容', exact: true })).toBeVisible()
     saved.release()
-    await expect(page.getByRole('heading', { name: '主Agent提示词', exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '通用提示词', exact: true })).toBeVisible()
     await expect(page.getByText('DeepSeek Harness 配置已保存。', { exact: true })).toHaveCount(0)
     await expect(page.getByLabel('API Key', { exact: true })).toHaveCount(0)
   })
@@ -211,7 +211,7 @@ test.describe('Harness 独立面板与泛型目录', () => {
   test('DSH面板资源失败仍归Harness且QQ配置继续可用', async ({ page }) => {
     await page.route('**/plugins/dsh/*/ui/index.js', route => route.abort())
     await page.goto(`${url}/#harness/dsh`)
-    await expect(page.getByRole('alert').getByText('此插件的管理面板加载失败，请检查安装包并重启 Host。其他插件仍可使用。', { exact: true })).toBeVisible()
+    await expect(page.getByRole('alert').getByText('此插件的配置面板无法加载，请检查插件安装后重启 Eating。其他插件仍可使用。', { exact: true })).toBeVisible()
     const harnessNav = page.getByRole('navigation', { name: 'Harness 分类', exact: true })
     await expect(harnessNav.getByRole('button', { name: 'DeepSeek Harness', exact: true })).toBeVisible()
     await expect(harnessNav.getByRole('button', { name: 'QQ', exact: true })).toHaveCount(0)

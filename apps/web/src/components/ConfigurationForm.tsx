@@ -2,7 +2,9 @@ import { useId, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { Check, Info, Save, ShieldCheck } from 'lucide-react'
 import type { PluginConfiguration } from '@eating/plugin-core'
-import type { ConfigurationValidation, PluginPanelProps } from '@eating/ui-sdk'
+import type { ConfigurationValidation, PluginPanelProps, WorkspaceActionResult } from '@eating/ui-sdk'
+import { formatNumber, translate, useI18n } from '@eating/ui-sdk'
+import '../i18n/app'
 
 interface ConfigurationFormProps extends PluginPanelProps {
   readonly title: string
@@ -15,17 +17,26 @@ interface ConfigurationFormProps extends PluginPanelProps {
   }) => ReactNode
 }
 
+type FormResult =
+  | { readonly kind: 'validation' | 'saved' | 'checked' }
+  | { readonly kind: 'error'; readonly response: Extract<WorkspaceActionResult, { readonly ok: false }> }
+
 export function ConfigurationForm({ saved, initialValues, onSave, onFeedback, validate, title, description, children }: ConfigurationFormProps) {
+  const { t } = useI18n('app')
   const [values, setValues] = useState<PluginConfiguration>(() => ({ ...initialValues, ...saved?.values }))
-  const [errors, setErrors] = useState<Readonly<Record<string, string>>>({})
-  const [result, setResult] = useState<{ readonly success: boolean; readonly message: string } | null>(null)
+  const [errorFields, setErrorFields] = useState<readonly string[]>([])
+  const [result, setResult] = useState<FormResult | null>(null)
+  const validationErrors = errorFields.length ? validate(values).errors : {}
+  const errors = Object.fromEntries(errorFields.flatMap(key => validationErrors[key] ? [[key, validationErrors[key]]] : []))
   const changed = JSON.stringify(values) !== JSON.stringify({ ...initialValues, ...saved?.values })
+  const success = result?.kind === 'saved' || result?.kind === 'checked'
+  const message = !result ? '' : result.kind === 'error' ? result.response.error : t(result.kind === 'validation' ? 'form.fixErrors' : result.kind === 'saved' ? 'form.savedMessage' : 'form.checkedMessage')
 
   function check(): boolean {
     const validation = validate(values)
-    setErrors(validation.errors)
+    setErrorFields(Object.keys(validation.errors))
     if (!validation.valid) {
-      setResult({ success: false, message: '请修正已标出的配置，再重试。' })
+      setResult({ kind: 'validation' })
       return false
     }
     return true
@@ -36,11 +47,11 @@ export function ConfigurationForm({ saved, initialValues, onSave, onFeedback, va
     if (!check()) return
     const response = await onSave(values)
     if (!response.ok) {
-      setResult({ success: false, message: response.error })
+      setResult({ kind: 'error', response })
       return
     }
-    setResult({ success: true, message: '配置已保存在此浏览器中，尚未连接真实平台。' })
-    onFeedback('配置已保存')
+    setResult({ kind: 'saved' })
+    onFeedback(t('form.savedFeedback'))
   }
 
   return <form onSubmit={save} noValidate className="configuration-form">
@@ -49,20 +60,20 @@ export function ConfigurationForm({ saved, initialValues, onSave, onFeedback, va
       values,
       update: (key, value) => {
         setValues(current => ({ ...current, [key]: value }))
-        setErrors(current => { const next = { ...current }; delete next[key]; return next })
+        setErrorFields(current => current.filter(field => field !== key))
         setResult(null)
       },
       errors,
     })}</div>
     <div className="form-actions">
-      <button className="button button-primary" type="submit"><Save size={16} />保存配置</button>
+      <button className="button button-primary" type="submit"><Save size={16} />{t('form.save')}</button>
       <button className="button button-secondary" type="button" onClick={() => {
-        if (check()) setResult({ success: true, message: '配置格式正确。本地校验不会向外部平台发起连接。' })
-      }}><ShieldCheck size={16} />本地校验</button>
-      <span className="save-indicator">{changed ? '有未保存的更改' : saved ? <><Check size={14} /> 已保存</> : '尚未保存'}</span>
+        if (check()) setResult({ kind: 'checked' })
+      }}><ShieldCheck size={16} />{t('form.validate')}</button>
+      <span className="save-indicator">{changed ? t('form.unsaved') : saved ? <><Check size={14} /> {t('form.saved')}</> : t('form.notSaved')}</span>
     </div>
-    {result && <p className={`form-result ${result.success ? 'result-success' : 'result-error'}`} role={result.success ? 'status' : 'alert'}>
-      {result.success ? <Check size={17} /> : <Info size={17} />}{result.message}
+    {result && <p className={`form-result ${success ? 'result-success' : 'result-error'}`} role={success ? 'status' : 'alert'}>
+      {success ? <Check size={17} /> : <Info size={17} />}{message}
     </p>}
   </form>
 }
@@ -90,8 +101,8 @@ export function TextValue(values: PluginConfiguration, key: string, fallback = '
 
 export function validateDisplayName(values: PluginConfiguration): string | undefined {
   const name = TextValue(values, 'displayName').trim()
-  if (!name) return '请填写显示名称。'
-  if (name.length > 40) return '显示名称最多 40 个字符。'
+  if (!name) return translate('app', 'validation.nameRequired')
+  if (name.length > 40) return translate('app', 'validation.nameLength', { limit: formatNumber(40) })
   return undefined
 }
 
@@ -101,6 +112,6 @@ export function validateLocalAddress(value: string, protocols: readonly string[]
     if (!protocols.includes(url.protocol) || !url.hostname || url.username || url.password) throw new Error('address')
     return undefined
   } catch {
-    return `请填写有效的 ${protocols.map(protocol => protocol.slice(0, -1)).join(' / ')} 地址，不要包含账号或密码。`
+    return translate('app', 'validation.address', { protocols: protocols.map(protocol => protocol.slice(0, -1)).join(' / ') })
   }
 }

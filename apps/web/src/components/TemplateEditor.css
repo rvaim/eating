@@ -1,0 +1,120 @@
+.template-editor {
+  width: 100%;
+  min-width: 0;
+  color: var(--color-ink);
+  font-size: 13px;
+}
+
+.template-editor-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 9px;
+}
+
+.template-editor-insert { min-height: 36px; padding: 6px 12px; }
+.template-editor-scope { min-width: 0; color: var(--color-muted); font-size: 11px; overflow-wrap: anywhere; }
+.template-editor-host { min-width: 0; width: 100%; }
+.template-editor .cm-editor {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #849289;
+  border-radius: 5px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font: inherit;
+}
+.template-editor .cm-editor:hover { border-color: #6e8776; }
+.template-editor .cm-editor.cm-focused { border-color: var(--color-primary); outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.template-editor .cm-scroller {
+  min-height: 220px;
+  max-height: 480px;
+  overflow: auto;
+  border-radius: 4px;
+  font: inherit;
+  line-height: 1.85;
+  overscroll-behavior: contain;
+}
+.template-editor .cm-content { min-width: 0; padding: 10px 0; caret-color: var(--color-primary); font-family: inherit; }
+.template-editor .cm-line { padding: 0 12px; overflow-wrap: anywhere; }
+.template-editor .cm-content:focus-visible { outline: none; }
+.template-editor .cm-cursor, .template-editor .cm-dropCursor { border-left-color: var(--color-primary); }
+.template-editor .cm-selectionBackground { background: var(--color-tint); }
+.template-editor .cm-editor.cm-focused .cm-selectionBackground { background: #dbe9de; }
+.template-editor .cm-gutters { border-right: 1px solid var(--color-line); border-radius: 4px 0 0 4px; background: #f5f7f3; color: var(--color-muted); }
+.template-editor .cm-lineNumbers .cm-gutterElement { min-width: 30px; padding: 0 7px 0 6px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.template-editor .template-variable { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.template-editor .template-variable-valid { color: var(--color-primary-hover); background: #f0f5ef; }
+.template-editor .template-variable-invalid { color: #aa3838; text-decoration: underline wavy #aa3838; text-underline-offset: 4px; }
+.template-editor .cm-lintRange-error { background-image: none; text-decoration: underline wavy #aa3838; text-underline-offset: 4px; }
+.template-editor.is-disabled .cm-editor, .template-editor.is-disabled .cm-gutters { background: #f5f7f3; }
+.template-editor.is-disabled .cm-content { color: #606e64; }
+.template-editor.is-disabled .cm-editor:hover { border-color: #849289; }
+.template-editor-hint { margin-top: 8px; color: var(--color-muted); font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
+.template-editor-diagnostics { margin-top: 6px; font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
+.template-editor-diagnostic-count { color: var(--color-muted); }
+.template-editor.has-errors .template-editor-diagnostic-count { color: #aa3838; }
+.template-editor-error-list { display: grid; gap: 2px; margin: 4px 0 0; padding: 0; list-style: none; }
+.template-editor-error-list button { display: block; min-height: 32px; max-width: 100%; padding: 5px 0; border: 0; border-radius: 3px; background: none; color: #aa3838; font: inherit; text-align: left; overflow-wrap: anywhere; }
+.template-editor-error-list button:hover { color: #8c3030; text-decoration: underline; text-underline-offset: 3px; }
+.template-editor-error-list button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.template-editor-more-errors { margin-top: 4px; color: var(--color-muted); }
+
+/* Native CodeMirror tooltips are portalled past scrolling form ancestors. */
+.template-editor-popups {
+  position: relative;
+  z-index: 80;
+  color: var(--color-ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.template-editor-popups .cm-tooltip {
+  max-width: calc(100vw - 24px);
+  border: 1px solid #cbd3cb;
+  border-radius: 5px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  box-shadow: 0 7px 24px #273f2a14;
+}
+.template-editor-popups .template-editor-completion { width: 380px; max-width: calc(100vw - 24px); }
+.template-editor-popups .template-editor-completion > ul {
+  max-height: min(300px, 45vh);
+  margin: 0;
+  padding: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  list-style: none;
+  overscroll-behavior: contain;
+}
+.template-editor-popups .template-editor-completion-option {
+  display: grid;
+  gap: 2px;
+  min-height: 48px;
+  padding: 7px 9px;
+  border-radius: 3px;
+  color: var(--color-ink);
+  white-space: normal;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+/* Match the native tooltip/list structure so these states outrank CM's theme. */
+.template-editor-popups .template-editor-completion > ul > li.template-editor-completion-option:hover { background: #f1f5ef; color: var(--color-primary-hover); }
+.template-editor-popups .template-editor-completion > ul > li.template-editor-completion-option[aria-selected="true"] { background: var(--color-tint); color: var(--color-primary-hover); }
+.template-editor-popups .template-editor-completion > ul > li.template-editor-completion-option:hover .cm-completionDetail,
+.template-editor-popups .template-editor-completion > ul > li.template-editor-completion-option[aria-selected="true"] .cm-completionDetail { color: var(--color-primary-hover); }
+.template-editor-popups .cm-completionLabel { min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
+.template-editor-popups .cm-completionDetail { min-width: 0; margin: 0; padding: 0; color: var(--color-muted); font-size: 11px; font-style: normal; line-height: 1.6; overflow-wrap: anywhere; }
+.template-editor-popups .cm-completionMatchedText { font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.template-editor-popups .cm-tooltip-lint { max-width: min(360px, calc(100vw - 24px)); margin: 0; padding: 7px 10px; list-style: none; font-size: 12px; overflow-wrap: anywhere; }
+.template-editor-popups .cm-diagnostic { margin: 0; padding: 3px 0; border: 0; white-space: pre-wrap; }
+.template-editor-popups .cm-diagnostic-error { color: #aa3838; }
+.template-editor-popups .cm-diagnosticSource { display: block; color: var(--color-muted); font-size: 11px; }
+
+@media (max-width: 600px) {
+  .template-editor-insert { min-height: 40px; }
+  .template-editor .cm-scroller { min-height: 200px; max-height: 420px; }
+  .template-editor .cm-line { padding-right: 9px; padding-left: 9px; }
+  .template-editor-error-list button { min-height: 40px; }
+}

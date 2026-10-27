@@ -1,0 +1,79 @@
+.authoring-workspace, .authoring-content, .authoring-form { min-width: 0; }
+.authoring-content { padding-right: 36px; }
+.authoring-title-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 16px 20px; }
+.authoring-title-row > div { min-width: 0; flex: 1; }
+.authoring-title-row h2 { overflow-wrap: anywhere; }
+.authoring-read-button { flex-shrink: 0; }
+.authoring-sidebar-state { padding: 7px 12px 15px; color: var(--color-muted); font-size: 12px; }
+.authoring-persona-item > span:first-of-type { flex: 1; white-space: nowrap; }
+.authoring-active-label { flex-shrink: 0; color: var(--color-primary-hover); font-size: 11px; font-weight: 550; white-space: nowrap; }
+.authoring-persona-item .authoring-draft-mark { flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--color-muted); }
+.authoring-new-button { margin-top: 9px; border-top-color: var(--color-line); color: var(--color-primary); }
+.authoring-active-badge { color: var(--color-primary-hover); }
+.authoring-runtime-note { display: flex; align-items: flex-start; gap: 9px; margin: 23px 0 27px; padding: 12px 0; border-top: 1px solid var(--color-line); border-bottom: 1px solid var(--color-line); color: var(--color-muted); font-size: 12px; }
+.authoring-runtime-note p { max-width: 70ch; overflow-wrap: anywhere; }
+.authoring-runtime-note svg { margin-top: 2px; color: var(--color-primary); }
+.authoring-notice { margin-bottom: 20px; font-size: 13px; overflow-wrap: anywhere; }
+.authoring-notice-error, .authoring-field-error { color: var(--color-danger); }
+.authoring-notice-success { color: var(--color-primary-hover); }
+.authoring-notice-info { color: var(--color-muted); }
+.authoring-read-state { padding: 12px 0 28px; color: var(--color-muted); font-size: 13px; }
+.authoring-new-note { margin-bottom: 24px; }
+.authoring-new-note h3 { font-size: 15px; }
+.authoring-new-note p { max-width: 65ch; margin-top: 5px; color: var(--color-muted); font-size: 12px; }
+.authoring-name-field { max-width: 520px; margin-bottom: 27px; }
+.authoring-name-field label { display: block; margin-bottom: 7px; font-size: 13px; font-weight: 550; }
+.authoring-name-field input { width: 100%; min-width: 0; height: 42px; padding: 8px 12px; border: 1px solid #849289; border-radius: 5px; background: var(--color-surface); color: var(--color-ink); font-size: 13px; }
+.authoring-name-field input:hover { border-color: #6e8776; }
+.authoring-name-field input:focus { border-color: var(--color-primary); }
+.authoring-name-field input[aria-invalid="true"] { border-color: #b64a4a; }
+.authoring-name-field input:disabled { background: #f5f7f3; color: var(--color-muted); cursor: not-allowed; }
+.authoring-field-hint, .authoring-field-error { margin-top: 7px; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.authoring-field-hint { color: var(--color-muted); }
+.authoring-editor-heading { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 13px; }
+.authoring-editor-heading > span { color: var(--color-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.authoring-editor-heading > .authoring-field-error { color: var(--color-danger); }
+.authoring-editor { width: 100%; min-width: 0; }
+.authoring-editor .cm-scroller { min-height: clamp(280px, 38vh, 420px); }
+.authoring-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 24px; padding-top: 22px; border-top: 1px solid var(--color-line); }
+.authoring-save-state { color: var(--color-muted); font-size: 11px; }
+.authoring-result { margin-top: 13px; margin-bottom: 0; }
+.authoring-draft-hint { margin-top: 14px; color: var(--color-muted); font-size: 11px; }
+.authoring-delete-section { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px 24px; margin-top: 32px; padding-top: 23px; border-top: 1px solid var(--color-line); }
+.authoring-delete-section > div { flex: 1; min-width: 180px; }
+.authoring-delete-section h3 { font-size: 13px; }
+.authoring-delete-section p { max-width: 65ch; margin-top: 5px; color: var(--color-muted); font-size: 12px; overflow-wrap: anywhere; }
+.authoring-delete-trigger { flex-shrink: 0; color: #77726b; padding-top: 0; }
+.authoring-delete-trigger:hover { color: var(--color-danger); }
+.authoring-updated { display: block; margin-top: 5px; color: var(--color-subtle); font-size: 11px; font-variant-numeric: tabular-nums; }
+.authoring-confirmation { display: flex; flex-direction: column; gap: 14px; margin: 19px 0 24px; padding: 18px; border: 1px solid #e5d2cc; border-radius: var(--radius); background: #fdf9f7; color: #77625d; font-size: 12px; overflow-wrap: anywhere; }
+.authoring-confirmation strong { color: var(--color-ink); font-size: 13px; font-weight: 600; }
+.authoring-confirmation p { max-width: 70ch; margin-top: 5px; }
+.authoring-confirm-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 1100px) {
+  .authoring-content { padding-right: 28px; }
+}
+@media (max-width: 850px) {
+  .authoring-content { padding-right: 25px; }
+  .authoring-title-row > div { flex-basis: 100%; }
+  .authoring-persona-item { gap: 7px; }
+}
+@media (max-width: 600px) {
+  .authoring-content { padding-right: 20px; }
+  .authoring-title-row { gap: 14px; }
+  .authoring-read-button { min-height: 40px; }
+  .authoring-sidebar nav { align-items: center; scrollbar-color: #aab9ad #fcfdfb; scrollbar-width: thin; }
+  .authoring-sidebar .platform-nav-item { min-height: 40px; max-width: 220px; }
+  .authoring-sidebar-state { flex-shrink: 0; padding: 8px 10px; font-size: 11px; }
+  .authoring-new-button { margin-top: 0; border-top-color: transparent; }
+  .authoring-runtime-note { margin-top: 20px; font-size: 11px; }
+  .authoring-name-field { margin-bottom: 24px; }
+  .authoring-editor .cm-scroller { min-height: 240px; }
+  .authoring-actions { gap: 8px; }
+  .authoring-actions .button { min-height: 40px; }
+  .authoring-save-state { flex-basis: 100%; margin-top: 3px; }
+  .authoring-confirmation { padding: 15px; }
+  .authoring-confirm-actions .button { white-space: normal; min-height: 40px; }
+  .authoring-delete-section > div { min-width: 0; flex-basis: 100%; }
+  .authoring-delete-trigger { min-height: 40px; }
+}

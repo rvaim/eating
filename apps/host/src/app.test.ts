@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { lstat, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { request } from 'node:http'
+import { connect as connectSocket } from 'node:net'
 import type { IncomingHttpHeaders } from 'node:http'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -145,6 +146,70 @@ afterEach(async () => {
 })
 
 describe('real Eating Host → QQ OneBot → SQLite → authenticated MCP', () => {
+  it('closes keep-alive polling requests arriving while an earlier request drains during shutdown', async () => {
+    const context = await createHost()
+    const socket = connectSocket({ host: '127.0.0.1', port: Number(new URL(context.url).port) })
+    cleanups.push(async () => { socket.destroy() })
+    const connected = new Promise<void>((resolveConnected, reject) => { socket.once('connect', resolveConnected); socket.once('error', reject) })
+    let receivedContinue!: () => void
+    const requestAccepted = new Promise<void>(resolveAccepted => { receivedContinue = resolveAccepted })
+    const drained = new Promise<string>((resolveDrained, reject) => {
+      let content = ''
+      socket.on('data', chunk => { content += chunk.toString('utf8'); if (content.includes('100 Continue')) receivedContinue() })
+      socket.once('end', () => resolveDrained(content)); socket.once('error', reject)
+    })
+    await connected
+    await new Promise<void>(resolveWritten => socket.write(`POST /api/plugins/qq/invoke HTTP/1.1\r\nHost: ${new URL(context.url).host}\r\nCookie: ${context.cookie}\r\nX-Eating-CSRF: ${context.csrf}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nExpect: 100-continue\r\nConnection: keep-alive\r\n\r\n{`, () => resolveWritten()))
+    await requestAccepted
+    const stopping = context.host.close()
+    socket.write(`}GET /api/workspace HTTP/1.1\r\nHost: ${new URL(context.url).host}\r\nCookie: ${context.cookie}\r\nConnection: keep-alive\r\n\r\n`)
+    const responses = await drained
+    expect(responses).toContain('503 Service Unavailable')
+    expect(responses).toMatch(/Connection: close/i)
+    await stopping
+  })
+
+  it('persists owner prompts and rejects invalid variables, stale updates and unauthenticated mutations', async () => {
+    const context = await createHost()
+    expect((await http(context.url, '/api/authoring')).status).toBe(401)
+    const initial = (await context.api('/api/authoring')).body
+    expect(initial).toMatchObject({ protocolVersion: 1, revision: 0, activePersonaId: null, personas: [] })
+    const body = '主人编辑的主策略 {{当前时间}}'
+    expect((await http(context.url, '/api/prompts/main', { method: 'POST', headers: { Cookie: context.cookie }, body: { expectedRevision: 0, body } })).status).toBe(403)
+    expect((await context.api('/api/prompts/main', { method: 'POST', body: { expectedRevision: 0, body: '{{不存在}}' } })).status).toBe(400)
+    const saved = await context.api('/api/prompts/main', { method: 'POST', body: { expectedRevision: 0, body } })
+    expect(saved.status).toBe(200)
+    expect(saved.body).toMatchObject({ revision: 1, prompts: expect.arrayContaining([expect.objectContaining({ id: 'main', body, revision: 1 })]) })
+    expect((await context.api('/api/prompts/main', { method: 'POST', body: { expectedRevision: 0, body: '过期覆盖' } })).status).toBe(409)
+    expect((await context.api('/api/prompts/main', { method: 'POST', body: { expectedRevision: 1, body: '{{消息内容}}' } })).status).toBe(400)
+    await context.host.close()
+    const restarted = await createHost(context.home)
+    const persisted = (await restarted.api('/api/authoring')).body
+    expect(persisted).toMatchObject({ revision: 1, prompts: expect.arrayContaining([expect.objectContaining({ id: 'main', body, revision: 1 })]) })
+  })
+
+  it('creates multiple personas without activation and atomically enables only one', async () => {
+    const context = await createHost()
+    const make = async (name: string) => {
+      const response = await context.api('/api/personas', { method: 'POST', body: { name, body: `我是{{人格名称}}，当前时间{{当前时间}}。` } })
+      expect(response.status).toBe(201)
+      return object(response.body.persona)
+    }
+    const first = await make('第一人格'), second = await make('第二人格')
+    expect(first.id).not.toBe(second.id)
+    const initial = (await context.api('/api/authoring')).body
+    expect(initial.activePersonaId).toBeNull()
+    const activeA = await context.api(`/api/personas/${String(first.id)}/activate`, { method: 'POST', body: { expectedRevision: initial.revision!, enabled: true } })
+    expect(activeA.body.activePersonaId).toBe(first.id)
+    const activeB = await context.api(`/api/personas/${String(second.id)}/activate`, { method: 'POST', body: { expectedRevision: activeA.body.revision!, enabled: true } })
+    expect(activeB.body.activePersonaId).toBe(second.id)
+    expect((await context.api(`/api/personas/${String(second.id)}/delete`, { method: 'POST', body: { expectedRevision: second.revision!, confirmed: true } })).status).toBe(409)
+    expect((await context.api(`/api/personas/${String(first.id)}/delete`, { method: 'POST', body: { expectedRevision: first.revision! } })).status).toBe(409)
+    expect((await context.api(`/api/personas/${String(first.id)}/activate`, { method: 'POST', body: { expectedRevision: activeA.body.revision!, enabled: true } })).status).toBe(409)
+    expect((await context.api(`/api/personas/${String(first.id)}/delete`, { method: 'POST', body: { expectedRevision: first.revision!, confirmed: true } })).status).toBe(200)
+    expect((await context.api(`/api/personas/${String(second.id)}`)).body).toMatchObject({ name: '第二人格', body: '我是{{人格名称}}，当前时间{{当前时间}}。' })
+  })
+
   it('applies authenticated settings atomically and rejects stale revisions or invalid values', async () => {
     const context = await createHost()
     expect((await http(context.url, '/api/settings')).status).toBe(401)

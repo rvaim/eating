@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve, extname, sep } from 'node:path'
 import type { BackendPlugin, BackendPluginEntry, HostPluginContext, JsonObject } from '@eating/plugin-sdk'
 import { PlatformError, isJsonObject, validateDeliverySettings } from '@eating/plugin-sdk'
+import { AuthoringService } from './authoring'
 import { HostStore } from './store'
 import { HarnessGateway } from './harness'
 import { acquireWorkspaceLock } from './lock'
@@ -26,6 +27,7 @@ export interface HostOptions {
 export class EatingHost {
   readonly store: HostStore
   readonly harness: HarnessGateway
+  readonly authoring: AuthoringService
   private readonly server: Server
   private readonly plugins = new Map<string, BackendPlugin>()
   private readonly entries = new Map<string, BackendPluginEntry>()
@@ -47,6 +49,7 @@ export class EatingHost {
     try {
       this.store = openedStore = new HostStore(resolve(options.dataDirectory, 'host', 'Eating.sqlite'))
       this.harness = new HarnessGateway(this.store)
+      this.authoring = new AuthoringService(this.store)
       const enabledIds = persistedEnabledIds(this.store.getSetting('platforms.enabled'), options.entries.map(entry => entry.id))
       const storageDirectories = new Set<string>()
       for (const entry of options.entries) {
@@ -114,7 +117,10 @@ export class EatingHost {
 
   private async route(request: IncomingMessage, response: ServerResponse): Promise<void> {
     try {
-      if (this.closed) throw new PlatformError('HOST_STOPPED', 'Host 正在停止。', 503)
+      if (this.closed) {
+        response.setHeader('Connection', 'close')
+        throw new PlatformError('HOST_STOPPED', 'Host 正在停止。', 503)
+      }
       validateLocalRequest(request, this.allowedHosts, this.allowedOrigins)
       const pathname = new URL(request.url ?? '/', this.url || 'http://127.0.0.1').pathname
       if (pathname.startsWith('/mcp/')) {
@@ -136,6 +142,40 @@ export class EatingHost {
         requireSession(request, this.ownerSession)
         if (request.method !== 'GET' && !sameSecret(typeof request.headers['x-eating-csrf'] === 'string' ? request.headers['x-eating-csrf'] : undefined, this.csrf)) throw new PlatformError('INVALID_CSRF_TOKEN', '管理请求校验失败，请刷新页面。', 403)
         if (pathname === '/api/workspace' && request.method === 'GET') { json(response, 200, this.getWorkspace()); return }
+        if (pathname === '/api/authoring') {
+          if (request.method !== 'GET') throw new PlatformError('METHOD_NOT_ALLOWED', '配置目录仅支持 GET。', 405)
+          json(response, 200, this.authoring.getSnapshot()); return
+        }
+        const promptMatch = /^\/api\/prompts\/(main|group|private)$/.exec(pathname)
+        if (promptMatch) {
+          if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '保存提示词需使用 POST。', 405)
+          const input = await readJson(request)
+          if (!isJsonObject(input) || typeof input.body !== 'string' || typeof input.expectedRevision !== 'number') throw new PlatformError('INVALID_AUTHORING_REQUEST', '请提供提示词正文与版本。')
+          json(response, 200, this.authoring.updatePrompt(promptMatch[1] as 'main' | 'group' | 'private', input.body, input.expectedRevision)); return
+        }
+        const personaMatch = /^\/api\/personas(?:\/([a-zA-Z0-9-]{1,80})(?:\/(activate|delete))?)?$/.exec(pathname)
+        if (personaMatch) {
+          const id = personaMatch[1], operation = personaMatch[2]
+          if (id && !operation && request.method === 'GET') { json(response, 200, this.authoring.getPersona(id)); return }
+          if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '人格管理操作需使用 POST。', 405)
+          const input = await readJson(request)
+          if (!isJsonObject(input)) throw new PlatformError('INVALID_AUTHORING_REQUEST', '人格配置必须为对象。')
+          if (!id) {
+            if (typeof input.name !== 'string' || typeof input.body !== 'string') throw new PlatformError('INVALID_AUTHORING_REQUEST', '请提供人格名称和设定。')
+            json(response, 201, this.authoring.createPersona(input.name, input.body)); return
+          }
+          if (typeof input.expectedRevision !== 'number') throw new PlatformError('INVALID_AUTHORING_REQUEST', '人格操作缺少版本，请重新读取。')
+          if (operation === 'activate') {
+            if (typeof input.enabled !== 'boolean') throw new PlatformError('INVALID_AUTHORING_REQUEST', '请明确选择启用或停用人格。')
+            json(response, 200, this.authoring.setPersonaEnabled(id, input.enabled, input.expectedRevision)); return
+          }
+          if (operation === 'delete') {
+            if (input.confirmed !== true) throw new PlatformError('PERSONA_DELETE_CONFIRMATION_REQUIRED', '请确认删除此人格配置。', 409)
+            json(response, 200, this.authoring.deletePersona(id, input.expectedRevision)); return
+          }
+          if (typeof input.name !== 'string' || typeof input.body !== 'string') throw new PlatformError('INVALID_AUTHORING_REQUEST', '请提供人格名称和设定。')
+          json(response, 200, this.authoring.updatePersona(id, input.name, input.body, input.expectedRevision)); return
+        }
         if (pathname === '/api/settings' || pathname === '/api/settings/queue/clear') {
           if (pathname === '/api/settings' && request.method === 'GET') { json(response, 200, this.store.getDeliverySettingsSnapshot()); return }
           if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '设置操作仅支持 GET 或 POST。', 405)

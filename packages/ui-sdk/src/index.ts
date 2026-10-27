@@ -1,5 +1,5 @@
 export * from './api.js'
-export type { CommunicationPlugin, ConfigurationValidation, PluginPanelProps, WorkspaceActionResult } from './contract.js'
+export type { ManagedPlugin, CommunicationPlugin, HarnessPlugin, ConfigurationValidation, PluginPanelProps, WorkspaceActionResult } from './contract.js'
 
 /** One shared React instance for independently built frontend contributions. */
 export function registerUiRuntime(react: unknown, jsxRuntime: unknown): void {

@@ -3,7 +3,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { createHash, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve, extname, sep } from 'node:path'
-import type { BackendPlugin, BackendPluginEntry, HostPluginContext, JsonObject } from '@eating/plugin-sdk'
+import type { BackendPlugin, BackendPluginEntry, HarnessHostServices, HarnessMessageSink, HostPluginContext, JsonObject } from '@eating/plugin-sdk'
 import { PlatformError, isJsonObject, validateDeliverySettings } from '@eating/plugin-sdk'
 import { AuthoringService } from './authoring'
 import { HostStore } from './store'
@@ -39,7 +39,8 @@ export class EatingHost {
   private readonly releaseLock: () => void
   private readonly allowedOrigins: Set<string>
   private readonly allowedHosts = new Set<string>()
-  private readonly mutations = new Set<string>()
+  private readonly mutations = new Map<string, string>()
+  private readonly sinkRegistrations = new Map<string, Set<() => void>>()
   private url = ''
   private closed = false
 
@@ -53,11 +54,18 @@ export class EatingHost {
       const enabledIds = persistedEnabledIds(this.store.getSetting('platforms.enabled'), options.entries.map(entry => entry.id))
       const storageDirectories = new Set<string>()
       for (const entry of options.entries) {
-        if (!/^[a-z][a-z0-9-]*$/.test(entry.id) || this.plugins.has(entry.id) || !/^[a-z][a-z0-9-]*-bot$/.test(entry.storageDirectory)) throw new Error('平台标识或 bot 目录声明非法。')
-        if (storageDirectories.has(entry.storageDirectory)) throw new Error('平台 bot 数据目录重复，拒绝共同写入。')
-        storageDirectories.add(entry.storageDirectory)
+        const kind = entry.installed?.manifest.kind ?? entry.kind ?? 'communication'
+        const validId = (value: string) => value.length <= 64 && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value) && !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(value)
+        if (!validId(entry.id) || this.entries.has(entry.id) || !validId(entry.storageDirectory)
+          || !['communication', 'harness'].includes(kind) || (kind === 'communication' && !entry.storageDirectory.endsWith('-bot'))) throw new Error('插件标识、类型或数据目录声明非法。')
+        const storageKey = `${kind}/${entry.storageDirectory}`
+        if (storageDirectories.has(storageKey)) throw new Error('插件数据目录重复，拒绝共同写入。')
+        storageDirectories.add(storageKey)
+        this.entries.set(entry.id, entry)
+        if (enabledIds.includes(entry.id)) this.enabled.add(entry.id)
         const context: HostPluginContext = {
-          dataDirectory: resolve(options.dataDirectory, 'bot', entry.storageDirectory),
+          ...(kind === 'harness' ? { harness: this.harnessServices(entry.id) } : {}),
+          dataDirectory: resolve(options.dataDirectory, kind === 'harness' ? 'harness' : 'bot', entry.storageDirectory),
           getSetting: key => this.store.getSetting(`${entry.id}:${key}`),
           setSetting: (key, value) => this.store.setSetting(`${entry.id}:${key}`, value),
           recordEvent: (pluginId, key, event, harnessEvent, metadata) => {
@@ -77,11 +85,9 @@ export class EatingHost {
         }
         let plugin: BackendPlugin
         try { plugin = entry.create(context) }
-        catch (error) { plugin = failedPlugin(entry, error) }
+        catch (error) { this.revokeHarnessSinks(entry.id); plugin = failedPlugin(entry, error) }
         if (plugin.id !== entry.id) throw new Error('插件后台身份不匹配。')
         this.plugins.set(plugin.id, plugin)
-        this.entries.set(plugin.id, entry)
-        if (enabledIds.includes(plugin.id)) this.enabled.add(plugin.id)
       }
       this.allowedOrigins = new Set(options.allowedUiOrigins ?? ['http://127.0.0.1:5180', 'http://localhost:5180', 'http://127.0.0.1:4180'])
       for (const origin of this.allowedOrigins) this.allowedHosts.add(new URL(origin).host)
@@ -101,14 +107,14 @@ export class EatingHost {
     this.allowedHosts.add(`localhost:${address.port}`)
     this.allowedOrigins.add(this.url)
     for (const plugin of this.plugins.values()) {
-      if (this.enabled.has(plugin.id) && plugin.getPublicConfiguration().autoConnect === true) void plugin.connect().catch(() => { /* The connector exposes the actual error in getStatus(). */ })
+      if (this.enabled.has(plugin.id) && plugin.getPublicConfiguration().autoConnect === true) void this.mutatePlugin(plugin.id, 'connect', () => plugin.connect()).catch(() => { /* The connector exposes the actual error in getStatus(). */ })
     }
     return this.url
   }
 
   getWorkspace(): JsonObject {
     return { protocolVersion: 1, registeredIds: [...this.enabled],
-      plugins: [...this.plugins.values()].map(plugin => ({ id: plugin.id, name: plugin.name, version: plugin.version,
+      plugins: [...this.plugins.values()].map(plugin => ({ id: plugin.id, name: plugin.name, version: plugin.version, kind: this.pluginKind(plugin.id),
         enabled: this.enabled.has(plugin.id), logsSupported: Boolean(plugin.logs), logViewerCount: this.logStreams.get(plugin.id)?.size ?? 0, configuration: plugin.getPublicConfiguration(), frontend: this.frontendContribution(plugin.id),
         status: plugin.getStatus(), capabilities: plugin.capabilities, tools: plugin.tools })),
       harness: this.harness.getStatus(),
@@ -207,7 +213,7 @@ export class EatingHost {
           if (!response.destroyed && !response.writableEnded) streams.add(stop)
           return
         }
-        const match = /^\/api\/plugins\/([a-z][a-z0-9-]*)\/(configuration|connect|disconnect|enable|disable|invoke|mcp-registration)$/.exec(pathname)
+        const match = /^\/api\/plugins\/([a-z][a-z0-9-]*)\/(configuration|connect|disconnect|enable|disable|manage|invoke|mcp-registration)$/.exec(pathname)
         if (!match) throw new PlatformError('NOT_FOUND', '接口不存在。', 404)
         const id = match[1]!
         const operation = match[2]!
@@ -231,15 +237,18 @@ export class EatingHost {
             headers: { Authorization: `Bearer ${this.getMcpToken(id)}` },
             note: '这是插件 MCP 连接参数；尚未自动注册到 Harness。请仅交给可信的主 Harness。' }); return
         }
-        if (this.mutations.has(id)) throw new PlatformError('PLUGIN_BUSY', '平台正在变更连接或配置，请稍后重试。', 409)
-        this.mutations.add(id)
-        try {
+        await this.mutatePlugin(id, operation, async () => {
           if (operation === 'configuration') json(response, 200, await plugin.updateConfiguration(body))
           else if (operation === 'connect') { await plugin.connect(); json(response, 200, plugin.getStatus()) }
-          else if (operation === 'disconnect') { await plugin.disconnect(); json(response, 200, plugin.getStatus()) }
+          else if (operation === 'disconnect') { this.revokeHarnessSinks(id); await plugin.disconnect(); json(response, 200, plugin.getStatus()) }
           else if (operation === 'enable') { await this.setEnabled(id, true); json(response, 200, { ok: true }) }
           else if (operation === 'disable') { await this.setEnabled(id, false); json(response, 200, { ok: true }) }
-        } finally { this.mutations.delete(id) }
+          else if (operation === 'manage') {
+            if (!plugin.manage) throw new PlatformError('PLUGIN_MANAGEMENT_UNSUPPORTED', '此插件未提供管理操作。', 404)
+            if (!isJsonObject(body) || typeof body.operation !== 'string' || !body.operation.trim()) throw new PlatformError('INVALID_INPUT', '请提供有效的插件管理操作。')
+            json(response, 200, await plugin.manage(body.operation, body.input))
+          }
+        })
         return
       }
       if (request.method === 'GET' && this.options.staticDirectory) { await this.serveStatic(pathname, response); return }
@@ -249,6 +258,77 @@ export class EatingHost {
       const failure = safeError(error)
       json(response, failure.statusCode, { ok: false, error: { code: failure.code, message: failure.message, outcome: failure.outcome } })
     }
+  }
+
+  private pluginKind(id: string): 'communication' | 'harness' {
+    const entry = this.entries.get(id)
+    return entry?.installed?.manifest.kind ?? entry?.kind ?? 'communication'
+  }
+
+  private requireHarnessAccess(id: string): void {
+    if (this.closed) throw new PlatformError('HOST_STOPPED', 'Host 正在停止。', 503)
+    if (!this.enabled.has(id)) throw new PlatformError('PLUGIN_DISABLED', 'Harness 插件已停用。', 409, 'not-sent')
+  }
+
+  private harnessServices(id: string): HarnessHostServices {
+    return Object.freeze({
+      registerSink: (sink: HarnessMessageSink) => {
+        this.requireHarnessAccess(id)
+        if (this.mutations.has(id) && this.mutations.get(id) !== 'connect') throw new PlatformError('PLUGIN_BUSY', '插件正在变更，暂不能登记 Harness 接收者。', 409)
+        if (sink.id !== id) throw new PlatformError('PLUGIN_SCOPE_VIOLATION', 'Harness 接收者身份必须属于当前插件。', 403)
+        const detach = this.harness.register({
+          id,
+          isReady: () => !this.closed && this.enabled.has(id) && (sink.isReady?.() ?? true),
+          ...(typeof sink.deliverBatch === 'function' ? { deliverBatch: (batch, signal) => {
+            this.requireHarnessAccess(id)
+            return sink.deliverBatch!(batch, signal)
+          } } satisfies Pick<HarnessMessageSink, 'deliverBatch'> : {}),
+          ...(typeof sink.deliver === 'function' ? { deliver: (event, signal) => {
+            this.requireHarnessAccess(id)
+            return sink.deliver!(event, signal)
+          } } satisfies Pick<HarnessMessageSink, 'deliver'> : {}),
+        })
+        const registrations = this.sinkRegistrations.get(id) ?? new Set<() => void>()
+        this.sinkRegistrations.set(id, registrations)
+        const unregister = () => {
+          if (!registrations.delete(unregister)) return
+          if (!registrations.size) this.sinkRegistrations.delete(id)
+          detach()
+        }
+        registrations.add(unregister)
+        return unregister
+      },
+      wake: () => {
+        if (!this.closed && this.enabled.has(id) && this.sinkRegistrations.get(id)?.size) this.harness.notify()
+      },
+      readOwnerConfiguration: () => {
+        this.requireHarnessAccess(id)
+        const snapshot = this.authoring.getSnapshot()
+        return Object.freeze({ revision: snapshot.revision,
+          prompts: Object.freeze(snapshot.prompts.map(prompt => Object.freeze({ ...prompt }))),
+          activePersona: snapshot.activePersonaId ? Object.freeze({ ...this.authoring.getPersona(snapshot.activePersonaId) }) : null,
+        })
+      },
+      getMcpConnection: (pluginId: string) => {
+        this.requireHarnessAccess(id)
+        if (!this.url) throw new PlatformError('HOST_NOT_LISTENING', 'Host 尚未监听，无法登记 MCP 连接。', 503)
+        this.requirePlugin(pluginId, true)
+        if (this.pluginKind(pluginId) !== 'communication') throw new PlatformError('PLUGIN_SCOPE_VIOLATION', 'Harness 仅可取得已启用通讯插件的 MCP 连接。', 403)
+        return Object.freeze({ url: `${this.url}/mcp/${pluginId}`, headers: Object.freeze({ Authorization: `Bearer ${this.getMcpToken(pluginId)}` }) })
+      },
+    })
+  }
+
+  private revokeHarnessSinks(id: string): void {
+    for (const unregister of this.sinkRegistrations.get(id) ?? []) unregister()
+    this.sinkRegistrations.delete(id)
+  }
+
+  private async mutatePlugin<T>(id: string, operation: string, run: () => Promise<T>): Promise<T> {
+    if (this.mutations.has(id)) throw new PlatformError('PLUGIN_BUSY', '插件正在变更连接或配置，请稍后重试。', 409)
+    this.mutations.set(id, operation)
+    try { return await run() }
+    finally { this.mutations.delete(id) }
   }
 
   private requirePlugin(id: string, requireEnabled: boolean): BackendPlugin {
@@ -268,16 +348,19 @@ export class EatingHost {
   private async setEnabled(id: string, enabled: boolean): Promise<void> {
     const next = new Set(this.enabled)
     if (enabled) next.add(id)
-    else {
-      for (const stop of this.logStreams.get(id) ?? []) stop()
-      this.logStreams.delete(id)
-      await this.plugins.get(id)?.disconnect()
-      await this.mcp.get(id)?.close()
-      this.mcp.delete(id)
-      next.delete(id)
-    }
+    else next.delete(id)
     this.store.setSetting('platforms.enabled', JSON.stringify({ version: 1, ids: [...next] }))
     this.enabled.clear(); for (const entry of next) this.enabled.add(entry)
+    if (!enabled) {
+      for (const stop of this.logStreams.get(id) ?? []) stop()
+      this.logStreams.delete(id)
+      this.revokeHarnessSinks(id)
+      try { await this.plugins.get(id)?.disconnect() }
+      finally {
+        try { await this.mcp.get(id)?.close() }
+        finally { this.mcp.delete(id) }
+      }
+    }
   }
 
   private frontendContribution(id: string): JsonObject | null {
@@ -320,6 +403,7 @@ export class EatingHost {
     this.closed = true
     for (const streams of this.logStreams.values()) for (const stop of streams) stop()
     this.logStreams.clear()
+    for (const id of this.sinkRegistrations.keys()) this.revokeHarnessSinks(id)
     const stopped = new Promise<void>(resolveClose => this.server.listening ? this.server.close(() => resolveClose()) : resolveClose())
     this.server.closeIdleConnections()
     await Promise.allSettled([...this.plugins.values()].map(plugin => plugin.dispose()))

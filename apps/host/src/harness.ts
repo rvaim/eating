@@ -90,6 +90,7 @@ export class HarnessGateway {
     if (!this.registration || this.closed || this.flushing) return
     let deadline = this.storageRetryAt
     if (!this.pendingFinalization) {
+      if (!this.isReady(this.registration)) return
       try {
         const selections = this.selections(this.store.getDeliverySettings(), Date.now())
         if (!selections.length) { this.storageRetryAt = 0; return }
@@ -111,6 +112,14 @@ export class HarnessGateway {
         if (succeeded || wakeRequested || this.storageRetryAt > Date.now()) this.schedule()
       })
     }, Math.max(0, deadline - Date.now()))
+  }
+
+  private isReady(registration: Registration): boolean {
+    try { return registration.sink.isReady?.() ?? true }
+    catch {
+      this.lastError = 'Harness 接收者就绪检查失败，保留正文并等待接收者唤醒。'
+      return false
+    }
   }
 
   private recordStorageFailure(): void {
@@ -206,6 +215,7 @@ export class HarnessGateway {
     this.storageRetryAt = 0
     if (!this.completeFinalization()) return
     while (this.registration === registration && !this.closed && !this.pendingFinalization) {
+      if (!this.isReady(registration)) return
       const settings = this.store.getDeliverySettings()
       const now = Date.now()
       const selection = this.selections(settings, now).filter(candidate => candidate.items.length && candidate.readyAt <= now)
@@ -221,7 +231,7 @@ export class HarnessGateway {
         await this.deliver(selection.items, registration, settings, signal => sink.deliverBatch!(batch, signal))
       } else {
         for (const item of selection.items) {
-          if (this.registration !== registration || this.closed) return
+          if (this.registration !== registration || this.closed || !this.isReady(registration)) return
           // A settings/capacity change may remove a selected, still-unsent item.
           const queued = this.store.getQueuedHarnessEvents().find(current => current.event.eventId === item.event.eventId)
           if (!queued || queued.status !== 'pending') continue

@@ -54,7 +54,8 @@ export function parsePluginPackageManifest(value: unknown): PluginPackageManifes
     throw failure('INVALID_PLUGIN_MANIFEST', '插件清单字段不完整或含有未知字段。')
   }
   if (value.schemaVersion !== 1 || value.apiVersion !== 1) throw failure('INCOMPATIBLE_PLUGIN_API', '仅支持 schemaVersion 1 / SDK apiVersion 1 的插件包。')
-  if (!validId(value.id) || !validVersion(value.version) || !validId(value.storageDirectory) || !value.storageDirectory.endsWith('-bot') || value.kind !== 'communication'
+  if (!validId(value.id) || !validVersion(value.version) || !validId(value.storageDirectory)
+    || (value.kind !== 'communication' && value.kind !== 'harness') || (value.kind === 'communication' && !value.storageDirectory.endsWith('-bot'))
     || typeof value.name !== 'string' || !value.name.trim() || value.name.length > 100
     || typeof value.description !== 'string' || value.description.length > 2000) {
     throw failure('INVALID_PLUGIN_MANIFEST', '插件身份、版本、类型、数据目录或说明无效。')
@@ -76,7 +77,7 @@ export function parsePluginPackageManifest(value: unknown): PluginPackageManifes
   // Canonical field order also makes immutable-version comparisons independent of JSON formatting.
   return {
     schemaVersion: 1, id: value.id, name: value.name, description: value.description,
-    version: value.version, kind: 'communication', apiVersion: 1, storageDirectory: value.storageDirectory,
+    version: value.version, kind: value.kind, apiVersion: 1, storageDirectory: value.storageDirectory,
     backend: value.backend,
     frontend: { entry: frontend.entry, style: frontend.style, order: frontend.order, brandColor: frontend.brandColor, icon: frontend.icon },
     integrity: Object.fromEntries(ENTRIES.map(entry => [entry, integrity[entry] as string])),
@@ -382,10 +383,10 @@ export async function installPluginPackage(home: string, sourceDirectory: string
           const activeVersions = await versionDirectory(plugins, active, false)
           if (!activeVersions || !await statOrMissing(join(activeVersions, active.version))) throw failure('MISSING_PLUGIN_PACKAGE', '索引指向的插件版本不存在，禁止修改安装状态。')
           const { manifest } = await verifyPackage(join(activeVersions, active.version), active)
-          if (active.id === snapshot.manifest.id && manifest.storageDirectory !== snapshot.manifest.storageDirectory) {
-            throw failure('PLUGIN_STORAGE_MIGRATION_REQUIRED', '升级插件不能更改数据目录；需要先完成单独授权的数据迁移。', 409)
+          if (active.id === snapshot.manifest.id && (manifest.kind !== snapshot.manifest.kind || manifest.storageDirectory !== snapshot.manifest.storageDirectory)) {
+            throw failure('PLUGIN_STORAGE_MIGRATION_REQUIRED', '升级插件不能更改数据种类或目录；需要先完成单独授权的数据迁移。', 409)
           }
-          if (active.id !== snapshot.manifest.id && manifest.storageDirectory === snapshot.manifest.storageDirectory) {
+          if (active.id !== snapshot.manifest.id && manifest.kind === snapshot.manifest.kind && manifest.storageDirectory === snapshot.manifest.storageDirectory) {
             throw failure('PLUGIN_STORAGE_CONFLICT', '插件数据目录已由另一个活动插件使用，请为本插件声明独立目录。', 409)
           }
         }

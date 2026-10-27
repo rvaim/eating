@@ -87,6 +87,120 @@ const failAck = "CREATE TRIGGER fail_ack BEFORE UPDATE ON event_dedup WHEN NEW.d
 const failState = "CREATE TRIGGER fail_state BEFORE UPDATE ON settings WHEN NEW.key='host:delivery-queue-state' BEGIN SELECT RAISE(ABORT,'injected state failure'); END"
 
 describe('HarnessGateway bounded aggregation and delivery', () => {
+  it('keeps an unready receiver at zero attempts and zero timers until explicitly woken', async () => {
+    const { gateway, store, record } = fixture({ maxBatchMessages: 1 })
+    record()
+    let ready = false
+    const harness = { ...batchSink(), isReady: () => ready }
+    const select = vi.spyOn(store, 'getQueuedHarnessEvents')
+    gateway.register(harness)
+    gateway.notify()
+    expect(select).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(60000)
+    expect(store.getQueuedHarnessEvents()[0]).toMatchObject({ status: 'pending', attempts: 0 })
+    ready = true
+    gateway.notify()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.deliverBatch).toHaveBeenCalledOnce()
+    expect(store.harnessSummary()).toMatchObject({ accepted: 1, pending: 0 })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('rechecks readiness when a scheduled batch becomes due', async () => {
+    const { gateway, store, record } = fixture()
+    record()
+    let ready = true
+    const harness = { ...batchSink(), isReady: () => ready }
+    gateway.register(harness)
+    expect(vi.getTimerCount()).toBe(1)
+    ready = false
+    await vi.advanceTimersByTimeAsync(500)
+    expect(harness.deliverBatch).not.toHaveBeenCalled()
+    expect(store.getQueuedHarnessEvents()[0]).toMatchObject({ status: 'pending', attempts: 0 })
+    expect(vi.getTimerCount()).toBe(0)
+    ready = true
+    gateway.notify()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.deliverBatch).toHaveBeenCalledOnce()
+  })
+
+  it.each(['batch', 'per-event'] as const)('retains new arrivals without retry while the %s receiver is busy', async mode => {
+    const { gateway, store, record } = fixture({ maxBatchMessages: 1, retryIntervalMs: 100 })
+    record('first')
+    let ready = true
+    const implementation = async () => { ready = false; return reliableReceipt() }
+    const harness = { ...(mode === 'batch' ? batchSink('busy', implementation) : eventSink('busy', implementation)), isReady: () => ready }
+    gateway.register(harness)
+    await vi.advanceTimersByTimeAsync(0)
+    const second = record('arrived during model processing')
+    gateway.notify()
+    await vi.advanceTimersByTimeAsync(60000)
+    expect(store.getQueuedHarnessEvents()).toMatchObject([{ event: second, status: 'pending', attempts: 0 }])
+    expect(store.harnessSummary()).toMatchObject({ accepted: 1, pending: 1, uncertain: 0 })
+    expect(vi.getTimerCount()).toBe(0)
+    ready = true
+    gateway.notify()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.harnessSummary()).toMatchObject({ accepted: 2, pending: 0, uncertain: 0 })
+  })
+
+  it('stops a legacy batch between events when readiness changes', async () => {
+    const { gateway, store, record } = fixture({ maxBatchMessages: 2 })
+    record('first')
+    const second = record('second')
+    let ready = true
+    const harness = { ...eventSink('legacy-busy', async () => { ready = false; return reliableReceipt() }), isReady: () => ready }
+    gateway.register(harness)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.deliver).toHaveBeenCalledOnce()
+    expect(store.getQueuedHarnessEvents()).toMatchObject([{ event: second, status: 'pending', attempts: 0 }])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('records a fixed readiness error without polling or exposing plugin errors and can recover on wake', async () => {
+    const { gateway, store, record } = fixture({ maxBatchMessages: 1 })
+    record()
+    let failing = true
+    const isReady = vi.fn(() => { if (failing) throw new Error('private readiness diagnostic'); return true })
+    const harness = { ...batchSink(), isReady }
+    gateway.register(harness)
+    expect(gateway.getStatus().lastError).toBe('Harness 接收者就绪检查失败，保留正文并等待接收者唤醒。')
+    await vi.advanceTimersByTimeAsync(60000)
+    expect(isReady).toHaveBeenCalledOnce()
+    expect(harness.deliverBatch).not.toHaveBeenCalled()
+    expect(store.getQueuedHarnessEvents()[0]?.attempts).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+    failing = false
+    gateway.notify()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.deliverBatch).toHaveBeenCalledOnce()
+    expect(gateway.getStatus().lastError).toBeNull()
+  })
+
+  it.each(['persistent', 'memory'] as const)('commits a pending %s local acknowledgement while receiver readiness stays false', async storageMode => {
+    const { gateway, store, record } = fixture({ storageMode, maxBatchMessages: 1, retryIntervalMs: 100 })
+    record('reliably handed off')
+    let ready = true
+    const harness = { ...batchSink('local-only', async () => {
+      ready = false
+      executeSql(store, failAck)
+      return reliableReceipt()
+    }), isReady: () => ready }
+    gateway.register(harness)
+    await vi.advanceTimersByTimeAsync(0)
+    const second = record('waiting for model readiness')
+    gateway.notify()
+    expect(gateway.getStatus()).toMatchObject({ waitingForLocalCommit: true, delivering: 1, pending: 1 })
+    expect(vi.getTimerCount()).toBe(1)
+    executeSql(store, 'DROP TRIGGER fail_ack')
+    await vi.advanceTimersByTimeAsync(100)
+    expect(harness.deliverBatch).toHaveBeenCalledOnce()
+    expect(store.getQueuedHarnessEvents()).toMatchObject([{ event: second, status: 'pending', attempts: 0 }])
+    expect(gateway.getStatus()).toMatchObject({ waitingForLocalCommit: false, accepted: 1, delivering: 0 })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('keeps bodies pending without a sink and leaves no idle timer', async () => {
     const { gateway, store, record } = fixture()
     record()

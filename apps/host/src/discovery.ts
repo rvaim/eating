@@ -12,6 +12,7 @@ export async function discoverBackendPlugins(home: string): Promise<readonly Bac
     const loaded = await import(pathToFileURL(resolve(installed.directory, installed.manifest.backend)).href) as { default?: unknown }
     const entry = loaded.default
     if (!entry || typeof entry !== 'object' || !('id' in entry) || entry.id !== installed.manifest.id
+      || (('kind' in entry ? entry.kind : undefined) ?? 'communication') !== installed.manifest.kind
       || !('storageDirectory' in entry) || entry.storageDirectory !== installed.manifest.storageDirectory
       || !('create' in entry) || typeof entry.create !== 'function') throw new PlatformError('INVALID_PLUGIN_ENTRY', `插件 ${installed.manifest.id} 后台入口与安装清单不匹配。`, 500)
     const original = entry as BackendPluginEntry

@@ -2,7 +2,7 @@
 
 结论：**认知与行动交给用户选定的 Harness，Eating 提供稳定运行和统一接入边界，不永久绑定 DSH，也不重写 Harness。** 唯一 AI 身份保持不变。
 
-状态：可替换原则已确认。公开输入信封、批次/回执、唯一 sink、有界临时队列与投递设置已有实现并通过独立测试接收端验证；实际 DSH/其他 Harness 连接、能力选择、运行时切换与记忆迁移仍未实现。认知边界见 [ADR-0006](../decisions/ADR-0006-可替换Harness与认知边界.md)，无历史队列见 [ADR-0013](../decisions/ADR-0013-无历史消息与可配置投递队列.md)。
+状态：可替换原则及公开输入、回执、唯一sink、有界队列已实现；2026-10-28最小DSH插件通过官方SDK、独立运行时、QQ MCP、本地模型协议/OneBot夹具和整Host会话恢复验证，见[本轮报告](../reports/2026-10-28-DSH最小Harness验证报告.md)。其他Harness、热切换、完整自主调度与长期记忆迁移仍未实现。认知边界见 [ADR-0006](../decisions/ADR-0006-可替换Harness与认知边界.md)，无历史队列见 [ADR-0013](../decisions/ADR-0013-无历史消息与可配置投递队列.md)。
 
 ## 现状与依赖方向
 
@@ -12,13 +12,15 @@ UI、通讯、队列与授权依赖 Eating 公开契约，具体适配器将契�
 
 ## 已实现的输入交接边界
 
-[公开 SDK](../../packages/plugin-sdk/src/index.ts)当前为 1.2.0、`apiVersion: 1`。`HarnessEvent` 保留协议版本、稳定 eventId、pluginId/instanceId/accountId、conversationId、senderId、接收时间、结构化 content/text 和外部来源；外部正文不能升级为系统指令或主人授权。
+[公开 SDK](../../packages/plugin-sdk/src/index.ts)当前为 1.4.0、`apiVersion: 1`。`HarnessEvent` 保留协议版本、稳定 eventId、pluginId/instanceId/accountId、conversationId、senderId、可选messageId/targetId、接收时间、结构化 content/text 和外部来源；外部正文不能升级为系统指令或主人授权。
 
 [HarnessGateway](../../apps/host/src/harness.ts)同一工作区只允许一个主要 `HarnessMessageSink`，接收端可提供 `deliverBatch(batch, signal)`，也可保留 `deliver(event, signal)`。批次包含稳定 batchId、conversationId、createdAt、触发原因与逐条事件；只有旧单条接口时按事件交接，不将队列聚合误写为一次模型调用。
 
 批次按 `conversationId` 分组，不跨会话。全局“设置 → 消息投递”配置实际聚合参数：默认静默 500 ms、最长等待 2000 ms、每批 10 条、目标 32 KiB。静默从同会话最后一条更新，最长等待从首条入队固定；数量或目标字节提前触发。目标字节是软阈值，单条超过目标时独立、不拆分，仍受队列硬容量约束，不代表模型 token 或上下文长度。
 
 默认回执超时 15 秒，明确拒收后间隔 10 秒、最多 5 次，包含首次。设置影响之后的批次选择，在途交接沿用开始时的超时；同会话被拒收的队首冷却期间，新消息不能越过队首投递。
+
+接收端可提供`isReady`，未就绪不选批、不消耗尝试数或启动空轮询，处理结束通过受控wake恢复；本地pendingFinalization提交始终优先，不被接收者busy挡住。DSH单批一直占用至模型idle与回执处理结束，ACK先返回也不把Host队列搬成无界inbox。
 
 ## 回执与结果语义
 
@@ -35,6 +37,12 @@ UI、通讯、队列与授权依赖 Eating 公开契约，具体适配器将契�
 未转交消息不保存正文，原始 OneBot raw 和额外 text 副本不落库，可靠交接后的正文删除。短期去重只有哈希、小状态与回执摘要，固定 24 小时、常态不超过 10000 个；SQLite 连清理也故障时，磁盘旧标识加内存后备最多 20000 个，无正文。长期记忆与原生会话归所选 Harness 的已授权机制，Eating 不复制一套聊天历史。
 
 reject-new 满时明确拒收、计数并报告错误；drop-oldest 只移最旧 pending，保护 delivering/uncertain。模式切换事务迁移当前队列，失败不部分更新；缩容不能满足保护条件时 409。清空另行用户确认，有正在投递消息则 409，保留动作账本与账号配置。迁移旧库保全所有未交接内容，移除终态历史与重复正文，原库压缩不另做聊天备份。具体默认字段、清空与迁移见[操作说明](../operations/QQ配置与功能测试.md)和[数据规范](../technical/数据目录与账号实例.md)。
+
+## 已实现的DSH首版
+
+[独立插件](../../plugins/harness/dsh/)只依赖公开Eating SDK与固定官方SDK，显式安装同版本独立运行时，使用sdk-minimal定向patch、两个专属home与固定真实UUID；完整重启显式resume，不换ID冒充恢复。只开放9个QQ MCP工具，system只含主人主策略与所启用人格，群/私聊外部模板通过user JSON传入。每批策略固定，主人编辑用于下一请求，普通finalResponse不自动发QQ。
+
+薄桥只用DSH公开会话、持久化、systemPrompt和tools服务：持久屏障后原子写元数据ACK；flush后ACK前的窗口通过公开持久只读handle核对批次并重建当前nonce回执，不重复prompt，不承诺exactly-once。最初空会话也须session-ready持久哨兵才保存created状态。模型失败与可靠交接分开报告，停用/断开/关闭即撤sink，断开失败仍disabled。
 
 ## 后续适配器职责
 
@@ -62,6 +70,6 @@ reject-new 满时明确拒收、计数并报告错误；drop-oldest 只移最旧
 
 ## 验证与未实现范围
 
-本轮用独立 sink 与真实临时 SQLite 验证交接，最终完整构建/严格类型、Vitest 16 文件 387/387、浏览器 13/13 通过，Gateway 49/49 与存储 41/41 合计 90 项获限定 PASS，见[项目状态](../项目状态.md)。测试接收端不等于模型消费测试，当前没有 DSH 插件、真实 Harness、自动 MCP 注册或跨引擎迁移实现。
+上一阶段独立sink回归为387/13，保留在旧报告；当前完整构建/严格类型、Vitest24文件541/541及浏览器23/23通过，含两项真实官方SDK集成：源码组合与独立安装产物的模型工具/沉默、可靠ACK、策略更新和整Host恢复同会话。完整命令及范围见[DSH报告](../reports/2026-10-28-DSH最小Harness验证报告.md)。模型端和QQ端仅测试夹具，实际提供商认证仍需主人配置后核验；无OS沙箱、原生Web会话页、第二Harness或跨引擎迁移承诺。
 
-下一步实际适配需验证隔离数据根、真实会话与消费证据；第二种 Harness 接入时应确认无需修改通讯模块与通用页面。DSH 专属调查仍见[DSH 集成](DSH集成.md)与[源码核对](../research/DSH源码核对.md)，旧调查结论不扩展为本轮已运行证据。
+后续继续核验真实提供商与未覆盖能力；第二种Harness接入时应验证不修改既有通讯实现，通用页面仍按kind目录注册。DSH首版的当前运行证据见[本轮报告](../reports/2026-10-28-DSH最小Harness验证报告.md)，原先[DSH集成设计](DSH集成.md)与[源码核对](../research/DSH源码核对.md)保留调查范围，不能替代实际发布包验证。

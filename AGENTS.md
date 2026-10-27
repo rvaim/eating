@@ -35,13 +35,13 @@
 
 统一 `EATING_HOME`，默认 `~/.eating`。机器人数据只放 `bot/<插件声明目录>`，QQ为 `bot/qq-bot`。账号索引用 `accounts.json`，每实例配置在 `accounts/<instanceId>/config.json`；实例ID稳定且独立于真实QQ号。本版只操作一个默认账号，多账号结构不等于已支持多账号并行。
 
-公共队列/账本/MCP令牌和锁在 `host`，插件不得将自己的令牌放浏览器localStorage或回显。停用保留配置与消息，删除数据另有授权。目录规则见[规范](docs/technical/数据目录与账号实例.md)。
+公共队列/账本/MCP令牌和锁在 `host`，插件不得将自己的令牌放浏览器localStorage或回显。停用保留配置与消息，删除数据另有授权。Harness数据放 `harness/<插件声明目录>`，DSH为 `harness/dsh`，包括专属DSH_HOME、DSH_AGENTS_HOME、工作区、runtime-home及版本化运行时；不得借用主DSH/Profile/凭据。所选Harness原生会话JSONL归Harness，Eating不再复制聊天历史。目录规则见[规范](docs/technical/数据目录与账号实例.md)，本轮实现见[DSH变更](docs/changes/2026-10-28-DSH最小Harness接入.md)。
 
 ## 技术状态与模块边界
 
 已确认：唯一身份、可替换 Harness、Host/认知边界、独立模块与面板注册、主人新增能力批准、独立 UI 和 Git。DSH Plugins 属于 DSH 适配生态，其他 Harness 另核。
 
-已采用React/TypeScript/Vite、普通CSS、lucide-react、pnpm；正式Host采用Node>=24.9.0/TypeScript、内置SQLite、ws和官方MCP SDK。Cordis仍为后续候选底座，Tauri/真实Harness/长期记忆/OS沙箱尚未实现。逻辑注册不等于完整执行隔离。
+已采用React/TypeScript/Vite、普通CSS、lucide-react、pnpm；正式Host采用Node>=24.9.0/TypeScript、内置SQLite、ws和官方MCP SDK。最小DSH Harness插件已实现，独立官方运行时与固定会话经本地模型/OneBot协议夹具验证；生产模型认证单独核验，不把启动就绪等同模型可用。Cordis仍为后续候选底座，Tauri/长期记忆/OS沙箱尚未实现；其他Harness、跨Harness无损迁移与能力等价未承诺。逻辑注册不等于完整执行隔离。
 
 Eating 定义自己的业务契约，Cordis 内部适配不应泄漏成所有跨进程/持久数据格式。其 scope 不等于进程/OS 隔离；DSH vendor 与上游包不能默认兼容。见[插槽设计](docs/architecture/插槽式扩展.md)、[Harness 适配](docs/architecture/Harness适配.md)、[Cordis 评估](docs/technical/Cordis选型评估.md)。
 
@@ -71,11 +71,11 @@ TypeScript 明确类型；跨进程接口有协议版本、输入校验、结构
 
 ## 工程结构与包边界
 
-2026-10-26负责人已确认保留一个Git仓库，主程序、SDK与插件按独立包管理和发布；在目录重组前已提交正式QQ基线 `2532469`。当前目录为 `apps/host`、`apps/web`、`packages/plugin-sdk`、`packages/ui-sdk`、`packages/plugin-core`、`plugins/communication/qq`，由pnpm workspace协调。
+2026-10-26负责人已确认保留一个Git仓库，主程序、SDK与插件按独立包管理和发布；在目录重组前已提交正式QQ基线 `2532469`。当前目录为 `apps/host`、`apps/web`、`packages/plugin-sdk`、`packages/ui-sdk`、`packages/plugin-core`、`plugins/communication/qq`、`plugins/harness/dsh`，由pnpm workspace协调。
 
 插件只依赖公开包入口，不允许引用 `apps/**` 的内部源码、跨插件实现或仓库相邻文件。OneBot等专用配置由插件维护，不放进通用SDK。主程序按已安装版本清单加载构建产物；禁止恢复源码扫描或把QQ静态编进应用来绕过独立安装验证。
 
-插件代码安装在 `EATING_HOME/plugins/<id>/versions/<version>`，`installed.json`保存激活记录；与 `bot`账号数据区分开。当前本地目录产物安装、升级和卸载要求Host停机，重启后生效；不宣称热更新或已发布npm。校验/安装失败保留旧激活与数据，版本内容不可变；删除账号数据仍需独立授权。公开SDK版本和apiVersion兼容需检查，产物脱离源码仍可运行须实际验证。详见[工程结构与插件发布](docs/architecture/工程结构与插件发布.md)。
+插件代码安装在 `EATING_HOME/plugins/<id>/versions/<version>`，`installed.json`保存激活记录；与 `bot`通讯账号区、`harness`运行数据区分开。当前本地目录产物安装、升级和卸载要求Host停机，重启后生效；不宣称热更新或已发布npm。校验/安装失败保留旧激活与数据，版本内容不可变；跨communication/harness类型升级拒绝隐式迁移，删除业务数据仍需独立授权。公开SDK版本和apiVersion兼容需检查，产物脱离源码仍可运行须实际验证。详见[工程结构与插件发布](docs/architecture/工程结构与插件发布.md)。
 
 ## 临时实时日志
 
@@ -87,9 +87,15 @@ TypeScript 明确类型；跨进程接口有协议版本、输入校验、结构
 
 ## 提示词、人格与DSH首版
 
-2026-10-27负责人要求先提交已有代码，再实现主Agent/群聊/私聊提示词及人格管理、变量高亮校验与光标补全；完成验证后再次提交，之后才开始DSH插件实现。多个人格是同一AI的候选配置，一次最多启用一个，不能因此产生多个主认知控制者。主人配置由受控管理API保存，模型/MCP不提供修改固定人格入口。模板变量目录、作用域、语法校验和替换共用公开SDK，禁止eval与递归解释替换后的外部正文。
+2026-10-27负责人要求先提交已有代码，再实现主Agent/群聊/私聊提示词及人格管理、变量高亮校验与光标补全；完成验证后再次提交，之后才开始DSH插件实现。前置基线 `fea2f7a` 与第二提交 `93a3d51` 已完成，顺序已履行。多个人格是同一AI的候选配置，一次最多启用一个，不能因此产生多个主认知控制者。主人配置由受控管理API保存，模型/MCP不提供修改固定人格入口。模板变量目录、作用域、语法校验和替换共用公开SDK，禁止eval与递归解释替换后的外部正文。
 
-DSH首版已明确授权：独立安装插件、专属运行时及DSH_HOME/DSH_AGENTS_HOME和固定真实会话，QQ消息由Harness自行判断是否调用QQ MCP回复，Host不得转发finalResponse冒充模型工具发送。不得借用主DSH、Profile或已有凭据。自动验证只用本地模型协议夹具和OneBot夹具；真实模型凭据由主人在独立插件界面配置。SDK排队或入箱通知不等于fsync，只有公开持久屏障后才可给Host可靠交接回执。每个阶段提交中文说明，推送另行授权。
+最小DSH已实现：独立安装插件、专属运行时及DSH_HOME/DSH_AGENTS_HOME和固定真实会话，QQ消息由Harness自行判断是否调用QQ MCP回复，Host不得转发finalResponse冒充模型工具发送。主策略/当前人格作为可信system，外部批次仅作user数据，下一请求更新策略但不更换会话。模型仅开放已批准QQ工具，不开放原生文件/Shell、资源、安装或固定人格写入口；这不构成OS沙箱。不得借用主DSH、Profile或已有凭据，真实模型凭据由主人在独立插件界面配置，自动验证只用本地模型协议与OneBot夹具。
+
+ready、SDK排队或入箱通知不等于fsync；只有公开 `sessions.flush` 成功后原子ACK，才可给Host可靠交接回执并删除正文。忙时暂停不耗重试，恢复扫描公开持久记录、不重发未知批次，不宣称exactly-once；桥ACK元数据保持有界、不建后台日志。停用先持久disabled并撤权限，disconnect失败也不得恢复注册；通讯插件不获得Harness私有服务。运行时安装只允许owner受控管理接口、独立环境与版本/lockfile校验，不经Shell且禁安装脚本，超时/取消终止子进程。
+
+本轮完整构建/严格TypeScript、Vitest 24文件541/541、Playwright 23/23通过；两项官方SDK集成覆盖源码组合与独立安装产物/运行时、删除安装源后整Host恢复同会话。SDK集成须显式设置 `EATING_DSH_TEST_RUNTIME`，未配置时默认跳过两项，不能视作本轮完整实跑。QQ0.5.0、DSH0.1.0与专属运行时已实际部署，当前DSH仅启用目录、模型空配置未启动，原3条待投递与账号/队列/发送账本摘要保持；主人配置真实提供商后再启动与核验认证，不能把installed写成模型online。实际5180双尺寸DSH页截图已读取，pageerror0、无横向溢出；限定只读UI复核SHIP、material0、无需重采，不声称该审阅重跑541/23。证据见[本轮报告](docs/reports/2026-10-28-DSH最小Harness验证报告.md)。
+
+本次用户只授权上述两个前置提交，DSH阶段未另行自动提交或推送；后续提交须明确授权，按中文说明规范记录原因、内容与验证，推送另行授权。当前证据见[本轮变更](docs/changes/2026-10-28-DSH最小Harness接入.md)。
 
 ## Git 提交信息约束
 

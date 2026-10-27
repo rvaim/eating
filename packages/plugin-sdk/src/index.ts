@@ -40,6 +40,8 @@ export interface HarnessEvent {
   readonly accountId: string
   readonly conversationId: string
   readonly senderId: string
+  readonly messageId?: string
+  readonly targetId?: string
   readonly receivedAt: string
   readonly source: { readonly trust: 'external'; readonly kind: 'private' | 'group' }
   readonly content: JsonValue
@@ -107,6 +109,7 @@ export interface HarnessDeliveryReceipt {
 
 export interface HarnessMessageSink {
   readonly id: string
+  isReady?(): boolean
   deliver?(event: HarnessEvent, signal: AbortSignal): Promise<HarnessDeliveryReceipt>
   deliverBatch?(batch: HarnessDeliveryBatch, signal: AbortSignal): Promise<HarnessDeliveryReceipt>
 }
@@ -133,7 +136,22 @@ export function validateDeliverySettings(input: unknown): DeliverySettings {
   return Object.freeze({ ...input }) as unknown as DeliverySettings
 }
 
+export interface HarnessOwnerConfiguration {
+  readonly revision: number
+  readonly prompts: readonly import('./authoring.js').PromptDocument[]
+  readonly activePersona: import('./authoring.js').PersonaDocument | null
+}
+
+export interface HarnessHostServices {
+  registerSink(sink: HarnessMessageSink): () => void
+  wake(): void
+  readOwnerConfiguration(): HarnessOwnerConfiguration
+  getMcpConnection(pluginId: string): { readonly url: string; readonly headers: Readonly<Record<string, string>> }
+}
+
 export interface HostPluginContext {
+  /** Present only for installed, approved Harness plugins. */
+  readonly harness?: HarnessHostServices
   readonly dataDirectory: string
   getSetting(key: string): string | null
   setSetting(key: string, value: string): void
@@ -170,6 +188,8 @@ export interface PluginLogSource {
 }
 
 export interface BackendPlugin {
+  readonly kind?: 'communication' | 'harness'
+  manage?(operation: string, input: unknown): Promise<JsonValue>
   readonly logs?: PluginLogSource
   readonly id: string
   readonly name: string
@@ -191,7 +211,7 @@ export interface PluginPackageManifest {
   readonly name: string
   readonly description: string
   readonly version: string
-  readonly kind: 'communication'
+  readonly kind: 'communication' | 'harness'
   readonly apiVersion: 1
   readonly storageDirectory: string
   readonly backend: string
@@ -206,6 +226,7 @@ export interface PluginPackageManifest {
 }
 
 export interface BackendPluginEntry {
+  readonly kind?: 'communication' | 'harness'
   readonly id: string
   readonly storageDirectory: string
   readonly installed?: { readonly manifest: PluginPackageManifest; readonly directory: string }

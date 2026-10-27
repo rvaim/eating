@@ -52,7 +52,8 @@ function readEnvelope(json: string): HarnessEvent {
   try { value = JSON.parse(json) } catch { throw new PlatformError('STORAGE_CORRUPTED', '待投递信封损坏，原数据未被丢弃。', 500) }
   const strings = ['eventId', 'pluginId', 'instanceId', 'platform', 'accountId', 'conversationId', 'senderId', 'receivedAt', 'text']
   if (!isJsonObject(value) || value.protocolVersion !== 1 || strings.some(key => typeof value[key] !== 'string') ||
-    !isJsonObject(value.source) || value.source.trust !== 'external' || !['private', 'group'].includes(String(value.source.kind)) || !isJsonValue(value.content)) {
+    !isJsonObject(value.source) || value.source.trust !== 'external' || !['private', 'group'].includes(String(value.source.kind)) || !isJsonValue(value.content)
+    || ['messageId', 'targetId'].some(key => value[key] !== undefined && (typeof value[key] !== 'string' || !value[key] || (value[key] as string).length > 200))) {
     throw new PlatformError('STORAGE_CORRUPTED', '待投递信封损坏，原数据未被丢弃。', 500)
   }
   return value as unknown as HarnessEvent
@@ -62,6 +63,7 @@ function serializeEnvelope(event: HarnessEvent, eventId: string): string {
   // Retain only the public normalized envelope, never the original protocol event or a second text column.
   const json = JSON.stringify({ protocolVersion: event.protocolVersion, eventId, pluginId: event.pluginId, instanceId: event.instanceId,
     platform: event.platform, accountId: event.accountId, conversationId: event.conversationId, senderId: event.senderId,
+    messageId: event.messageId, targetId: event.targetId,
     receivedAt: event.receivedAt, source: { trust: event.source.trust, kind: event.source.kind }, content: event.content, text: event.text })
   readEnvelope(json)
   return json

@@ -64,7 +64,11 @@ async function buildRuntime() {
 }
 
 if (target === 'sdk' || target === 'all') await buildSdk()
-if (target === 'plugin' || target === 'all') await buildPlugin(target === 'plugin' ? process.argv[3] ?? 'plugins/communication/qq' : 'plugins/communication/qq')
+if (target === 'plugin') await buildPlugin(process.argv[3] ?? 'plugins/communication/qq')
+if (target === 'all') {
+  await buildPlugin('plugins/communication/qq')
+  await buildPlugin('plugins/harness/dsh')
+}
 if (target === 'host' || target === 'all') await buildHost()
 if (target === 'all') {
   execFileSync(process.execPath, [resolve(root, 'node_modules/typescript/bin/tsc'), '--noEmit'], { cwd: root, stdio: 'inherit' })

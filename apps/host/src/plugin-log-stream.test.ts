@@ -340,11 +340,11 @@ describe('real Host temporary plugin log SSE', () => {
     expect(context.source.unsubscribe).toHaveBeenCalledTimes(2)
     expect(heartbeats.active()).toBe(0)
     expect((await context.api('/api/workspace')).body).toMatchObject({
-      registeredIds: ['test-log'], plugins: [{ id: 'test-log', enabled: true, logViewerCount: 0 }],
+      registeredIds: [], plugins: [{ id: 'test-log', enabled: false, logViewerCount: 0 }],
     })
     const busy = await context.api(streamPath)
     expect(busy.status).toBe(409)
-    expect(busy.body).toMatchObject({ error: { code: 'PLUGIN_BUSY' } })
+    expect(busy.body).toMatchObject({ error: { code: 'PLUGIN_DISABLED' } })
     expect(context.source.subscribe).toHaveBeenCalledTimes(2)
     expect(heartbeats.started()).toBe(2)
 
@@ -378,15 +378,21 @@ describe('real Host temporary plugin log SSE', () => {
     expect(heartbeats.active()).toBe(0)
     const busy = await context.api(streamPath)
     expect(busy.status).toBe(409)
-    expect(busy.body).toMatchObject({ error: { code: 'PLUGIN_BUSY' } })
+    expect(busy.body).toMatchObject({ error: { code: 'PLUGIN_DISABLED' } })
     failDisconnect(new Error('test disconnect failed'))
     const failed = await disabling
     expect(failed.status).toBe(500)
     expect(failed.body).toMatchObject({ error: { code: 'INTERNAL_ERROR' } })
     expect((await context.api('/api/workspace')).body).toMatchObject({
-      registeredIds: ['test-log'], plugins: [{ id: 'test-log', enabled: true, logViewerCount: 0 }],
+      registeredIds: [], plugins: [{ id: 'test-log', enabled: false, logViewerCount: 0 }],
     })
     expect(context.source.listeners.size).toBe(0)
+    const stillDisabled = await context.api(streamPath)
+    expect(stillDisabled.status).toBe(409)
+    expect(stillDisabled.body).toMatchObject({ error: { code: 'PLUGIN_DISABLED' } })
+    expect(context.source.subscribe).toHaveBeenCalledTimes(1)
+    expect(heartbeats.active()).toBe(0)
+    expect((await context.api('/api/plugins/test-log/enable', { method: 'POST', body: {} })).status).toBe(200)
 
     const resumed = await readyViewer(context)
     expect(resumed.logs).toEqual([])

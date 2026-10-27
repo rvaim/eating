@@ -144,8 +144,10 @@ test.describe('正式 QQ 平台与 OneBot v11', () => {
     await cp(fileURLToPath(new URL('../../plugins/communication/qq/dist/', import.meta.url)), source, { recursive: true })
     const manifestPath = join(source, 'eating-plugin.json')
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { version: string; integrity: Record<string, string> }
-    manifest.version = '0.4.1+local'
-    for (const [name, before, after] of [['server.mjs', 'version = "0.4.0"', 'version = "0.4.1+local"'], ['ui/index.js', 'version:"0.4.0"', 'version:"0.4.1+local"']]) {
+    const originalVersion = manifest.version
+    const fixtureVersion = `${originalVersion}+local`
+    manifest.version = fixtureVersion
+    for (const [name, before, after] of [['server.mjs', `version = "${originalVersion}"`, `version = "${fixtureVersion}"`], ['ui/index.js', `version:"${originalVersion}"`, `version:"${fixtureVersion}"`]]) {
       const path = join(source, name!)
       const text = await readFile(path, 'utf8')
       expect(text).toContain(before!)
@@ -158,7 +160,7 @@ test.describe('正式 QQ 平台与 OneBot v11', () => {
     url = await host.listen()
     await page.goto(`${url}/#robots/qq`)
     await expect(page.getByRole('tab', { name: '连接配置', exact: true })).toBeVisible()
-    await expect(page.getByText('v0.4.1+local', { exact: true })).toBeVisible()
+    await expect(page.getByText(`v${fixtureVersion}`, { exact: true })).toBeVisible()
     await expect(page.getByLabel('OneBot 地址', { exact: true })).toBeVisible()
   })
 

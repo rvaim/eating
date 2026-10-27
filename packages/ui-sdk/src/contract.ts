@@ -19,9 +19,9 @@ export interface PluginPanelProps {
   readonly onRefresh?: () => Promise<void>
 }
 
-/** Frontend contribution only. Real connector services will have a separate entry. */
-export interface CommunicationPlugin extends PluginManifest {
-  readonly kind: 'communication'
+/** Shared frontend contribution for independently managed plugin kinds. */
+export interface ManagedPlugin extends PluginManifest {
+  readonly kind: 'communication' | 'harness'
   readonly order: number
   readonly icon: LucideIcon
   readonly brandColor: string
@@ -30,4 +30,12 @@ export interface CommunicationPlugin extends PluginManifest {
   readonly validate: (values: PluginConfiguration) => ConfigurationValidation
   readonly summary: (values: PluginConfiguration) => string
   readonly Panel: ComponentType<PluginPanelProps>
+}
+
+export interface CommunicationPlugin extends ManagedPlugin {
+  readonly kind: 'communication'
+}
+
+export interface HarnessPlugin extends ManagedPlugin {
+  readonly kind: 'harness'
 }

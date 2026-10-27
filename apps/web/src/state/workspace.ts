@@ -1,6 +1,6 @@
 import type { ActivityEntry, PluginConfiguration, SavedConfiguration } from '@eating/plugin-core'
 import type { ConnectionStatus, JsonObject } from '@eating/plugin-sdk'
-import type { CommunicationPlugin, WorkspaceActionResult } from '@eating/ui-sdk'
+import type { ManagedPlugin, WorkspaceActionResult } from '@eating/ui-sdk'
 import { hostRequest } from '@eating/ui-sdk'
 import type { InstalledFrontendContribution } from '../plugins/catalog'
 
@@ -11,7 +11,7 @@ interface HostWorkspaceResponse {
 }
 
 export interface WorkspaceSnapshot {
-  readonly plugins: readonly CommunicationPlugin[]
+  readonly plugins: readonly ManagedPlugin[]
   readonly configurations: Readonly<Record<string, SavedConfiguration>>
   readonly activity: readonly ActivityEntry[]
   readonly storageError: string | null
@@ -22,15 +22,15 @@ export interface WorkspaceSnapshot {
 }
 
 export class PlatformWorkspace {
-  catalog: readonly CommunicationPlugin[]
+  catalog: readonly ManagedPlugin[]
   private readonly listeners = new Set<() => void>()
   private generation = 0
   private mutation = false
   private snapshot: WorkspaceSnapshot = Object.freeze({ plugins: [], configurations: {}, activity: [], storageError: null,
     unavailableIds: [], statuses: {}, harness: { state: 'not-attached', pending: 0 }, ready: false })
 
-  constructor(catalog: readonly CommunicationPlugin[], private readonly request: typeof hostRequest = hostRequest,
-    private readonly loadCatalog?: (entries: readonly InstalledFrontendContribution[]) => Promise<readonly CommunicationPlugin[]>) {
+  constructor(catalog: readonly ManagedPlugin[], private readonly request: typeof hostRequest = hostRequest,
+    private readonly loadCatalog?: (entries: readonly InstalledFrontendContribution[]) => Promise<readonly ManagedPlugin[]>) {
     this.catalog = Object.freeze([...catalog].sort((a, b) => a.order - b.order))
   }
 
@@ -52,7 +52,10 @@ export class PlatformWorkspace {
         statuses[plugin.id] = plugin.status
         if (typeof plugin.configuration.endpoint === 'string' && plugin.configuration.endpoint) {
           const values: Record<string, string | boolean> = {}
-          for (const [key, value] of Object.entries(plugin.configuration)) if (typeof value === 'string' || typeof value === 'boolean') values[key] = value
+          for (const [key, value] of Object.entries(plugin.configuration)) {
+            if (typeof value === 'string' || typeof value === 'boolean') values[key] = value
+            else if (typeof value === 'number' && Number.isFinite(value)) values[key] = String(value)
+          }
           configurations[plugin.id] = { values, savedAt: typeof plugin.configuration.updatedAt === 'string' ? plugin.configuration.updatedAt : '' }
         }
       }
@@ -73,8 +76,8 @@ export class PlatformWorkspace {
   }
 
   private async change(id: string, operation: string, label: string, body: unknown = {}): Promise<WorkspaceActionResult> {
-    if (this.mutation) return { ok: false, error: '平台正在更新，请稍后重试。' }
-    if (!this.catalog.some(plugin => plugin.id === id)) return { ok: false, error: '平台插件不存在。' }
+    if (this.mutation) return { ok: false, error: '插件正在更新，请稍后重试。' }
+    if (!this.catalog.some(plugin => plugin.id === id)) return { ok: false, error: '插件不存在。' }
     this.mutation = true
     try {
       await this.request(`/plugins/${encodeURIComponent(id)}/${operation}`, { method: 'POST', body })
@@ -83,7 +86,7 @@ export class PlatformWorkspace {
       this.publish({ ...this.snapshot, activity: [entry, ...this.snapshot.activity].slice(0, 20) })
       await this.refresh()
       return { ok: true }
-    } catch (error) { return { ok: false, error: error instanceof Error ? error.message : '平台操作失败。' } }
+    } catch (error) { return { ok: false, error: error instanceof Error ? error.message : '插件操作失败。' } }
     finally { this.mutation = false }
   }
 

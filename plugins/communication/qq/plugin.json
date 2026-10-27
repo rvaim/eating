@@ -3,7 +3,7 @@
   "id": "qq",
   "name": "QQ",
   "description": "通过 OneBot v11 连接 QQ，接收消息并提供独立 MCP 工具。",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "kind": "communication",
   "apiVersion": 1,
   "storageDirectory": "qq-bot",

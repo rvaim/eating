@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
-import { lstat, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { request } from 'node:http'
 import { connect as connectSocket } from 'node:net'
 import type { IncomingHttpHeaders } from 'node:http'
@@ -12,7 +12,7 @@ import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
 import { isJsonObject } from '@eating/plugin-sdk'
-import type { BackendPluginEntry, JsonObject, JsonValue } from '@eating/plugin-sdk'
+import type { BackendPlugin, BackendPluginEntry, HarnessMessageSink, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import qqEntry from '../../../plugins/communication/qq/src/server.ts'
 import { startOneBotFixture } from '../../../tests/fixtures/onebot.ts'
 import { EatingHost } from './app.ts'
@@ -112,8 +112,8 @@ async function connectHost(context: Awaited<ReturnType<typeof configuredHost>>) 
   return connected
 }
 
-async function mcpClient(context: Awaited<ReturnType<typeof createHost>>) {
-  const registration = await context.api('/api/plugins/qq/mcp-registration', { method: 'POST', body: {} })
+async function mcpClient(context: Awaited<ReturnType<typeof createHost>>, id = 'qq') {
+  const registration = await context.api(`/api/plugins/${id}/mcp-registration`, { method: 'POST', body: {} })
   expect(registration.status).toBe(200)
   const endpoint = registration.body.url
   const authorization = object(registration.body.headers).Authorization
@@ -124,6 +124,21 @@ async function mcpClient(context: Awaited<ReturnType<typeof createHost>>) {
     requestInit: { headers: { Authorization: authorization, Origin: context.url, Connection: 'close' } },
   }))
   return { client, endpoint, authorization }
+}
+
+function testEntry(id: string, kind: BackendPluginEntry['kind'], inspect: (context: HostPluginContext) => void, overrides: Partial<BackendPlugin> = {}): BackendPluginEntry {
+  return { id, ...(kind ? { kind } : {}), storageDirectory: kind === 'harness' ? id : `${id}-bot`, create: context => {
+    inspect(context)
+    return { id, ...(kind ? { kind } : {}), name: 'Host 边界测试插件', version: '1.0.0', tools: [], capabilities: [],
+      getStatus: () => ({ state: 'disconnected', accountId: null, accountName: null, connectedAt: null, lastEventAt: null, lastError: null, reconnectAttempt: 0 }),
+      getPublicConfiguration: () => ({}), updateConfiguration: async () => ({}), connect: async () => {},
+      disconnect: async () => {}, invoke: async () => null, dispose: async () => {}, ...overrides,
+    }
+  } }
+}
+
+function testSink(id: string): HarnessMessageSink {
+  return { id, isReady: () => false, deliverBatch: async () => ({ accepted: true, durable: true, receiptId: 'test-receipt' }) }
 }
 
 function invokeBody(name: string, args: JsonObject, requestId = randomUUID(), confirmed?: boolean): JsonObject {
@@ -143,6 +158,198 @@ afterEach(async () => {
     await rm(target, { recursive: true })
   }
   if (failures.length) throw new AggregateError(failures, 'Integration resources did not close cleanly')
+})
+
+describe('generic Host Harness services and management boundary', () => {
+  it('isolates Harness and communication data roots using the installed kind first and legacy entry fallback', async () => {
+    const home = await temporaryHome()
+    const captured = new Map<string, HostPluginContext>()
+    const capture = (id: string) => (context: HostPluginContext) => { captured.set(id, context) }
+    const legacy = testEntry('legacy', undefined, capture('legacy'))
+    const source = testEntry('dsh', 'harness', capture('dsh'))
+    const declared = testEntry('installed', undefined, capture('installed'))
+    const installed: BackendPluginEntry = { ...declared, installed: { directory: join(home, 'package'), manifest: {
+      schemaVersion: 1, id: 'installed', name: 'Harness', description: 'test', version: '1.0.0', kind: 'harness', apiVersion: 1,
+      storageDirectory: declared.storageDirectory, backend: 'server.mjs', integrity: {},
+      frontend: { entry: 'ui/index.js', style: 'ui/style.css', order: 0, brandColor: '#123456', icon: 'brain' },
+    } } }
+    const context = await createHost(home, [legacy, source, installed])
+    expect(captured.get('legacy')?.dataDirectory).toBe(join(home, 'bot', 'legacy-bot'))
+    expect(captured.get('legacy')).not.toHaveProperty('harness')
+    expect(captured.get('dsh')?.dataDirectory).toBe(join(home, 'harness', 'dsh'))
+    expect(captured.get('installed')?.dataDirectory).toBe(join(home, 'harness', 'installed-bot'))
+    expect(captured.get('installed')?.harness).toBeDefined()
+    for (const [id, pluginContext] of captured) {
+      await mkdir(pluginContext.dataDirectory, { recursive: true })
+      await writeFile(join(pluginContext.dataDirectory, 'probe.txt'), id)
+    }
+    expect(await readFile(join(home, 'harness', 'dsh', 'probe.txt'), 'utf8')).toBe('dsh')
+    await expect(stat(join(home, 'bot', 'dsh'))).rejects.toMatchObject({ code: 'ENOENT' })
+    const workspace = (await context.api('/api/workspace')).body
+    expect(pluginFrom(workspace, 'legacy').kind).toBe('communication')
+    expect(pluginFrom(workspace, 'dsh').kind).toBe('harness')
+    expect(pluginFrom(workspace, 'installed').kind).toBe('harness')
+  })
+
+  it('returns a deeply immutable owner configuration copy without any write service', async () => {
+    let pluginContext!: HostPluginContext
+    const context = await createHost('', [testEntry('dsh', 'harness', value => { pluginContext = value })])
+    const services = pluginContext.harness!
+    const initial = services.readOwnerConfiguration()
+    expect(initial).toMatchObject({ revision: 0, activePersona: null })
+    expect(context.host.store.getSetting('host:authoring')).toBeNull()
+    const persona = context.host.authoring.createPersona('主人设定', '固定人格{{人格名称}}').persona
+    const snapshot = context.host.authoring.getSnapshot()
+    context.host.authoring.setPersonaEnabled(persona.id, true, snapshot.revision)
+    const configuration = services.readOwnerConfiguration()
+    expect(configuration.activePersona).toMatchObject({ id: persona.id, body: persona.body })
+    expect(Object.isFrozen(configuration)).toBe(true)
+    expect(Object.isFrozen(configuration.prompts)).toBe(true)
+    expect(configuration.prompts.every(Object.isFrozen)).toBe(true)
+    expect(Object.isFrozen(configuration.activePersona)).toBe(true)
+    expect(Reflect.set(configuration.prompts[0]!, 'body', 'override')).toBe(false)
+    expect(Reflect.set(configuration.activePersona!, 'body', 'override')).toBe(false)
+    expect(Object.keys(services).sort()).toEqual(['getMcpConnection', 'readOwnerConfiguration', 'registerSink', 'wake'])
+    const updated = context.host.authoring.updatePersona(persona.id, persona.name, '主人新设定', persona.revision)
+    expect(configuration.activePersona?.body).toBe(persona.body)
+    expect(services.readOwnerConfiguration().activePersona?.body).toBe(updated.persona.body)
+  })
+
+  it('gives only Harness plugins local scoped communication MCP credentials after listen', async () => {
+    const home = await temporaryHome()
+    let harnessContext!: HostPluginContext
+    let communicationContext!: HostPluginContext
+    const entries = [testEntry('comm', undefined, value => { communicationContext = value }),
+      testEntry('other', undefined, () => {}), testEntry('dsh', 'harness', value => { harnessContext = value })]
+    const unstarted = new EatingHost({ dataDirectory: home, entries, port: 0, allowedUiOrigins: [] })
+    cleanups.push(() => unstarted.close())
+    expect(communicationContext.harness).toBeUndefined()
+    expect(() => harnessContext.harness!.getMcpConnection('comm')).toThrow(expect.objectContaining({ code: 'HOST_NOT_LISTENING' }))
+    expect(unstarted.store.getSetting('comm:mcp-token')).toBeNull()
+    await unstarted.close()
+    const context = await createHost(home, entries)
+    const services = harnessContext.harness!
+    const first = services.getMcpConnection('comm'), second = services.getMcpConnection('other')
+    expect(first.url).toBe(`${context.url}/mcp/comm`)
+    expect(first.headers.Authorization?.startsWith('Bearer ')).toBe(true)
+    expect(first.headers.Authorization === second.headers.Authorization).toBe(false)
+    expect(services.getMcpConnection('comm') === first).toBe(false)
+    expect(Object.isFrozen(first.headers)).toBe(true)
+    expect(() => services.getMcpConnection('dsh')).toThrow(expect.objectContaining({ code: 'PLUGIN_SCOPE_VIOLATION' }))
+    expect(() => services.getMcpConnection('missing')).toThrow(expect.objectContaining({ code: 'PLUGIN_NOT_FOUND' }))
+    const wrongScope = await http(context.url, '/mcp/other', { method: 'POST', body: { jsonrpc: '2.0', id: 1, method: 'tools/list' }, headers: { Authorization: first.headers.Authorization! } })
+    expect(wrongScope.status).toBe(401)
+    const workspace = await context.api('/api/workspace')
+    expect(workspace.text.includes(first.headers.Authorization!)).toBe(false)
+    expect((await context.api('/api/plugins/comm/disable', { method: 'POST', body: {} })).status).toBe(200)
+    expect(() => services.getMcpConnection('comm')).toThrow(expect.objectContaining({ code: 'PLUGIN_DISABLED' }))
+    expect((await context.api('/api/plugins/dsh/disable', { method: 'POST', body: {} })).status).toBe(200)
+    expect(() => services.getMcpConnection('other')).toThrow(expect.objectContaining({ code: 'PLUGIN_DISABLED' }))
+  })
+
+  it('allows the enabled plugin to register inside connect and preserves a single primary sink', async () => {
+    let first!: HostPluginContext, second!: HostPluginContext
+    const entry = testEntry('dsh', 'harness', value => { first = value }, { connect: async () => { first.harness!.registerSink(testSink('dsh')) } })
+    const other = testEntry('alternate', 'harness', value => { second = value })
+    const context = await createHost('', [entry, other])
+    expect(() => first.harness!.registerSink(testSink('alternate'))).toThrow(expect.objectContaining({ code: 'PLUGIN_SCOPE_VIOLATION' }))
+    expect((await context.api('/api/plugins/dsh/connect', { method: 'POST', body: {} })).status).toBe(200)
+    expect(context.host.harness.getStatus()).toMatchObject({ state: 'attached', sinkId: 'dsh' })
+    expect(() => second.harness!.registerSink(testSink('alternate'))).toThrow('同一工作区仅允许一个主要 Harness 接收者。')
+    const wake = vi.spyOn(context.host.harness, 'notify')
+    second.harness!.wake()
+    expect(wake).not.toHaveBeenCalled()
+    first.harness!.wake()
+    expect(wake).toHaveBeenCalledOnce()
+    expect((await context.api('/api/plugins/dsh/disconnect', { method: 'POST', body: {} })).status).toBe(200)
+    expect(context.host.harness.getStatus().state).toBe('not-attached')
+    second.harness!.registerSink(testSink('alternate'))
+    const closeGateway = vi.spyOn(context.host.harness, 'close')
+    await context.host.close()
+    expect(closeGateway).toHaveBeenCalledOnce()
+    expect(() => second.harness!.registerSink(testSink('alternate'))).toThrow(expect.objectContaining({ code: 'HOST_STOPPED' }))
+    wake.mockClear()
+    second.harness!.wake()
+    expect(wake).not.toHaveBeenCalled()
+  })
+
+  it('revokes a sink and persists disabled state even when disconnect fails or attempts to re-register', async () => {
+    let pluginContext!: HostPluginContext
+    let attempted = false
+    const entry = testEntry('dsh', 'harness', value => { pluginContext = value }, { disconnect: async () => {
+      attempted = true
+      expect(() => pluginContext.harness!.registerSink(testSink('dsh'))).toThrow(expect.objectContaining({ code: 'PLUGIN_DISABLED' }))
+      throw new Error('fixture disconnect failure')
+    } })
+    const context = await createHost('', [entry])
+    pluginContext.harness!.registerSink(testSink('dsh'))
+    const response = await context.api('/api/plugins/dsh/disable', { method: 'POST', body: {} })
+    expect(response.status).toBe(500)
+    expect(attempted).toBe(true)
+    expect(context.host.harness.getStatus().state).toBe('not-attached')
+    expect(pluginFrom((await context.api('/api/workspace')).body, 'dsh').enabled).toBe(false)
+    expect(() => pluginContext.harness!.registerSink(testSink('dsh'))).toThrow(expect.objectContaining({ code: 'PLUGIN_DISABLED' }))
+    await context.host.close()
+    const restarted = await createHost(context.home, [entry])
+    expect(pluginFrom((await restarted.api('/api/workspace')).body, 'dsh').enabled).toBe(false)
+  })
+
+  it('clears registrations before disposal even on failure', async () => {
+    let pluginContext!: HostPluginContext
+    let unregister!: () => void
+    let stateAtDispose: JsonValue | undefined
+    const dispose = vi.fn(async () => {
+      stateAtDispose = context.host.harness.getStatus().state
+      unregister()
+      throw new Error('fixture dispose failure')
+    })
+    const entry = testEntry('dsh', 'harness', value => { pluginContext = value }, { dispose })
+    const context = await createHost('', [entry])
+    unregister = pluginContext.harness!.registerSink(testSink('dsh'))
+    await context.host.close()
+    expect(dispose).toHaveBeenCalledOnce()
+    expect(stateAtDispose).toBe('not-attached')
+  })
+
+  it('keeps manage owner-only, validates input, and excludes management from MCP tools', async () => {
+    const manage = vi.fn(async (operation: string, input: unknown) => ({ operation, supplied: input !== undefined }))
+    const invoke = vi.fn(async () => null)
+    const context = await createHost('', [testEntry('dsh', 'harness', () => {}, { manage, invoke }), testEntry('comm', undefined, () => {})])
+    const path = '/api/plugins/dsh/manage', body = { operation: 'install', input: { source: 'approved' } }
+    expect((await http(context.url, path, { method: 'POST', body })).status).toBe(401)
+    expect((await http(context.url, path, { method: 'POST', body, headers: { Cookie: context.cookie } })).status).toBe(403)
+    expect((await context.api(path, { method: 'POST', body, headers: { Origin: 'https://outside.invalid' } })).status).toBe(403)
+    expect((await context.api(path)).status).toBe(405)
+    expect((await context.api(path, { method: 'POST', body: { operation: 2 } })).status).toBe(400)
+    expect((await context.api(path, { method: 'POST', body })).body).toEqual({ operation: 'install', supplied: true })
+    expect(manage).toHaveBeenCalledExactlyOnceWith('install', { source: 'approved' })
+    expect((await context.api(path, { method: 'POST', body: { operation: 'status' } })).body).toEqual({ operation: 'status', supplied: false })
+    expect((await context.api('/api/plugins/comm/manage', { method: 'POST', body })).status).toBe(404)
+    const { client } = await mcpClient(context, 'dsh')
+    expect((await client.listTools()).tools).toEqual([])
+    expect(await client.callTool({ name: 'install', arguments: {} })).toMatchObject({ isError: true, structuredContent: { code: 'TOOL_NOT_FOUND' } })
+    expect(manage).toHaveBeenCalledTimes(2)
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('serializes manage with connection and configuration changes and rejects registrations inside management', async () => {
+    let pluginContext!: HostPluginContext, finish!: (value: JsonValue) => void
+    const manage = vi.fn(async () => {
+      expect(() => pluginContext.harness!.registerSink(testSink('dsh'))).toThrow(expect.objectContaining({ code: 'PLUGIN_BUSY' }))
+      return new Promise<JsonValue>(resolveValue => { finish = resolveValue })
+    })
+    const context = await createHost('', [testEntry('dsh', 'harness', value => { pluginContext = value }, { manage })])
+    const pending = context.api('/api/plugins/dsh/manage', { method: 'POST', body: { operation: 'start' } })
+    await vi.waitFor(() => expect(manage).toHaveBeenCalledOnce())
+    for (const operation of ['manage', 'connect', 'configuration', 'disable']) {
+      const result = await context.api(`/api/plugins/dsh/${operation}`, { method: 'POST', body: { operation: 'start' } })
+      expect(result.status).toBe(409)
+      expect(result.body).toMatchObject({ error: { code: 'PLUGIN_BUSY' } })
+    }
+    finish({ state: 'started' })
+    expect((await pending).body).toEqual({ state: 'started' })
+    expect((await context.api('/api/plugins/dsh/connect', { method: 'POST', body: {} })).status).toBe(200)
+  })
 })
 
 describe('real Eating Host → QQ OneBot → SQLite → authenticated MCP', () => {

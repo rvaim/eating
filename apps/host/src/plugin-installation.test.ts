@@ -8,6 +8,7 @@ import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PluginPackageManifest } from '@eating/plugin-sdk'
 import { acquireWorkspaceLock } from './lock'
+import { discoverBackendPlugins } from './discovery'
 import { installPluginPackage, loadInstalledPluginPackages, parsePluginPackageManifest, uninstallPluginPackage } from './plugin-installation'
 
 vi.mock('node:fs/promises', async importOriginal => {
@@ -74,6 +75,48 @@ async function expectCleanTransaction(): Promise<void> {
 }
 
 describe('independent plugin directory packages', () => {
+  it('installs an independent Harness package using dsh storage with verified hashes', async () => {
+    const source = await makePackage('1.0.0', 'dsh')
+    const manifest = { ...source.manifest, kind: 'harness' as const, storageDirectory: 'dsh' }
+    expect(parsePluginPackageManifest(manifest)).toEqual(manifest)
+    await writeFile(join(source.directory, 'eating-plugin.json'), JSON.stringify(manifest))
+    const installed = await installPluginPackage(home, source.directory)
+    expect(installed.manifest).toEqual(manifest)
+    expect(await loadInstalledPluginPackages(home)).toEqual([installed])
+    await writeFile(join(installed.directory, 'server.mjs'), 'modified Harness backend')
+    await expect(loadInstalledPluginPackages(home)).rejects.toMatchObject({ code: 'PLUGIN_INTEGRITY_MISMATCH' })
+    await expect(lstat(join(temporary, 'executed.txt'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expectCleanTransaction()
+  })
+
+  it('discovers matching Harness entries and refuses missing or mismatched entry kinds', async () => {
+    const backend = `export default { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create() { return { id: 'dsh', version: '1.0.0' } } }`
+    const source = await makePackage('1.0.0', 'dsh', backend)
+    await writeFile(join(source.directory, 'eating-plugin.json'), JSON.stringify({ ...source.manifest, kind: 'harness', storageDirectory: 'dsh' }))
+    await installPluginPackage(home, source.directory)
+    const [entry] = await discoverBackendPlugins(home)
+    expect(entry?.kind).toBe('harness')
+    expect(entry?.installed?.manifest.kind).toBe('harness')
+    const mismatch = await makePackage('1.0.0', 'other', `export default { id: 'other', storageDirectory: 'other', create() {} }`)
+    await writeFile(join(mismatch.directory, 'eating-plugin.json'), JSON.stringify({ ...mismatch.manifest, kind: 'harness', storageDirectory: 'other' }))
+    await installPluginPackage(home, mismatch.directory)
+    await expect(discoverBackendPlugins(home)).rejects.toMatchObject({ code: 'INVALID_PLUGIN_ENTRY' })
+  })
+
+  it('keeps kind-specific storage separate and refuses an implicit cross-kind upgrade', async () => {
+    const communication = await makePackage()
+    const old = await installPluginPackage(home, communication.directory)
+    const harness = await makePackage('1.0.0', 'dsh')
+    await writeFile(join(harness.directory, 'eating-plugin.json'), JSON.stringify({ ...harness.manifest, kind: 'harness', storageDirectory: 'qq-bot' }))
+    const installed = await installPluginPackage(home, harness.directory)
+    expect(await loadInstalledPluginPackages(home)).toEqual([old, installed])
+    const upgrade = await makePackage('0.3.0')
+    await writeFile(join(upgrade.directory, 'eating-plugin.json'), JSON.stringify({ ...upgrade.manifest, kind: 'harness' }))
+    await expect(installPluginPackage(home, upgrade.directory)).rejects.toMatchObject({ code: 'PLUGIN_STORAGE_MIGRATION_REQUIRED' })
+    expect(await loadInstalledPluginPackages(home)).toEqual([old, installed])
+    await expectCleanTransaction()
+  })
+
   it('copies a complete independent package and discovers it after its source is deleted, without executing code', async () => {
     const source = await makePackage()
     const installed = await installPluginPackage(home, source.directory)

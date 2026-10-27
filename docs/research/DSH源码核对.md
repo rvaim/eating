@@ -1,6 +1,8 @@
 # Eating DSH 官方源码核对
 
-结论：**已完成定向源码分析，未运行 DSH/SDK、模型或官方测试。** SDK Preset、消息来源、持久确认和调度存在需要改变原实现假设的限制。
+结论：**下文保留2026-10-26固定SHA的定向源码分析；该轮未运行DSH/SDK、模型或官方测试。** 后续2026-10-28已核对官方rc.4实际发布包，并完成独立运行时、官方SDK、QQ MCP、本地模型协议及OneBot夹具的实际验证，见[最小Harness报告](../reports/2026-10-28-DSH最小Harness验证报告.md)。历史未运行状态不能当作当前实现状态。
+
+rc.4发布行为更正S-10：高层run会先等待与messageId匹配的 `agent/inbox/spliced`，再等待根idle；旧表“到根首次idle”的简写不足以完整描述当前版本。入箱事件仍不能独立证明fsync，Eating现通过公开 `sessions.flush` 成功后写仅元数据ACK；最终文本不会自动发送QQ。主策略和人格现通过公开 `systemPrompt.section` 的complete/interpolate/text回调提供，未新增SDK虚构参数。实际发布依赖锁与固定SHA不是同一构建，不能互相冒充。
 
 ## 版本与方法
 

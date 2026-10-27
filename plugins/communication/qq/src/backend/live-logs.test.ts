@@ -241,6 +241,18 @@ describe('QQ receive-event live logs through the real plugin entry and loopback 
     expect(records[0]?.event.message).toBe(text)
   })
 
+  it('does not forward the bot own message echo while preserving explicit routing on real incoming messages', async () => {
+    const { logs, recordEvent, records, remote } = await pluginFixture()
+    const observed: PluginLogEntry[] = []
+    logs.subscribe(log => observed.push(log))
+    remote.emitEvent(message(30, { user_id: 123456789, message: '机器人自身回显' }))
+    remote.emitEvent(message(31, { message_type: 'group', group_id: 123456, message: '真正群内新消息' }))
+    await vi.waitFor(() => expect(recordEvent).toHaveBeenCalledTimes(2))
+    expect(records[0]?.harnessEvent).toBeNull()
+    expect(observed[0]?.metadata?.queueAdmission).toBe('not-forwarded')
+    expect(records[1]?.harnessEvent).toMatchObject({ messageId: '31', targetId: '123456', senderId: '987654321' })
+  })
+
   it('continues storing with no viewers and never replays messages received before or between views', async () => {
     const { logs, recordEvent, records, remote } = await pluginFixture()
     const clone = vi.spyOn(globalThis, 'structuredClone')

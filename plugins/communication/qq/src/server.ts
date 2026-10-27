@@ -50,7 +50,7 @@ function parseConfiguration(input: unknown, previous: OneBotConfig): OneBotConfi
 class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly name = 'QQ'
-  readonly version = '0.4.0'
+  readonly version = '0.5.0'
   readonly logs = new LiveLogChannel()
   readonly tools = qqTools
   readonly capabilities = [
@@ -147,9 +147,9 @@ class QQPlugin implements BackendPlugin {
     const receivedAt = new Date().toISOString()
     const key = `${this.instanceId}:${accountId}:${kind}:${targetId}:${messageId}`
     const eventId = createHash('sha256').update(`qq:${key}`).digest('hex')
-    const shouldForward = this.configuration.forwardToHarness && (kind === 'private' || this.configuration.receiveGroups)
+    const shouldForward = senderId !== accountId && this.configuration.forwardToHarness && (kind === 'private' || this.configuration.receiveGroups)
     const harness: HarnessEvent | null = shouldForward ? { protocolVersion: 1, eventId, pluginId: this.id, instanceId: this.instanceId,
-      platform: 'qq', accountId, conversationId, senderId, receivedAt,
+      platform: 'qq', accountId, conversationId, senderId, messageId, targetId, receivedAt,
       source: { trust: 'external', kind }, content: event.message ?? '', text } : null
     const { inserted, admission } = this.context.recordEvent(this.id, key, event, harness, { conversationId, text, instanceId: this.instanceId })
     if (inserted) this.logs.publish(() => {

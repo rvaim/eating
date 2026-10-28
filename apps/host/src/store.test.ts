@@ -65,6 +65,33 @@ describe('HostStore outstanding delivery queue', () => {
     expect(reopened.listMessages('other-platform')).toHaveLength(1)
   })
 
+  it('preserves verified sender roles and source references across restart without upgrading older envelopes', () => {
+    const { open, close } = fixture(), first = open()
+    for (const [index, senderRole] of (['owner', 'administrator', 'user'] as const).entries()) first.recordEvent('test-platform', `role-${index}`, {}, {
+      ...event(), source: { trust: 'external', kind: 'private', senderRole }, resourceIds: ['known.image', 'r'.repeat(2048)] })
+    first.recordEvent('test-platform', 'legacy-without-role', {}, event())
+    close(first)
+    const events = open().pendingHarnessEvents().map(entry => entry.event)
+    expect(events.slice(0, 3).map(entry => entry.source.senderRole)).toEqual(['owner', 'administrator', 'user'])
+    expect(events[0]?.resourceIds).toEqual(['known.image', 'r'.repeat(2048)])
+    expect(events.every(entry => entry.source.trust === 'external')).toBe(true)
+    expect(events[3]?.source.senderRole).toBeUndefined()
+    expect(events[3]?.resourceIds).toBeUndefined()
+  })
+
+  it('rejects invalid role and resource metadata without losing already queued messages', () => {
+    const store = fixture().open()
+    store.recordEvent('test-platform', 'valid-first', {}, event())
+    const invalid = [
+      { ...event(), source: { trust: 'external', kind: 'private', senderRole: 'system' } },
+      { ...event(), resourceIds: [''] }, { ...event(), resourceIds: ['r'.repeat(2049)] },
+      { ...event(), resourceIds: ['a\u0000b'] }, { ...event(), resourceIds: Array.from({ length: 257 }, () => 'resource') },
+    ]
+    for (const [index, value] of invalid.entries()) expect(store.recordEvent('test-platform', `bad-${index}`, {}, value as HarnessEvent)).toMatchObject({ admission: 'rejected', queued: false })
+    expect(store.pendingHarnessEvents()).toHaveLength(1)
+    expect(store.pendingHarnessEvents()[0]?.event.source.senderRole).toBeUndefined()
+  })
+
   it('filters by plugin and conversation with descending stable cursor pagination', () => {
     const store = fixture().open()
     store.recordEvent('test-platform', 'one', { n: 1 }, event('conversation-one', 'oldest'))

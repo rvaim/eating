@@ -1,4 +1,5 @@
 export * from './authoring.js'
+export * from './agents.js'
 
 export type JsonPrimitive = string | number | boolean | null
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue }
@@ -44,8 +45,9 @@ export interface HarnessEvent {
   readonly senderId: string
   readonly messageId?: string
   readonly targetId?: string
+  readonly resourceIds?: readonly string[]
   readonly receivedAt: string
-  readonly source: { readonly trust: 'external'; readonly kind: 'private' | 'group' }
+  readonly source: { readonly trust: 'external'; readonly kind: 'private' | 'group'; readonly senderRole?: 'owner' | 'administrator' | 'user' }
   readonly content: JsonValue
   readonly text: string
 }
@@ -141,14 +143,20 @@ export function validateDeliverySettings(input: unknown): DeliverySettings {
 export interface HarnessOwnerConfiguration {
   readonly revision: number
   readonly prompts: readonly import('./authoring.js').PromptDocument[]
+  readonly legacyPrompts?: readonly import('./authoring.js').PromptDocument[]
   readonly activePersona: import('./authoring.js').PersonaDocument | null
+  readonly agentTypes?: readonly import('./agents.js').RegisteredAgentType[]
+  readonly pluginInstructions?: readonly import('./agents.js').RegisteredAgentInstructions[]
+  readonly bindings?: Readonly<Record<string, string>>
 }
 
 export interface HarnessHostServices {
   registerSink(sink: HarnessMessageSink): () => void
   wake(): void
   readOwnerConfiguration(): HarnessOwnerConfiguration
-  getMcpConnection(pluginId: string): { readonly url: string; readonly headers: Readonly<Record<string, string>> }
+  getMcpConnection(pluginId: string, scope?: import('./agents.js').AgentInvocationScope): import('./agents.js').AgentMcpConnection
+  readAgentActions?(agentId: string): readonly import('./agents.js').AgentActionReceipt[]
+  revokeAgentAccess?(agentId: string): void
 }
 
 export interface HostPluginContext {
@@ -198,6 +206,10 @@ export interface BackendPlugin {
   readonly version: string
   readonly capabilities: readonly PluginCapability[]
   readonly tools: readonly PluginToolDefinition[]
+  readonly agentTypes?: readonly import('./agents.js').AgentTypeDefinition[]
+  readonly agentInstructions?: readonly import('./agents.js').AgentInstructions[]
+  getAgentIdentity?(): import('./agents.js').AgentIdentityConfiguration
+  invokeScoped?(name: string, input: unknown, requestId: string, scope: import('./agents.js').AgentInvocationScope): Promise<JsonValue>
   getStatus(): ConnectionStatus
   getPublicConfiguration(): JsonObject
   updateConfiguration(input: unknown): Promise<JsonObject>

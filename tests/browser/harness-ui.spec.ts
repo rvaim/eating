@@ -203,7 +203,7 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await page.getByRole('link', { name: '提示词管理', exact: true }).click()
     await expect(page.getByRole('textbox', { name: '提示词内容', exact: true })).toBeVisible()
     saved.release()
-    await expect(page.getByRole('heading', { name: '通用提示词', exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '通用前置提示词', exact: true })).toBeVisible()
     await expect(page.getByText('DeepSeek Harness 配置已保存。', { exact: true })).toHaveCount(0)
     await expect(page.getByLabel('API Key', { exact: true })).toHaveCount(0)
   })

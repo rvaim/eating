@@ -302,11 +302,12 @@ export function TemplateEditor(props: TemplateEditorProps) {
       setAnalysis(view.state.field(inspection).analysis)
     } else {
       const localeChanged = editor.locale !== locale
-      if (editor.scope !== scope || editor.variables !== variables || editor.disabled !== disabled || editor.ariaLabel !== ariaLabel || localeChanged) {
-        const reopenCompletion = localeChanged && completionStatus(view.state) !== null
+      const scopeChanged = editor.scope !== scope
+      if (scopeChanged || editor.variables !== variables || editor.disabled !== disabled || editor.ariaLabel !== ariaLabel || localeChanged) {
+        const reopenCompletion = (localeChanged || scopeChanged) && completionStatus(view.state) !== null
         closeCompletion(view)
         view.dispatch({ effects: editor.configuration.reconfigure(configurationExtensions(latest.current)) })
-        if (localeChanged) {
+        if (localeChanged || scopeChanged) {
           // Refresh diagnostics immediately, including any open lint tooltip.
           // Reconfiguration leaves the document, selection, and undo history intact.
           view.dispatch(setDiagnostics(view.state, lintDiagnostics(view.state)))

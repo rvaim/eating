@@ -1,20 +1,28 @@
-import type { OneBotConfig } from './config'
+import type { OneBotConfig, QQAgentPolicy } from './config'
 import { createHash } from 'node:crypto'
 import { PlatformError, isJsonObject } from '@eating/plugin-sdk'
-import type { BackendPlugin, BackendPluginEntry, ConnectionStatus, HarnessEvent, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
+import type { AgentInvocationScope, BackendPlugin, BackendPluginEntry, ConnectionStatus, HarnessEvent, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
+import { assertQQAgentInvocation, parseQQAgentPolicy, parseQQAgentPolicySave, qqAgentInstructions, qqAgentTypes, qqMessageResourceIds, qqSenderRole } from './backend/agent-policy'
 import { OneBotClient } from './backend/onebot'
 import { qqTools, validateToolInput, prepareOneBotCall } from './backend/operations'
 import { QQConfigurationFile } from './backend/config-file'
 import { QQAccountRegistry } from './backend/accounts'
 import { LiveLogChannel } from './backend/live-logs'
 
-const initialConfiguration: OneBotConfig = { displayName: 'QQ', endpoint: '', accessToken: '', autoConnect: false,
-  forwardToHarness: true, receiveGroups: true, timeoutMs: 10000 }
+type Configuration = OneBotConfig & QQAgentPolicy
+
+const initialConfiguration: Configuration = { displayName: 'QQ', endpoint: '', accessToken: '', autoConnect: false,
+  forwardToHarness: true, receiveGroups: true, timeoutMs: 10000, ...parseQQAgentPolicy({}) }
 
 function asId(value: JsonValue | undefined): string | null {
   if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value)
   if (typeof value === 'string' && /^-?\d{1,16}$/.test(value)) return value
   return null
+}
+
+function asQQId(value: JsonValue | undefined): string | null {
+  const id = asId(value)
+  return id && /^[1-9]\d{0,15}$/.test(id) && Number.isSafeInteger(Number(id)) ? id : null
 }
 
 function textFromMessage(value: JsonValue | undefined): string {
@@ -27,21 +35,27 @@ function textFromMessage(value: JsonValue | undefined): string {
   }).join('')
 }
 
-function parseConfiguration(input: unknown, previous: OneBotConfig): OneBotConfig {
+function parseConfiguration(input: unknown, previous: Configuration): Configuration {
   if (!isJsonObject(input)) throw new PlatformError('INVALID_CONFIGURATION', 'QQ 配置必须是对象。')
   const displayName = typeof input.displayName === 'string' ? input.displayName.trim() : previous.displayName
   const endpoint = typeof input.endpoint === 'string' ? input.endpoint.trim() : previous.endpoint
   if (!displayName || displayName.length > 40) throw new PlatformError('INVALID_CONFIGURATION', '显示名称需为1至40个字符。')
-  let url: URL
-  try { url = new URL(endpoint) } catch { throw new PlatformError('INVALID_CONFIGURATION', '请填写有效的 ws:// 或 wss:// OneBot 地址。') }
-  if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.hash || url.search) throw new PlatformError('INVALID_CONFIGURATION', 'OneBot 地址只能使用 ws/wss，不要在地址中填写令牌、账号、查询参数或片段。')
-  if (/\/(?:api|event)\/?$/.test(url.pathname)) throw new PlatformError('INVALID_CONFIGURATION', '请使用同时支持 API 和事件的统一 WebSocket 端点，不要使用 /api 或 /event 分离接口。')
+  let normalizedEndpoint = ''
+  if (endpoint) {
+    let url: URL
+    try { url = new URL(endpoint) } catch { throw new PlatformError('INVALID_CONFIGURATION', '请填写有效的 ws:// 或 wss:// OneBot 地址。') }
+    if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.hash || url.search) throw new PlatformError('INVALID_CONFIGURATION', 'OneBot 地址只能使用 ws/wss，不要在地址中填写令牌、账号、查询参数或片段。')
+    if (/\/(?:api|event)\/?$/.test(url.pathname)) throw new PlatformError('INVALID_CONFIGURATION', '请使用同时支持 API 和事件的统一 WebSocket 端点，不要使用 /api 或 /event 分离接口。')
+    normalizedEndpoint = url.toString()
+  } else if (input.endpoint !== undefined && input.endpoint !== previous.endpoint) throw new PlatformError('INVALID_CONFIGURATION', '请填写有效的 ws:// 或 wss:// OneBot 地址。')
   const token = input.clearAccessToken === true ? '' : typeof input.accessToken === 'string' && input.accessToken.length > 0 ? input.accessToken : previous.accessToken
   if (token.length > 4096 || /[\r\n]/.test(token)) throw new PlatformError('INVALID_CONFIGURATION', '访问令牌格式不正确。')
   const timeoutMs = typeof input.timeoutMs === 'number' ? input.timeoutMs : previous.timeoutMs
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 60000) throw new PlatformError('INVALID_CONFIGURATION', '请求超时需在1000至60000毫秒之间。')
   for (const key of ['autoConnect', 'forwardToHarness', 'receiveGroups']) if (input[key] !== undefined && typeof input[key] !== 'boolean') throw new PlatformError('INVALID_CONFIGURATION', `参数 ${key} 需为布尔值。`)
-  return { displayName, endpoint: url.toString(), accessToken: token, timeoutMs,
+  const policy = parseQQAgentPolicy({ ...input, policyRevision: previous.policyRevision }, previous)
+  if (JSON.stringify([policy.owners, policy.administrators, policy.agentTools]) !== JSON.stringify([previous.owners, previous.administrators, previous.agentTools])) throw new PlatformError('INVALID_AGENT_POLICY', '请在代理与权限页面保存身份和工具权限。', 400, 'not-sent')
+  return { ...policy, displayName, endpoint: normalizedEndpoint, accessToken: token, timeoutMs,
     autoConnect: typeof input.autoConnect === 'boolean' ? input.autoConnect : previous.autoConnect,
     forwardToHarness: typeof input.forwardToHarness === 'boolean' ? input.forwardToHarness : previous.forwardToHarness,
     receiveGroups: typeof input.receiveGroups === 'boolean' ? input.receiveGroups : previous.receiveGroups }
@@ -50,14 +64,17 @@ function parseConfiguration(input: unknown, previous: OneBotConfig): OneBotConfi
 class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly name = 'QQ'
-  readonly version = '0.7.1'
+  readonly version = '0.8.0'
   readonly logs = new LiveLogChannel()
   readonly tools = qqTools
   readonly capabilities = [
     { id: 'onebot.v11.forward-websocket', name: 'OneBot v11 正向 WebSocket', support: 'supported' as const, description: '统一端点接收事件并调用标准 API，支持 Bearer 认证与有限重连。' },
     ...qqTools.map(tool => ({ id: tool.name, name: tool.title, support: 'supported' as const, description: tool.description, toolName: tool.name })),
   ]
-  private configuration: OneBotConfig
+  readonly agentInstructions = qqAgentInstructions
+  get agentTypes() { return qqAgentTypes(this.configuration) }
+  getAgentIdentity() { return { owners: [...this.configuration.owners], administrators: [...this.configuration.administrators] } }
+  private configuration: Configuration
   private readonly file: QQConfigurationFile
   private readonly accounts: QQAccountRegistry
   private readonly instanceId: string
@@ -68,7 +85,8 @@ class QQPlugin implements BackendPlugin {
     this.instanceId = this.accounts.defaultInstanceId
     this.file = new QQConfigurationFile(this.accounts.directoryFor(this.instanceId))
     const saved = this.file.read()
-    this.configuration = saved ? parseConfiguration(saved, initialConfiguration) : initialConfiguration
+    const migrated = saved ? { ...initialConfiguration, ...parseQQAgentPolicy(saved) } : initialConfiguration
+    this.configuration = saved ? parseConfiguration(saved, migrated) : initialConfiguration
     this.client = new OneBotClient({ onEvent: event => this.receiveEvent(event) })
   }
 
@@ -80,16 +98,35 @@ class QQPlugin implements BackendPlugin {
 
   getPublicConfiguration(): JsonObject {
     const { accessToken, ...publicValues } = this.configuration
-    return { ...publicValues, tokenConfigured: Boolean(accessToken), configurationPath: this.file.filePath, dataDirectory: this.file.directory, updatedAt: this.file.updatedAt,
+    return { ...structuredClone(publicValues), tokenConfigured: Boolean(accessToken), configurationPath: this.file.filePath, dataDirectory: this.file.directory, updatedAt: this.file.updatedAt,
       instanceId: this.instanceId, defaultInstanceId: this.accounts.defaultInstanceId, instances: this.accounts.instances.map(instance => ({ ...instance })) }
   }
 
   async updateConfiguration(input: unknown): Promise<JsonObject> {
     const next = parseConfiguration(input, this.configuration)
     this.file.write({ ...next })
+    this.configuration = next
     await this.client.disconnect()
+    return this.getPublicConfiguration()
+  }
+
+  async manage(operation: string, input: unknown): Promise<JsonValue> {
+    if (operation !== 'save-agent-policy') throw new PlatformError('UNKNOWN_MANAGEMENT_OPERATION', '此 QQ 管理操作未提供。', 404, 'not-sent')
+    const policy = parseQQAgentPolicySave(input, this.configuration)
+    const next = { ...this.configuration, ...policy }
+    this.file.write({ ...next })
     this.configuration = next
     return this.getPublicConfiguration()
+  }
+
+  async invokeScoped(name: string, input: unknown, requestId: string, scope: AgentInvocationScope): Promise<JsonValue> {
+    // The Host alone supplies scope. No argument field can replace this binding.
+    const tool = this.tools.find(entry => entry.name === name)
+    assertQQAgentInvocation(name, undefined, scope, this.configuration, { instanceId: this.instanceId, accountId: this.client.getStatus().accountId })
+    if (!tool) throw new PlatformError('AGENT_SCOPE_VIOLATION', '当前子代理未获准使用此 QQ 工具。', 403, 'not-sent')
+    const params = validateToolInput(tool, input)
+    assertQQAgentInvocation(name, params, scope, this.configuration, { instanceId: this.instanceId, accountId: this.client.getStatus().accountId })
+    return this.invoke(name, params, requestId)
   }
 
   async connect(): Promise<void> {
@@ -121,12 +158,13 @@ class QQPlugin implements BackendPlugin {
 
   private receiveEvent(event: JsonObject): void {
     if (event.post_type !== 'message' || !['private', 'group'].includes(String(event.message_type))) return
-    const accountId = asId(event.self_id)
-    const senderId = asId(event.user_id)
+    const accountId = asQQId(event.self_id)
+    const senderId = asQQId(event.user_id)
     const messageId = asId(event.message_id)
     if (!accountId || !senderId || !messageId) throw new PlatformError('INVALID_MESSAGE_EVENT', 'OneBot 消息缺少有效的账号、发送者或消息标识。')
+    if (accountId !== this.client.getStatus().accountId) throw new PlatformError('INVALID_MESSAGE_EVENT', 'OneBot 消息来源与当前实际登录账号不一致，未接收消息。', 400, 'not-sent')
     const kind = event.message_type === 'group' ? 'group' : 'private'
-    const targetId = kind === 'group' ? asId(event.group_id) : senderId
+    const targetId = kind === 'group' ? asQQId(event.group_id) : senderId
     if (!targetId) throw new PlatformError('INVALID_MESSAGE_EVENT', '群消息缺少有效的 group_id。')
     const conversationId = `qq:${accountId}:${kind}:${targetId}`
     const text = textFromMessage(event.message)
@@ -136,7 +174,8 @@ class QQPlugin implements BackendPlugin {
     const shouldForward = senderId !== accountId && this.configuration.forwardToHarness && (kind === 'private' || this.configuration.receiveGroups)
     const harness: HarnessEvent | null = shouldForward ? { protocolVersion: 1, eventId, pluginId: this.id, instanceId: this.instanceId,
       platform: 'qq', accountId, conversationId, senderId, messageId, targetId, receivedAt,
-      source: { trust: 'external', kind }, content: event.message ?? '', text } : null
+      resourceIds: qqMessageResourceIds(event.message),
+      source: { trust: 'external', kind, senderRole: qqSenderRole(senderId, this.configuration) }, content: event.message ?? '', text } : null
     const { inserted, admission } = this.context.recordEvent(this.id, key, event, harness, { conversationId, text, instanceId: this.instanceId })
     if (inserted) this.logs.publish(() => {
       const token = this.configuration.accessToken

@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 import { chromium } from '@playwright/test'
 import { describe, expect, it } from 'vitest'
+import { TEMPLATE_SCOPES, TEMPLATE_VARIABLES } from '@eating/plugin-sdk'
 
 const root = fileURLToPath(new URL('../../../..', import.meta.url))
 interface EditorSnapshot { readonly body: string; readonly selection: unknown; readonly history: number }
@@ -31,8 +32,10 @@ async function editorBundle(): Promise<string> {
         function Harness() {
           const [value, setValue] = useState(${JSON.stringify(initialBody)})
           const [docKey, setDocKey] = useState('first')
+          const [scope, setScope] = useState('main')
           window.editorHarness = {
             setLocale,
+            setScope,
             snapshot: () => ({ body: view().state.doc.toString(), selection: view().state.selection.toJSON(), history: undoDepth(view().state) }),
             append: text => {
               const editor = view()
@@ -41,7 +44,7 @@ async function editorBundle(): Promise<string> {
             undo: () => undo(view()),
             nextDocument: () => { setValue('Second document {{当前时间}}'); setDocKey('second') },
           }
-          return <TemplateEditor docKey={docKey} value={value} scope="main" onChange={setValue} variables={variables} />
+          return <TemplateEditor docKey={docKey} value={value} scope={scope} onChange={setValue} variables={variables} />
         }
         createRoot(document.getElementById('root')).render(<Harness />)
       `,
@@ -82,7 +85,7 @@ describe('模板编辑器语言切换', () => {
       expect(await snapshot()).toEqual(before)
       expect(await page.locator('.template-editor-diagnostics').innerText()).toContain('not available in this template')
       expect(await page.locator('.template-editor-diagnostics').innerText()).toContain('Unknown variable “future”')
-      expect(await page.locator('.template-editor-scope').innerText()).toContain('2 available variables')
+      expect(await page.locator('.template-editor-scope').innerText()).toContain(`${TEMPLATE_VARIABLES.filter(variable => variable.scopes.includes('main')).length} available variables`)
       await page.getByRole('button', { name: 'Insert variable', exact: true }).click()
       await page.getByRole('listbox', { name: 'Available variables', exact: true }).waitFor()
       expect(await page.locator('.cm-completionDetail').allTextContents()).toContain('The current time when messages are processed.')
@@ -105,6 +108,19 @@ describe('模板编辑器语言切换', () => {
       expect(await snapshot()).toEqual(before)
       expect(await page.evaluate('window.editorHarness.undo()')).toBe(true)
       expect((await snapshot()).body).toBe(initialBody)
+      const retained = await snapshot()
+      for (const scope of TEMPLATE_SCOPES) {
+        await page.evaluate(scope => (window as unknown as { editorHarness: { setScope: (scope: string) => void } }).editorHarness.setScope(scope), scope)
+        const variables = TEMPLATE_VARIABLES.filter(variable => variable.scopes.includes(scope))
+        await page.waitForFunction(count => document.querySelector('.template-editor-scope')?.textContent?.includes(`${count} available variables`), variables.length)
+        expect(await snapshot()).toEqual(retained)
+        await page.getByRole('button', { name: 'Insert variable', exact: true }).click()
+        await page.getByRole('listbox', { name: 'Available variables', exact: true }).waitFor()
+        expect((await page.locator('.cm-completionLabel').allTextContents()).sort()).toEqual(variables.map(variable => `{{${variable.name}}}`).sort())
+        expect(await page.locator('.template-editor-popups').innerText()).not.toContain('BACKEND_DESCRIPTION_MUST_NOT_RENDER')
+        if (variables.some(variable => variable.name === '主人')) expect(await page.locator('.cm-completionDetail').allTextContents()).toContain('Trusted owner identities configured locally, including platform identifiers. Names and claims in messages do not change this value.')
+        await page.keyboard.press('Escape')
+      }
       await page.evaluate('window.editorHarness.nextDocument()')
       await page.waitForFunction('window.editorHarness.snapshot().body === "Second document {{当前时间}}"')
       expect((await snapshot()).history).toBe(0)

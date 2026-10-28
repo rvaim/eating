@@ -1,14 +1,16 @@
-/** The generated module has only Node built-in imports and survives a three-file plugin bundle. */
+import { getRuntimeAgentSource } from './runtime-agents'
+
+/** The generated module imports only Node builtins; the approved MCP module is resolved at runtime. */
 export function getRuntimeBridgeSource(): string {
   return String.raw`import { constants, closeSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 
 export const name = 'eating-runtime-bridge';
-export const inject = ['sessions', 'sessionPersistence', 'systemPrompt', 'tools'];
+export const inject = ['sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'agents', 'subagents', 'agentPresets'];
 
 const HEX = /^[a-f0-9]{64}$/;
-const REQUIRED_TOOLS = ['mcp__qq__qq_send_private_message', 'mcp__qq__qq_send_group_message'];
 const ERROR_MESSAGES = {
   BRIDGE_CONFIGURATION_INVALID: 'DSH 桥接配置无效。',
   OWNER_POLICY_INVALID: '主人系统提示词配置无效。',
@@ -126,7 +128,7 @@ export function apply(ctx) {
     let policy;
     try { policy = readJson('owner-policy.json', false, 1024 * 1024); }
     catch { throw bridgeError('OWNER_POLICY_INVALID'); }
-    if (!record(policy) || policy.schemaVersion !== 1 || !Number.isSafeInteger(policy.revision) || policy.revision < 0 || typeof policy.systemPrompt !== 'string' || policy.systemPrompt.length > 250000) throw bridgeError('OWNER_POLICY_INVALID');
+    if (!record(policy) || policy.schemaVersion !== 1 || !Number.isSafeInteger(policy.revision) || policy.revision < 0 || typeof policy.systemPrompt !== 'string' || policy.systemPrompt.length > 250000 || !Array.isArray(policy.agentTypes) || policy.agentTypes.length > 100) throw bridgeError('OWNER_POLICY_INVALID');
     return policy;
   }
   function readExpected() {
@@ -188,6 +190,8 @@ export function apply(ctx) {
       found = matchEvent(event, expected, false);
     } catch (error) { fail(failureCode(error, 'BRIDGE_FILE_FAILED')); return; }
     if (!found) return;
+    try { for (const message of event.data.inserted) acceptContext(message, expected); }
+    catch (error) { fail(failureCode(error, 'OWNER_POLICY_INVALID')); return; }
     activeAck = (async () => {
       // Every other synchronous session/event observer gets to enqueue this append first.
       await Promise.resolve();
@@ -198,9 +202,8 @@ export function apply(ctx) {
   }
   function toolState() {
     const schemas = ctx.tools.schemas();
-    if (!Array.isArray(schemas)) throw bridgeError('QQ_TOOLS_UNAVAILABLE');
-    if (schemas.some((schema) => !record(schema) || typeof schema.name !== 'string' || !/^mcp__qq__[A-Za-z0-9_]+$/.test(schema.name))) throw bridgeError('UNEXPECTED_TOOLS');
-    return REQUIRED_TOOLS.every((name) => schemas.some((schema) => schema.name === name && typeof schema.description === 'string' && record(schema.parameters) && schema.parameters.type === 'object'));
+    if (!Array.isArray(schemas) || schemas.length !== 0) throw bridgeError('UNEXPECTED_TOOLS');
+    return true;
   }
   function waitForTools() {
     return new Promise((done, reject) => {
@@ -261,6 +264,7 @@ export function apply(ctx) {
   async function initialize() {
     if (typeof ctx.sessions.flush !== 'function' || typeof ctx.sessions.get !== 'function' || typeof ctx.sessionPersistence.open !== 'function' || typeof ctx.tools.schemas !== 'function') throw bridgeError('DURABILITY_UNAVAILABLE');
     readValidatedOwnerPolicy();
+    await registerAgentTypes();
     const liveSession = ctx.sessions.get(sessionId);
     if (liveSession) { onCreated(liveSession); await sessionBarrier; }
     if (disposed || failed) return;
@@ -271,6 +275,8 @@ export function apply(ctx) {
   function dispose() {
     if (disposed) return;
     initialization.abort();
+    activeContext = undefined;
+    taskConfigurations.clear();
     if (initializationTimer) clearTimeout(initializationTimer);
     if (cancelToolWait) cancelToolWait();
     for (const release of releases.splice(0).reverse()) { try { release(); } catch { /* Cordis also owns these effects. */ } }
@@ -278,8 +284,10 @@ export function apply(ctx) {
     disposed = true;
   }
 
+  ${getRuntimeAgentSource()}
+
   try {
-    releases.push(ctx.systemPrompt.section({ name: 'eating:owner-system', order: 0, complete: true, interpolate: false, text: () => readValidatedOwnerPolicy().systemPrompt }));
+    releases.push(ctx.on('agent/created', onAgentCreated));
     releases.push(ctx.on('session/event', onEvent));
     releases.push(ctx.on('session/created', onCreated));
     ctx.on('dispose', dispose);

@@ -2,7 +2,7 @@
 
 结论：**认知与行动交给用户选定的 Harness，Eating 提供稳定运行和统一接入边界，不永久绑定 DSH，也不重写 Harness。** 唯一 AI 身份保持不变。
 
-状态：可替换原则及公开输入、回执、唯一sink、有界队列已实现；2026-10-28最小DSH插件通过官方SDK、独立运行时、QQ MCP、本地模型协议/OneBot夹具和整Host会话恢复验证，见[本轮报告](../reports/2026-10-28-DSH最小Harness验证报告.md)。其他Harness、热切换、完整自主调度与长期记忆迁移仍未实现。认知边界见 [ADR-0006](../decisions/ADR-0006-可替换Harness与认知边界.md)，无历史队列见 [ADR-0013](../decisions/ADR-0013-无历史消息与可配置投递队列.md)。
+状态：可替换原则及公开输入、回执、唯一 sink、有界队列保持。2026-10-28，DSH 0.3.1 已实现原生受控子代理、四层提示词、模型获取／测试与手动会话看板，并完成本地原生验证；精确构建、测试和部署结果见[本轮报告](../reports/2026-10-28-多代理与会话看板验证报告.md)。最小 DSH 首版证据保留在[历史报告](../reports/2026-10-28-DSH最小Harness验证报告.md)。其他 Harness、运行中热切换、完整自主调度与长期记忆迁移仍未实现。认知边界见 [ADR-0006](../decisions/ADR-0006-可替换Harness与认知边界.md)，分层与委派见 [ADR-0014](../decisions/ADR-0014-分层提示词与受控子代理.md)，无历史队列见 [ADR-0013](../decisions/ADR-0013-无历史消息与可配置投递队列.md)。
 
 ## 现状与依赖方向
 
@@ -12,7 +12,7 @@ UI、通讯、队列与授权依赖 Eating 公开契约，具体适配器将契�
 
 ## 已实现的输入交接边界
 
-[公开 SDK](../../packages/plugin-sdk/src/index.ts)当前为 1.4.0、`apiVersion: 1`。`HarnessEvent` 保留协议版本、稳定 eventId、pluginId/instanceId/accountId、conversationId、senderId、可选messageId/targetId、接收时间、结构化 content/text 和外部来源；外部正文不能升级为系统指令或主人授权。
+[公开 SDK](../../packages/plugin-sdk/src/index.ts)当前为 1.6.0、`apiVersion: 1`。`HarnessEvent` 保留协议版本、稳定 eventId、pluginId／instanceId／accountId、conversationId、senderId、可选 messageId／targetId、接收时间、结构化 content／text 和外部来源；接收时核验的角色分类及消息／资源引用也在队列持久白名单内。owner／administrator 分类不会把 source 改成 system 或 owner，外部正文不能升级为系统指令或主人授权。
 
 [HarnessGateway](../../apps/host/src/harness.ts)同一工作区只允许一个主要 `HarnessMessageSink`，接收端可提供 `deliverBatch(batch, signal)`，也可保留 `deliver(event, signal)`。批次包含稳定 batchId、conversationId、createdAt、触发原因与逐条事件；只有旧单条接口时按事件交接，不将队列聚合误写为一次模型调用。
 
@@ -38,15 +38,42 @@ UI、通讯、队列与授权依赖 Eating 公开契约，具体适配器将契�
 
 reject-new 满时明确拒收、计数并报告错误；drop-oldest 只移最旧 pending，保护 delivering/uncertain。模式切换事务迁移当前队列，失败不部分更新；缩容不能满足保护条件时 409。清空另行用户确认，有正在投递消息则 409，保留动作账本与账号配置。迁移旧库保全所有未交接内容，移除终态历史与重复正文，原库压缩不另做聊天备份。具体默认字段、清空与迁移见[操作说明](../operations/QQ配置与功能测试.md)和[数据规范](../technical/数据目录与账号实例.md)。
 
-## 已实现的DSH首版
+## 最小 DSH 历史基线
 
-[独立插件](../../plugins/harness/dsh/)只依赖公开Eating SDK与固定官方SDK，显式安装同版本独立运行时，使用sdk-minimal定向patch、两个专属home与固定真实UUID；完整重启显式resume，不换ID冒充恢复。只开放9个QQ MCP工具，system只含主人主策略与所启用人格，群/私聊外部模板通过user JSON传入。每批策略固定，主人编辑用于下一请求，普通finalResponse不自动发QQ。
+最小 DSH 首版的[独立插件](../../plugins/harness/dsh/)只依赖公开 Eating SDK 与固定官方 SDK，使用 sdk-minimal 定向 patch、两个专属 home 与固定真实 UUID，完整重启显式 resume。该阶段只开放 9 个 QQ MCP 工具；后来 OneBot 完整目录扩展为 39 项。这些均为历史阶段范围，当前主代理和子代理的实际工具按下节装配。
 
-薄桥只用DSH公开会话、持久化、systemPrompt和tools服务：持久屏障后原子写元数据ACK；flush后ACK前的窗口通过公开持久只读handle核对批次并重建当前nonce回执，不重复prompt，不承诺exactly-once。最初空会话也须session-ready持久哨兵才保存created状态。模型失败与可靠交接分开报告，停用/断开/关闭即撤sink，断开失败仍disabled。
+薄桥的持久交接责任保持：公开 sessions.flush 成功后原子写匹配批次的 ACK；flush 后 ACK 前的窗口通过公开 persistence 只读恢复核对，不重复 prompt，不承诺 exactly-once。最初空会话也须 session-ready 持久哨兵才保存 created 状态。模型失败与可靠交接分开报告，停用／断开／关闭即撤 sink，断开失败仍 disabled。
+
+## 当前分层提示词与原生委派
+
+插件通过公开 SDK 注册代理类型、独有默认提示词、主代理使用说明、可选／默认工具与展示标题。QQ 提供 `qq.private`、`qq.group`，通用 Host 和 UI 动态读取贡献，不枚举平台实现。由 DSH 适配器将类型配置装配为真实原生 Agent／Preset，Host 不接管主代理的行动判断。
+
+| 执行对象 | 受信 system 顺序 | 当前工具边界 |
+| --- | --- | --- |
+| 主 Agent | common → main → 已启用插件的说明文档 → 统一人格 | 仅原生 `eating_list_agent_types`、`eating_delegate_task` |
+| 子 Agent | common → subagent → `agent:<类型ID>` → 同一人格引用 | 该类型 availableTools 内当前已勾选的范围化工具，无原生再次委派能力 |
+
+候选人格可保存多份，但一次最多启用一份，所有执行者引用同一启用文档，不复制正文到角色层；各层保留独立 ID 和 revision。未启用人格时包含明确的空人格层，可以全部停用，不创建默认角色。未注册／停用类型或缺少必要层时拒绝执行，不回退到主代理。每次任务开始重新读取提示词、贡献与权限，在途请求使用开始时快照。插件默认升级／启停不改变主人 CAS revision，因此不能仅按该 revision 缓存组合。新任务可在同一原生子会话 UUID 中使用更新后的 common、人格和工具，旧上下文仍属于该 Harness 会话。
+
+纯 SDK helper 只做一次变量渲染，不递归解释替换值，不执行 eval。主人／管理员来自 Host 本地受信配置，可表达多个平台身份；时间与人格供所有层使用，main／agent 另可使用受信平台、账号、会话、kind 和目标 ID，无当前来源时明确为空。发送者文本、消息列表／正文等外部变量只可用于旧 group／private 的 user 输入模板。插件 localizedTitles 只是展示元数据，不写进主人覆盖或 system 正文。
+
+旧作者配置严格校验后只在内存中迁移：旧 main 原文归 common，group／private 原文保留为 legacy user 输入，人格、名称、ID、版本与 CAS 不变。读和无变化保存不写；首个实际主人修改才原子写 v2。未修改的插件默认随升级更新，主人覆盖优先；停用保留编辑能力并撤执行权限，卸载后保留覆盖、标明来源不可用并只读。细节见[数据规范](../technical/数据目录与账号实例.md)。
+
+主代理按真实 context_ref 委派任务，不能通过参数传入任意 system、tools、persona 或 scope。Host 由实际接收来源绑定插件、实例、登录账号、会话、类型、目标和消息／资源引用；任务和事件仍是 user 数据。实例按这些稳定标识复用原生 UUID，不同会话隔离。原生 Agent 创建钩子应用正确 preset 与工具 scope，再用公开 subagents.startActivation／sendMessage 执行。
+
+每个任务取得短期独立 MCP 令牌，逐次调用动态核对类型启用列表、实际账号、会话、目标与引用；结束、断开或停用即撤销。适配器私有 loopback 控制通道只提供 prepare-task、actions、finish-task，使用随机令牌／nonce，不复制聊天正文。子任务通过原生委派返回摘要及本任务 Host 真实动作回执，主普通输出不会转发 QQ；成功、失败、未知分别表示，未知任务不盲重传。实际权限与幂等边界见[权限说明](../security/权限与授权.md)。
+
+## 模型配置与原生会话看板
+
+模型获取和连接测试只使用已保存的 endpoint／key。选择模型先改页面草稿，保存后才生效；服务不支持列表时可手填。测试发送最小 Ping、max_tokens=1，限制 15 秒、禁止重定向并限制响应 1 MiB。API 连通、runtimeReady、实际任务／外部动作成功分别核对；自动验证只有回环模型与 OneBot 夹具。
+
+会话看板在主人手动列出或选择后，通过公开原生 Cordis＋persistence 只读接口读取当前专属根的父子树。停机也可读，不启动模型或新会话，不创建 Eating archive；只沿 rootParentSession 树展示，默认每次 50 条、会话列表最多 100 条，响应受 1 MiB 和单条文本 32K 上限约束，并过滤敏感字段与内部推理。运行中最近缓冲不保证已落盘，无证据的状态为 unknown、更新时间为空。
+
+离开或隐藏看板清除内容，不为会话读取增加后台轮询；应用已有 workspace 状态轮询不在此范围。逻辑分页底层仍可能解码整个原生日志，不承诺大量历史的磁盘分页复杂度；停机读取前后文件摘要保持不变的证据见[本轮报告](../reports/2026-10-28-多代理与会话看板验证报告.md)。
 
 ## 后续适配器职责
 
-下表是后续职责草案，除上述输入交接边界外，尚未形成全部可用的方法或能力实现。
+下表是各适配器分别核对的职责清单。DSH 已落实的输入交接、原生会话、受控子代理与管理能力以上文为准；其他 Harness 不能直接继承这些结论，调度、记忆和未验证能力仍需单独证据。
 
 | 职责 | 需要表达的事实 | 差异处理 |
 | --- | --- | --- |
@@ -70,6 +97,6 @@ reject-new 满时明确拒收、计数并报告错误；drop-oldest 只移最旧
 
 ## 验证与未实现范围
 
-上一阶段独立sink回归为387/13，保留在旧报告；当前完整构建/严格类型、Vitest24文件541/541及浏览器23/23通过，含两项真实官方SDK集成：源码组合与独立安装产物的模型工具/沉默、可靠ACK、策略更新和整Host恢复同会话。完整命令及范围见[DSH报告](../reports/2026-10-28-DSH最小Harness验证报告.md)。模型端和QQ端仅测试夹具，实际提供商认证仍需主人配置后核验；无OS沙箱、原生Web会话页、第二Harness或跨引擎迁移承诺。
+历史独立 sink 阶段为 387 项／13 浏览器；最小 DSH 阶段为 24 文件 541/541 与 23/23 浏览器，含两项真实官方 SDK 集成，原范围见[首版报告](../reports/2026-10-28-DSH最小Harness验证报告.md)。本轮最终一次完整回归为 43 文件 855/855（43.52 秒），最终浏览器为 53/53（18.2 秒），均通过。同一次完整回归同时设置 EATING_DSH_TEST_RUNTIME 与 EATING_DSH_TEST_LEGACY_PLUGINS，实际运行全部 6 项原生验证：多代理 3 项、SDK 集成 2 项、旧公开产物迁移 1 项；迁移已包含在 855 项内。精确命令与证据见[本轮报告](../reports/2026-10-28-多代理与会话看板验证报告.md)。默认未设置这两项环境变量时跳过 6 项，仅设置 runtime 时仍跳过旧产物迁移 1 项，不能将跳过记作实跑。
 
-后续继续核验真实提供商与未覆盖能力；第二种Harness接入时应验证不修改既有通讯实现，通用页面仍按kind目录注册。DSH首版的当前运行证据见[本轮报告](../reports/2026-10-28-DSH最小Harness验证报告.md)，原先[DSH集成设计](DSH集成.md)与[源码核对](../research/DSH源码核对.md)保留调查范围，不能替代实际发布包验证。
+当前原生多代理、稳定 UUID 与只读看板证据均使用回环模型／OneBot；用户自行配置模型不等于开发代测正式付费 API。真实数据根的新版本部署以[项目状态](../项目状态.md)及本轮报告为准，不从夹具结果推断已上线。OS 沙箱、第二 Harness、全部 OneBot 实现、三平台完整运行和跨引擎迁移仍未由本轮证明；第二种 Harness 接入应验证不修改既有通讯实现。原先[DSH 集成设计](DSH集成.md)与[源码核对](../research/DSH源码核对.md)保留调查范围，不能替代实际发布包证据。

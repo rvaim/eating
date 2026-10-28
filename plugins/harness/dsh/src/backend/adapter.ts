@@ -1,14 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants, chmodSync, closeSync, existsSync, fsyncSync, lstatSync, openSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import { createRequire } from 'node:module'
 import { DeepSeekHarness } from '@deepseek-ai/dsh-sdk-client'
 import type { DeepSeekHarnessOptions, HarnessSession } from '@deepseek-ai/dsh-sdk-client'
-import { PlatformError, renderTemplate } from '@eating/plugin-sdk'
+import { PlatformError, composeAgentPrompt, renderTemplate } from '@eating/plugin-sdk'
 import type { BackendPlugin, ConnectionStatus, HarnessDeliveryBatch, HarnessDeliveryReceipt, HarnessHostServices, HarnessMessageSink, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { DshConfigurationFile, DshSessionFile, parseConfiguration, prepareRestrictedDirectory, readRestrictedJson, writeRestrictedJson } from './config'
 import type { DshConfiguration, DshSessionMetadata } from './config'
 import { DSH_VERSION, DshRuntimeInstallation } from './runtime'
 import { getRuntimeBridgeSource } from './runtime-bridge'
+import { DshAgentControl } from './agent-control'
+import type { AgentBinding } from './agent-control'
+import { listNativeSessions, nativeReaderOptions, readNativeSession } from './session-view'
+import { listModels, testModelConnection } from './model-service'
 
 export interface DshHarnessClient {
   start(): Promise<void>
@@ -24,6 +29,7 @@ export interface DshAdapterOptions {
   readonly startupTimeoutMs?: number
   readonly readyTimeoutMs?: number
   readonly closeTimeoutMs?: number
+  readonly resolveNativeModules?: (dshBin: string) => Readonly<Record<string, string>>
 }
 
 interface BatchIdentity {
@@ -62,7 +68,7 @@ function writePrivateSource(path: string, source: string): void {
 }
 
 export function createRuntimeEnvironment(dataDirectory: string, configuration: DshConfiguration,
-  mcp: { readonly url: string; readonly headers: Readonly<Record<string, string>> }, nonce: string, sessionId: string,
+  _mcp: { readonly url: string; readonly headers: Readonly<Record<string, string>> }, nonce: string, sessionId: string,
   parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const root = resolve(dataDirectory)
   const runtimeHome = join(root, 'runtime-home')
@@ -70,29 +76,32 @@ export function createRuntimeEnvironment(dataDirectory: string, configuration: D
   for (const key of ['PATH', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'NODE_EXTRA_CA_CERTS', 'NODE_USE_SYSTEM_CA', 'SSL_CERT_FILE', 'SSL_CERT_DIR']) {
     if (typeof parent[key] === 'string') environment[key] = parent[key]
   }
-  const authorization = mcp.headers.Authorization ?? mcp.headers.authorization
-  if (typeof authorization !== 'string' || !authorization.startsWith('Bearer ') || !authorization.slice(7)) {
-    throw failure('MCP_CONNECTION_INVALID', 'QQ MCP 连接认证不可用，未启动 DSH。', 'not-sent')
-  }
   return { ...environment, HOME: runtimeHome, USERPROFILE: runtimeHome,
     APPDATA: join(runtimeHome, 'AppData', 'Roaming'), LOCALAPPDATA: join(runtimeHome, 'AppData', 'Local'),
     XDG_CONFIG_HOME: join(runtimeHome, '.config'), XDG_CACHE_HOME: join(runtimeHome, '.cache'), XDG_DATA_HOME: join(runtimeHome, '.local', 'share'),
     DSH_HOME: join(root, 'dsh-home'), DSH_AGENTS_HOME: join(root, 'agents-home'),
-    EATING_DSH_API_KEY: configuration.apiKey, EATING_QQ_MCP_URL: mcp.url, EATING_QQ_MCP_TOKEN: authorization.slice(7),
+    EATING_DSH_API_KEY: configuration.apiKey,
     EATING_DSH_BRIDGE_DIRECTORY: join(root, 'bridge'), EATING_DSH_BRIDGE_NONCE: nonce, EATING_DSH_SESSION_ID: sessionId }
 }
 
-export function createRuntimePatch(resolved: { readonly providerEntry: string; readonly mcpEntry: string }, bridgePath: string, configuration: DshConfiguration): string {
+export function resolveNativeRuntimeModules(dshBin: string): Readonly<Record<string, string>> {
+  const request = createRequire(dshBin)
+  return Object.fromEntries(['dsh-subagent', 'dsh-subagent-spawn-in-process', 'dsh-session-query-sqlite', 'dsh-agent-preset-registry'].map(name => [name, request.resolve(`@deepseek-ai/${name}`)]))
+}
+
+export function createRuntimePatch(resolved: { readonly providerEntry: string; readonly mcpEntry: string }, bridgePath: string, configuration: DshConfiguration, modules: Readonly<Record<string, string>> = {}): string {
   const provider = { providers: { 'eating-openai': { api: 'openai-completions', baseURL: configuration.endpoint,
     apiKeyEnv: 'EATING_DSH_API_KEY', models: [{ id: configuration.model, input: ['text'], reasoningEfforts: false }] } } }
   const disabled = ['llm-deepseek', 'tool-fs', 'tool-working-directory', 'persistent-bash', 'persistent-pwsh', 'mcp-resources', 'terminal-bash', 'terminal-pwsh', 'pty', 'subprocess']
-  return disabled.map(id => `- id: ${id}\n  disabled: true\n`).join('') + `- insert:\n` +
-    `    - id: eating-provider\n      name: ${JSON.stringify(resolved.providerEntry)}\n      config: ${JSON.stringify(provider)}\n` +
-    `    - id: eating-qq\n      name: ${JSON.stringify(resolved.mcpEntry)}\n      config:\n` +
-    `        serverName: qq\n        transport: streamable-http\n        url: !!js process.env.EATING_QQ_MCP_URL\n` +
-    '        headers:\n          Authorization: !!js "`Bearer ${process.env.EATING_QQ_MCP_TOKEN}`"\n' +
-    `        toolCallTimeoutMs: ${configuration.timeoutMs}\n        failOnStartupError: true\n` +
-    `    - id: eating-owner-bridge\n      name: ${JSON.stringify(bridgePath)}\n`
+  const rows = [
+    { id: 'eating-provider', name: resolved.providerEntry, config: provider },
+    { id: 'eating-subagents', name: modules['dsh-subagent'], config: { maxDepth: 1, maxActiveSubagents: 8 } },
+    { id: 'eating-spawn', name: modules['dsh-subagent-spawn-in-process'] },
+    { id: 'eating-session-query', name: modules['dsh-session-query-sqlite'], config: { path: ':memory:', openAt: 'never' } },
+    { id: 'eating-agent-presets', name: modules['dsh-agent-preset-registry'], config: { default: 'eating-main' } },
+    { id: 'eating-owner-bridge', name: bridgePath },
+  ]
+  return disabled.map(id => `- id: ${id}\n  disabled: true\n`).join('') + '- insert:\n' + rows.map(row => `    - ${JSON.stringify(row)}\n`).join('')
 }
 
 /** Owns one official SDK runtime and one persisted session; it never forwards model text. */
@@ -100,7 +109,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.2.0'
+  readonly version = '0.3.1'
   readonly tools = []
   readonly capabilities = [
     { id: 'dsh.fixed-session', name: '固定 DSH 主会话', support: 'supported' as const, description: '使用独立官方 DSH 运行时与固定原生会话；可靠交接须经持久屏障。' },
@@ -113,6 +122,8 @@ export class DshPlugin implements BackendPlugin {
   private readonly runtime: Pick<DshRuntimeInstallation, 'getStatus' | 'install' | 'resolve' | 'dispose'>
   private readonly createHarness: (options: DeepSeekHarnessOptions) => DshHarnessClient
   private readonly bridgeDirectory: string
+  private readonly agentControl: DshAgentControl
+  private readonly managementRequests = new Set<AbortController>()
   private configuration: DshConfiguration
   private metadata: DshSessionMetadata | null
   private client: DshHarnessClient | null = null
@@ -143,6 +154,7 @@ export class DshPlugin implements BackendPlugin {
     this.sessionFile = new DshSessionFile(context.dataDirectory)
     this.metadata = this.sessionFile.read()
     this.bridgeDirectory = prepareRestrictedDirectory(join(context.dataDirectory, 'bridge'))
+    this.agentControl = new DshAgentControl(context.dataDirectory, this.host)
     this.runtime = options.runtime ?? new DshRuntimeInstallation(context.dataDirectory)
     this.createHarness = options.createHarness ?? (configuration => new DeepSeekHarness(configuration))
   }
@@ -200,7 +212,8 @@ export class DshPlugin implements BackendPlugin {
     this.lastError = null
     this.nonce = randomUUID()
     try {
-      const mcp = this.host.getMcpConnection('qq')
+      const nativeModules = (this.options.resolveNativeModules ?? resolveNativeRuntimeModules)(resolved.dshBin)
+      await this.agentControl.start(this.nonce)
       if (!this.metadata) {
         this.metadata = { sessionId: randomUUID(), created: false }
         this.sessionFile.write(this.metadata)
@@ -214,10 +227,11 @@ export class DshPlugin implements BackendPlugin {
       const bridgePath = join(this.bridgeDirectory, 'runtime-bridge.mjs')
       const patchPath = join(this.bridgeDirectory, 'runtime.patch.yaml')
       writePrivateSource(bridgePath, getRuntimeBridgeSource())
-      writePrivateSource(patchPath, createRuntimePatch(resolved, bridgePath, this.configuration))
+      writePrivateSource(patchPath, createRuntimePatch(resolved, bridgePath, this.configuration, nativeModules))
       const workspace = join(resolve(this.context.dataDirectory), 'workspace')
       const client = this.createHarness({ dshBin: resolved.dshBin, profile: 'sdk-minimal', patches: [patchPath],
-        dshHome: join(resolve(this.context.dataDirectory), 'dsh-home'), env: createRuntimeEnvironment(this.context.dataDirectory, this.configuration, mcp, this.nonce, sessionId),
+        dshHome: join(resolve(this.context.dataDirectory), 'dsh-home'), env: { ...createRuntimeEnvironment(this.context.dataDirectory, this.configuration, { url: '', headers: {} }, this.nonce, sessionId),
+          EATING_DSH_CONTROL_URL: this.agentControl.url, EATING_DSH_CONTROL_TOKEN: this.agentControl.token, EATING_DSH_MCP_ENTRY: resolved.mcpEntry, EATING_DSH_TASK_TIMEOUT: String(this.configuration.timeoutMs) },
         processCwd: workspace, cwd: workspace, provider: 'eating-openai', model: this.configuration.model, maxTokens: this.configuration.maxTokens,
         initializeTimeoutMs: MAX_STARTUP_MS, requestTimeoutMs: this.configuration.timeoutMs,
         shutdownTimeoutMs: 500, disposeEofGraceMs: 1000, disposeGraceMs: 1000 })
@@ -302,20 +316,16 @@ export class DshPlugin implements BackendPlugin {
     })
   }
 
-  private publishPolicy(): { readonly revision: number; readonly personaName: string; readonly messageTemplate: (kind: 'group' | 'private') => string } {
+  private publishPolicy(binding?: AgentBinding, contextRef?: string): { readonly revision: number; readonly personaName: string; readonly identityBindings: Readonly<Record<string, string>>; readonly messageTemplate: (kind: 'group' | 'private') => string } {
     const owner = this.host.readOwnerConfiguration()
-    const main = owner.prompts.find(prompt => prompt.id === 'main')
-    if (!main) throw failure('OWNER_CONFIGURATION_INVALID', '主人主提示词不可用，未投递消息。', 'not-sent')
     const personaName = owner.activePersona?.name ?? ''
-    const bindings = { 当前时间: new Date().toISOString(), 人格名称: personaName }
-    const mainBody = renderTemplate(main.body, 'main', bindings)
-    const personaBody = owner.activePersona ? renderTemplate(owner.activePersona.body, 'persona', bindings) : ''
-    const systemPrompt = personaBody ? `${mainBody}\n\n${personaBody}` : mainBody
-    writeRestrictedJson(join(this.bridgeDirectory, 'owner-policy.json'), { schemaVersion: 1, revision: owner.revision, systemPrompt })
-    return { revision: owner.revision, personaName, messageTemplate: kind => {
+    const preview = composeAgentPrompt(owner, null, { 当前时间: new Date().toISOString(), 人格名称: personaName })
+    writeRestrictedJson(join(this.bridgeDirectory, 'owner-policy.json'), { schemaVersion: 1, revision: preview.revision, systemPrompt: preview.systemPrompt,
+      agentTypes: (owner.agentTypes ?? []).filter(type => type.enabled).map(type => ({ id: type.id, title: type.title, description: type.description, enabled: type.enabled })),
+      ...(binding && contextRef ? { contextRef, binding: { agentId: binding.scope.agentId, agentTypeId: binding.scope.agentTypeId, label: `${binding.scope.pluginId}-${binding.scope.kind}-${binding.scope.targetId}` } } : {}) })
+    return { revision: owner.revision, personaName, identityBindings: { 主人: owner.bindings?.主人 ?? '', 管理员: owner.bindings?.管理员 ?? '' }, messageTemplate: kind => {
       const prompt = owner.prompts.find(candidate => candidate.id === kind)
-      if (!prompt) throw failure('OWNER_CONFIGURATION_INVALID', '主人消息提示词不可用，未投递消息。', 'not-sent')
-      return prompt.body
+      return prompt?.body ?? ''
     } }
   }
 
@@ -372,7 +382,7 @@ export class DshPlugin implements BackendPlugin {
     if (!this.isReady() || signal.aborted) return { accepted: false }
     if (batch.protocolVersion !== 1 || !batchIdPattern.test(batch.batchId) || !batch.events.length || batch.events.length > 200) return { accepted: false }
     const first = batch.events[0]!
-    if (batch.events.some(event => event.protocolVersion !== 1 || event.source.trust !== 'external' || event.conversationId !== batch.conversationId || event.source.kind !== first.source.kind || event.platform !== first.platform || event.accountId !== first.accountId)) return { accepted: false }
+    if (batch.events.some(event => event.protocolVersion !== 1 || event.source.trust !== 'external' || event.conversationId !== batch.conversationId || event.source.kind !== first.source.kind || event.platform !== first.platform || event.pluginId !== first.pluginId || event.instanceId !== first.instanceId || event.targetId !== first.targetId || event.accountId !== first.accountId)) return { accepted: false }
     if (this.metadata?.activeBatchId === batch.batchId) {
       const ack = this.metadata.digest ? this.readAck({ nonce: this.nonce, sessionId: this.metadata.sessionId, batchId: batch.batchId, digest: this.metadata.digest }) : null
       if (ack) return { accepted: true, durable: true, receiptId: ack.receiptId }
@@ -390,13 +400,15 @@ export class DshPlugin implements BackendPlugin {
     let sent = false
     let runFinished = false
     try {
-      const policy = this.publishPolicy()
-      const context = { platform: first.platform, accountId: first.accountId, instanceId: first.instanceId, conversationId: batch.conversationId,
+      const binding = this.agentControl.bind(batch, this.metadata!.sessionId)
+      const policy = this.publishPolicy(binding, batch.batchId)
+      const context = { contextRef: batch.batchId, agentTypeId: binding.scope.agentTypeId, platform: first.platform, accountId: first.accountId, instanceId: first.instanceId, conversationId: batch.conversationId,
         kind: first.source.kind, createdAt: batch.createdAt, reason: batch.reason, ownerRevision: policy.revision }
       const renderedPrompt = renderTemplate(policy.messageTemplate(first.source.kind), first.source.kind, {
         当前时间: new Date().toISOString(), 人格名称: policy.personaName, 平台: first.platform, 机器人账号: first.accountId,
         会话编号: batch.conversationId, 会话类型: first.source.kind, 发送者列表: JSON.stringify([...new Set(batch.events.map(event => event.senderId))]),
         消息列表: JSON.stringify(batch.events), 消息内容: batch.events[batch.events.length - 1]!.text, 消息数量: String(batch.events.length), 批次编号: batch.batchId,
+        目标编号: binding.scope.targetId, ...policy.identityBindings,
       })
       const body = { context, renderedPrompt, events: batch.events }
       const digest = createHash('sha256').update(JSON.stringify(body)).digest('hex')
@@ -468,6 +480,7 @@ export class DshPlugin implements BackendPlugin {
     this.detach?.(); this.detach = null
     this.lifetime?.abort()
     this.delivery?.abort()
+    await this.agentControl.close()
     const client = this.client
     if (client) {
       try { await bounded(client.close().then(async () => { await this.runTask }), this.options.closeTimeoutMs ?? 6000, failure('RUNTIME_STOP_FAILED', 'DSH 进程清理未完成，请先停止运行时。')) }
@@ -485,8 +498,22 @@ export class DshPlugin implements BackendPlugin {
     if (!this.runTask) this.busy = false
   }
 
-  async manage(operation: string, _input: unknown): Promise<JsonValue> {
+  async manage(operation: string, input: unknown): Promise<JsonValue> {
     if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH 插件已停用。', 'not-sent')
+    if (operation === 'list-models' || operation === 'test-connection') {
+      const controller = new AbortController(); this.managementRequests.add(controller)
+      try { return operation === 'list-models' ? { models: [...(await listModels(this.configuration, controller.signal)).models].map(model => ({ ...model })) } : { ...await testModelConnection(this.configuration, controller.signal) } }
+      finally { this.managementRequests.delete(controller) }
+    }
+    if (operation === 'list-sessions' || operation === 'read-session') {
+      if (!this.metadata && operation === 'list-sessions') {
+        if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length) throw new PlatformError('SESSION_VIEW_INPUT_INVALID', '会话读取参数无效。', 400, 'not-sent')
+        return { sessions: [], truncated: false, refreshedAt: new Date().toISOString() }
+      }
+      const resolved = this.runtime.resolve()
+      const options = nativeReaderOptions(this.context.dataDirectory, resolved.dshBin, this.metadata?.sessionId ?? null, this.agentControl.list(), [this.configuration.apiKey, this.agentControl.token], this.runtimeReady)
+      return (operation === 'list-sessions' ? await listNativeSessions(options, input) : await readNativeSession(options, input)) as unknown as JsonValue
+    }
     if (operation !== 'install-runtime') throw new PlatformError('MANAGEMENT_OPERATION_NOT_FOUND', 'DSH 未提供此管理操作。', 404, 'not-sent')
     if (this.client || this.connectTask) throw failure('RUNTIME_BUSY', '请先停止 DSH，再安装独立运行时。', 'not-sent')
     if (this.installTask) return { started: true }
@@ -508,6 +535,7 @@ export class DshPlugin implements BackendPlugin {
 
   async dispose(): Promise<void> {
     this.closed = true
+    for (const controller of this.managementRequests) controller.abort()
     this.installController?.abort()
     this.runtime.dispose()
     try { await this.disconnect() }

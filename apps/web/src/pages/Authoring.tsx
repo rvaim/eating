@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Check, ChevronRight, FileText, Info, Plus, Power, RefreshCw, Save, Trash2, UserRound } from 'lucide-react'
-import { analyzeTemplate } from '@eating/plugin-sdk'
-import type { AuthoringSnapshot, PersonaDocument, PersonaMutationResult, PersonaSummary, PromptDocument, PromptKind, TemplateScope } from '@eating/plugin-sdk'
-import { HostApiError, formatDateTime, getErrorMessage, hostRequest, translate, useI18n } from '@eating/ui-sdk'
+import { Check, ChevronRight, Eye, FileText, Info, Plus, Power, RefreshCw, Save, Trash2, UserRound } from 'lucide-react'
+import { TEMPLATE_SCOPES, analyzeTemplate, getPromptTemplateScope } from '@eating/plugin-sdk'
+import type { AgentPromptPreview, AuthoringSnapshot, PersonaDocument, PersonaMutationResult, PersonaSummary, PromptDocument, TemplateScope } from '@eating/plugin-sdk'
+import { HostApiError, formatDateTime, getErrorMessage, getLocale, hostRequest, translate, useI18n } from '@eating/ui-sdk'
 import '../i18n/authoring'
 import { TemplateEditor } from '../components/TemplateEditor'
 import './Authoring.css'
@@ -33,12 +33,34 @@ interface RequestTicket {
   readonly kind: Operation
 }
 
-const promptKinds: readonly PromptKind[] = ['main', 'group', 'private']
+const basePromptIds = ['common', 'subagent', 'main'] as const
 const authoringText = (key: string, params?: Record<string, string | number | boolean | null | undefined>) => translate('authoring', key, params)
 const personaIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const promptKind = (id: string | null): PromptKind => promptKinds.includes(id as PromptKind) ? id as PromptKind : 'main'
 const revisionValid = (value: number) => Number.isSafeInteger(value) && value >= 0
 const responseError = () => new HostApiError('INVALID_HOST_RESPONSE', authoringText('error.response'))
+const promptDocuments = (snapshot: AuthoringSnapshot) => [...snapshot.prompts, ...(snapshot.legacyPrompts ?? [])]
+
+function promptValid(doc: PromptDocument, legacy = false): boolean {
+  if (!doc || typeof doc.id !== 'string') return false
+  const scope = getPromptTemplateScope(doc.id)
+  return scope !== null && (legacy ? scope === 'group' || scope === 'private' : scope !== 'group' && scope !== 'private')
+    && typeof doc.title === 'string' && typeof doc.body === 'string' && revisionValid(doc.revision)
+    && (doc.updatedAt === null || typeof doc.updatedAt === 'string')
+    && (doc.scope === undefined || doc.scope === scope)
+    && (doc.source === undefined || (legacy ? doc.source === 'legacy-user-input' : doc.source === 'owner' || doc.source === 'plugin'))
+    && (doc.localizedTitles === undefined || doc.localizedTitles !== null && typeof doc.localizedTitles === 'object' && !Array.isArray(doc.localizedTitles)
+      && Object.values(doc.localizedTitles).every(title => typeof title === 'string' && title.trim().length > 0))
+    && (doc.pluginId === undefined || typeof doc.pluginId === 'string' && doc.pluginId.length > 0)
+    && (doc.agentTypeId === undefined || typeof doc.agentTypeId === 'string' && scope === 'agent' && doc.id === `agent:${doc.agentTypeId}`)
+    && (doc.defaultBody === undefined || typeof doc.defaultBody === 'string')
+    && (doc.enabled === undefined || typeof doc.enabled === 'boolean')
+    && (doc.available === undefined || typeof doc.available === 'boolean')
+}
+
+function promptTitle(doc: Pick<PromptDocument, 'id' | 'title' | 'localizedTitles'>): string {
+  const scope = getPromptTemplateScope(doc.id)
+  return scope === 'agent' || scope === 'plugin' ? doc.localizedTitles?.[getLocale()] ?? doc.title : authoringText(`prompt.${doc.id}.title`)
+}
 
 function summaryValid(value: PersonaSummary): boolean {
   return Boolean(value && typeof value.id === 'string' && personaIdPattern.test(value.id)
@@ -49,13 +71,25 @@ function summaryValid(value: PersonaSummary): boolean {
 function checkSnapshot(value: AuthoringSnapshot): AuthoringSnapshot {
   if (!value || value.protocolVersion !== 1 || !revisionValid(value.revision)
     || !Array.isArray(value.prompts) || !Array.isArray(value.personas) || !Array.isArray(value.variables)
-    || value.prompts.length !== promptKinds.length || new Set(value.prompts.map(doc => doc?.id)).size !== promptKinds.length
-    || value.prompts.some(doc => !doc || !promptKinds.includes(doc.id) || typeof doc.title !== 'string'
-      || typeof doc.body !== 'string' || !revisionValid(doc.revision) || !(doc.updatedAt === null || typeof doc.updatedAt === 'string'))
+    || value.legacyPrompts !== undefined && !Array.isArray(value.legacyPrompts)
+    || value.prompts.some(doc => !promptValid(doc)) || value.legacyPrompts?.some(doc => !promptValid(doc, true))
+    || basePromptIds.some(id => !value.prompts.some(doc => doc.id === id))
+    || new Set(promptDocuments(value).map(doc => doc.id)).size !== promptDocuments(value).length
     || value.personas.some(persona => !summaryValid(persona)) || new Set(value.personas.map(persona => persona.id)).size !== value.personas.length
     || !(value.activePersonaId === null || value.personas.some(persona => persona.id === value.activePersonaId))
     || value.variables.some(variable => !variable || typeof variable.name !== 'string' || typeof variable.description !== 'string'
-      || !Array.isArray(variable.scopes) || variable.scopes.some((scope: string) => !['main', 'group', 'private', 'persona'].includes(scope)))) throw responseError()
+      || !Array.isArray(variable.scopes) || variable.scopes.some((scope: TemplateScope) => !TEMPLATE_SCOPES.includes(scope)))) throw responseError()
+  return value
+}
+
+function checkPreview(value: AgentPromptPreview, agentTypeId: string | null): AgentPromptPreview {
+  if (!value || !revisionValid(value.revision) || value.agentTypeId !== agentTypeId || !Array.isArray(value.layers)
+    || value.layers.length === 0 || new Set(value.layers.map(layer => layer?.id)).size !== value.layers.length
+    || value.layers.some(layer => !layer || typeof layer.id !== 'string'
+      || !(getPromptTemplateScope(layer.id) !== null && !['group', 'private'].includes(layer.id)
+        || layer.id === 'persona' || layer.id.startsWith('persona:') && personaIdPattern.test(layer.id.slice(8)))
+      || typeof layer.title !== 'string' || !revisionValid(layer.revision) || typeof layer.body !== 'string')
+    || typeof value.systemPrompt !== 'string' || !value.bindings || typeof value.bindings !== 'object' || Array.isArray(value.bindings)) throw responseError()
   return value
 }
 
@@ -73,7 +107,9 @@ function checkMutation(value: PersonaMutationResult, expectedId?: string): Perso
 }
 
 function promptDraft(doc: PromptDocument): Draft {
-  return { key: `prompts:${doc.id}`, id: doc.id, scope: doc.id, name: doc.title, body: doc.body, saved: doc, requiresRead: false, notice: null }
+  const scope = getPromptTemplateScope(doc.id)
+  if (scope === null) throw responseError()
+  return { key: `prompts:${doc.id}`, id: doc.id, scope, name: doc.title, body: doc.body, saved: doc, requiresRead: false, notice: null }
 }
 
 function personaDraft(doc: PersonaDocument): Draft {
@@ -94,7 +130,7 @@ function isConflict(error: unknown): boolean {
 }
 
 function needsRead(error: unknown): boolean {
-  return isConflict(error) || error instanceof HostApiError && (error.outcome === 'unknown' || error.code === 'INVALID_HOST_RESPONSE' || error.code === 'ACTIVE_PERSONA')
+  return isConflict(error) || error instanceof HostApiError && (error.outcome === 'unknown' || error.code === 'INVALID_HOST_RESPONSE' || error.code === 'ACTIVE_PERSONA' || error.code === 'PROMPT_SOURCE_UNAVAILABLE')
 }
 
 function errorMessage(error: unknown, kind: Operation): string {
@@ -102,6 +138,9 @@ function errorMessage(error: unknown, kind: Operation): string {
   if (error instanceof HostApiError) {
     if (error.outcome === 'unknown' && kind !== 'read') return authoringText('error.unknown')
     if (error.code === 'ACTIVE_PERSONA') return authoringText('error.activePersona')
+    if (error.code === 'PROMPT_SOURCE_UNAVAILABLE') return authoringText('error.sourceUnavailable')
+    if (error.code === 'INVALID_AGENT_PROMPT') return authoringText('error.agentPrompt')
+    if (error.code === 'AGENT_TYPE_UNAVAILABLE') return authoringText('error.agentUnavailable')
   }
   return getErrorMessage(error, authoringText(kind === 'read' ? 'error.read' : 'error.mutate'))
 }
@@ -126,6 +165,8 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
   const [snapshotNeedsRead, setSnapshotNeedsRead] = useState(false)
   const [confirmRead, setConfirmRead] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [preview, setPreview] = useState<{ readonly key: string; readonly loading: boolean; readonly data?: AgentPromptPreview; readonly error?: unknown } | null>(null)
+  const previewRequest = useRef<{ readonly key: string; readonly controller: AbortController } | null>(null)
   const mounted = useRef(false)
   const generation = useRef(0)
   const activeRequest = useRef<RequestTicket | null>(null)
@@ -142,8 +183,18 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
   feedback.current = onFeedback
   select.current = onSelect
 
-  const resolvedId = mode === 'prompts' ? promptKind(selectedId) : selectedId ?? snapshot?.activePersonaId ?? snapshot?.personas[0]?.id ?? 'new'
-  const selection: Selection = { key: `${mode}:${resolvedId}`, id: resolvedId, scope: mode === 'prompts' ? promptKind(resolvedId) : 'persona' }
+  const documents = snapshot ? promptDocuments(snapshot) : []
+  const resolvedId = mode === 'prompts' ? documents.some(doc => doc.id === selectedId) ? selectedId! : 'common'
+    : selectedId ?? snapshot?.activePersonaId ?? snapshot?.personas[0]?.id ?? 'new'
+  const selectedPrompt = mode === 'prompts' ? documents.find(doc => doc.id === resolvedId) ?? null : null
+  const selection: Selection = { key: `${mode}:${resolvedId}`, id: resolvedId, scope: mode === 'prompts' ? getPromptTemplateScope(resolvedId) ?? 'common' : 'persona' }
+  const groups = [
+    { key: 'common', documents: documents.filter(doc => doc.id === 'common' || doc.id === 'subagent') },
+    { key: 'main', documents: documents.filter(doc => doc.id === 'main') },
+    { key: 'plugins', documents: documents.filter(doc => getPromptTemplateScope(doc.id) === 'plugin') },
+    { key: 'agents', documents: documents.filter(doc => getPromptTemplateScope(doc.id) === 'agent') },
+    { key: 'legacy', documents: documents.filter(doc => doc.source === 'legacy-user-input' || doc.id === 'group' || doc.id === 'private') },
+  ]
   const selectedKey = useRef(selection.key)
   selectedKey.current = selection.key
   const currentDraft = drafts[selection.key] ?? null
@@ -158,7 +209,22 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
   const active = Boolean(currentDraft?.saved && snapshot?.activePersonaId === currentDraft.id && mode === 'personas')
   const blocked = snapshotNeedsRead || Boolean(currentDraft?.requiresRead)
   const currentReadError = readError && (readError.key === null || readError.key === selection.key) ? errorMessage(readError.error, 'read') : null
-  const title = mode === 'prompts' ? t(`prompt.${promptKind(resolvedId)}.title`) : !snapshot ? t('persona.title') : resolvedId === 'new' ? t('persona.new') : currentDraft?.saved && 'name' in currentDraft.saved ? currentDraft.saved.name : snapshot.personas.find(persona => persona.id === resolvedId)?.name ?? t('persona.fallbackTitle')
+  const title = mode === 'prompts' ? selectedPrompt ? promptTitle(selectedPrompt) : t('nav.prompts') : !snapshot ? t('persona.title') : resolvedId === 'new' ? t('persona.new') : currentDraft?.saved && 'name' in currentDraft.saved ? currentDraft.saved.name : snapshot.personas.find(persona => persona.id === resolvedId)?.name ?? t('persona.fallbackTitle')
+  const sourceUnavailable = selectedPrompt?.available === false
+  const sourceDisabled = selectedPrompt?.enabled === false
+  const legacy = selectedPrompt?.source === 'legacy-user-input' || selection.scope === 'group' || selection.scope === 'private'
+  const canPreview = mode === 'prompts' && (selection.scope === 'main' || selection.scope === 'agent')
+  const currentPreview = preview?.key === selection.key ? preview : null
+  const hasUnsavedDrafts = Object.values(drafts).some(draft => isDirty(draft))
+  const visibleLayers = currentPreview?.data?.layers.filter(layer => !(layer.id === 'persona' && layer.body === '')) ?? []
+
+  const cancelPreview = useCallback(() => {
+    previewRequest.current?.controller.abort()
+    previewRequest.current = null
+    if (mounted.current) setPreview(null)
+  }, [])
+
+  useEffect(() => () => cancelPreview(), [selection.key, cancelPreview])
 
   const replaceDrafts = useCallback((next: Readonly<Record<string, Draft>>) => {
     draftsRef.current = next
@@ -166,9 +232,10 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
   }, [])
 
   const replaceSnapshot = useCallback((next: AuthoringSnapshot) => {
+    cancelPreview()
     snapshotRef.current = next
     setSnapshot(next)
-  }, [])
+  }, [cancelPreview])
 
   const requireSnapshotRead = useCallback((required: boolean) => {
     snapshotNeedsReadRef.current = required
@@ -192,6 +259,7 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
 
   const beginRequest = useCallback((kind: Operation, key: string | null): RequestTicket | null => {
     if (!mounted.current || lock.current) return null
+    cancelPreview()
     lock.current = true
     const ticket = { generation: ++generation.current, controller: new AbortController(), key, kind }
     activeRequest.current = ticket
@@ -200,7 +268,7 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
     setConfirmDelete(null)
     setReadError(null)
     return ticket
-  }, [])
+  }, [cancelPreview])
 
   const isCurrent = useCallback((ticket: RequestTicket) => mounted.current && generation.current === ticket.generation
     && !ticket.controller.signal.aborted && (ticket.key === null || selectedKey.current === ticket.key), [])
@@ -222,13 +290,13 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
       if (target?.scope === 'persona') replacement = target.id === 'new' ? emptyPersona()
         : personaDraft(checkPersona(await hostRequest<PersonaDocument>(`/personas/${encodeURIComponent(target.id)}`, { signal: ticket.controller.signal }), target.id))
       else if (target) {
-        const doc = next.prompts.find(prompt => prompt.id === target.id)
+        const doc = promptDocuments(next).find(prompt => prompt.id === target.id)
         if (!doc) throw responseError()
         replacement = promptDraft(doc)
       }
       if (!isCurrent(ticket)) return
       const nextDrafts = { ...draftsRef.current }
-      for (const doc of next.prompts) if (!nextDrafts[`prompts:${doc.id}`]) nextDrafts[`prompts:${doc.id}`] = promptDraft(doc)
+      for (const doc of promptDocuments(next)) if (!nextDrafts[`prompts:${doc.id}`]) nextDrafts[`prompts:${doc.id}`] = promptDraft(doc)
       if (replacement) nextDrafts[replacement.key] = replacement
       replaceDrafts(nextDrafts)
       replaceSnapshot(next)
@@ -241,8 +309,8 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
   useEffect(() => {
     mounted.current = true
     void readSnapshot(null)
-    return () => { mounted.current = false; cancelRequest(false) }
-  }, [cancelRequest, readSnapshot])
+    return () => { mounted.current = false; cancelRequest(false); cancelPreview() }
+  }, [cancelRequest, cancelPreview, readSnapshot])
 
   const ready = snapshot !== null
   useEffect(() => {
@@ -253,7 +321,7 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
     const key = `${mode}:${resolvedId}`
     if (!draftsRef.current[key]) {
       if (mode === 'prompts') {
-        const doc = snapshotRef.current?.prompts.find(prompt => prompt.id === resolvedId)
+        const doc = snapshotRef.current ? promptDocuments(snapshotRef.current).find(prompt => prompt.id === resolvedId) : undefined
         if (doc) replaceDrafts({ ...draftsRef.current, [key]: promptDraft(doc) })
       } else if (resolvedId === 'new') replaceDrafts({ ...draftsRef.current, [key]: emptyPersona() })
       else {
@@ -273,7 +341,7 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
 
   useEffect(() => {
     if (!snapshot) return
-    if (mode === 'prompts' && selectedId !== promptKind(selectedId) || mode === 'personas' && selectedId === null) select.current(resolvedId)
+    if (mode === 'prompts' && selectedId !== resolvedId || mode === 'personas' && selectedId === null) select.current(resolvedId)
   }, [mode, resolvedId, selectedId, snapshot])
 
   useEffect(() => { if (confirmRead) readCancel.current?.focus() }, [confirmRead])
@@ -290,7 +358,7 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
   function updateDraft(field: 'name' | 'body', value: string) {
     if (lock.current) return
     const draft = draftsRef.current[selection.key]
-    if (!draft) return
+    if (!draft || mode === 'prompts' && sourceUnavailable) return
     replaceDrafts({ ...draftsRef.current, [draft.key]: { ...draft, [field]: value, notice: draft.notice?.kind === 'error' ? draft.notice : null } })
     setConfirmRead(null)
     setConfirmDelete(null)
@@ -308,7 +376,7 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
     const index = snapshotRef.current
     if (lock.current || selectedKey.current !== draft?.key || !draft || !index || draft.requiresRead || snapshotNeedsReadRef.current) return
     const currentlyActive = draft.scope === 'persona' && index.activePersonaId === draft.id
-    if (kind === 'save' && (!isDirty(draft) || !draft.body.trim() || draft.body.length > 50000
+    if (kind === 'save' && (mode === 'prompts' && sourceUnavailable || !isDirty(draft) || !draft.body.trim() || draft.body.length > 50000
       || draft.scope === 'persona' && (!draft.name.trim() || draft.name.trim().length > 80)
       || !analyzeTemplate(draft.body, draft.scope).valid)) return
     if (kind === 'activate' && (!draft.saved || !currentlyActive && isDirty(draft))) return
@@ -325,7 +393,7 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
         next = checkSnapshot(await hostRequest<AuthoringSnapshot>(`/prompts/${encodeURIComponent(draft.id)}`, {
           method: 'POST', signal: ticket.controller.signal, body: { expectedRevision: draft.saved.revision, body: draft.body },
         }))
-        const doc = next.prompts.find(prompt => prompt.id === draft.id)
+        const doc = promptDocuments(next).find(prompt => prompt.id === draft.id)
         if (!doc) throw responseError()
         savedDraft = promptDraft(doc)
         messageKey = 'success.promptSaved'
@@ -371,13 +439,39 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
     else if (kind === 'delete' && !draftsRef.current[draft.key]) select.current('new')
   }
 
+  async function readSavedPreview() {
+    if (lock.current || previewRequest.current || !selectedPrompt || !canPreview || sourceUnavailable || sourceDisabled) return
+    const agentTypeId = selection.scope === 'agent' ? selectedPrompt.agentTypeId ?? selectedPrompt.id.slice(6) : null
+    const request = { key: selection.key, controller: new AbortController() }
+    previewRequest.current = request
+    setPreview({ key: request.key, loading: true })
+    try {
+      const data = checkPreview(await hostRequest<AgentPromptPreview>('/authoring/preview', {
+        method: 'POST', body: { agentTypeId }, signal: request.controller.signal,
+      }), agentTypeId)
+      if (mounted.current && previewRequest.current === request && selectedKey.current === request.key) setPreview({ key: request.key, loading: false, data })
+    } catch (error) {
+      if (mounted.current && previewRequest.current === request && selectedKey.current === request.key && !request.controller.signal.aborted) setPreview({ key: request.key, loading: false, error })
+    } finally {
+      if (previewRequest.current === request) previewRequest.current = null
+    }
+  }
+
   function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); void mutate('save') }
 
   return <div className="robot-workspace authoring-workspace">
     <aside className="platform-sidebar authoring-sidebar">
       <p className="platform-nav-heading">{t(mode === 'prompts' ? 'nav.prompts' : 'nav.personas')}{mode === 'personas' && snapshot && <span>{formatNumber(snapshot.personas.length)}</span>}</p>
       <nav aria-label={t(mode === 'prompts' ? 'nav.prompts' : 'nav.personaList')}>
-        {mode === 'prompts' ? promptKinds.map(id => <button key={id} type="button" disabled={!snapshot || mutating} className={`platform-nav-item ${resolvedId === id ? 'is-selected' : ''}`} aria-current={resolvedId === id ? 'page' : undefined} onClick={() => choose(id)}><FileText size={18} aria-hidden="true" /><span>{t(`prompt.${id}.title`)}</span>{resolvedId === id && <ChevronRight size={15} className="nav-chevron" aria-hidden="true" />}</button>) : <>
+        {mode === 'prompts' ? !snapshot ? <p className="authoring-sidebar-state">{t(busy ? 'nav.loadingPrompts' : 'nav.promptsNotLoaded')}</p> : groups.filter(group => group.documents.length > 0).map(group => <div className="authoring-prompt-group" key={group.key} role="group" aria-label={t(`nav.${group.key}`)}>
+          <p className="authoring-group-heading">{t(`nav.${group.key}`)}</p>
+          {group.documents.map(doc => <button key={doc.id} type="button" disabled={mutating} className={`platform-nav-item authoring-prompt-item ${resolvedId === doc.id ? 'is-selected' : ''}`} aria-current={resolvedId === doc.id ? 'page' : undefined} onClick={() => choose(doc.id)}>
+            <FileText size={18} aria-hidden="true" /><span title={promptTitle(doc)}>{promptTitle(doc)}</span>
+            {doc.available === false ? <small className="authoring-source-label">{t('source.unavailableLabel')}</small> : doc.enabled === false && <small className="authoring-source-label">{t('source.disabledLabel')}</small>}
+            {drafts[`prompts:${doc.id}`] && isDirty(drafts[`prompts:${doc.id}`]!) && <span className="authoring-draft-mark" aria-label={t('status.unsaved')} />}
+            {resolvedId === doc.id && <ChevronRight size={15} className="nav-chevron" aria-hidden="true" />}
+          </button>)}
+        </div>) : <>
           {!snapshot ? <p className="authoring-sidebar-state">{t(busy ? 'nav.loadingPersonas' : 'nav.personasNotLoaded')}</p> : snapshot.personas.length === 0 ? <p className="authoring-sidebar-state">{t('nav.personasEmpty')}</p> : snapshot.personas.map(persona => <button key={persona.id} type="button" disabled={mutating} className={`platform-nav-item authoring-persona-item ${resolvedId === persona.id ? 'is-selected' : ''}`} aria-current={resolvedId === persona.id ? 'page' : undefined} onClick={() => choose(persona.id)}><UserRound size={18} aria-hidden="true" /><span title={persona.name}>{persona.name}</span>{snapshot.activePersonaId === persona.id && <small className="authoring-active-label">{t('status.active')}</small>}{drafts[`personas:${persona.id}`] && isDirty(drafts[`personas:${persona.id}`]!) && <span className="authoring-draft-mark" aria-label={t('status.unsaved')} />}</button>)}
           <button type="button" disabled={!snapshot || mutating} className={`platform-nav-item authoring-new-button ${snapshot && resolvedId === 'new' ? 'is-selected' : ''}`} aria-current={snapshot && resolvedId === 'new' ? 'page' : undefined} onClick={() => choose('new')}><Plus size={18} aria-hidden="true" /><span>{t('persona.new')}</span></button>
         </>}
@@ -385,8 +479,11 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
       <div className="platform-sidebar-footer"><Info size={17} aria-hidden="true" /><p>{t(mode === 'prompts' ? 'nav.promptHint' : 'nav.personaHint')}</p></div>
     </aside>
     <main id="main-content" className="robot-content authoring-content" aria-busy={busy}>
-      <div className="authoring-title-row"><div><div className="panel-title-row"><h2>{title}</h2>{active && <span className="status-badge authoring-active-badge"><Check size={12} aria-hidden="true" />{t('status.active')}</span>}</div><p className="panel-description">{t(mode === 'prompts' ? `prompt.${promptKind(resolvedId)}.description` : 'persona.description')}</p></div><button ref={readTrigger} type="button" className="button button-secondary authoring-read-button" disabled={busy} onClick={requestRead}><RefreshCw size={15} aria-hidden="true" />{t(operation?.kind === 'read' ? 'action.reading' : mode === 'prompts' ? 'action.readPrompt' : 'action.readPersona')}</button></div>
-      <div className="authoring-runtime-note"><Info size={16} aria-hidden="true" /><p>{t('runtimeNote')}</p></div>
+      <div className="authoring-title-row"><div><div className="panel-title-row"><h2>{title}</h2>{active && <span className="status-badge authoring-active-badge"><Check size={12} aria-hidden="true" />{t('status.active')}</span>}</div><p className="panel-description">{t(mode === 'prompts' ? `prompt.${selection.scope}.description` : 'persona.description')}</p></div><button ref={readTrigger} type="button" className="button button-secondary authoring-read-button" disabled={busy} onClick={requestRead}><RefreshCw size={15} aria-hidden="true" />{t(operation?.kind === 'read' ? 'action.reading' : mode === 'prompts' ? 'action.readPrompt' : 'action.readPersona')}</button></div>
+      <div className="authoring-runtime-note"><Info size={16} aria-hidden="true" /><p>{t(mode === 'prompts' ? 'prompt.runtimeNote' : 'runtimeNote')}</p></div>
+      {selectedPrompt?.pluginId && <p className="authoring-source-detail">{t('source.plugin', { pluginId: selectedPrompt.pluginId })}</p>}
+      {legacy && <p className="authoring-legacy-warning" role="note"><Info size={16} aria-hidden="true" />{t('legacy.warning')}</p>}
+      {(sourceUnavailable || sourceDisabled) && <p className="authoring-notice authoring-notice-info" role="status">{t(sourceUnavailable ? 'source.unavailable' : 'source.disabled')}</p>}
       {snapshotNeedsRead && <p className="authoring-notice authoring-notice-error" role="alert">{t(mode === 'prompts' ? 'read.requiredPrompt' : 'read.requiredPersona')}</p>}
       {currentReadError && <p className="authoring-notice authoring-notice-error" role="alert">{currentDraft ? t('read.errorWithDraft', { message: currentReadError }) : currentReadError}</p>}
       {confirmRead === selection.key && <div className="authoring-confirmation" role="group" aria-label={t('read.confirmLabel')}><div><strong>{t('read.confirmTitle')}</strong><p>{t('read.confirmDescription')}</p></div><div className="authoring-confirm-actions"><button ref={readCancel} type="button" className="button button-secondary" onClick={() => { setConfirmRead(null); readTrigger.current?.focus() }}>{t('action.continue')}</button><button type="button" className="button button-danger" onClick={() => void readSnapshot(selection)}>{t('read.confirmAction')}</button></div></div>}
@@ -394,12 +491,33 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
         {mode === 'personas' && !currentDraft.saved && <div className="authoring-new-note"><h3>{t(snapshot.personas.length === 0 ? 'new.emptyTitle' : 'new.title')}</h3><p>{t('new.description')}</p></div>}
         {mode === 'personas' && <div className="authoring-name-field"><label htmlFor="authoring-persona-name">{t('name.label')}</label><input id="authoring-persona-name" type="text" autoComplete="off" value={currentDraft.name} disabled={busy} aria-describedby="authoring-name-hint" aria-invalid={Boolean(nameError && (currentDraft.name || currentDraft.saved))} onChange={event => updateDraft('name', event.target.value)} /><p id="authoring-name-hint" className={nameError && (currentDraft.name || currentDraft.saved) ? 'authoring-field-error' : 'authoring-field-hint'}>{nameError && (currentDraft.name || currentDraft.saved) ? nameError : t('name.hint')}</p></div>}
         <div className="authoring-editor-heading"><h3>{t(mode === 'prompts' ? 'body.prompt' : 'body.persona')}</h3><span className={currentDraft.body.length > 50000 ? 'authoring-field-error' : ''}>{t('body.count', { countText: formatNumber(currentDraft.body.length), limitText: formatNumber(50000) })}</span></div>
-        <div className="authoring-editor"><TemplateEditor docKey={currentDraft.key} scope={currentDraft.scope} value={currentDraft.body} onChange={value => updateDraft('body', value)} disabled={busy} ariaLabel={t(mode === 'prompts' ? 'body.prompt' : 'body.persona')} variables={snapshot.variables} /></div>
+        <div className="authoring-editor"><TemplateEditor docKey={currentDraft.key} scope={currentDraft.scope} value={currentDraft.body} onChange={value => updateDraft('body', value)} disabled={busy || sourceUnavailable} ariaLabel={t(mode === 'prompts' ? 'body.prompt' : 'body.persona')} variables={snapshot.variables} /></div>
         {bodyError && (currentDraft.body.length > 0 || currentDraft.saved !== null) && <p className="authoring-field-error" role="alert">{bodyError}</p>}
-        <div className="authoring-actions"><button type="submit" className="button button-primary" disabled={busy || blocked || !valid || !dirty}><Save size={15} aria-hidden="true" />{t(operation?.kind === 'save' ? 'action.saving' : mode === 'prompts' ? 'action.savePrompt' : 'action.savePersona')}</button>{mode === 'personas' && currentDraft.saved && <button type="button" className="button button-secondary" disabled={busy || blocked || !active && dirty} aria-describedby={!active && dirty ? 'authoring-activation-hint' : undefined} onClick={() => void mutate('activate')}><Power size={15} aria-hidden="true" />{t(operation?.kind === 'activate' ? active ? 'action.deactivating' : 'action.activating' : active ? 'action.deactivate' : 'action.activate')}</button>}<span className="authoring-save-state">{t(blocked ? 'status.waitingRead' : !currentDraft.saved ? 'status.notSaved' : dirty ? 'status.unsaved' : 'status.saved')}</span></div>
+        <div className="authoring-actions"><button type="submit" className="button button-primary" disabled={busy || sourceUnavailable || blocked || !valid || !dirty}><Save size={15} aria-hidden="true" />{t(operation?.kind === 'save' ? 'action.saving' : mode === 'prompts' ? 'action.savePrompt' : 'action.savePersona')}</button>{mode === 'personas' && currentDraft.saved && <button type="button" className="button button-secondary" disabled={busy || blocked || !active && dirty} aria-describedby={!active && dirty ? 'authoring-activation-hint' : undefined} onClick={() => void mutate('activate')}><Power size={15} aria-hidden="true" />{t(operation?.kind === 'activate' ? active ? 'action.deactivating' : 'action.activating' : active ? 'action.deactivate' : 'action.activate')}</button>}<span className="authoring-save-state">{t(blocked ? 'status.waitingRead' : !currentDraft.saved ? 'status.notSaved' : dirty ? 'status.unsaved' : 'status.saved')}</span></div>
         {mode === 'personas' && currentDraft.saved && dirty && <p id="authoring-activation-hint" className="authoring-field-hint">{t(active ? 'activation.activeDirty' : 'activation.inactiveDirty')}</p>}
         {currentDraft.notice && <p className={`authoring-notice authoring-result authoring-notice-${currentDraft.notice.kind}`} role={currentDraft.notice.kind === 'error' ? 'alert' : 'status'}>{noticeMessage(currentDraft.notice)}</p>}
         <p className="authoring-draft-hint">{t(mode === 'prompts' ? 'draft.promptHint' : 'draft.personaHint')}</p>
+        {canPreview && <section className="authoring-preview" aria-labelledby="authoring-preview-title" aria-busy={Boolean(currentPreview?.loading)}>
+          <div className="authoring-preview-heading"><h3 id="authoring-preview-title">{t('preview.title')}</h3><button type="button" className="button button-secondary" disabled={busy || sourceUnavailable || sourceDisabled || currentPreview?.loading} onClick={() => void readSavedPreview()}><Eye size={15} aria-hidden="true" />{t(currentPreview?.loading ? 'preview.loading' : 'preview.action')}</button></div>
+          <p className="authoring-field-hint">{t('preview.savedHint')}</p>
+          {hasUnsavedDrafts && <p className="authoring-field-hint" role="note">{t('preview.dirtyHint')}</p>}
+          {currentPreview?.error !== undefined && <p className="authoring-notice authoring-notice-error authoring-result" role="alert">{currentPreview.error instanceof HostApiError ? errorMessage(currentPreview.error, 'read') : t('preview.error')}</p>}
+          {currentPreview?.data && <div className="authoring-preview-result">
+            <p className="authoring-preview-revision" role="status">{t('preview.revision', { revision: formatNumber(currentPreview.data.revision) })}</p>
+            {!visibleLayers.some(layer => layer.id.startsWith('persona:')) && <p className="authoring-field-hint">{t('preview.noPersona')}</p>}
+            {visibleLayers.map(layer => {
+              const doc = documents.find(document => document.id === layer.id)
+              const persona = layer.id.startsWith('persona:')
+              return <details className="authoring-preview-layer" key={layer.id} open>
+                <summary><span>{persona ? layer.title : promptTitle(doc ?? { id: layer.id as PromptDocument['id'], title: layer.title })}</span><span>{t('preview.layerRevision', { revision: formatNumber(layer.revision) })}</span></summary>
+                <p className="authoring-preview-source">{persona ? t('preview.layerPersona') : doc?.pluginId ? t('preview.layerPlugin', { pluginId: doc.pluginId }) : t('preview.layerOwner')} <code>{layer.id}</code></p>
+                <pre>{layer.body}</pre>
+              </details>
+            })}
+            <details className="authoring-preview-layer"><summary>{t('preview.systemPrompt')}</summary><pre>{currentPreview.data.systemPrompt}</pre></details>
+            <details className="authoring-preview-layer"><summary>{t('preview.bindings')}</summary><p className="authoring-field-hint">{t('preview.bindingHint')}</p><pre>{JSON.stringify(currentPreview.data.bindings, null, 2)}</pre></details>
+          </div>}
+        </section>}
         {mode === 'personas' && currentDraft.saved && <section className="authoring-delete-section" aria-label={t('delete.title')}><div><h3>{t('delete.title')}</h3><p>{t(active ? 'delete.activeHint' : 'delete.hint')}{currentDraft.saved.updatedAt && <span className="authoring-updated">{updatedLabel(currentDraft.saved.updatedAt)}</span>}</p></div><button ref={deleteTrigger} type="button" className="text-button authoring-delete-trigger" disabled={busy || blocked || active} onClick={() => { setConfirmRead(null); setConfirmDelete(currentDraft.key) }}><Trash2 size={15} aria-hidden="true" />{t('delete.title')}</button></section>}
         {confirmDelete === currentDraft.key && <div className="authoring-confirmation" role="group" aria-label={t('delete.confirmLabel', { name: currentDraft.name })}><div><strong>{t('delete.confirmTitle', { name: currentDraft.saved && 'name' in currentDraft.saved ? currentDraft.saved.name : currentDraft.name })}</strong><p>{t(dirty ? 'delete.confirmDirtyDescription' : 'delete.confirmDescription')}</p></div><div className="authoring-confirm-actions"><button ref={deleteCancel} type="button" className="button button-secondary" onClick={() => { setConfirmDelete(null); deleteTrigger.current?.focus() }}>{t('action.cancel')}</button><button type="button" className="button button-danger" disabled={busy || blocked || active} onClick={() => void mutate('delete')}><Trash2 size={15} aria-hidden="true" />{t('delete.confirmAction')}</button></div></div>}
       </form>}

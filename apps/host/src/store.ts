@@ -53,7 +53,9 @@ function readEnvelope(json: string): HarnessEvent {
   const strings = ['eventId', 'pluginId', 'instanceId', 'platform', 'accountId', 'conversationId', 'senderId', 'receivedAt', 'text']
   if (!isJsonObject(value) || value.protocolVersion !== 1 || strings.some(key => typeof value[key] !== 'string') ||
     !isJsonObject(value.source) || value.source.trust !== 'external' || !['private', 'group'].includes(String(value.source.kind)) || !isJsonValue(value.content)
-    || ['messageId', 'targetId'].some(key => value[key] !== undefined && (typeof value[key] !== 'string' || !value[key] || (value[key] as string).length > 200))) {
+    || ['messageId', 'targetId'].some(key => value[key] !== undefined && (typeof value[key] !== 'string' || !value[key] || (value[key] as string).length > 200))
+    || value.source.senderRole !== undefined && !['owner', 'administrator', 'user'].includes(String(value.source.senderRole))
+    || value.resourceIds !== undefined && (!Array.isArray(value.resourceIds) || value.resourceIds.length > 256 || value.resourceIds.some(id => typeof id !== 'string' || !id || id.length > 2048 || /[\u0000-\u001f\u007f]/u.test(id)))) {
     throw new PlatformError('STORAGE_CORRUPTED', '待投递信封损坏，原数据未被丢弃。', 500)
   }
   return value as unknown as HarnessEvent
@@ -63,8 +65,8 @@ function serializeEnvelope(event: HarnessEvent, eventId: string): string {
   // Retain only the public normalized envelope, never the original protocol event or a second text column.
   const json = JSON.stringify({ protocolVersion: event.protocolVersion, eventId, pluginId: event.pluginId, instanceId: event.instanceId,
     platform: event.platform, accountId: event.accountId, conversationId: event.conversationId, senderId: event.senderId,
-    messageId: event.messageId, targetId: event.targetId,
-    receivedAt: event.receivedAt, source: { trust: event.source.trust, kind: event.source.kind }, content: event.content, text: event.text })
+    messageId: event.messageId, targetId: event.targetId, resourceIds: event.resourceIds,
+    receivedAt: event.receivedAt, source: { trust: event.source.trust, kind: event.source.kind, senderRole: event.source.senderRole }, content: event.content, text: event.text })
   readEnvelope(json)
   return json
 }

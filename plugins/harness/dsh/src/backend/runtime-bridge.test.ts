@@ -29,6 +29,9 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
   vi.stubEnv('EATING_DSH_BRIDGE_DIRECTORY', directory)
   vi.stubEnv('EATING_DSH_BRIDGE_NONCE', nonce)
   vi.stubEnv('EATING_DSH_SESSION_ID', sessionId)
+  vi.stubEnv('EATING_DSH_CONTROL_URL', 'http://127.0.0.1:1')
+  vi.stubEnv('EATING_DSH_CONTROL_TOKEN', 'fixture-only-control-token')
+  vi.stubEnv('EATING_DSH_MCP_ENTRY', '/fixture/mcp.mjs')
   const path = (name: string) => join(directory, name)
   const read = (name: string) => JSON.parse(readFileSync(path(name), 'utf8')) as Json
   const write = (name: string, value: unknown) => {
@@ -37,15 +40,12 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
     if (dirname(temporary) !== directory || dirname(path(name)) !== directory) throw new Error('Invalid fixture destination')
     renameSync(temporary, path(name))
   }
-  write('owner-policy.json', { schemaVersion: 1, revision: 1, systemPrompt: '主人策略 {{不解释外部变量}}' })
+  write('owner-policy.json', { schemaVersion: 1, revision: 1, agentTypes: [], systemPrompt: '主人策略 {{不解释外部变量}}' })
   const listeners = new Map<string, Set<Listener>>()
   const section: { current?: { name: string; order: number; complete: boolean; interpolate: boolean; text: () => string } } = {}
   const session = { id: sessionId }
   const flush = vi.fn(options.flush ?? (async () => true))
-  let tools = options.tools ?? [
-    { name: 'mcp__qq__qq_send_private_message', description: '私聊', parameters: { type: 'object', properties: {} } },
-    { name: 'mcp__qq__qq_send_group_message', description: '群聊', parameters: { type: 'object', properties: {} } },
-  ]
+  let tools = options.tools ?? []
   let stored = options.stored
   const close = vi.fn(async () => {})
   const readLog = vi.fn(async (offset = 0, length = 256) => ({ eventState: 'detached', events: (stored ?? []).slice(offset, offset + length) }))
@@ -67,12 +67,14 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
     sessions: { flush, get: () => options.live ? session : undefined },
     sessionPersistence: { open },
     systemPrompt: { section: (value: NonNullable<typeof section.current>) => { section.current = value; return () => { section.current = undefined } } },
-    tools: { schemas: () => tools },
+    tools: { schemas: () => tools, restrict: vi.fn(() => () => {}), register: vi.fn(() => () => {}), guard: vi.fn(() => () => {}) },
+    agents: {}, subagents: {}, agentPresets: { register: vi.fn(async () => () => {}) },
   }
   const modulePath = path('runtime-bridge.mjs')
   writeFileSync(modulePath, getRuntimeBridgeSource())
   const bridge = await import(/* @vite-ignore */ pathToFileURL(modulePath).href) as { name: string; inject: string[]; apply: (context: typeof ctx) => void }
   bridge.apply(ctx)
+  for (const listener of listeners.get('agent/created') ?? []) await listener({ agent: { id: sessionId, ctx } })
   cleanups.push(() => emit('dispose'))
   const body = { context: { owner: false, source: 'fixture' }, renderedPrompt: '外部 QQ 正文不进入 system', events: [{ text: 'fixture-message' }] }
   const digest = createHash('sha256').update(JSON.stringify(body)).digest('hex')
@@ -97,11 +99,11 @@ describe('self-contained published-API DSH runtime bridge', () => {
     const f = await fixture()
     await turn()
     expect(f.bridge.name).toBe('eating-runtime-bridge')
-    expect(f.bridge.inject).toEqual(['sessions', 'sessionPersistence', 'systemPrompt', 'tools'])
+    expect(f.bridge.inject).toEqual(['sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'agents', 'subagents', 'agentPresets'])
     expect(getRuntimeBridgeSource()).not.toMatch(/from ['"](?:@|\.\.)/)
     expect(f.section.current).toMatchObject({ name: 'eating:owner-system', order: 0, complete: true, interpolate: false })
     expect(f.section.current?.text()).toBe('主人策略 {{不解释外部变量}}')
-    f.write('owner-policy.json', { schemaVersion: 1, revision: 2, systemPrompt: '主人修订后的系统提示' })
+    f.write('owner-policy.json', { schemaVersion: 1, revision: 2, agentTypes: [], systemPrompt: '主人修订后的系统提示' })
     expect(f.section.current?.text()).toBe('主人修订后的系统提示')
     f.write('owner-policy.json', { schemaVersion: 1, revision: 3, systemPrompt: 123, qqMessage: '伪造主人' })
     expect(() => f.section.current?.text()).toThrow('主人系统提示词配置无效。')
@@ -174,10 +176,8 @@ describe('self-contained published-API DSH runtime bridge', () => {
       on: (name: string, listener: Listener) => { if (!first.listeners.has(name)) first.listeners.set(name, new Set()); first.listeners.get(name)!.add(listener); return () => { first.listeners.get(name)?.delete(listener) } },
       sessions: { flush: first.flush, get: () => undefined },
       sessionPersistence: { open: first.open },
-      systemPrompt: { section: () => () => {} }, tools: { schemas: () => [
-        { name: 'mcp__qq__qq_send_private_message', description: '', parameters: { type: 'object' } },
-        { name: 'mcp__qq__qq_send_group_message', description: '', parameters: { type: 'object' } },
-      ] },
+      systemPrompt: { section: () => () => {} }, tools: { schemas: () => [] },
+      agents: {}, subagents: {}, agentPresets: { register: async () => () => {} },
     } as never)
     await turn()
     expect(first.read('ready.json')).toMatchObject({ recovery: 'persisted', batchId: first.expected.batchId })
@@ -199,7 +199,7 @@ describe('self-contained published-API DSH runtime bridge', () => {
     f.emit('dispose')
     expect(existsSync(f.path('ready.json'))).toBe(false)
     expect(existsSync(f.path('session-ready.json'))).toBe(false)
-    expect(f.section.current).toBeUndefined()
+    expect(f.listeners.get('agent/created')?.size).toBe(0)
     expect(f.listeners.get('session/event')?.size).toBe(0)
     expect(f.listeners.get('session/created')?.size).toBe(0)
   })
@@ -219,13 +219,11 @@ describe('self-contained published-API DSH runtime bridge', () => {
     expect(f.read('error.json')).toMatchObject({ code: 'UNEXPECTED_TOOLS' })
   })
 
-  it('bounds the startup tool wait to 10 seconds and clears its listener/timer', async () => {
+  it('starts with no global tools and leaves no startup tool timer', async () => {
     vi.useFakeTimers()
     const f = await fixture({ tools: [] })
-    await vi.advanceTimersByTimeAsync(9999)
-    expect(existsSync(f.path('ready.json'))).toBe(false)
     await vi.advanceTimersByTimeAsync(1)
-    expect(f.read('error.json')).toMatchObject({ code: 'QQ_TOOLS_UNAVAILABLE' })
+    expect(f.read('ready.json')).toMatchObject({ toolsReady: true })
     expect(f.listeners.get('tools/change')?.size).toBe(0)
     expect(vi.getTimerCount()).toBe(0)
   })

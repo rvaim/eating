@@ -8,9 +8,14 @@ import { HostApiError, formatNumber, getErrorMessage, hostRequest, translate, us
 import type { ConfigurationValidation, PluginPanelProps } from '@eating/ui-sdk'
 import './i18n'
 import type { DshTranslationKey } from './i18n'
+import { SessionDashboard } from './SessionDashboard'
+import { readModels, readModelTest } from './panel-data'
+import type { ModelOption, ModelTestResult } from './panel-data'
 import './panel.css'
 
 type Operation = 'save' | 'install' | 'connect' | 'disconnect'
+type ModelOperation = 'list-models' | 'test-connection'
+type PanelTab = 'configuration' | 'sessions'
 interface RuntimeStatus {
   readonly version: string
   readonly installed: boolean
@@ -170,6 +175,13 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
   const [uncertain, setUncertain] = useState<UncertainAction | null>(null)
   const [readSerial, setReadSerial] = useState(0)
   const [visible, setVisible] = useState(() => !document.hidden)
+  const [tab, setTab] = useState<PanelTab>('configuration')
+  const [modelOperation, setModelOperation] = useState<ModelOperation | null>(null)
+  const [models, setModels] = useState<readonly ModelOption[] | null>(null)
+  const [modelTest, setModelTest] = useState<ModelTestResult | null>(null)
+  const [modelFailure, setModelFailure] = useState<Failure | null>(null)
+  const modelController = useRef<AbortController | null>(null)
+  const modelGeneration = useRef(0)
   const mounted = useRef(false)
   const actionLock = useRef(false)
   const generation = useRef(0)
@@ -201,6 +213,16 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
     }
   }, [])
 
+  const cancelModelRequest = useCallback(() => {
+    ++modelGeneration.current
+    if (modelController.current) { modelController.current.abort(); modelController.current = null; actionLock.current = false }
+    setModelOperation(null); setModelTest(null); setModelFailure(null); setModels(null)
+  }, [])
+
+  useEffect(() => {
+    if (tab !== 'configuration') cancelModelRequest()
+  }, [tab, cancelModelRequest])
+
   useEffect(() => {
     mounted.current = true
     let timer: number | undefined
@@ -220,10 +242,10 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
     }
     const visibilityChanged = () => {
       setVisible(!document.hidden)
-      if (document.hidden) { stopPolling(); clearSecret() }
+      if (document.hidden) { stopPolling(); clearSecret(); cancelModelRequest() }
       else startPolling()
     }
-    const pageHidden = () => { stopPolling(); clearSecret(); setVisible(false) }
+    const pageHidden = () => { stopPolling(); clearSecret(); cancelModelRequest(); setVisible(false) }
     const pageShown = () => { setVisible(!document.hidden); if (!document.hidden) startPolling() }
     document.addEventListener('visibilitychange', visibilityChanged)
     window.addEventListener('pagehide', pageHidden)
@@ -235,15 +257,19 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
       ++generation.current
       readController.current?.abort(); readController.current = null
       actionController.current?.abort(); actionController.current = null
+      ++modelGeneration.current; modelController.current?.abort(); modelController.current = null
       document.removeEventListener('visibilitychange', visibilityChanged)
       window.removeEventListener('pagehide', pageHidden)
       window.removeEventListener('pageshow', pageShown)
     }
-  }, [refreshWorkspace])
+  }, [refreshWorkspace, cancelModelRequest])
+
+  useEffect(() => { if (plugin && !plugin.enabled) cancelModelRequest() }, [plugin?.enabled, cancelModelRequest])
 
   function updateDraft<K extends keyof Draft>(key: K, value: Draft[K]) {
     setDraft(current => current ? { ...current, [key]: value, ...(key === 'clearApiKey' && value === true ? { apiKey: '' } : {}) } : current)
-    dirtyRef.current = true; setDirty(true); setResult('')
+    dirtyRef.current = true; setDirty(true); setResult(''); setModelTest(null)
+    if (key === 'endpoint' || key === 'apiKey' || key === 'clearApiKey') { setModels(null); setModelFailure(null) }
     setFieldIssues(current => { const next = { ...current }; delete next[key]; return next })
   }
   const saved = plugin?.configuration
@@ -252,7 +278,44 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
   const starting = state === 'connecting' || state === 'reconnecting'
   const active = state === 'connected'
   const configured = Boolean(saved?.endpoint.trim() && saved.model.trim())
-  const blocked = operation !== null || runtime?.installing === true || starting || !visible || refreshFailure !== null || uncertain !== null
+  const blocked = operation !== null || modelOperation !== null || runtime?.installing === true || starting || !visible || refreshFailure !== null || uncertain !== null
+
+  async function requestModel(next: ModelOperation) {
+    if (!plugin?.enabled || !saved?.endpoint.trim() || next === 'test-connection' && !configured || dirtyRef.current || blocked || actionLock.current || tab !== 'configuration') return
+    actionLock.current = true; setModelOperation(next); setModelFailure(null); setModelTest(null)
+    if (next === 'list-models') setModels(null)
+    ++generation.current; readController.current?.abort(); setReading(false)
+    const ticket = ++modelGeneration.current
+    const controller = new AbortController()
+    const deadline = new AbortController()
+    modelController.current = controller
+    const timer = window.setTimeout(() => deadline.abort(), 15_000)
+    const valid = () => mounted.current && !document.hidden && !controller.signal.aborted && modelGeneration.current === ticket
+    try {
+      const value = await hostRequest<unknown>('/plugins/dsh/manage', { method: 'POST', body: { operation: next, input: {} }, signal: AbortSignal.any([controller.signal, deadline.signal]) })
+      if (!valid()) return
+      if (next === 'list-models') setModels(readModels(value))
+      else setModelTest(readModelTest(value, saved.model))
+    } catch (error) {
+      if (valid()) setModelFailure({ ...failureFrom(deadline.signal.aborted ? new HostApiError('MODEL_REQUEST_TIMEOUT', '') : error), outcome: 'failed' })
+    } finally {
+      window.clearTimeout(timer)
+      deadline.abort()
+      if (modelController.current === controller) {
+        modelController.current = null; actionLock.current = false
+        if (mounted.current && modelGeneration.current === ticket) setModelOperation(null)
+      }
+    }
+  }
+
+  function changeTab(next: PanelTab) {
+    if (next === tab) return
+    if (next === 'sessions') {
+      cancelModelRequest()
+      setDraft(current => current ? { ...current, apiKey: '', clearApiKey: false } : current)
+    }
+    setTab(next)
+  }
 
   async function mutate(next: Operation) {
     if (!draft || !plugin || !visible || actionLock.current || blocked || !plugin.enabled) return
@@ -276,7 +339,7 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
           ...(draft.clearApiKey ? { clearApiKey: true } : {}),
         } }))
         if (!mounted.current || controller.signal.aborted) return
-        dirtyRef.current = false; setDirty(false); setDraft(makeDraft(response))
+        dirtyRef.current = false; setDirty(false); setDraft(makeDraft(response)); setModels(null); setModelTest(null); setModelFailure(null)
         setPlugin(current => current ? { ...current, configuration: response } : current)
         setResult('result.saved'); callbacks.current.onFeedback(translate('dsh', 'feedback.saved'))
       } else if (next === 'install') {
@@ -314,11 +377,21 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
   const outcomeKey = runtime?.lastOutcome ? outcomeKeys[runtime.lastOutcome] : undefined
 
   return <div className="dsh-panel">
-    <div className="dsh-status-strip"><div><strong>{plugin ? refreshFailure ? t('state.unconfirmed') : t(stateKeys[plugin.status.state]) : t('state.loading')}</strong>{runtime && <span>{processing}</span>}</div><button type="button" className="text-button" disabled={operation !== null || reading || !visible} onClick={() => void refreshWorkspace()}><RefreshCw size={14} aria-hidden="true" />{t(reading ? 'action.refreshing' : 'action.refresh')}</button></div>
+    <div className="dsh-status-strip"><div><strong>{plugin ? refreshFailure ? t('state.unconfirmed') : t(stateKeys[plugin.status.state]) : t('state.loading')}</strong>{runtime && <span>{processing}</span>}</div><button type="button" className="text-button" disabled={operation !== null || modelOperation !== null || reading || !visible} onClick={() => void refreshWorkspace()}><RefreshCw size={14} aria-hidden="true" />{t(reading ? 'action.refreshing' : 'action.refresh')}</button></div>
     <ErrorNotice failure={refreshFailure} />
     {plugin?.status.lastError && <ErrorNotice failure={runtimeFailure('HARNESS_STATUS_ERROR', plugin.status.lastError)} />}
     {loading && <p className="dsh-loading" role="status">{t('loading.configuration')}</p>}
     {!plugin && !loading && <button type="button" className="button button-secondary" disabled={reading} onClick={() => void refreshWorkspace()}>{t('action.reload')}</button>}
+    <div className="dsh-tablist" role="tablist" aria-label={t('panel.tabs')} onKeyDown={event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+      event.preventDefault()
+      const next: PanelTab = event.key === 'Home' ? 'configuration' : event.key === 'End' ? 'sessions' : tab === 'configuration' ? 'sessions' : 'configuration'
+      changeTab(next)
+      event.currentTarget.querySelector<HTMLButtonElement>(`[data-panel-tab="${next}"]`)?.focus()
+    }}>
+      {(['configuration', 'sessions'] as const).map(value => <button key={value} type="button" role="tab" data-panel-tab={value} id={id(`tab-${value}`)} aria-controls={id(`panel-${value}`)} aria-selected={tab === value} tabIndex={tab === value ? 0 : -1} onClick={() => changeTab(value)}>{t(value === 'configuration' ? 'panel.configuration' : 'panel.sessions')}</button>)}
+    </div>
+    <div role="tabpanel" id={id('panel-configuration')} aria-labelledby={id('tab-configuration')} hidden={tab !== 'configuration'}>
     {saved && runtime && <section className="dsh-runtime" aria-labelledby={id('runtime-title')}>
       <div className="dsh-runtime-heading"><div><h3 id={id('runtime-title')}>{t('runtime.title')}</h3><p>{runtime.version ? t('runtime.versionedStatus', { status: runtimeLabel, version: runtime.version }) : runtimeLabel}</p></div><button type="button" className="button button-secondary" disabled={blocked || !plugin?.enabled || runtime.installed || active} onClick={() => void mutate('install')}><Download size={16} aria-hidden="true" />{t(operation === 'install' || runtime.installing ? 'action.installing' : runtime.installed ? 'action.installed' : 'action.install')}</button></div>
       <p className="dsh-help">{runtimeHelp}</p>
@@ -329,10 +402,20 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
       <div className="section-heading"><h3 id={id('configuration-title')}>{t('configuration.title')}</h3><p>{t('configuration.description')}</p></div>
       {saved?.warning && <div className="dsh-notice"><Info size={16} aria-hidden="true" /><p>{t('notice.httpWarning')}</p></div>}
       <form className="form-fields" noValidate onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void mutate('save') }}>
-        <fieldset className="dsh-fieldset" disabled={operation !== null || runtime?.installing || starting || !visible}>
+        <fieldset className="dsh-fieldset" disabled={operation !== null || modelOperation !== null || runtime?.installing || starting || !visible}>
           <Field id={id('displayName')} label={t('field.displayName.label')} hint={t('field.displayName.hint')} error={fieldErrors.displayName}><input id={id('displayName')} maxLength={80} value={draft.displayName} autoComplete="off" aria-describedby={describedBy('displayName')} aria-invalid={Boolean(fieldErrors.displayName)} onChange={event => updateDraft('displayName', event.target.value)} /></Field>
           <Field id={id('endpoint')} label={t('field.endpoint.label')} hint={t('field.endpoint.hint')} error={fieldErrors.endpoint}><input id={id('endpoint')} type="url" value={draft.endpoint} placeholder={t('field.endpoint.placeholder')} autoComplete="off" spellCheck={false} aria-describedby={describedBy('endpoint')} aria-invalid={Boolean(fieldErrors.endpoint)} onChange={event => updateDraft('endpoint', event.target.value)} /></Field>
           <Field id={id('model')} label={t('field.model.label')} hint={t('field.model.hint')} error={fieldErrors.model}><input id={id('model')} value={draft.model} maxLength={160} autoComplete="off" spellCheck={false} aria-describedby={describedBy('model')} aria-invalid={Boolean(fieldErrors.model)} onChange={event => updateDraft('model', event.target.value)} /></Field>
+          {models && models.length > 0 && <div className="dsh-model-picker"><Field id={id('model-choice')} label={t('models.choose')} hint={t('models.choiceHint')}><select id={id('model-choice')} value={models.some(model => model.id === draft.model) ? draft.model : ''} onChange={event => { if (event.target.value) updateDraft('model', event.target.value) }} aria-describedby={`${id('model-choice')}-hint`}><option value="" disabled>{t('models.choosePlaceholder')}</option>{models.map(model => <option key={model.id} value={model.id}>{model.name && model.name !== model.id ? `${model.name} · ${model.id}` : model.id}</option>)}</select></Field></div>}
+          <div className="dsh-model-feedback">
+            <div className="dsh-model-actions"><button className="button button-secondary" type="button" disabled={blocked || dirty || !saved?.endpoint.trim() || !plugin?.enabled} onClick={() => void requestModel('list-models')}><RefreshCw size={15} aria-hidden="true" />{t(modelOperation === 'list-models' ? 'models.fetching' : 'models.fetch')}</button><button className="button button-secondary" type="button" disabled={blocked || dirty || !configured || !plugin?.enabled} onClick={() => void requestModel('test-connection')}>{t(modelOperation === 'test-connection' ? 'models.testing' : 'models.test')}</button></div>
+            <p className="dsh-model-help">{t(dirty ? 'models.saveFirst' : 'models.savedOnly')}</p>
+            <p className="dsh-model-help">{t('models.testNotice')}</p>
+            {models !== null && <p className="dsh-result" role="status">{t(models.length ? 'models.loaded' : 'models.empty', { count: models.length, value: formatNumber(models.length) })}</p>}
+            {models && models.length > 0 && draft.model && !models.some(model => model.id === draft.model) && <p className="dsh-model-help">{t('models.currentManual')}</p>}
+            {modelTest && <p className="dsh-result" role="status"><Check size={15} aria-hidden="true" />{t('models.success', { model: modelTest.model, latency: formatNumber(modelTest.latencyMs) })}</p>}
+            <ErrorNotice failure={modelFailure} />
+          </div>
           <Field id={id('apiKey')} label={t('field.apiKey.label')} hint={t(saved?.apiKeyConfigured ? 'field.apiKey.hint.saved' : 'field.apiKey.hint.empty')} error={fieldErrors.apiKey}><input id={id('apiKey')} type="password" value={draft.apiKey} disabled={draft.clearApiKey} maxLength={4096} autoComplete="new-password" spellCheck={false} aria-describedby={describedBy('apiKey')} aria-invalid={Boolean(fieldErrors.apiKey)} onChange={event => updateDraft('apiKey', event.target.value)} /></Field>
           <label className="check-field dsh-compact-check"><input type="checkbox" checked={draft.clearApiKey} onChange={event => updateDraft('clearApiKey', event.target.checked)} /><span><strong>{t('field.clearApiKey.label')}</strong><small>{t('field.clearApiKey.hint')}</small></span></label>
           <Field id={id('timeoutMs')} label={t('field.timeoutMs.label')} hint={t('field.timeoutMs.hint', { min: formatNumber(1000), max: formatNumber(120000) })} error={fieldErrors.timeoutMs}><input id={id('timeoutMs')} type="number" min={1000} max={120000} step={1} inputMode="numeric" value={draft.timeoutMs} aria-describedby={describedBy('timeoutMs')} aria-invalid={Boolean(fieldErrors.timeoutMs)} onChange={event => updateDraft('timeoutMs', event.target.value)} /></Field>
@@ -349,5 +432,9 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
     {runtime && <dl className="dsh-details"><div><dt>{t('details.processing')}</dt><dd>{refreshFailure ? t('state.unconfirmed') : processing}</dd></div>{runtime.sessionId && <div><dt>{t('details.sessionId')}</dt><dd>{runtime.sessionId}</dd></div>}{runtime.version && <div><dt>{t('details.version')}</dt><dd>{runtime.version}</dd></div>}{runtime.lastOutcome && <div><dt>{t('details.outcome')}</dt><dd>{outcomeKey ? t(outcomeKey) : runtime.lastOutcome}</dd></div>}</dl>}
     {(saved?.dataDirectory || saved?.configurationPath) && <details className="dsh-file-details"><summary>{t('details.files')}</summary><dl className="dsh-details">{saved.dataDirectory && <div><dt>{t('details.dataDirectory')}</dt><dd>{saved.dataDirectory}</dd></div>}{saved.configurationPath && <div><dt>{t('details.configurationPath')}</dt><dd>{saved.configurationPath}</dd></div>}</dl></details>}
     <div className="dsh-notice dsh-boundary"><Info size={16} aria-hidden="true" /><p>{t('notice.authentication')}</p></div>
+    </div>
+    <div role="tabpanel" id={id('panel-sessions')} aria-labelledby={id('tab-sessions')} hidden={tab !== 'sessions'}>
+      {tab === 'sessions' && visible && <SessionDashboard enabled={plugin?.enabled === true} />}
+    </div>
   </div>
 }

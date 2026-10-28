@@ -38,10 +38,19 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
   let owner: HarnessOwnerConfiguration = {
     revision: 1,
     prompts: [
+      { id: 'common', title: 'common', body: 'owner common', revision: 1, updatedAt: null },
+      { id: 'subagent', title: 'subagent', body: 'owner subagent', revision: 1, updatedAt: null },
+      { id: 'agent:qq.group', title: 'group agent', body: 'owner group role', pluginId: 'qq', revision: 1, updatedAt: null },
+      { id: 'agent:qq.private', title: 'private agent', body: 'owner private role', pluginId: 'qq', revision: 1, updatedAt: null },
       { id: 'main', title: 'main', body: 'owner main {{当前时间}} {{人格名称}}', revision: 1, updatedAt: null },
       { id: 'group', title: 'group', body: 'group {{消息内容}} {{发送者列表}} {{消息列表}}', revision: 1, updatedAt: null },
       { id: 'private', title: 'private', body: 'private {{消息内容}}', revision: 1, updatedAt: null },
-    ], activePersona: { id: 'fixture-persona', name: 'fixture owner persona', body: 'owner persona {{人格名称}}', revision: 1, createdAt: '2026-10-27T16:00:00.000Z', updatedAt: '2026-10-27T16:00:00.000Z' },
+    ],
+    agentTypes: [
+      { id: 'qq.group', title: '群聊', description: 'group', pluginId: 'qq', pluginName: 'QQ', enabled: true, identity: { owners: [], administrators: [] }, conversationKind: 'group', defaultPrompt: 'group', availableTools: ['qq_send_group_message'], defaultTools: ['qq_send_group_message'], enabledTools: ['qq_send_group_message'] },
+      { id: 'qq.private', title: '私聊', description: 'private', pluginId: 'qq', pluginName: 'QQ', enabled: true, identity: { owners: [], administrators: [] }, conversationKind: 'private', defaultPrompt: 'private', availableTools: ['qq_send_private_message'], defaultTools: ['qq_send_private_message'], enabledTools: ['qq_send_private_message'] },
+    ],
+    activePersona: { id: 'fixture-persona', name: 'fixture owner persona', body: 'owner persona {{人格名称}}', revision: 1, createdAt: '2026-10-27T16:00:00.000Z', updatedAt: '2026-10-27T16:00:00.000Z' },
   }
   let registered: HarnessMessageSink | null = null
   const detach = vi.fn(() => { registered = null })
@@ -97,7 +106,7 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
     })
     return client
   })
-  const plugin = new DshPlugin(context, { runtime, createHarness: factory, pollIntervalMs: 2, startupTimeoutMs: 500, readyTimeoutMs: 300, closeTimeoutMs: 500, ...options.adapter })
+  const plugin = new DshPlugin(context, { runtime, createHarness: factory, resolveNativeModules: () => ({}), pollIntervalMs: 2, startupTimeoutMs: 500, readyTimeoutMs: 300, closeTimeoutMs: 500, ...options.adapter })
   cleanups.push(() => plugin.dispose())
   return { plugin, runtime, directory, context, clients, factory, detach, get sink() { return registered }, setOwner(value: HarnessOwnerConfiguration) { owner = value }, getOwner() { return owner } }
 }
@@ -141,7 +150,9 @@ describe('DSH isolated runtime lifecycle', () => {
     const patch = readFileSync(client.launch.patches![0]!, 'utf8')
     expect(patch).not.toContain('fixture-only-api-key')
     expect(patch).not.toContain('fixture-only-mcp-token')
-    expect(patch).toContain('process.env.EATING_QQ_MCP_TOKEN')
+    expect(patch).not.toContain('EATING_QQ_MCP_TOKEN')
+    expect(client.launch.env).not.toHaveProperty('EATING_QQ_MCP_TOKEN')
+    expect(setup.context.harness!.getMcpConnection).not.toHaveBeenCalled()
     expect(patch).toContain('id: persistent-bash\n  disabled: true')
     await setup.plugin.disconnect()
     await setup.plugin.connect()
@@ -175,7 +186,7 @@ describe('DSH isolated runtime lifecycle', () => {
     file.write({ sessionId, created: false })
     // The fixture's first plugin loaded before this metadata; reopen through the normal constructor.
     await setup.plugin.dispose()
-    const reopened = new DshPlugin(setup.context, { runtime: setup.runtime, createHarness: setup.factory, pollIntervalMs: 2, startupTimeoutMs: 500 })
+    const reopened = new DshPlugin(setup.context, { runtime: setup.runtime, createHarness: setup.factory, resolveNativeModules: () => ({}), pollIntervalMs: 2, startupTimeoutMs: 500 })
     cleanups.push(() => reopened.dispose())
     await reopened.connect()
     expect(setup.clients[0]!.resumeCalls).toBe(1)
@@ -308,6 +319,18 @@ describe('DSH reliable single-batch handoff', () => {
     expect(input.eating).toMatchObject({ magic: 'eating-harness-delivery', protocolVersion: 1, batchId: 'a'.repeat(64) })
     expect(String(input.renderedPrompt)).toContain(text)
     expect(String(input.renderedPrompt)).toContain('{{当前时间}}')
+    setup.clients[0]!.run.resolve(result(setup.clients[0]!))
+  })
+
+  it('renders the declared identity and target variables in legacy user templates from the trusted snapshot', async () => {
+    const setup = fixture(), owner = setup.getOwner()
+    setup.setOwner({ ...owner, bindings: { 主人: '["400"]', 管理员: '["500"]' }, prompts: owner.prompts.map(prompt => prompt.id === 'group' ? { ...prompt, body: '{{主人}} / {{管理员}} / {{目标编号}} / {{消息内容}}' } : prompt) })
+    await configure(setup.plugin)
+    await setup.plugin.connect()
+    await setup.plugin.deliverBatch(batch(undefined, '{{主人}} remains external'), new AbortController().signal)
+    const input = JSON.parse(setup.clients[0]!.runInput!) as { renderedPrompt: string }
+    expect(input.renderedPrompt).toBe('["400"] / ["500"] / 200 / {{主人}} remains external')
+    expect(String(readRestrictedJson(join(setup.directory, 'bridge', 'owner-policy.json'))!.systemPrompt)).not.toContain('remains external')
     setup.clients[0]!.run.resolve(result(setup.clients[0]!))
   })
 

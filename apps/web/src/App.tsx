@@ -30,7 +30,7 @@ const navigation = [
   { page: 'overview', href: '#overview', Icon: LayoutDashboard },
   { page: 'robots', href: '#robots', Icon: Bot },
   { page: 'harness', href: '#harness', Icon: BrainCircuit },
-  { page: 'prompts', href: '#prompts/main', Icon: FileText },
+  { page: 'prompts', href: '#prompts/common', Icon: FileText },
   { page: 'personas', href: '#personas', Icon: UserRound },
   { page: 'settings', href: '#settings/delivery', Icon: SettingsIcon },
 ] as const
@@ -66,7 +66,7 @@ export function App({ workspace }: { readonly workspace: PlatformWorkspace }) {
   }, [feedback])
 
   const navigate = useCallback((page: Page, id: string | null = null) => {
-    window.location.hash = page === 'robots' || page === 'harness' ? `${page}${id ? `/${encodeURIComponent(id)}` : ''}` : page === 'settings' ? 'settings/delivery' : page === 'prompts' ? 'prompts/main' : page
+    window.location.hash = page === 'robots' || page === 'harness' ? `${page}${id ? `/${encodeURIComponent(id)}` : ''}` : page === 'settings' ? 'settings/delivery' : page === 'prompts' ? 'prompts/common' : page
     setCatalogOpen(false)
   }, [])
   const selectPlugin = useCallback((id: string | null) => navigate(route.page === 'harness' ? 'harness' : 'robots', id), [navigate, route.page])

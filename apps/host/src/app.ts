@@ -4,7 +4,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve, extname, sep } from 'node:path'
 import type { BackendPlugin, BackendPluginEntry, HarnessHostServices, HarnessMessageSink, HostPluginContext, JsonObject } from '@eating/plugin-sdk'
-import { PlatformError, isJsonObject, validateDeliverySettings } from '@eating/plugin-sdk'
+import { PlatformError, composeAgentPrompt, isJsonObject, validateDeliverySettings } from '@eating/plugin-sdk'
+import { AgentAccessRegistry, collectAgentContributions } from './agent-access'
 import { AuthoringService } from './authoring'
 import { HostStore } from './store'
 import { HarnessGateway } from './harness'
@@ -14,6 +15,14 @@ import { failedPlugin } from './failed-plugin'
 import { createPluginMcpHandler } from './mcp'
 import { servePluginLogStream } from './plugin-log-stream'
 import { SESSION_COOKIE, getBearer, json, readJson, requireSession, safeError, sameSecret, secret, validateLocalRequest } from './security'
+
+function immutableConfiguration<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) immutableConfiguration(child)
+    Object.freeze(value)
+  }
+  return value
+}
 
 export interface HostOptions {
   readonly dataDirectory: string
@@ -41,6 +50,7 @@ export class EatingHost {
   private readonly allowedHosts = new Set<string>()
   private readonly mutations = new Map<string, string>()
   private readonly sinkRegistrations = new Map<string, Set<() => void>>()
+  private readonly agentAccess: AgentAccessRegistry
   private url = ''
   private closed = false
 
@@ -50,7 +60,8 @@ export class EatingHost {
     try {
       this.store = openedStore = new HostStore(resolve(options.dataDirectory, 'host', 'Eating.sqlite'))
       this.harness = new HarnessGateway(this.store)
-      this.authoring = new AuthoringService(this.store)
+      this.agentAccess = new AgentAccessRegistry(id => this.requirePlugin(id, true), id => !this.closed && this.enabled.has(id))
+      this.authoring = new AuthoringService(this.store, () => collectAgentContributions(this.plugins.values(), this.enabled))
       const enabledIds = persistedEnabledIds(this.store.getSetting('platforms.enabled'), options.entries.map(entry => entry.id))
       const storageDirectories = new Set<string>()
       for (const entry of options.entries) {
@@ -116,7 +127,7 @@ export class EatingHost {
     return { protocolVersion: 1, registeredIds: [...this.enabled],
       plugins: [...this.plugins.values()].map(plugin => ({ id: plugin.id, name: plugin.name, version: plugin.version, kind: this.pluginKind(plugin.id),
         enabled: this.enabled.has(plugin.id), logsSupported: Boolean(plugin.logs), logViewerCount: this.logStreams.get(plugin.id)?.size ?? 0, configuration: plugin.getPublicConfiguration(), frontend: this.frontendContribution(plugin.id),
-        status: plugin.getStatus(), capabilities: plugin.capabilities, tools: plugin.tools })),
+        status: plugin.getStatus(), capabilities: plugin.capabilities, tools: plugin.tools, agentTypes: plugin.agentTypes ?? [] })),
       harness: this.harness.getStatus(),
     } as unknown as JsonObject
   }
@@ -132,7 +143,13 @@ export class EatingHost {
       if (pathname.startsWith('/mcp/')) {
         const id = pathname.slice('/mcp/'.length)
         const plugin = this.requirePlugin(id, true)
-        if (!sameSecret(getBearer(request), this.getMcpToken(id))) throw new PlatformError('MCP_UNAUTHENTICATED', 'MCP 访问令牌无效。', 401)
+        const bearer = getBearer(request)
+        if (this.agentAccess.recognizes(bearer, id)) {
+          const body = request.method === 'POST' ? await readJson(request, 1024 * 1024) : undefined
+          if (!await this.agentAccess.handle(bearer, id, request, response, body)) throw new PlatformError('MCP_UNAUTHENTICATED', '代理 MCP 访问已撤销。', 401, 'not-sent')
+          return
+        }
+        if (!sameSecret(bearer, this.getMcpToken(id))) throw new PlatformError('MCP_UNAUTHENTICATED', 'MCP 访问令牌无效。', 401)
         let handler = this.mcp.get(id)
         if (!handler) { handler = createPluginMcpHandler(plugin); this.mcp.set(id, handler) }
         await handler.handle(request, response, request.method === 'POST' ? await readJson(request, 1024 * 1024) : undefined)
@@ -152,12 +169,20 @@ export class EatingHost {
           if (request.method !== 'GET') throw new PlatformError('METHOD_NOT_ALLOWED', '配置目录仅支持 GET。', 405)
           json(response, 200, this.authoring.getSnapshot()); return
         }
-        const promptMatch = /^\/api\/prompts\/(main|group|private)$/.exec(pathname)
+        if (pathname === '/api/authoring/preview') {
+          if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '提示词预览需使用 POST。', 405)
+          const input = await readJson(request)
+          if (!isJsonObject(input) || !(input.agentTypeId === null || typeof input.agentTypeId === 'string') || Object.keys(input).some(key => key !== 'agentTypeId')) throw new PlatformError('INVALID_AUTHORING_REQUEST', '请指定需要预览的代理类型。', 400, 'not-sent')
+          json(response, 200, composeAgentPrompt(this.authoring.readOwnerConfiguration(), input.agentTypeId, { 当前时间: new Date().toISOString() })); return
+        }
+        const promptMatch = /^\/api\/prompts\/([^/]{1,220})$/.exec(pathname)
         if (promptMatch) {
           if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '保存提示词需使用 POST。', 405)
           const input = await readJson(request)
           if (!isJsonObject(input) || typeof input.body !== 'string' || typeof input.expectedRevision !== 'number') throw new PlatformError('INVALID_AUTHORING_REQUEST', '请提供提示词正文与版本。')
-          json(response, 200, this.authoring.updatePrompt(promptMatch[1] as 'main' | 'group' | 'private', input.body, input.expectedRevision)); return
+          let promptId: string
+          try { promptId = decodeURIComponent(promptMatch[1]!) } catch { throw new PlatformError('INVALID_AUTHORING_REQUEST', '提示词标识无效。', 400, 'not-sent') }
+          json(response, 200, this.authoring.updatePrompt(promptId, input.body, input.expectedRevision)); return
         }
         const personaMatch = /^\/api\/personas(?:\/([a-zA-Z0-9-]{1,80})(?:\/(activate|delete))?)?$/.exec(pathname)
         if (personaMatch) {
@@ -303,23 +328,23 @@ export class EatingHost {
       },
       readOwnerConfiguration: () => {
         this.requireHarnessAccess(id)
-        const snapshot = this.authoring.getSnapshot()
-        return Object.freeze({ revision: snapshot.revision,
-          prompts: Object.freeze(snapshot.prompts.map(prompt => Object.freeze({ ...prompt }))),
-          activePersona: snapshot.activePersonaId ? Object.freeze({ ...this.authoring.getPersona(snapshot.activePersonaId) }) : null,
-        })
+        return immutableConfiguration(this.authoring.readOwnerConfiguration())
       },
-      getMcpConnection: (pluginId: string) => {
+      getMcpConnection: (pluginId: string, scope?: import('@eating/plugin-sdk').AgentInvocationScope) => {
         this.requireHarnessAccess(id)
         if (!this.url) throw new PlatformError('HOST_NOT_LISTENING', 'Host 尚未监听，无法登记 MCP 连接。', 503)
         this.requirePlugin(pluginId, true)
         if (this.pluginKind(pluginId) !== 'communication') throw new PlatformError('PLUGIN_SCOPE_VIOLATION', 'Harness 仅可取得已启用通讯插件的 MCP 连接。', 403)
+        if (scope) return this.agentAccess.issue(id, pluginId, scope, this.url)
         return Object.freeze({ url: `${this.url}/mcp/${pluginId}`, headers: Object.freeze({ Authorization: `Bearer ${this.getMcpToken(pluginId)}` }) })
       },
+      readAgentActions: (agentId: string) => { this.requireHarnessAccess(id); return this.agentAccess.actions(id, agentId) },
+      revokeAgentAccess: (agentId: string) => { this.agentAccess.revokeAgent(id, agentId) },
     })
   }
 
   private revokeHarnessSinks(id: string): void {
+    this.agentAccess?.revokeHarness(id)
     for (const unregister of this.sinkRegistrations.get(id) ?? []) unregister()
     this.sinkRegistrations.delete(id)
   }
@@ -352,6 +377,7 @@ export class EatingHost {
     this.store.setSetting('platforms.enabled', JSON.stringify({ version: 1, ids: [...next] }))
     this.enabled.clear(); for (const entry of next) this.enabled.add(entry)
     if (!enabled) {
+      this.agentAccess.revokePlugin(id)
       for (const stop of this.logStreams.get(id) ?? []) stop()
       this.logStreams.delete(id)
       this.revokeHarnessSinks(id)
@@ -408,6 +434,7 @@ export class EatingHost {
     this.server.closeIdleConnections()
     await Promise.allSettled([...this.plugins.values()].map(plugin => plugin.dispose()))
     await Promise.allSettled([...this.mcp.values()].map(handler => handler.close()))
+    await this.agentAccess.close()
     await this.harness.close()
     await stopped
     this.store.close()

@@ -209,7 +209,7 @@ describe('generic Host Harness services and management boundary', () => {
     expect(Object.isFrozen(configuration.activePersona)).toBe(true)
     expect(Reflect.set(configuration.prompts[0]!, 'body', 'override')).toBe(false)
     expect(Reflect.set(configuration.activePersona!, 'body', 'override')).toBe(false)
-    expect(Object.keys(services).sort()).toEqual(['getMcpConnection', 'readOwnerConfiguration', 'registerSink', 'wake'])
+    expect(Object.keys(services).sort()).toEqual(['getMcpConnection', 'readAgentActions', 'readOwnerConfiguration', 'registerSink', 'revokeAgentAccess', 'wake'])
     const updated = context.host.authoring.updatePersona(persona.id, persona.name, '主人新设定', persona.revision)
     expect(configuration.activePersona?.body).toBe(persona.body)
     expect(services.readOwnerConfiguration().activePersona?.body).toBe(updated.persona.body)
@@ -503,7 +503,8 @@ describe('real Eating Host → QQ OneBot → SQLite → authenticated MCP', () =
     expect(configuration.configurationPath).toBe(expectedPath)
     expect(configuration.tokenConfigured).toBe(true)
     const disk = object(JSON.parse(await readFile(expectedPath, 'utf8')))
-    expect(object(disk.configuration)).toEqual(context.configuration)
+    expect(object(disk.configuration)).toEqual({ ...context.configuration, owners: [], administrators: [], policyRevision: 0,
+      agentTools: { 'qq.private': expect.arrayContaining(['qq_send_private_message', 'qq_get_message']), 'qq.group': expect.arrayContaining(['qq_send_group_message', 'qq_get_message']) } })
     const accounts = object(JSON.parse(await readFile(join(accountRoot, 'accounts.json'), 'utf8')))
     expect(accounts.defaultInstanceId).toBe(instanceId)
     expect(accounts.instances).toHaveLength(1)

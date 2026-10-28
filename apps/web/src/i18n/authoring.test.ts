@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { TEMPLATE_VARIABLES } from '@eating/plugin-sdk'
+import { TEMPLATE_SCOPES, TEMPLATE_VARIABLES } from '@eating/plugin-sdk'
 import { setLocale, translate } from '@eating/ui-sdk'
 import { authoringResources, variableDescriptionKeys } from './authoring'
 import { settingsResources } from './settings'
@@ -30,6 +30,8 @@ describe('设置和创作双语资源', () => {
         const key = variableDescriptionKeys[variable.name]!
         expect(translate('authoring', key)).not.toBe(key)
       }
+      for (const scope of TEMPLATE_SCOPES) expect(translate('authoring', `scope.${scope}`)).not.toBe(`scope.${scope}`)
+      for (const key of ['error.sourceUnavailable', 'error.agentPrompt', 'error.agentUnavailable', 'legacy.warning', 'preview.dirtyHint']) expect(translate('authoring', key)).not.toBe(key)
       for (const code of ['UNKNOWN_VARIABLE', 'UNAVAILABLE_VARIABLE', 'UNCLOSED_VARIABLE', 'MALFORMED_VARIABLE']) {
         const key = `editor.diagnostic.${code}`
         expect(translate('authoring', key, { name: 'custom' })).not.toBe(key)

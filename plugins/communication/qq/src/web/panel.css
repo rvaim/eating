@@ -131,3 +131,20 @@
   .qq-json pre { padding: 12px; font-size: 11px; }
 }
 @media (prefers-reduced-motion: reduce) { .qq-panel textarea { transition: none; } }
+
+.qq-policy-notice { max-width: 72ch; margin: 0 0 24px; color: var(--color-muted); font-size: 12px; line-height: 1.8; }
+.qq-agent-types { display: grid; gap: 30px; }
+.qq-agent-type { min-width: 0; margin: 0; padding: 18px 0 0; border: 0; border-top: 1px solid var(--color-line); }
+.qq-agent-type legend { padding: 0 12px 0 0; color: var(--color-ink); font-size: 15px; font-weight: 600; }
+.qq-agent-type > p { max-width: 72ch; color: var(--color-muted); font-size: 12px; line-height: 1.8; }
+.qq-policy-tools-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin: 14px 0 8px; }
+.qq-policy-tools-heading > span { color: var(--color-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.qq-policy-tools-heading > div { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.qq-policy-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 28px; }
+.qq-policy-tool { display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 13px 0; border-top: 1px solid var(--color-line); cursor: pointer; }
+.qq-policy-tool input { width: 16px; height: 16px; flex-shrink: 0; margin: 3px 0 0; accent-color: var(--color-primary); }
+.qq-policy-tool > span { min-width: 0; }
+.qq-policy-tool strong { display: block; font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
+.qq-policy-tool small { display: block; margin-top: 3px; color: var(--color-muted); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.qq-policy-tool small.qq-policy-action { color: #77625d; }
+@media (max-width: 850px) { .qq-policy-tools { grid-template-columns: minmax(0, 1fr); } }

@@ -83,18 +83,18 @@ test.describe('提示词与人格的真实持久编辑', () => {
     await page.getByRole('link', { name: '提示词管理', exact: true }).click()
     await expect(bodyEditor(page)).toBeVisible()
     const entries = [
-      { id: 'main', label: '通用提示词', body: '主提示词独立草稿 {{当前时间}}' },
-      { id: 'group', label: '群聊提示词', body: '群聊独立草稿 {{消息数量}}' },
-      { id: 'private', label: '私聊提示词', body: '私聊独立草稿 {{消息内容}}' },
+      { id: 'common', label: '通用前置提示词', body: '通用前置独立草稿 {{当前时间}}' },
+      { id: 'subagent', label: '通用子代理前置', body: '子代理前置独立草稿 {{人格名称}}' },
+      { id: 'main', label: '主 Agent 提示词', body: '主代理独立草稿 {{主人}}' },
     ] as const
     for (const entry of entries) {
-      await promptNav(page).getByRole('button', { name: entry.label, exact: true }).click()
+      await promptNav(page).getByRole('button', { name: new RegExp(`^${entry.label}`) }).click()
       await expect(page).toHaveURL(`${url}/#prompts/${entry.id}`)
       await expect(page.getByRole('heading', { name: entry.label, exact: true })).toBeVisible()
       await bodyEditor(page).fill(entry.body)
     }
     for (const entry of entries) {
-      await promptNav(page).getByRole('button', { name: entry.label, exact: true }).click()
+      await promptNav(page).getByRole('button', { name: new RegExp(`^${entry.label}`) }).click()
       await expect(page).toHaveURL(`${url}/#prompts/${entry.id}`)
       await expect(page.getByRole('heading', { name: entry.label, exact: true })).toBeVisible()
       await expect(bodyEditor(page)).toHaveText(entry.body)
@@ -104,7 +104,7 @@ test.describe('提示词与人格的真实持久编辑', () => {
     }
     await page.reload()
     for (const entry of entries) {
-      await promptNav(page).getByRole('button', { name: entry.label, exact: true }).click()
+      await promptNav(page).getByRole('button', { name: new RegExp(`^${entry.label}`) }).click()
       await expect(page).toHaveURL(`${url}/#prompts/${entry.id}`)
       await expect(page.getByRole('heading', { name: entry.label, exact: true })).toBeVisible()
       await expect(bodyEditor(page)).toHaveText(entry.body)
@@ -149,9 +149,9 @@ test.describe('提示词与人格的真实持久编辑', () => {
     await expect(page.getByRole('button', { name: '保存提示词', exact: true })).toBeDisabled()
     await expect(page.getByRole('button', { name: /定位变量错误 1/ })).toBeVisible()
     await editor.fill('主文档专属草稿')
-    const groupBefore = (await snapshot(page)).prompts.find(doc => doc.id === 'group')!.body
-    await promptNav(page).getByRole('button', { name: '群聊提示词', exact: true }).click()
-    await expect(page.getByRole('heading', { name: '群聊提示词', exact: true })).toBeVisible()
+    const groupBefore = (await snapshot(page)).prompts.find(doc => doc.id === 'agent:qq.group')!.body
+    await promptNav(page).getByRole('button', { name: 'QQ 群聊', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'QQ 群聊', exact: true })).toBeVisible()
     await expect(editor).toHaveText(groupBefore, { useInnerText: true })
     await editor.press('ControlOrMeta+z')
     await expect(editor).toHaveText(groupBefore, { useInnerText: true })
@@ -159,7 +159,7 @@ test.describe('提示词与人格的真实持久编辑', () => {
     await editor.press('ControlOrMeta+z')
     await expect(editor).toHaveText(groupBefore, { useInnerText: true })
     await expect(editor).not.toContainText('主文档专属草稿')
-    await promptNav(page).getByRole('button', { name: '通用提示词', exact: true }).click()
+    await promptNav(page).getByRole('button', { name: /^主 Agent 提示词/ }).click()
     await expect(editor).toHaveText('主文档专属草稿')
     await editor.press('ControlOrMeta+z')
     await expect(editor).toHaveText('主文档专属草稿')

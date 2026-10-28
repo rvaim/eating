@@ -24,6 +24,15 @@ describe('DSH 面板本地化', () => {
     }
   })
 
+  it('模型反馈与会话数量即时翻译，保留真实模型标识', () => {
+    setLocale('zh-CN')
+    expect(translate('dsh', 'models.success', { model: 'provider/模型原文', latency: '42' })).toBe('模型 provider/模型原文 请求成功，耗时 42 毫秒。')
+    setLocale('en-US')
+    expect(translate('dsh', 'models.success', { model: 'provider/模型原文', latency: '42' })).toBe('Request to model provider/模型原文 succeeded in 42 ms.')
+    expect(translate('dsh', 'sessions.count', { count: 1, value: '1' })).toBe('1 session')
+    expect(translate('dsh', 'sessions.count', { count: 2, value: '2' })).toBe('2 sessions')
+  })
+
   it('同一插件在切换语言后即时生成描述和校验，不改变空草稿或摘要数据', () => {
     const invalid = { ...dsh.initialValues, endpoint: 'invalid URL', timeoutMs: '999' }
     setLocale('zh-CN')

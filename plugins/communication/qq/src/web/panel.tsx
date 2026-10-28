@@ -6,13 +6,14 @@ import { formatNumber, getErrorMessage, HostApiError, hostRequest, translate, us
 import type { PluginPanelProps } from '@eating/ui-sdk'
 import { enumValue, parseToolArguments, schemaFields } from './tool-fields'
 import type { FieldFormat } from './tool-fields'
-import type { ConnectionStatus, JsonObject, JsonValue, PluginCapability, PluginToolDefinition } from '@eating/plugin-sdk'
+import type { AgentTypeDefinition, ConnectionStatus, JsonObject, JsonValue, PluginCapability, PluginToolDefinition } from '@eating/plugin-sdk'
 import './panel.css'
 import { capabilityDescription, capabilityTitle, parameterDescription, parameterLabel, parameterOptionLabel, toolDescription, toolSchemaHelp, toolTitle } from './i18n'
 import type { QQMessage, QQTranslationKey } from './i18n'
 import { LiveLogs } from './live-logs'
+import { AgentPolicyFields } from './agent-policy-fields'
 
-type Tab = 'configuration' | 'tests' | 'mcp' | 'live-logs'
+type Tab = 'configuration' | 'agent-policy' | 'tests' | 'mcp' | 'live-logs'
 type PublicConfiguration = Omit<OneBotConfig, 'accessToken'> & { tokenConfigured: boolean; instanceId?: string; configurationPath?: string; dataDirectory?: string }
 type Draft = Omit<OneBotConfig, 'timeoutMs'> & { timeoutMs: string; clearAccessToken: boolean }
 type FieldErrors = Record<string, QQMessage | undefined>
@@ -20,6 +21,7 @@ interface QQWorkspacePlugin {
   id: string
   enabled: boolean
   logsSupported?: boolean
+  agentTypes?: AgentTypeDefinition[]
   configuration: JsonObject
   status: ConnectionStatus
   capabilities: PluginCapability[]
@@ -45,7 +47,7 @@ interface McpRegistration { transport: 'streamable-http'; url: string; headers: 
 type QQPanelProps = PluginPanelProps & { onRefresh?: () => Promise<void> }
 
 const tabs: { id: Tab; title: QQTranslationKey }[] = [
-  { id: 'configuration', title: 'tabs.configuration' }, { id: 'live-logs', title: 'tabs.logs' }, { id: 'tests', title: 'tabs.tests' },
+  { id: 'configuration', title: 'tabs.configuration' }, { id: 'agent-policy', title: 'tabs.agentPolicy' }, { id: 'live-logs', title: 'tabs.logs' }, { id: 'tests', title: 'tabs.tests' },
   { id: 'mcp', title: 'tabs.mcp' },
 ]
 
@@ -126,6 +128,7 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [mutation, setMutation] = useState<'save' | 'connect' | 'disconnect' | null>(null)
   const [testing, setTesting] = useState(false)
+  const [policySaving, setPolicySaving] = useState(false)
   const actionLock = useRef(false)
   const mounted = useRef(false)
   const workspaceGeneration = useRef(0)
@@ -246,7 +249,7 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
     document.getElementById(`${prefix}-tab-${selected.id}`)?.focus()
   }
   const saved = plugin ? publicConfiguration(plugin.configuration) : null
-  const busy = mutation !== null || testing
+  const busy = mutation !== null || testing || policySaving
   const id = (name: string) => `${prefix}-${name}`
   const describedBy = (name: string) => `${id(name)}-hint${fieldErrors[name] ? ` ${id(name)}-error` : ''}`
 
@@ -291,11 +294,14 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
       <ErrorNotice failure={configurationFailure} />
       {saved && (saved.instanceId || saved.configurationPath || saved.dataDirectory) && <details className="qq-location-details"><summary>{t('config.locations')}</summary><dl className="qq-paths">{saved.instanceId && <div><dt>{t('config.instance')}</dt><dd>{saved.instanceId}</dd></div>}{saved.configurationPath && <div><dt>{t('config.configurationPath')}</dt><dd>{saved.configurationPath}</dd></div>}{saved.dataDirectory && <div><dt>{t('config.dataDirectory')}</dt><dd>{saved.dataDirectory}</dd></div>}</dl></details>}
     </section>
+    <section hidden={tab !== 'agent-policy'} role="tabpanel" id={`${prefix}-panel-agent-policy`} aria-labelledby={`${prefix}-tab-agent-policy`}>
+      {plugin && <AgentPolicyFields configuration={plugin.configuration} agentTypes={plugin.agentTypes ?? []} tools={plugin.tools} enabled={plugin.enabled} busy={busy} actionLock={actionLock} onBusy={value => { if (!mounted.current) return; setPolicySaving(value); if (value) { ++workspaceGeneration.current; workspaceController.current?.abort() } else { void refreshWorkspace(); void refreshRef.current?.().catch(error => setRefreshFailure(failureFrom(error, 'error.refreshAfterAction'))) } }} onSaved={configuration => setPlugin(current => current ? { ...current, configuration } : current)} onFeedback={onFeedback} />}
+    </section>
     <section hidden={tab !== 'live-logs'} role="tabpanel" id={`${prefix}-panel-live-logs`} aria-labelledby={`${prefix}-tab-live-logs`}>
       <LiveLogs active={tab === 'live-logs'} enabled={plugin?.enabled === true} available={plugin?.logsSupported === true} />
     </section>
     <section hidden={tab !== 'tests'} role="tabpanel" id={`${prefix}-panel-tests`} aria-labelledby={`${prefix}-tab-tests`}>
-      <ToolTester active={tab === 'tests'} tools={plugin?.tools ?? []} enabled={plugin?.enabled === true} mutationBusy={mutation !== null} actionLock={actionLock} onBusy={setTesting} onFeedback={onFeedback} />
+      <ToolTester active={tab === 'tests'} tools={plugin?.tools ?? []} enabled={plugin?.enabled === true} mutationBusy={mutation !== null || policySaving} actionLock={actionLock} onBusy={setTesting} onFeedback={onFeedback} />
     </section>
     <section hidden={tab !== 'mcp'} role="tabpanel" id={`${prefix}-panel-mcp`} aria-labelledby={`${prefix}-tab-mcp`}>
       <McpCapabilities active={tab === 'mcp'} enabled={plugin?.enabled === true} capabilities={plugin?.capabilities ?? []} harness={workspace?.harness} onFeedback={onFeedback} />

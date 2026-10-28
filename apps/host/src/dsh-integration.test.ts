@@ -146,7 +146,7 @@ describe.runIf(Boolean(runtimeDirectory))('真实DSH SDK → 独立主会话 →
     expect(sends()[0]).toMatchObject({ action: 'send_private_msg', params: { user_id: 987654321, message: '由模型工具调用选择的私聊回复', auto_escape: true } })
     expect(model.requests).toHaveLength(2)
     const tools = model.requests[0]!.tools?.map(tool => tool.function?.name) ?? []
-    expect(tools).toHaveLength(9)
+    expect(tools).toHaveLength(39)
     expect(tools.every(name => name?.startsWith('mcp__qq__'))).toBe(true)
     const systemA = JSON.stringify(model.requests[0]!.messages?.filter(message => message.role === 'system'))
     expect(systemA).toContain('OWNER-MARKER-A')

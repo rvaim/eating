@@ -1,16 +1,26 @@
 {
   "name": "@eating/plugin-qq",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "type": "module",
   "description": "Eating QQ OneBot v11通讯插件，包含独立后台和管理面板",
-  "files": ["dist"],
-  "exports": { ".": "./dist/server.mjs" },
-  "scripts": { "build": "node ../../../scripts/build.mjs plugin plugins/communication/qq" },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": "./dist/server.mjs"
+  },
+  "scripts": {
+    "build": "node ../../../scripts/build.mjs plugin plugins/communication/qq"
+  },
   "dependencies": {
+    "@cfworker/json-schema": "4.1.1",
+    "@eating/plugin-core": "workspace:^",
     "@eating/plugin-sdk": "workspace:^",
     "@eating/ui-sdk": "workspace:^",
-    "@eating/plugin-core": "workspace:^",
     "ws": "8.22.0"
   },
-  "peerDependencies": { "react": "^19.3.1", "lucide-react": "^1.61.0" }
+  "peerDependencies": {
+    "lucide-react": "^1.61.0",
+    "react": "^19.3.1"
+  }
 }

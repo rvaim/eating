@@ -135,7 +135,7 @@ export class EatingHost {
         if (!sameSecret(getBearer(request), this.getMcpToken(id))) throw new PlatformError('MCP_UNAUTHENTICATED', 'MCP 访问令牌无效。', 401)
         let handler = this.mcp.get(id)
         if (!handler) { handler = createPluginMcpHandler(plugin); this.mcp.set(id, handler) }
-        await handler.handle(request, response, request.method === 'POST' ? await readJson(request) : undefined)
+        await handler.handle(request, response, request.method === 'POST' ? await readJson(request, 1024 * 1024) : undefined)
         return
       }
       if (request.method === 'GET' && pathname.startsWith('/plugins/')) { await this.servePluginAsset(pathname, response); return }
@@ -220,12 +220,12 @@ export class EatingHost {
         const plugin = this.requirePlugin(id, !['enable', 'disable', 'configuration'].includes(operation))
         if (request.method === 'GET' && operation === 'configuration') { json(response, 200, plugin.getPublicConfiguration()); return }
         if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '此接口需使用 POST。', 405)
-        const body = await readJson(request)
+        const body = await readJson(request, operation === 'invoke' ? 1024 * 1024 : undefined)
         if (operation === 'invoke') {
           if (!isJsonObject(body) || typeof body.name !== 'string' || !isJsonObject(body.arguments) || typeof body.requestId !== 'string') throw new PlatformError('INVALID_INPUT', '工具调用参数不完整。')
           const tool = plugin.tools.find(entry => entry.name === body.name)
           if (!tool) throw new PlatformError('TOOL_NOT_FOUND', '平台未提供该功能。', 404)
-          if (!tool.readOnly && body.confirmed !== true) throw new PlatformError('ACTION_CONFIRMATION_REQUIRED', '发送或撤回会影响真实 QQ，请确认目标和内容。', 409)
+          if (!tool.readOnly && body.confirmed !== true) throw new PlatformError('ACTION_CONFIRMATION_REQUIRED', '此操作会影响真实账号、消息或群组，请确认目标和参数。', 409)
           const args = { ...body.arguments }
           if (isJsonObject(tool.inputSchema.properties) && tool.inputSchema.properties.request_id !== undefined && args.request_id === undefined) args.request_id = body.requestId
           const result = await plugin.invoke(body.name, args, body.requestId)

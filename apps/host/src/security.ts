@@ -42,8 +42,19 @@ export async function readJson(request: IncomingMessage, limit = 256 * 1024): Pr
     if (size > limit) throw new PlatformError('PAYLOAD_TOO_LARGE', '请求内容超出大小限制。', 413)
     chunks.push(chunk)
   }
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) }
+  let value: unknown
+  try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')) }
   catch { throw new PlatformError('INVALID_JSON', '请求不是有效 JSON。') }
+  const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }]
+  let nodes = 0
+  while (pending.length) {
+    const current = pending.pop()!
+    if (++nodes > 50000 || current.depth > 64) throw new PlatformError('INVALID_JSON', 'JSON 结构过于复杂，请减少嵌套或数据项。', 400, 'not-sent')
+    if (current.value !== null && typeof current.value === 'object') {
+      for (const item of Object.values(current.value)) pending.push({ value: item, depth: current.depth + 1 })
+    }
+  }
+  return value
 }
 
 export function json(response: ServerResponse, status: number, value: unknown): void {

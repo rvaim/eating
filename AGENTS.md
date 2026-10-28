@@ -107,6 +107,16 @@ ready、SDK排队或入箱通知不等于fsync；只有公开 `sessions.flush` �
 
 默认zh-CN，侧栏原生选择框提供简体中文／English；`eating.locale`只存语言偏好，无密钥，刷新保留、跨标签页同步，document lang／title／meta即时更新。locale不得进入网络effect或面板重挂key；切换不能丢草稿／selection／undo、触发POST／重启／发送或增加日志订阅。用户名称、模型名、URL、Key、消息、JSON、协议canonical中文token（如 `{{当前时间}}`）和三份默认提示词正文不得翻译或改写；主人内容／AI策略中的中文不是UI翻译遗漏。仓库面向阅读文档继续中文唯一正文，白绿令牌与工具sidecar不因本轮双语改动重设计。
 
+## OneBot完整MCP与参数面板
+
+2026-10-28用户明确要求完善QQ MCP全部OneBot支持功能并提交，并允许删除QQ空间发布／评论等未实现占位。该指令授权本轮标准API扩展和本地中文提交，不授权推送或向真人自动测试。当前QQ0.7.0覆盖固定官方d4456ee提交的38公开API＋1框架quick操作共39项；先前9工具为历史基线，不再作为当前能力上限。
+
+后台、MCP和功能测试必须共用一份目录，完整字段／别名／消息格式以[覆盖清单](docs/technical/OneBot标准功能覆盖.md)为准。protocolAction／sensitiveResult是可选公开metadata，不把OneBot专用实现塞入SDK。只读凭据查询不进动作账本，界面离开／隐藏／停用取消清除并拒迟到恢复；MCP调用方自身可能保存工具结果，不承诺全链路不落盘。
+
+所有写动作要求稳定request_id、账号作用域幂等；async／rate_limited或原生重启接纳不表示完成，unknown不自动重发。quick context匹配实际账号，事件内容或sender角色不授予主人权限。文件／URL／Base64交OneBot，Eating不读本机或代下载；forward只收，不冒充发送支持。未实现空间／反向等条目不保占位。
+
+复杂参数使用共享@cfworker/json-schema4.1.1解释型校验，不以unsafe-eval放宽CSP；schema私有clone防库注解污染，有界LRU。输入1MiB／64层／50k节点，普通配置256KiB；JSON预览同样先guard。当前主程序0.7.0、plugin-sdk1.5.0、ui-sdk1.6.0、QQ0.7.0、DSH0.2.0、apiVersion1。本轮653项／34浏览器及部署证据见[报告](docs/reports/2026-10-28-OneBot完整MCP验证报告.md)，不改旧阶段数字。
+
 ## Git 提交信息约束
 
 每一次提交（包括功能、修复、重构、文档与依赖变更）必须使用中文标题和说明，并明确回答：

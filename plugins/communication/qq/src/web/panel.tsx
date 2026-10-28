@@ -1,13 +1,14 @@
 import type { OneBotConfig } from '../config'
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent, MutableRefObject, ReactNode } from 'react'
 import { AlertCircle, Check, Copy, RefreshCw } from 'lucide-react'
 import { formatNumber, getErrorMessage, HostApiError, hostRequest, translate, useI18n } from '@eating/ui-sdk'
 import type { PluginPanelProps } from '@eating/ui-sdk'
-import { isJsonObject } from '@eating/plugin-sdk'
+import { enumValue, parseToolArguments, schemaFields } from './tool-fields'
+import type { FieldFormat } from './tool-fields'
 import type { ConnectionStatus, JsonObject, JsonValue, PluginCapability, PluginToolDefinition } from '@eating/plugin-sdk'
 import './panel.css'
-import { capabilityDescription, capabilityTitle, parameterDescription, parameterLabel, toolDescription, toolTitle } from './i18n'
+import { capabilityDescription, capabilityTitle, parameterDescription, parameterLabel, parameterOptionLabel, toolDescription, toolSchemaHelp, toolTitle } from './i18n'
 import type { QQMessage, QQTranslationKey } from './i18n'
 import { LiveLogs } from './live-logs'
 
@@ -55,7 +56,10 @@ function failureFrom(error: unknown, fallbackKey: QQTranslationKey = 'error.oper
 function localFailure(code: string, messageKey: QQTranslationKey): Failure {
   return { message: '', code, outcome: 'not-sent', messageKey }
 }
-function pretty(value: unknown): string { return JSON.stringify(value, null, 2) ?? 'null' }
+function pretty(value: unknown): string {
+  try { return JSON.stringify(value, null, 2) ?? 'null' }
+  catch { return translate('qq', 'error.preview') }
+}
 function messageLabel(message: QQMessage | undefined, field?: string): string | undefined {
   if (!message) return undefined
   const params = Object.fromEntries(Object.entries(message.params ?? {}).map(([key, value]) => [key, typeof value === 'number' ? formatNumber(value) : value]))
@@ -291,7 +295,7 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
       <LiveLogs active={tab === 'live-logs'} enabled={plugin?.enabled === true} available={plugin?.logsSupported === true} />
     </section>
     <section hidden={tab !== 'tests'} role="tabpanel" id={`${prefix}-panel-tests`} aria-labelledby={`${prefix}-tab-tests`}>
-      <ToolTester tools={plugin?.tools ?? []} enabled={plugin?.enabled === true} mutationBusy={mutation !== null} actionLock={actionLock} onBusy={setTesting} onFeedback={onFeedback} />
+      <ToolTester active={tab === 'tests'} tools={plugin?.tools ?? []} enabled={plugin?.enabled === true} mutationBusy={mutation !== null} actionLock={actionLock} onBusy={setTesting} onFeedback={onFeedback} />
     </section>
     <section hidden={tab !== 'mcp'} role="tabpanel" id={`${prefix}-panel-mcp`} aria-labelledby={`${prefix}-tab-mcp`}>
       <McpCapabilities active={tab === 'mcp'} enabled={plugin?.enabled === true} capabilities={plugin?.capabilities ?? []} harness={workspace?.harness} onFeedback={onFeedback} />
@@ -299,80 +303,97 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
   </div>
 }
 
-interface SchemaField { key: string; schema: JsonObject; required: boolean }
-function schemaFields(tool: PluginToolDefinition | undefined): SchemaField[] {
-  if (!tool || !isJsonObject(tool.inputSchema.properties)) return []
-  const required = Array.isArray(tool.inputSchema.required) ? tool.inputSchema.required : []
-  return Object.entries(tool.inputSchema.properties).filter((entry): entry is [string, JsonObject] => isJsonObject(entry[1]))
-    .map(([key, schema]) => ({ key, schema, required: required.includes(key) }))
-}
-function parseArguments(fields: SchemaField[], values: Record<string, string>, requestId: string): { arguments: JsonObject; errors: FieldErrors } {
-  const args: JsonObject = {}
-  const errors: FieldErrors = {}
-  for (const { key, schema, required } of fields) {
-    if (key === 'request_id') { args[key] = requestId; continue }
-    const value = values[key] ?? ''
-    if (!value && !required) continue
-    if (!value && required) { errors[key] = { key: 'validation.required' }; continue }
-    if (schema.type === 'integer') {
-      const number = Number(value)
-      if (!value.trim() || !Number.isSafeInteger(number) || (typeof schema.minimum === 'number' && number < schema.minimum) || (typeof schema.maximum === 'number' && number > schema.maximum)) {
-        errors[key] = typeof schema.minimum === 'number' && typeof schema.maximum === 'number' ? { key: 'validation.integerRange', params: { min: schema.minimum, max: schema.maximum } }
-          : typeof schema.minimum === 'number' ? { key: 'validation.integerMin', params: { min: schema.minimum } }
-          : typeof schema.maximum === 'number' ? { key: 'validation.integerMax', params: { max: schema.maximum } } : { key: 'validation.integer' }
-      } else args[key] = number
-    } else if (schema.type === 'string') {
-      if ((typeof schema.minLength === 'number' && value.length < schema.minLength) || (typeof schema.maxLength === 'number' && value.length > schema.maxLength)) {
-        errors[key] = typeof schema.minLength === 'number' && typeof schema.maxLength === 'number' ? { key: 'validation.lengthRange', params: { min: schema.minLength, max: schema.maxLength } }
-          : typeof schema.minLength === 'number' ? { key: 'validation.lengthMin', params: { min: schema.minLength } }
-          : { key: 'validation.lengthMax', params: { max: typeof schema.maxLength === 'number' ? schema.maxLength : 0 } }
-      } else if (typeof schema.pattern === 'string') {
-        try { if (!new RegExp(schema.pattern).test(value)) errors[key] = { key: 'validation.pattern' } }
-        catch { errors[key] = { key: 'validation.ruleInvalid' } }
-      }
-      args[key] = value
-    } else errors[key] = { key: 'validation.typeUnavailable' }
-  }
-  return { arguments: args, errors }
-}
+const historyLimit = 10
 
-function ToolTester({ tools, enabled, mutationBusy, actionLock, onBusy, onFeedback }: {
-  tools: PluginToolDefinition[]; enabled: boolean; mutationBusy: boolean; actionLock: MutableRefObject<boolean>; onBusy: (value: boolean) => void; onFeedback: (message: string) => void
+function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, onFeedback }: {
+  active: boolean; tools: PluginToolDefinition[]; enabled: boolean; mutationBusy: boolean; actionLock: MutableRefObject<boolean>; onBusy: (value: boolean) => void; onFeedback: (message: string) => void
 }) {
   const { t, formatNumber } = useI18n('qq')
   const prefix = useId()
   const [toolName, setToolName] = useState('qq_get_login_info')
   const tool = tools.find(item => item.name === toolName) ?? tools.find(item => item.readOnly) ?? tools[0]
-  const fields = schemaFields(tool)
+  const fields = useMemo(() => schemaFields(tool), [tool])
   const [values, setValues] = useState<Record<string, string>>({})
+  const [formats, setFormats] = useState<Record<string, FieldFormat>>({})
   const [requestId, setRequestId] = useState(() => crypto.randomUUID())
   const [confirmed, setConfirmed] = useState(false)
   const [unknownReviewed, setUnknownReviewed] = useState(false)
   const [pending, setPending] = useState(false)
   const [errors, setErrors] = useState<FieldErrors>({})
+  const [schemaError, setSchemaError] = useState<QQMessage | undefined>()
   const [validationFailure, setValidationFailure] = useState<Failure | null>(null)
   const [execution, setExecution] = useState<Execution | null>(null)
   const [history, setHistory] = useState<Execution[]>([])
   const alive = useRef(false)
   const controllerRef = useRef<AbortController | null>(null)
+  const pendingSensitive = useRef(false)
   const generation = useRef(0)
-  useEffect(() => { alive.current = true; return () => { alive.current = false; ++generation.current; controllerRef.current?.abort() } }, [])
+  const onBusyRef = useRef(onBusy)
+  onBusyRef.current = onBusy
+
+  const clearSensitive = useCallback(() => {
+    if (pendingSensitive.current) {
+      ++generation.current
+      controllerRef.current?.abort(); controllerRef.current = null
+      pendingSensitive.current = false; actionLock.current = false
+      setPending(false); onBusyRef.current(false)
+    }
+    setExecution(current => current?.tool.sensitiveResult ? null : current)
+    setHistory(current => current.some(item => item.tool.sensitiveResult) ? current.filter(item => !item.tool.sensitiveResult) : current)
+  }, [actionLock])
+  useEffect(() => {
+    alive.current = true
+    function onHidden() { if (document.hidden) clearSensitive() }
+    document.addEventListener('visibilitychange', onHidden)
+    window.addEventListener('pagehide', clearSensitive)
+    return () => {
+      alive.current = false; ++generation.current
+      controllerRef.current?.abort(); controllerRef.current = null
+      pendingSensitive.current = false
+      document.removeEventListener('visibilitychange', onHidden)
+      window.removeEventListener('pagehide', clearSensitive)
+    }
+  }, [clearSensitive])
+  useEffect(() => { if (!active || !enabled) clearSensitive() }, [active, enabled, clearSensitive])
+
   const unknown = execution?.failure?.outcome === 'unknown'
   const blocked = pending || mutationBusy || Boolean(unknown)
-  const parsed = parseArguments(fields, values, requestId)
+  const parsed = parseToolArguments(tool, fields, values, formats, requestId, false)
   const hasSideEffect = tool ? !tool.readOnly || tool.destructive : false
+  function defaultValueLabel(key: string, schema: JsonObject): string {
+    const value = schema.default
+    return typeof value === 'boolean' ? t(value ? 'tests.option.true' : 'tests.option.false')
+      : typeof value === 'number' ? formatNumber(value)
+      : typeof value === 'string' ? value ? parameterOptionLabel(tool, key, value) : t('tests.emptyString') : pretty(value)
+  }
+  const previewInput = unknown && execution ? execution.arguments : parsed.arguments
+  const previewArguments = { ...Object.fromEntries(fields.filter(field => field.schema.default !== undefined).map(field => [field.key, field.schema.default!])), ...previewInput }
+  const confirmationKind = tool?.name === 'qq_delete_message' ? 'confirmDelete'
+    : tool?.name === 'qq_send_private_message' || tool?.name === 'qq_send_group_message' ? 'confirmSend' : 'confirmAction'
 
+  function invalidateConfirmation() {
+    setRequestId(crypto.randomUUID()); setConfirmed(false); setSchemaError(undefined); setValidationFailure(null)
+  }
   function updateField(key: string, value: string) {
-    setValues(current => ({ ...current, [key]: value })); setRequestId(crypto.randomUUID()); setConfirmed(false)
+    if (blocked) return
+    setValues(current => ({ ...current, [key]: value })); invalidateConfirmation()
     setErrors(current => ({ ...current, [key]: undefined }))
+  }
+  function updateFormat(key: string, format: FieldFormat) {
+    if (blocked) return
+    setFormats(current => ({ ...current, [key]: format })); invalidateConfirmation()
+    setErrors(current => ({ ...current, [key]: undefined }))
+  }
+  function remember(run: Execution) {
+    if (!run.tool.sensitiveResult) setHistory(current => [...current, run].slice(-historyLimit))
   }
   async function execute(retry?: Execution) {
     const selected = retry?.tool ?? tool
-    if (!selected || actionLock.current) return
+    if (!selected || actionLock.current || !active || !enabled || document.hidden) return
     if (unknown && !retry) return
-    const input = retry ? { arguments: retry.arguments, errors: {} } : parseArguments(fields, values, requestId)
-    setErrors(input.errors)
-    if (Object.keys(input.errors).length) { setValidationFailure(localFailure('INVALID_INPUT', 'error.fixTestInput')); return }
+    const input = retry ? { arguments: retry.arguments, errors: {}, schemaError: undefined } : parseToolArguments(selected, fields, values, formats, requestId)
+    setErrors(input.errors); setSchemaError(input.schemaError)
+    if (Object.keys(input.errors).length || input.schemaError) { setValidationFailure(localFailure('INVALID_INPUT', 'error.fixTestInput')); return }
     if ((!selected.readOnly || selected.destructive) && (!confirmed || (retry && !unknownReviewed))) {
       setValidationFailure(localFailure('ACTION_CONFIRMATION_REQUIRED', 'error.confirmAction')); return
     }
@@ -380,9 +401,9 @@ function ToolTester({ tools, enabled, mutationBusy, actionLock, onBusy, onFeedba
     const run: Execution = { tool: selected, requestId: retry?.requestId ?? requestId, arguments: input.arguments, startedAt: new Date().toISOString(), pending: true }
     const currentGeneration = ++generation.current
     const controller = new AbortController()
-    controllerRef.current = controller
+    controllerRef.current = controller; pendingSensitive.current = selected.sensitiveResult === true
     actionLock.current = true; setPending(true); onBusy(true); setValidationFailure(null)
-    if (execution) setHistory(current => [...current, execution])
+    if (execution && !retry) remember(execution)
     setExecution(run)
     try {
       const response = await hostRequest<InvokeResult>('/plugins/qq/invoke', { method: 'POST', signal: controller.signal, body: {
@@ -398,15 +419,16 @@ function ToolTester({ tools, enabled, mutationBusy, actionLock, onBusy, onFeedba
       setExecution({ ...run, pending: false, failure })
       if (failure.outcome !== 'unknown') setRequestId(crypto.randomUUID())
     } finally {
-      if (controllerRef.current === controller) controllerRef.current = null
-      actionLock.current = false
-      if (alive.current) { setPending(false); setConfirmed(false); setUnknownReviewed(false); onBusy(false) }
+      if (currentGeneration === generation.current && controllerRef.current === controller) {
+        controllerRef.current = null; pendingSensitive.current = false; actionLock.current = false
+        if (alive.current) { setPending(false); setConfirmed(false); setUnknownReviewed(false); onBusy(false) }
+      }
     }
   }
   function allowNewRequest() {
     if (!execution || !unknownReviewed || pending) return
-    setHistory(current => [...current, execution]); setExecution(null)
-    setRequestId(crypto.randomUUID()); setConfirmed(false); setUnknownReviewed(false); setValidationFailure(null)
+    remember(execution); setExecution(null)
+    invalidateConfirmation(); setUnknownReviewed(false)
   }
 
   return <>
@@ -415,28 +437,40 @@ function ToolTester({ tools, enabled, mutationBusy, actionLock, onBusy, onFeedba
       <fieldset className="qq-fieldset" disabled={blocked || !enabled}>
         <FormField id={`${prefix}-tool`} label={t('tests.tool.label')} hint={t('tests.tool.help')}>
           <select id={`${prefix}-tool`} aria-describedby={`${prefix}-tool-hint`} value={tool?.name ?? ''} onChange={event => {
-            setToolName(event.target.value); setValues({}); setRequestId(crypto.randomUUID()); setConfirmed(false); setErrors({}); setValidationFailure(null)
-          }}>{tools.map(item => <option key={item.name} value={item.name}>{t(!item.readOnly || item.destructive ? 'tests.tool.action' : 'tests.tool.readOnly', { title: toolTitle(item) })}</option>)}</select>
+            clearSensitive(); setToolName(event.target.value); setValues({}); setFormats({}); invalidateConfirmation(); setErrors({})
+          }}>{tools.map(item => <option key={item.name} value={item.name} title={item.protocolAction}>{t(!item.readOnly || item.destructive ? 'tests.tool.action' : 'tests.tool.readOnly', { title: toolTitle(item) })}</option>)}</select>
         </FormField>
-        {tool && <p className="qq-tool-description">{toolDescription(tool)}</p>}
-        {fields.map(({ key, schema, required }) => {
+        {tool && <><p className="qq-tool-description">{toolDescription(tool)}</p><details className="qq-tool-help"><summary>{t('tests.parameterHelp')}</summary><p>{toolSchemaHelp(tool)}</p>{tool.protocolAction && <p>{t('tests.protocolAction', { action: tool.protocolAction })}</p>}</details></>}
+        {tool?.sensitiveResult && <p className="qq-sensitive" role="note">{t('tests.sensitiveHelp')}</p>}
+        {fields.map(({ key, schema, required, kind, options }) => {
           const fieldId = `${prefix}-arg-${key}`
           const fieldLabel = parameterLabel(tool, key, schema)
           const label = t(required ? 'tests.field.required' : 'tests.field.optional', { label: fieldLabel })
-          const hint = parameterDescription(tool, key, schema, { max: typeof schema.maxLength === 'number' ? formatNumber(schema.maxLength) : undefined })
+          const json = kind === 'json' || kind === 'text-or-json' && formats[key] === 'json'
+          const defaultLabel = schema.default === undefined ? undefined : defaultValueLabel(key, schema)
+          const hint = [parameterDescription(tool, key, schema), json ? t('tests.json.help') : '', defaultLabel === undefined ? '' : t('tests.defaultHelp', { value: defaultLabel })].filter(Boolean).join(' ')
           const attributes = { id: fieldId, 'aria-describedby': `${fieldId}-hint${errors[key] ? ` ${fieldId}-error` : ''}`, 'aria-invalid': Boolean(errors[key]) }
-          return <FormField key={key} id={fieldId} label={label} hint={hint} error={messageLabel(errors[key], fieldLabel)}>
-            {key === 'request_id' ? <input {...attributes} value={requestId} readOnly className="input-readonly" /> : key === 'message' ?
-              <textarea {...attributes} value={values[key] ?? ''} rows={5} maxLength={typeof schema.maxLength === 'number' ? schema.maxLength : undefined} onChange={event => updateField(key, event.target.value)} /> :
-              <input {...attributes} type={schema.type === 'integer' ? 'number' : 'text'} inputMode={schema.type === 'integer' ? 'numeric' : undefined} min={typeof schema.minimum === 'number' ? schema.minimum : undefined} max={typeof schema.maximum === 'number' ? schema.maximum : undefined} step={schema.type === 'integer' ? 1 : undefined} maxLength={typeof schema.maxLength === 'number' ? schema.maxLength : undefined} value={values[key] ?? ''} autoComplete="off" spellCheck={false} onChange={event => updateField(key, event.target.value)} />}
-          </FormField>
+          return <Fragment key={key}>
+            {kind === 'text-or-json' && <FormField id={`${fieldId}-format`} label={t('tests.format.label', { label: fieldLabel })} hint={t('tests.format.help')}>
+              <select id={`${fieldId}-format`} value={formats[key] ?? 'text'} aria-describedby={`${fieldId}-format-hint`} onChange={event => updateFormat(key, event.target.value as FieldFormat)}><option value="text">{t('tests.format.text')}</option><option value="json">{t('tests.format.json')}</option></select>
+            </FormField>}
+            <FormField id={fieldId} label={label} hint={hint} error={messageLabel(errors[key], fieldLabel)}>
+              {key === 'request_id' ? <input {...attributes} value={requestId} readOnly className="input-readonly" />
+                : kind === 'boolean' ? <select {...attributes} value={values[key] ?? ''} onChange={event => updateField(key, event.target.value)}><option value="">{t(required ? 'tests.option.choose' : defaultLabel === undefined ? 'tests.option.unspecified' : 'tests.option.default', { value: defaultLabel })}</option><option value="true">{t('tests.option.true')}</option><option value="false">{t('tests.option.false')}</option></select>
+                : kind === 'enum' ? <select {...attributes} value={values[key] ?? ''} onChange={event => updateField(key, event.target.value)}><option value="">{t(required ? 'tests.option.choose' : defaultLabel === undefined ? 'tests.option.unspecified' : 'tests.option.default', { value: defaultLabel })}</option>{options.map(option => <option key={enumValue(option)} value={enumValue(option)}>{parameterOptionLabel(tool, key, enumValue(option))}</option>)}</select>
+                : json || kind === 'text-or-json' ? <textarea {...attributes} className={json ? 'qq-json-input' : undefined} value={values[key] ?? ''} rows={5} maxLength={!json && typeof schema.maxLength === 'number' ? schema.maxLength : undefined} spellCheck={false} onChange={event => updateField(key, event.target.value)} />
+                : <input {...attributes} type={kind === 'integer' || kind === 'number' ? 'number' : 'text'} inputMode={kind === 'integer' ? 'numeric' : kind === 'number' ? 'decimal' : undefined} min={typeof schema.minimum === 'number' ? schema.minimum : undefined} max={typeof schema.maximum === 'number' ? schema.maximum : undefined} step={kind === 'integer' ? 1 : kind === 'number' ? 'any' : undefined} maxLength={typeof schema.maxLength === 'number' ? schema.maxLength : undefined} value={values[key] ?? ''} autoComplete="off" spellCheck={false} onChange={event => updateField(key, event.target.value)} />}
+            </FormField>
+          </Fragment>
         })}
         {!fields.length && <p className="qq-no-arguments">{t('tests.noArguments')}</p>}
       </fieldset>
-      {hasSideEffect && <div className="qq-confirmation"><strong>{t(tool?.destructive ? 'tests.confirmDelete.title' : 'tests.confirmSend.title')}</strong><p>{t('tests.confirm.help')}</p>
-        <dl className="qq-target-preview">{Object.entries(unknown && execution ? execution.arguments : parsed.arguments).filter(([key]) => key !== 'request_id').map(([key, value]) => <div key={key}><dt>{parameterLabel(tool, key, fields.find(field => field.key === key)?.schema)}</dt><dd>{typeof value === 'string' ? value : pretty(value)}</dd></div>)}</dl>
-        <label className="qq-check"><input type="checkbox" disabled={pending || mutationBusy || !enabled} checked={confirmed} onChange={event => setConfirmed(event.target.checked)} /><span>{t(tool?.destructive ? 'tests.confirmDelete.label' : 'tests.confirmSend.label')}</span></label>
+      {values.onebot_call_mode && values.onebot_call_mode !== 'sync' && <p className="qq-call-mode" role="note">{t('tests.callModeHelp')}</p>}
+      {hasSideEffect && <div className="qq-confirmation"><strong>{t(`tests.${confirmationKind}.title`, { title: tool ? toolTitle(tool) : '' })}</strong><p>{t('tests.confirm.help')}</p>
+        <dl className="qq-target-preview">{Object.entries(previewArguments).filter(([key]) => key !== 'request_id').map(([key, value]) => <div key={key}><dt>{parameterLabel(tool, key, fields.find(field => field.key === key)?.schema)}</dt><dd>{typeof value === 'string' ? value || t('tests.emptyString') : <pre>{pretty(value)}</pre>}{!Object.hasOwn(previewInput, key) && <small className="qq-preview-default">{t('tests.previewDefault')}</small>}</dd></div>)}</dl>
+        <label className="qq-check"><input type="checkbox" disabled={pending || mutationBusy || !enabled} checked={confirmed} onChange={event => setConfirmed(event.target.checked)} /><span>{t(`tests.${confirmationKind}.label`)}</span></label>
       </div>}
+      {schemaError && <p className="qq-schema-error" role="alert">{t('tests.schemaError', { message: messageLabel(schemaError) })}</p>}
       <ErrorNotice failure={validationFailure} />
       <div className="qq-actions"><button className="button button-primary" type="submit" disabled={blocked || !enabled || (hasSideEffect && !confirmed)}>{t(pending ? 'action.running' : 'action.runTest')}</button><span className="qq-request-id">{t('tests.requestId', { id: requestId })}</span></div>
     </form>}
@@ -446,12 +480,14 @@ function ToolTester({ tools, enabled, mutationBusy, actionLock, onBusy, onFeedba
         <button type="button" className="button button-secondary" disabled={!unknownReviewed || pending || mutationBusy} onClick={allowNewRequest}>{t('action.newRequest')}</button></div><p className="qq-help">{t('tests.unknown.newRequestHelp')}</p>
     </div>}
     {execution && <ExecutionResult execution={execution} onFeedback={onFeedback} />}
+    <p className="qq-help">{t('tests.historyHelp', { limit: formatNumber(historyLimit) })}</p>
     {history.length > 0 && <details className="qq-history"><summary>{t('tests.history', { count: history.length, value: formatNumber(history.length) })}</summary>{[...history].reverse().map((item, index) => <ExecutionResult key={`${item.requestId}-${item.startedAt}-${index}`} execution={item} onFeedback={onFeedback} />)}</details>}
   </>
 }
 function ExecutionResult({ execution, onFeedback }: { execution: Execution; onFeedback: (message: string) => void }) {
   const { t, formatDateTime } = useI18n('qq')
   return <div className="qq-execution"><div className="qq-execution-heading"><strong>{toolTitle(execution.tool)}</strong><span>{t(execution.pending ? 'execution.pending' : execution.failure ? execution.failure.outcome === 'unknown' ? 'execution.unknown' : 'execution.failed' : 'execution.complete')}</span></div>
+    {execution.tool.sensitiveResult && <p className="qq-sensitive" role="note">{t('tests.sensitiveResult')}</p>}
     <p className="qq-help">{t('execution.started', { time: formatDateTime(execution.startedAt), id: execution.requestId })}</p><ErrorNotice failure={execution.failure ?? null} />
     <JsonPreview label={t('execution.json')} value={{ name: execution.tool.name, requestId: execution.requestId, arguments: execution.arguments, startedAt: execution.startedAt,
       ...(execution.pending ? { state: 'pending' } : execution.failure ? { error: { message: execution.failure.message, code: execution.failure.code, outcome: execution.failure.outcome } } : { result: execution.result }) }} onFeedback={onFeedback} />

@@ -21,6 +21,8 @@ export interface PluginToolDefinition {
   readonly inputSchema: JsonObject
   readonly readOnly: boolean
   readonly destructive: boolean
+  readonly protocolAction?: string
+  readonly sensitiveResult?: boolean
 }
 
 export interface PluginCapability {

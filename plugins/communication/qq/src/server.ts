@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { PlatformError, isJsonObject } from '@eating/plugin-sdk'
 import type { BackendPlugin, BackendPluginEntry, ConnectionStatus, HarnessEvent, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { OneBotClient } from './backend/onebot'
-import { qqTools, validateToolInput } from './backend/operations'
+import { qqTools, validateToolInput, prepareOneBotCall } from './backend/operations'
 import { QQConfigurationFile } from './backend/config-file'
 import { QQAccountRegistry } from './backend/accounts'
 import { LiveLogChannel } from './backend/live-logs'
@@ -50,15 +50,12 @@ function parseConfiguration(input: unknown, previous: OneBotConfig): OneBotConfi
 class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly name = 'QQ'
-  readonly version = '0.6.0'
+  readonly version = '0.7.0'
   readonly logs = new LiveLogChannel()
   readonly tools = qqTools
   readonly capabilities = [
     { id: 'onebot.v11.forward-websocket', name: 'OneBot v11 正向 WebSocket', support: 'supported' as const, description: '统一端点接收事件并调用标准 API，支持 Bearer 认证与有限重连。' },
     ...qqTools.map(tool => ({ id: tool.name, name: tool.title, support: 'supported' as const, description: tool.description, toolName: tool.name })),
-    { id: 'qzone.publish', name: 'QQ 空间发布', support: 'unsupported' as const, description: '不属于 OneBot v11 标准，本版没有提供实现；后续由独立扩展能力接入。' },
-    { id: 'qzone.comment', name: 'QQ 空间评论/回复', support: 'unsupported' as const, description: '不属于 OneBot v11 标准，需核对具体协议端扩展，未提供对应工具。' },
-    { id: 'onebot.v11.reverse-websocket', name: '反向 WebSocket', support: 'unsupported' as const, description: '当前版本使用正向统一端点；反向连接暂未实现。' },
   ]
   private configuration: OneBotConfig
   private readonly file: QQConfigurationFile
@@ -110,22 +107,11 @@ class QQPlugin implements BackendPlugin {
     if (!tool) throw new PlatformError('TOOL_NOT_FOUND', '此 QQ 功能未提供。', 404, 'not-sent')
     const params = validateToolInput(tool, input)
     if (params.instance_id !== undefined && params.instance_id !== this.instanceId) throw new PlatformError('ACCOUNT_INSTANCE_NOT_ACTIVE', '此账号实例当前未启用。本版本只支持默认账号，未自动切换。', 409, 'not-sent')
-    const map: Record<string, string> = { qq_get_login_info: 'get_login_info', qq_get_status: 'get_status', qq_get_version_info: 'get_version_info',
-      qq_get_friend_list: 'get_friend_list', qq_get_group_list: 'get_group_list', qq_get_message: 'get_msg',
-      qq_send_private_message: 'send_private_msg', qq_send_group_message: 'send_group_msg', qq_delete_message: 'delete_msg' }
-    const action = map[name]
-    if (!action) throw new PlatformError('TOOL_NOT_FOUND', '工具映射不存在。', 404, 'not-sent')
-    const forwarded: JsonObject = { ...params }
-    delete forwarded.request_id
-    delete forwarded.instance_id
-    for (const key of ['user_id', 'group_id', 'message_id']) {
-      if (forwarded[key] !== undefined) {
-        const identifier = Number(forwarded[key])
-        if (!Number.isSafeInteger(identifier) || key === 'message_id' && (identifier < -2147483648 || identifier > 2147483647)) throw new PlatformError('INVALID_IDENTIFIER', `参数 ${key} 超出 OneBot v11 安全整数范围。`, 400, 'not-sent')
-        forwarded[key] = identifier
-      }
+    const { action, params: forwarded } = prepareOneBotCall(tool, params)
+    if (tool.protocolAction === '.handle_quick_operation' && isJsonObject(forwarded.context)
+      && forwarded.context.self_id !== undefined && String(forwarded.context.self_id) !== this.client.getStatus().accountId) {
+      throw new PlatformError('INVALID_INPUT', '快速操作上下文不属于当前登录账号，未执行动作。', 400, 'not-sent')
     }
-    if (name.startsWith('qq_send_')) forwarded.auto_escape = true
     const execute = () => this.client.call(action, forwarded, { timeoutMs: this.configuration.timeoutMs, readOnly: tool.readOnly })
     if (tool.readOnly) return execute()
     const accountId = this.client.getStatus().accountId

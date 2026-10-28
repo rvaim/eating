@@ -12,6 +12,6 @@ export function LanguageSelector() {
     }}>
       {SUPPORTED_LOCALES.map(language => <option key={language} value={language}>{t(`language.${language}`)}</option>)}
     </select>
-    <small className="language-selector-version">Eating 0.6</small>
+    <small className="language-selector-version">Eating 0.7</small>
   </footer>
 }

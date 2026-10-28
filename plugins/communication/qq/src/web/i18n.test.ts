@@ -4,7 +4,7 @@ import { isJsonObject } from '@eating/plugin-sdk'
 import type { PluginCapability, PluginToolDefinition } from '@eating/plugin-sdk'
 import { qqTools } from '../backend/operations'
 import plugin from './entry'
-import { capabilityDescription, capabilityTitle, parameterDescription, parameterLabel, qqTranslations, toolDescription, toolTitle } from './i18n'
+import { capabilityDescription, capabilityTitle, parameterDescription, parameterLabel, parameterOptionLabel, qqTranslations, toolDescription, toolSchemaHelp, toolTitle } from './i18n'
 
 const initialLocale = getLocale()
 afterEach(() => { setLocale(initialLocale) })
@@ -27,15 +27,23 @@ describe('QQ presentation translations', () => {
   it('localizes the existing Host tool catalog and each known parameter without changing metadata', () => {
     setLocale('en-US')
     const original = JSON.stringify(qqTools)
-    expect(qqTools).toHaveLength(9)
+    expect(qqTools).toHaveLength(39)
+    expect(Object.keys(qqTranslations['zh-CN']).filter(key => /^tool\.[^.]+\.title$/.test(key))).toHaveLength(39)
     for (const tool of qqTools) {
       expect(toolTitle(tool)).not.toMatch(/\p{Script=Han}/u)
       expect(toolDescription(tool)).not.toMatch(/\p{Script=Han}/u)
+      expect(toolSchemaHelp(tool)).not.toMatch(/\p{Script=Han}|\{\{/u)
+      expect(toolSchemaHelp(tool)).not.toBe('')
       const properties = isJsonObject(tool.inputSchema.properties) ? tool.inputSchema.properties : {}
       for (const [key, value] of Object.entries(properties)) {
         if (!isJsonObject(value)) continue
         expect(parameterLabel(tool, key, value), `${tool.name}.${key}`).not.toBe(key)
+        expect(parameterLabel(tool, key, value), `${tool.name}.${key}`).not.toMatch(/\p{Script=Han}/u)
         expect(parameterDescription(tool, key, value, { max: '20,000' }), `${tool.name}.${key}`).not.toMatch(/\p{Script=Han}|\{\{/u)
+        expect(parameterDescription(tool, key, value), `${tool.name}.${key}`).not.toBe(key)
+        if (Array.isArray(value.enum)) for (const option of value.enum) {
+          expect(parameterOptionLabel(tool, key, String(option)), `${tool.name}.${key}.${String(option)}`).not.toMatch(/\p{Script=Han}|\{\{/u)
+        }
       }
       const capability: PluginCapability = { id: tool.name, name: tool.title, description: tool.description, support: 'supported', toolName: tool.name }
       expect(capabilityTitle(capability)).toBe(toolTitle(tool))

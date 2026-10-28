@@ -36,6 +36,13 @@
 .qq-paths dd { margin: 0; overflow-wrap: anywhere; }
 .qq-tool-description, .qq-no-arguments { color: var(--color-muted); font-size: 12px; margin: -7px 0 23px 156px; max-width: 72ch; }
 .qq-no-arguments { padding: 15px 0; }
+.qq-tool-help { margin: -12px 0 23px 156px; max-width: 72ch; }
+.qq-tool-help p { margin-top: 6px; color: var(--color-muted); font-size: 12px; line-height: 1.8; }
+.qq-panel .field textarea.qq-json-input { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.qq-sensitive, .qq-call-mode { max-width: 72ch; margin: 16px 0 22px; color: #77625d; font-size: 12px; line-height: 1.8; }
+.qq-schema-error { color: #a33434; font-size: 12px; line-height: 1.8; }
+.qq-target-preview pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.qq-panel .field-invalid select { border-color: #b64a4a; }
 .qq-confirmation, .qq-unknown { margin: 23px 0; padding: 18px 20px; border: 1px solid #e5d2cc; border-radius: 6px; background: #fdf9f7; }
 .qq-confirmation > strong, .qq-unknown h4 { margin: 0; font-size: 13px; font-weight: 600; color: #77625d; }
 .qq-confirmation > p, .qq-unknown > p { margin-top: 5px; font-size: 12px; color: #77625d; max-width: 72ch; }
@@ -43,6 +50,7 @@
 .qq-target-preview > div { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 12px; margin: 7px 0; font-size: 12px; }
 .qq-target-preview dt { overflow-wrap: anywhere; color: #77625d; }
 .qq-target-preview dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.qq-preview-default { display: block; margin-top: 3px; color: #77625d; font-size: 11px; }
 .qq-check { display: flex; gap: 10px; align-items: flex-start; margin: 16px 0 0; cursor: pointer; color: var(--color-ink); font-size: 12px; }
 .qq-check input { width: 16px; height: 16px; flex-shrink: 0; margin: 2px 0 0; accent-color: var(--color-primary); }
 .qq-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 20px; }
@@ -96,13 +104,13 @@
 .qq-capability-list code { display: block; margin-top: 5px; color: var(--color-muted); font-size: 11px; overflow-wrap: anywhere; }
 @media (max-width: 1100px) {
   .qq-paths > div { grid-template-columns: 95px minmax(0, 1fr); gap: 16px; }
-  .qq-tool-description, .qq-no-arguments { margin-left: 111px; }
+  .qq-tool-description, .qq-no-arguments, .qq-tool-help { margin-left: 111px; }
 }
 @media (max-width: 850px) {
   .qq-tabs { margin-bottom: 23px; }
   .qq-tabs button { padding: 9px 12px; }
   .qq-paths > div { grid-template-columns: 1fr; gap: 3px; margin-bottom: 9px; }
-  .qq-tool-description, .qq-no-arguments { margin-left: 0; }
+  .qq-tool-description, .qq-no-arguments, .qq-tool-help { margin-left: 0; }
   .qq-panel .qq-compact-check { margin-top: -3px; }
   .qq-target-preview > div { grid-template-columns: 1fr; gap: 3px; }
 }

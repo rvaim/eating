@@ -1,4 +1,5 @@
-.qq-panel { max-width: 1050px; min-width: 0; }
+.qq-panel { display: contents; }
+.qq-panel > * { max-width: 1050px; min-width: 0; }
 .qq-panel p { overflow-wrap: anywhere; }
 .qq-panel button, .qq-panel input, .qq-panel select, .qq-panel textarea, .qq-panel summary { touch-action: manipulation; }
 .qq-panel textarea { font: inherit; caret-color: var(--color-primary); transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease; }
@@ -8,7 +9,8 @@
 .qq-connection-strip strong { font-size: 14px; font-weight: 600; }
 .qq-connection-strip span { color: var(--color-muted); font-size: 12px; overflow-wrap: anywhere; }
 .qq-connection-strip .text-button { flex-shrink: 0; padding-top: 1px; }
-.qq-tabs { display: flex; gap: 4px; overflow-x: auto; margin-bottom: 27px; border-bottom: 1px solid var(--color-line); scrollbar-width: thin; scrollbar-color: #aab9ad #f3f4f2; }
+.qq-tabs { position: sticky; top: calc(0px - var(--content-inset-block-start, 0px)); z-index: 2; display: flex; gap: 4px; overflow-x: auto; overscroll-behavior-x: contain; margin-bottom: 27px; border-bottom: 1px solid var(--color-line); background: var(--color-surface); scrollbar-width: thin; scrollbar-color: #aab9ad #f3f4f2; }
+.qq-panel [role="tabpanel"] :is(input, select, textarea, button, summary, [tabindex]) { scroll-margin-block-start: 76px; }
 .qq-tabs button { flex: 0 0 auto; min-height: 44px; padding: 10px 15px; margin-bottom: 5px; border: 1px solid transparent; border-radius: 5px; background: transparent; font-size: 13px; color: #59625c; }
 .qq-tabs button:hover { background: #f0f3ed; }
 .qq-tabs button[aria-selected="true"] { color: var(--color-primary-hover); background: #e8eee7; font-weight: 600; }

@@ -117,6 +117,10 @@ ready、SDK排队或入箱通知不等于fsync；只有公开 `sessions.flush` �
 
 复杂参数使用共享@cfworker/json-schema4.1.1解释型校验，不以unsafe-eval放宽CSP；schema私有clone防库注解污染，有界LRU。输入1MiB／64层／50k节点，普通配置256KiB；JSON预览同样先guard。当前主程序0.7.0、plugin-sdk1.5.0、ui-sdk1.6.0、QQ0.7.0、DSH0.2.0、apiVersion1。本轮653项／34浏览器及部署证据见[报告](docs/reports/2026-10-28-OneBot完整MCP验证报告.md)，不改旧阶段数字。
 
+## 视口与滚动
+
+管理界面保持视口内布局，主区与二级导航独立滚动；插件固定Tab须覆盖完整内容及宿主footer，避免过短包含块把它推出。目录展开时保留主区可操作高度，键盘焦点不得落在固定控件之后。主区none禁止边缘回弹，不能仅凭DOM矩形正确认定绘制正确。保留[滚动回归](tests/browser/scrolling.spec.ts)的真实wheel／末端／短目录／长侧栏／键盘／resize验收，原因见[修复记录](docs/changes/2026-10-28-管理面板独立滚动修复.md)；白绿视觉、双语、草稿与业务行为不变。
+
 ## Git 提交信息约束
 
 每一次提交（包括功能、修复、重构、文档与依赖变更）必须使用中文标题和说明，并明确回答：

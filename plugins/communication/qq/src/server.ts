@@ -50,7 +50,7 @@ function parseConfiguration(input: unknown, previous: OneBotConfig): OneBotConfi
 class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly name = 'QQ'
-  readonly version = '0.7.0'
+  readonly version = '0.7.1'
   readonly logs = new LiveLogChannel()
   readonly tools = qqTools
   readonly capabilities = [

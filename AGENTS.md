@@ -33,7 +33,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`。
 
-当前应用／Host／Web0.10.0，三个共享包3.0.0，QQ0.10.1、DSH0.5.1；插件唯一 API3。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前应用／Host／Web0.10.0，三个共享包3.0.0，QQ0.10.1、DSH0.6.3；插件唯一 API3。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -63,7 +63,7 @@ MCP scope、Prompt、Preset不等于远端资源或OS沙箱。标准OneBot文件
 
 模型列表／最小真实连接测试使用已保存配置；选择只改草稿。图片能力独立schema1＋CAS，默认false，仅停止Harness可保存，换endpoint／model失效；声明不等于提供商已验证。API连通、运行时就绪与任务成功分别报告。
 
-原生Web与SDK同一Eating进程／注册表，隔离于主DSH。原样挂官方SessionController、client roster、Gateway和owner鉴权，保留原生功能与行为；不再注入自定义界面／CSS或权限过滤，不覆写cold follow。原生页面可以正常新建会话、发言和执行官方操作；不得修改官方源码来适应Eating视觉。Eating自有手动离线视图仍基于有效surface与来源，不能给历史倒灌最新版本。
+DSH 不自行下载运行时：检测系统安装的 `dsh`（EATING_DSH_BIN → PATH → 常见路径 → macOS 应用包），用 `launch/dsh-system.mjs` 转交层启动，`DSH_HOME`／`DSH_AGENTS_HOME` 仍指向 `~/.eating`。找不到时明确提示用户安装，不猜路径、不静默回退到自装。CLI overlay 只列官方裸包名（从系统安装解析），我们自己的 bridge 用绝对路径。Eating 不挂载 Web 界面；系统 DSH 模式下离线会话读取不可用并给出明确说明，不能伪造读取结果。
 
 实例名含真实绑定账号，不改UUID，不从旧label猜账号。默认系统层去实时时间；原生time-context在主、子对应scope各挂一次，上海时区、600000ms，不另加调度或时钟工具。当前9变量仍可手写使用，含动态变量的自定义正文对缓存的影响应如实报告。
 
@@ -72,6 +72,8 @@ MCP scope、Prompt、Preset不等于远端资源或OS沙箱。标准OneBot文件
 保持白绿风格、固定视口、主区／二级栏独立滚动、页签完整吸顶范围、键盘焦点可达。平台提示词按pluginId合为一个可折叠条目，名称来自当前目录元数据，折叠不能改变编辑器／路由／草稿。看板正文滚动时会话导航保持可见，长目录自身滚动；页签使用宿主边距与统一上下留白，正文末端／页脚不能推出导航。保留[滚动回归](tests/browser/scrolling.spec.ts)与[看板布局回归](tests/browser/panel-layout.spec.ts)，不能只凭DOM坐标宣称绘制正确。
 
 固定 UI 文案、ARIA、诊断、补全、错误、数值和日期使用模块双语资源及公开 ui-sdk；默认简体中文，可切英文。locale 不进入网络 effect 或重挂 key，不能丢草稿／选区／撤销或触发保存／发送。用户内容、Key、URL、模型名、消息与 canonical 变量不翻译。严格 CSP 不增加 unsafe-eval。
+
+界面颜色只能使用 `apps/web/src/styles.css` 的语义令牌，禁止在组件或插件 CSS 里写颜色字面量；新增颜色须同时给出浅色与 `prefers-color-scheme: dark` 值，并保持正文 ≥4.5:1、次要文字 ≥3:1。
 
 README 用中文作为标准入口；其他文档标题／文件名中文，技术标准名可保留。每次有意义变更同步 README、规范、状态、交接、待确认问题、变更日志和相应 ADR。历史报告保留数字和当时结论，当前策略变更另写决策，不篡改历史证据。
 

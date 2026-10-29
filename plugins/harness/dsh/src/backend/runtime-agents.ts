@@ -12,15 +12,25 @@ export function getRuntimeAgentSource(): string {
   const controlToken = process.env.EATING_DSH_CONTROL_TOKEN;
   const mcpEntry = process.env.EATING_DSH_MCP_ENTRY;
   const clockEntry = process.env.EATING_DSH_TIME_CONTEXT_ENTRY;
-  if (!clockEntry || !isAbsolute(clockEntry)) throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
+  // Official packages may be named by bare specifier so the child resolves them from
+  // its own installation (app.asar when packaged); only our own files are absolute.
+  const moduleSpec = value => typeof value === 'string' && (isAbsolute(value) || /^@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i.test(value));
+  // A bare specifier is resolved from the running DSH entry, so it also works when
+  // the installation lives inside app.asar (plain static imports would not).
+  const loadModule = spec => {
+    if (!spec.startsWith('@')) return import(pathToFileURL(spec).href);
+    const requireFromRuntime = createRequire(process.argv[1] || process.execPath);
+    return import(pathToFileURL(requireFromRuntime.resolve(spec)).href);
+  };
+  if (!moduleSpec(clockEntry)) throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
   const clocks = new WeakSet();
   async function mountClock(agent) {
     if (clocks.has(agent)) return;
-    const Clock = await import(pathToFileURL(clockEntry).href);
+    const Clock = await loadModule(clockEntry);
     await agent.ctx.plugin(Clock, { timeZone: 'Asia/Shanghai', refreshIntervalMs: 600000 });
     clocks.add(agent);
   }
-  if (!controlUrl || !/^http:\/\/127\.0\.0\.1:\d+$/.test(controlUrl) || !opaque(controlToken) || !mcpEntry || !isAbsolute(mcpEntry)) throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
+  if (!controlUrl || !/^http:\/\/127\.0\.0\.1:\d+$/.test(controlUrl) || !opaque(controlToken) || !moduleSpec(mcpEntry)) throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
 
   async function control(operation, value, signal) {
     const response = await fetch(controlUrl + '/' + operation, { method: 'POST', redirect: 'error', signal,
@@ -55,7 +65,7 @@ export function getRuntimeAgentSource(): string {
     // Child Agent scopes are separate from their runtime parent; a preset layer may
     // contribute capabilities, so filter every inherited tool before own MCP mounts.
     agent.ctx.tools.restrict({ allow: [] });
-    const Mcp = await import(pathToFileURL(mcpEntry).href);
+    const Mcp = await loadModule(mcpEntry);
     await agent.ctx.plugin(Mcp, { transport: 'streamable-http', serverName: 'qq', url: configuration.mcp.url, headers: configuration.mcp.headers,
       toolCallTimeoutMs: taskDeadlineMs, failOnStartupError: true, reconnect: { enabled: false } });
     const expectedNames = configuration.tools.map(name => 'mcp__qq__' + name).sort();

@@ -49,7 +49,7 @@
 .dsh-fieldset:disabled { opacity: .78; }
 .dsh-panel .dsh-compact-check { margin-top: -8px; }
 .dsh-panel .form-actions .button { min-height: 42px; }
-.dsh-error { display: flex; gap: 8px; align-items: flex-start; margin: 14px 0 18px; padding: 12px 14px; border: 1px solid #e5d2cc; border-radius: 6px; background: #fdf9f7; color: #a33434; font-size: 12px; }
+.dsh-error { display: flex; gap: 8px; align-items: flex-start; margin: 14px 0 18px; padding: 12px 14px; border: 1px solid var(--color-line-warm); border-radius: 6px; background: var(--color-danger-surface); color: var(--color-danger-ink); font-size: 12px; }
 .dsh-error > svg { margin-top: 2px; }
 .dsh-error small { display: block; margin-top: 4px; font-size: 11px; overflow-wrap: anywhere; }
 .dsh-error-recovery { margin-top: 5px; }
@@ -64,13 +64,13 @@
 .dsh-panel .save-indicator { min-width: 0; overflow-wrap: anywhere; }
 .dsh-result { display: flex; gap: 8px; align-items: flex-start; margin-top: 16px; color: var(--color-primary-hover); font-size: 12px; }
 .dsh-result svg { margin-top: 2px; }
-.dsh-notice { display: flex; gap: 8px; align-items: flex-start; margin: 16px 0 22px; color: #526358; font-size: 12px; }
+.dsh-notice { display: flex; gap: 8px; align-items: flex-start; margin: 16px 0 22px; color: var(--color-ink-notice); font-size: 12px; }
 .dsh-notice svg { margin-top: 2px; color: var(--color-primary); }
 .dsh-notice p { max-width: 72ch; }
 .dsh-boundary { margin-top: 25px; padding-top: 20px; border-top: 1px solid var(--color-line); }
-.dsh-unknown { margin-top: 23px; padding: 16px 18px; border: 1px solid #e5d2cc; border-radius: 6px; background: #fdf9f7; }
-.dsh-unknown strong { font-size: 13px; font-weight: 600; color: #77625d; }
-.dsh-unknown p { max-width: 72ch; margin-top: 5px; color: #77625d; font-size: 12px; }
+.dsh-unknown { margin-top: 23px; padding: 16px 18px; border: 1px solid var(--color-line-warm); border-radius: 6px; background: var(--color-danger-surface); }
+.dsh-unknown strong { font-size: 13px; font-weight: 600; color: var(--color-warm-ink); }
+.dsh-unknown p { max-width: 72ch; margin-top: 5px; color: var(--color-warm-ink); font-size: 12px; }
 .dsh-unknown .button { margin-top: 13px; white-space: normal; }
 .dsh-details { margin: 28px 0 0; padding-top: 18px; border-top: 1px solid var(--color-line); font-size: 12px; font-variant-numeric: tabular-nums; }
 .dsh-details > div { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 24px; padding: 5px 0; }

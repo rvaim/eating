@@ -2,7 +2,7 @@ import { build } from 'esbuild'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { resolve, relative } from 'node:path'
+import { dirname, resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as React from 'react'
 import * as JsxRuntime from 'react/jsx-runtime'
@@ -48,6 +48,11 @@ async function buildPlugin(source) {
     for (const path of Object.keys(result.metafile.inputs)) if (/apps\//.test(path)) throw new Error('插件面板不得依赖应用内部源码：' + path)
     for (const file of result.outputFiles) await writeFile(file.path.endsWith('.css') ? resolve(output, manifest.frontend.style) : resolve(output, manifest.frontend.entry), file.contents)
   })
+  // Declared assets live next to the plugin sources (not inside dist); copy them in first.
+  for (const asset of manifest.assets) {
+    await mkdir(dirname(resolve(output, asset)), { recursive: true })
+    await writeFile(resolve(output, asset), await readFile(resolve(directory, asset)))
+  }
   const integrity = {}
   for (const name of [manifest.backend, manifest.frontend.entry, manifest.frontend.style, ...manifest.assets]) integrity[name] = createHash('sha256').update(await readFile(resolve(output, name))).digest('hex')
   await writeFile(resolve(output, 'eating-plugin.json'), JSON.stringify({ ...manifest, integrity }, null, 2) + '\n')

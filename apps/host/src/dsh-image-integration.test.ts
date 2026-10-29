@@ -11,7 +11,7 @@ import { assertQQAgentInvocation, parseQQAgentPolicy } from '../../../plugins/co
 import { downloadQQImage, qqViewReceivedImageTool, readQQReceivedImage } from '../../../plugins/communication/qq/src/backend/media'
 import { validateToolInput } from '../../../plugins/communication/qq/src/backend/operations'
 import { DshPlugin } from '../../../plugins/harness/dsh/src/backend/adapter'
-import { DshRuntimeInstallation } from '../../../plugins/harness/dsh/src/backend/runtime'
+import { testSystemDsh } from '../../../tests/fixtures/system-dsh'
 import { startImageFixture } from '../../../tests/fixtures/image'
 import { readModelFixtureBatch } from '../../../tests/fixtures/openai'
 import type { ModelFixtureRequest } from '../../../tests/fixtures/openai'
@@ -137,9 +137,7 @@ function imageQQEntry(image: Awaited<ReturnType<typeof startImageFixture>>, scop
 
 async function runImageScenario(imageInput: boolean) {
   const home = await isolatedHome()
-  const installation = new DshRuntimeInstallation(resolve(runtimeDirectory!))
-  cleanups.push(() => installation.dispose())
-  expect(installation.getStatus().state).toBe('ready')
+  const systemDsh = () => testSystemDsh(resolve(runtimeDirectory!))
   const image = await startImageFixture()
   cleanups.push(() => image.close())
   // Prove this fixture contains an actual compressed RGBA scanline before SDK admission.
@@ -156,7 +154,7 @@ async function runImageScenario(imageInput: boolean) {
   const scopes: AgentInvocationScope[] = []
   let plugin!: DshPlugin
   const dshEntry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) {
-    plugin = new DshPlugin(context, { runtime: installation, startupTimeoutMs: 15000 })
+    plugin = new DshPlugin(context, { locateSystemDsh: systemDsh, startupTimeoutMs: 15000 })
     return plugin
   } }
   const host = new EatingHost({ dataDirectory: home, entries: [imageQQEntry(image, scopes), dshEntry], port: 0, allowedUiOrigins: [] })

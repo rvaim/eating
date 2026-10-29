@@ -11,7 +11,7 @@ import { installPluginPackage } from './plugin-installation'
 import { fileURLToPath } from 'node:url'
 import qqEntry from '../../../plugins/communication/qq/src/server'
 import { DshPlugin } from '../../../plugins/harness/dsh/src/backend/adapter'
-import { DshRuntimeInstallation } from '../../../plugins/harness/dsh/src/backend/runtime'
+import { testSystemDsh } from '../../../tests/fixtures/system-dsh'
 import { startOneBotFixture } from '../../../tests/fixtures/onebot'
 import { readModelFixtureBatch, startOpenAiFixture } from '../../../tests/fixtures/openai'
 import type { ModelFixtureRequest } from '../../../tests/fixtures/openai'
@@ -196,9 +196,7 @@ describe.runIf(Boolean(runtimeDirectory))('真实DSH SDK → 原生主子会话 
       if (target !== home || dirname(target) !== await realpath(tmpdir()) || !basename(target).startsWith('Eating_dsh_integration_')) throw new Error('Unsafe integration cleanup')
       await rm(target, { recursive: true })
     })
-    const installation = new DshRuntimeInstallation(resolve(runtimeDirectory!))
-    stops.push(() => installation.dispose())
-    expect(installation.getStatus().state).toBe('ready')
+    const systemDsh = () => testSystemDsh(resolve(runtimeDirectory!))
     const onebot = await startOneBotFixture()
     stops.push(() => onebot.close())
     const selected: string[] = []
@@ -212,7 +210,7 @@ describe.runIf(Boolean(runtimeDirectory))('真实DSH SDK → 原生主子会话 
     stops.push(() => model.close())
     let plugin!: DshPlugin
     const dshEntry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) {
-      plugin = new DshPlugin(context, { runtime: installation }); return plugin
+      plugin = new DshPlugin(context, { locateSystemDsh: systemDsh }); return plugin
     } }
     const host = new EatingHost({ dataDirectory: home, entries: [qqEntry, dshEntry], port: 0, allowedUiOrigins: [] })
     stops.push(() => host.close())

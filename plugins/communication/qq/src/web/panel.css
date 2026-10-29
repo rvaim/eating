@@ -17,24 +17,24 @@
 .qq-connection-strip strong { font-size: 14px; font-weight: 600; }
 .qq-connection-strip span { color: var(--color-muted); font-size: 12px; overflow-wrap: anywhere; }
 .qq-connection-strip .text-button { flex-shrink: 0; padding-top: 1px; }
-.qq-tabs { position: sticky; top: calc(0px - var(--content-inset-block-start)); z-index: 2; display: flex; gap: 4px; overflow-x: auto; overscroll-behavior-x: contain; max-width: none; margin-inline: calc(0px - var(--content-inset-inline-start)) calc(0px - var(--content-inset-inline-end)); padding: var(--panel-tab-padding-block) var(--content-inset-inline-end) var(--panel-tab-padding-block) var(--content-inset-inline-start); margin-bottom: 24px; border-bottom: 1px solid var(--color-line); background: var(--color-surface); scrollbar-width: thin; scrollbar-color: #aab9ad #f3f4f2; }
+.qq-tabs { position: sticky; top: calc(0px - var(--content-inset-block-start)); z-index: 2; display: flex; gap: 4px; overflow-x: auto; overscroll-behavior-x: contain; max-width: none; margin-inline: calc(0px - var(--content-inset-inline-start)) calc(0px - var(--content-inset-inline-end)); padding: var(--panel-tab-padding-block) var(--content-inset-inline-end) var(--panel-tab-padding-block) var(--content-inset-inline-start); margin-bottom: 24px; border-bottom: 1px solid var(--color-line); background: var(--color-surface); scrollbar-width: thin; scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track); }
 .qq-panel [role="tabpanel"] :is(input, select, textarea, button, summary, [tabindex]) { scroll-margin-block-start: calc(var(--panel-tab-rail-block-size) + 20px); }
-.qq-tabs button { flex: 0 0 auto; min-height: var(--panel-tab-min-block-size); padding: 10px 15px; margin: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; font-size: 13px; color: #59625c; }
-.qq-tabs button:hover { background: #f0f3ed; }
-.qq-tabs button[aria-selected="true"] { color: var(--color-primary-hover); background: #e8eee7; font-weight: 600; }
+.qq-tabs button { flex: 0 0 auto; min-height: var(--panel-tab-min-block-size); padding: 10px 15px; margin: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; font-size: 13px; color: var(--color-ink-soft); }
+.qq-tabs button:hover { background: var(--color-hover); }
+.qq-tabs button[aria-selected="true"] { color: var(--color-primary-hover); background: var(--color-selected); font-weight: 600; }
 .qq-tabs button:focus-visible { outline-offset: -3px; }
 .qq-fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
 .qq-fieldset:disabled { opacity: .78; }
 .qq-panel .section-heading p, .qq-capability-heading p { max-width: 72ch; }
-.qq-panel .field textarea { width: 100%; min-width: 0; max-width: 670px; min-height: 126px; resize: vertical; padding: 10px 12px; border: 1px solid #849289; border-radius: 5px; color: var(--color-ink); background: var(--color-surface); font-size: 13px; line-height: 1.6; }
-.qq-panel .field textarea:hover { border-color: #6e8776; }
+.qq-panel .field textarea { width: 100%; min-width: 0; max-width: 670px; min-height: 126px; resize: vertical; padding: 10px 12px; border: 1px solid var(--color-line-input); border-radius: 5px; color: var(--color-ink); background: var(--color-surface); font-size: 13px; line-height: 1.6; }
+.qq-panel .field textarea:hover { border-color: var(--color-line-input-hover); }
 .qq-panel .field textarea:focus { border-color: var(--color-primary); }
-.qq-panel .field-invalid textarea { border-color: #b64a4a; }
-.qq-panel input::placeholder, .qq-panel textarea::placeholder { color: #68716a; }
+.qq-panel .field-invalid textarea { border-color: var(--color-line-invalid); }
+.qq-panel input::placeholder, .qq-panel textarea::placeholder { color: var(--color-placeholder); }
 .qq-panel .qq-compact-check { margin-top: -8px; }
 .qq-operation-result { display: flex; gap: 8px; align-items: flex-start; margin-top: 16px; color: var(--color-primary-hover); font-size: 12px; }
 .qq-operation-result svg { margin-top: 2px; }
-.qq-error { display: flex; align-items: flex-start; gap: 8px; margin: 14px 0 18px; padding: 12px 14px; border: 1px solid #e5d2cc; border-radius: 6px; background: #fdf9f7; color: #a33434; font-size: 12px; }
+.qq-error { display: flex; align-items: flex-start; gap: 8px; margin: 14px 0 18px; padding: 12px 14px; border: 1px solid var(--color-line-warm); border-radius: 6px; background: var(--color-danger-surface); color: var(--color-danger-ink); font-size: 12px; }
 .qq-error > svg { margin-top: 2px; }
 .qq-error small { display: block; margin-top: 4px; font-size: 11px; overflow-wrap: anywhere; }
 .qq-location-details { margin-top: 24px; color: var(--color-muted); font-size: 12px; }
@@ -49,18 +49,18 @@
 .qq-tool-help { margin: -12px 0 23px 156px; max-width: 72ch; }
 .qq-tool-help p { margin-top: 6px; color: var(--color-muted); font-size: 12px; line-height: 1.8; }
 .qq-panel .field textarea.qq-json-input { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-.qq-sensitive, .qq-call-mode { max-width: 72ch; margin: 16px 0 22px; color: #77625d; font-size: 12px; line-height: 1.8; }
-.qq-schema-error { color: #a33434; font-size: 12px; line-height: 1.8; }
+.qq-sensitive, .qq-call-mode { max-width: 72ch; margin: 16px 0 22px; color: var(--color-warm-ink); font-size: 12px; line-height: 1.8; }
+.qq-schema-error { color: var(--color-danger-ink); font-size: 12px; line-height: 1.8; }
 .qq-target-preview pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; }
-.qq-panel .field-invalid select { border-color: #b64a4a; }
-.qq-confirmation, .qq-unknown { margin: 23px 0; padding: 18px 20px; border: 1px solid #e5d2cc; border-radius: 6px; background: #fdf9f7; }
-.qq-confirmation > strong, .qq-unknown h4 { margin: 0; font-size: 13px; font-weight: 600; color: #77625d; }
-.qq-confirmation > p, .qq-unknown > p { margin-top: 5px; font-size: 12px; color: #77625d; max-width: 72ch; }
-.qq-target-preview { margin: 16px 0; padding: 12px 0; border-top: 1px solid #e5d2cc; border-bottom: 1px solid #e5d2cc; }
+.qq-panel .field-invalid select { border-color: var(--color-line-invalid); }
+.qq-confirmation, .qq-unknown { margin: 23px 0; padding: 18px 20px; border: 1px solid var(--color-line-warm); border-radius: 6px; background: var(--color-danger-surface); }
+.qq-confirmation > strong, .qq-unknown h4 { margin: 0; font-size: 13px; font-weight: 600; color: var(--color-warm-ink); }
+.qq-confirmation > p, .qq-unknown > p { margin-top: 5px; font-size: 12px; color: var(--color-warm-ink); max-width: 72ch; }
+.qq-target-preview { margin: 16px 0; padding: 12px 0; border-top: 1px solid var(--color-line-warm); border-bottom: 1px solid var(--color-line-warm); }
 .qq-target-preview > div { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 12px; margin: 7px 0; font-size: 12px; }
-.qq-target-preview dt { overflow-wrap: anywhere; color: #77625d; }
+.qq-target-preview dt { overflow-wrap: anywhere; color: var(--color-warm-ink); }
 .qq-target-preview dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.qq-preview-default { display: block; margin-top: 3px; color: #77625d; font-size: 11px; }
+.qq-preview-default { display: block; margin-top: 3px; color: var(--color-warm-ink); font-size: 11px; }
 .qq-check { display: flex; gap: 10px; align-items: flex-start; margin: 16px 0 0; cursor: pointer; color: var(--color-ink); font-size: 12px; }
 .qq-check input { width: 16px; height: 16px; flex-shrink: 0; margin: 2px 0 0; accent-color: var(--color-primary); }
 .qq-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 20px; }
@@ -74,7 +74,7 @@
 .qq-json { min-width: 0; margin-top: 12px; }
 .qq-json-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; }
 .qq-json-heading strong { font-size: 12px; font-weight: 550; }
-.qq-json pre { max-height: 380px; max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 15px 16px; margin: 2px 0 0; border: 1px solid var(--color-line); border-radius: 5px; background: #f5f7f3; color: #445249; font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; scrollbar-width: thin; scrollbar-color: #aab9ad #f3f4f2; tab-size: 2; }
+.qq-json pre { max-height: 380px; max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 15px 16px; margin: 2px 0 0; border: 1px solid var(--color-line); border-radius: 5px; background: var(--color-surface-sunken); color: var(--color-ink-strong); font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; scrollbar-width: thin; scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track); tab-size: 2; }
 .qq-panel summary { width: fit-content; min-height: 36px; padding: 7px 0; color: var(--color-primary); font-size: 12px; cursor: pointer; text-underline-offset: 4px; }
 .qq-panel summary:hover { text-decoration: underline; }
 .qq-history { margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--color-line); }
@@ -82,8 +82,8 @@
 .qq-message-filter { margin: 0 0 15px; }
 .qq-message-filter > label { display: block; margin-bottom: 7px; font-size: 13px; font-weight: 550; }
 .qq-message-filter > div { display: flex; gap: 10px; align-items: center; }
-.qq-message-filter input { flex: 1; width: 100%; min-width: 0; height: 42px; padding: 8px 12px; border: 1px solid #849289; border-radius: 5px; background: var(--color-surface); color: var(--color-ink); font-size: 13px; }
-.qq-message-filter input:hover { border-color: #6e8776; }
+.qq-message-filter input { flex: 1; width: 100%; min-width: 0; height: 42px; padding: 8px 12px; border: 1px solid var(--color-line-input); border-radius: 5px; background: var(--color-surface); color: var(--color-ink); font-size: 13px; }
+.qq-message-filter input:hover { border-color: var(--color-line-input-hover); }
 .qq-message-filter input:focus { border-color: var(--color-primary); }
 .qq-empty { margin: 20px 0; padding: 25px 0; border-top: 1px solid var(--color-line); border-bottom: 1px solid var(--color-line); color: var(--color-muted); font-size: 13px; }
 .qq-empty strong { color: var(--color-ink); font-size: 14px; font-weight: 550; }
@@ -154,5 +154,5 @@
 .qq-policy-tool > span { min-width: 0; }
 .qq-policy-tool strong { display: block; font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
 .qq-policy-tool small { display: block; margin-top: 3px; color: var(--color-muted); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
-.qq-policy-tool small.qq-policy-action { color: #77625d; }
+.qq-policy-tool small.qq-policy-action { color: var(--color-warm-ink); }
 @media (max-width: 850px) { .qq-policy-tools { grid-template-columns: minmax(0, 1fr); } }

@@ -10,9 +10,7 @@ import type { HarnessDeliveryBatch, HarnessMessageSink, HarnessOwnerConfiguratio
 import { DshPlugin, createRuntimeEnvironment } from './adapter'
 import type { DshAdapterOptions, DshHarnessClient } from './adapter'
 import { DEFAULT_CONFIGURATION, DshSessionFile, readRestrictedJson, writeRestrictedJson } from './config'
-import { DSH_VERSION } from './runtime'
-import { NATIVE_WEB_MODULES } from './native-web'
-import type { DshRuntimeStatus } from './runtime'
+import type { SystemDshLocation } from './system-dsh'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -22,7 +20,6 @@ function deferred<T>() {
 }
 
 const cleanups: Array<() => Promise<void> | void> = []
-const nativeModules = () => Object.fromEntries(['dsh-subagent', 'dsh-subagent-spawn-in-process', 'dsh-session-query-sqlite', 'dsh-agent-preset-registry', 'dsh-api-session-controller-types', ...NATIVE_WEB_MODULES].map(name => [name, `/fixture/runtime/${name}.mjs`]))
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
 
 function batch(id = 'a'.repeat(64), text = 'fixture external text'): HarnessDeliveryBatch {
@@ -62,9 +59,8 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
     getSetting: vi.fn(() => null), setSetting: vi.fn(), recordEvent: vi.fn(() => { throw new Error('Adapter must not record a chat copy') }),
     listMessages: vi.fn(() => []), executeIdempotent: vi.fn(async () => { throw new Error('Adapter must never forward finalResponse') }),
   }
-  const status: DshRuntimeStatus = { state: options.missing ? 'missing' : 'ready', version: DSH_VERSION, error: null }
-  const runtime = { getStatus: vi.fn(() => ({ ...status })), resolve: vi.fn(() => ({ dshBin: '/fixture/runtime/bin.js', providerEntry: '/fixture/runtime/provider.js', mcpEntry: '/fixture/runtime/mcp.js' })),
-    install: vi.fn(options.install ?? (async () => {})), dispose: vi.fn() }
+  const location: SystemDshLocation | null = options.missing ? null : { bin: '/fixture/system/dsh', version: '0.0.0-fixture', source: 'override' }
+  const locateSystem = vi.fn(() => location)
   const clients: Array<{ client: DshHarnessClient; launch: DeepSeekHarnessOptions; run: ReturnType<typeof deferred<RunResult>>; runInput: string | null; sessionCalls: number; resumeCalls: number; closeCalls: number }> = []
   const factory = vi.fn((launch: DeepSeekHarnessOptions): DshHarnessClient => {
     const item = { client: undefined as DshHarnessClient | undefined, launch, run: deferred<RunResult>(), runInput: null as string | null, sessionCalls: 0, resumeCalls: 0, closeCalls: 0 }
@@ -87,7 +83,6 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
         const expected = readRestrictedJson(join(bridge, 'expected.json'))
         if (options.persisted) writeRestrictedJson(join(bridge, 'session-ready.json'), { schemaVersion: 1, nonce, sessionId })
         if (options.recovered && expected) ack(directory)
-        writeRestrictedJson(join(bridge, 'native-web-ready.json'), { schemaVersion: 1, nonce, sessionId, url: 'http://127.0.0.1:45678/?token=fixture-only-web-token' })
         writeRestrictedJson(join(bridge, 'ready.json'), { schemaVersion: 1, nonce, sessionId, toolsReady: true, durabilityAvailable: true,
           recovery: options.recovered ? 'persisted' : 'absent', ...(options.recovered && expected ? { batchId: expected.batchId! } : {}) })
       }),
@@ -108,9 +103,9 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
     })
     return client
   })
-  const plugin = new DshPlugin(context, { runtime, createHarness: factory, resolveNativeModules: nativeModules, pollIntervalMs: 2, startupTimeoutMs: 500, readyTimeoutMs: 300, closeTimeoutMs: 500, ...options.adapter })
+  const plugin = new DshPlugin(context, { locateSystemDsh: locateSystem, createHarness: factory, pollIntervalMs: 2, startupTimeoutMs: 500, readyTimeoutMs: 300, closeTimeoutMs: 500, ...options.adapter })
   cleanups.push(() => plugin.dispose())
-  return { plugin, runtime, directory, context, clients, factory, detach, get sink() { return registered }, setOwner(value: HarnessOwnerConfiguration) { owner = value }, getOwner() { return owner } }
+  return { plugin, locateSystem, directory, context, clients, factory, detach, get sink() { return registered }, setOwner(value: HarnessOwnerConfiguration) { owner = value }, getOwner() { return owner } }
 }
 
 function ack(directory: string, overrides: JsonObject = {}) {
@@ -130,7 +125,7 @@ describe('DSH isolated runtime lifecycle', () => {
     const setup = fixture({ missing: true })
     await expect(setup.plugin.connect()).rejects.toMatchObject({ code: 'NOT_CONFIGURED' })
     await configure(setup.plugin)
-    await expect(setup.plugin.connect()).rejects.toMatchObject({ code: 'RUNTIME_NOT_INSTALLED' })
+    await expect(setup.plugin.connect()).rejects.toMatchObject({ code: 'DSH_NOT_INSTALLED' })
     expect(setup.factory).not.toHaveBeenCalled()
     expect(existsSync(join(setup.directory, 'session.json'))).toBe(false)
   })
@@ -140,7 +135,7 @@ describe('DSH isolated runtime lifecycle', () => {
     await configure(setup.plugin)
     await setup.plugin.connect()
     const client = setup.clients[0]!
-    expect(client.launch).toMatchObject({ profile: 'sdk-minimal', dshBin: '/fixture/runtime/bin.js', provider: 'eating-openai', model: 'fixture-model', maxTokens: 4096,
+    expect(client.launch).toMatchObject({ profile: 'sdk-minimal', dshBin: expect.stringContaining('dsh-system.mjs'), provider: 'eating-openai', model: 'fixture-model', maxTokens: 4096,
       cwd: join(setup.directory, 'workspace'), processCwd: join(setup.directory, 'workspace'), dshHome: join(setup.directory, 'dsh-home') })
     expect(client.launch.env).toMatchObject({ HOME: join(setup.directory, 'runtime-home'), DSH_AGENTS_HOME: join(setup.directory, 'agents-home'), EATING_DSH_API_KEY: 'fixture-only-api-key' })
     expect(client.sessionCalls).toBe(1)
@@ -169,7 +164,7 @@ describe('DSH isolated runtime lifecycle', () => {
     const publicJson = JSON.stringify(setup.plugin.getPublicConfiguration())
     expect(publicJson).not.toContain('fixture-only-api-key')
     expect(publicJson).not.toContain('fixture-only-mcp-token')
-    expect(setup.plugin.getPublicConfiguration()).toMatchObject({ apiKeyConfigured: true, runtimeStatus: { installed: true, installing: false, busy: false } })
+    expect(setup.plugin.getPublicConfiguration()).toMatchObject({ apiKeyConfigured: true, runtimeStatus: { system: { found: true, path: '/fixture/system/dsh' }, busy: false } })
     const parent = { HOME: '/fixture-parent-home', DSH_HOME: '/fixture-parent-dsh', DSH_AGENTS_HOME: '/fixture-parent-agents', OPENAI_API_KEY: 'fixture-parent-key', ANTHROPIC_API_KEY: 'fixture-parent-key', NODE_OPTIONS: '--import /fixture/parent-hook', PATH: '/fixture/bin', TZ: 'UTC', LANG: 'C' }
     const env = createRuntimeEnvironment(setup.directory, DEFAULT_CONFIGURATION, 'fixture-nonce', 'fixture-session', parent)
     expect(env).not.toHaveProperty('OPENAI_API_KEY')
@@ -188,7 +183,7 @@ describe('DSH isolated runtime lifecycle', () => {
     file.write({ sessionId, created: false })
     // The fixture's first plugin loaded before this metadata; reopen through the normal constructor.
     await setup.plugin.dispose()
-    const reopened = new DshPlugin(setup.context, { runtime: setup.runtime, createHarness: setup.factory, resolveNativeModules: nativeModules, pollIntervalMs: 2, startupTimeoutMs: 500 })
+    const reopened = new DshPlugin(setup.context, { locateSystemDsh: setup.locateSystem, createHarness: setup.factory, pollIntervalMs: 2, startupTimeoutMs: 500 })
     cleanups.push(() => reopened.dispose())
     await reopened.connect()
     expect(setup.clients[0]!.resumeCalls).toBe(1)
@@ -227,18 +222,6 @@ describe('DSH isolated runtime lifecycle', () => {
     expect(new DshSessionFile(setup.directory).read()!.sessionId).toBe(metadata.sessionId)
   })
 
-  it('starts installation asynchronously and aborts it when disposed', async () => {
-    const pending = deferred<void>()
-    let signal: AbortSignal | undefined
-    const setup = fixture({ install: async value => { signal = value; value?.addEventListener('abort', () => pending.resolve(), { once: true }); return pending.promise } })
-    await expect(setup.plugin.manage('install-runtime', {})).resolves.toEqual({ started: true })
-    expect(signal?.aborted).toBe(false)
-    await expect(setup.plugin.invoke('install-runtime', {}, 'fixture')).rejects.toMatchObject({ code: 'TOOL_NOT_FOUND' })
-    expect(setup.plugin.tools).toEqual([])
-    await setup.plugin.dispose()
-    expect(signal?.aborted).toBe(true)
-    expect(setup.runtime.dispose).toHaveBeenCalled()
-  })
 })
 
 describe('DSH reliable single-batch handoff', () => {

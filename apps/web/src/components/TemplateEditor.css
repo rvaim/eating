@@ -19,13 +19,13 @@
 .template-editor .cm-editor {
   width: 100%;
   min-width: 0;
-  border: 1px solid #849289;
+  border: 1px solid var(--color-line-input);
   border-radius: 5px;
   background: var(--color-surface);
   color: var(--color-ink);
   font: inherit;
 }
-.template-editor .cm-editor:hover { border-color: #6e8776; }
+.template-editor .cm-editor:hover { border-color: var(--color-line-input-hover); }
 .template-editor .cm-editor.cm-focused { border-color: var(--color-primary); outline: 2px solid var(--color-primary); outline-offset: 2px; }
 .template-editor .cm-scroller {
   min-height: 220px;
@@ -41,23 +41,23 @@
 .template-editor .cm-content:focus-visible { outline: none; }
 .template-editor .cm-cursor, .template-editor .cm-dropCursor { border-left-color: var(--color-primary); }
 .template-editor .cm-selectionBackground { background: var(--color-tint); }
-.template-editor .cm-editor.cm-focused .cm-selectionBackground { background: #dbe9de; }
-.template-editor .cm-gutters { border-right: 1px solid var(--color-line); border-radius: 4px 0 0 4px; background: #f5f7f3; color: var(--color-muted); }
+.template-editor .cm-editor.cm-focused .cm-selectionBackground { background: var(--color-selection); }
+.template-editor .cm-gutters { border-right: 1px solid var(--color-line); border-radius: 4px 0 0 4px; background: var(--color-surface-sunken); color: var(--color-muted); }
 .template-editor .cm-lineNumbers .cm-gutterElement { min-width: 30px; padding: 0 7px 0 6px; font-size: 11px; font-variant-numeric: tabular-nums; }
 .template-editor .template-variable { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.template-editor .template-variable-valid { color: var(--color-primary-hover); background: #f0f5ef; }
-.template-editor .template-variable-invalid { color: #aa3838; text-decoration: underline wavy #aa3838; text-underline-offset: 4px; }
-.template-editor .cm-lintRange-error { background-image: none; text-decoration: underline wavy #aa3838; text-underline-offset: 4px; }
-.template-editor.is-disabled .cm-editor, .template-editor.is-disabled .cm-gutters { background: #f5f7f3; }
-.template-editor.is-disabled .cm-content { color: #606e64; }
-.template-editor.is-disabled .cm-editor:hover { border-color: #849289; }
+.template-editor .template-variable-valid { color: var(--color-primary-hover); background: var(--color-highlight); }
+.template-editor .template-variable-invalid { color: var(--color-danger-ink); text-decoration: underline wavy var(--color-danger-ink); text-underline-offset: 4px; }
+.template-editor .cm-lintRange-error { background-image: none; text-decoration: underline wavy var(--color-danger-ink); text-underline-offset: 4px; }
+.template-editor.is-disabled .cm-editor, .template-editor.is-disabled .cm-gutters { background: var(--color-surface-sunken); }
+.template-editor.is-disabled .cm-content { color: var(--color-disabled-ink); }
+.template-editor.is-disabled .cm-editor:hover { border-color: var(--color-line-input); }
 .template-editor-hint { margin-top: 8px; color: var(--color-muted); font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
 .template-editor-diagnostics { margin-top: 6px; font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
 .template-editor-diagnostic-count { color: var(--color-muted); }
-.template-editor.has-errors .template-editor-diagnostic-count { color: #aa3838; }
+.template-editor.has-errors .template-editor-diagnostic-count { color: var(--color-danger-ink); }
 .template-editor-error-list { display: grid; gap: 2px; margin: 4px 0 0; padding: 0; list-style: none; }
-.template-editor-error-list button { display: block; min-height: 32px; max-width: 100%; padding: 5px 0; border: 0; border-radius: 3px; background: none; color: #aa3838; font: inherit; text-align: left; overflow-wrap: anywhere; }
-.template-editor-error-list button:hover { color: #8c3030; text-decoration: underline; text-underline-offset: 3px; }
+.template-editor-error-list button { display: block; min-height: 32px; max-width: 100%; padding: 5px 0; border: 0; border-radius: 3px; background: none; color: var(--color-danger-ink); font: inherit; text-align: left; overflow-wrap: anywhere; }
+.template-editor-error-list button:hover { color: var(--color-danger-hover); text-decoration: underline; text-underline-offset: 3px; }
 .template-editor-error-list button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 .template-editor-more-errors { margin-top: 4px; color: var(--color-muted); }
 
@@ -72,11 +72,11 @@
 }
 .template-editor-popups .cm-tooltip {
   max-width: calc(100vw - 24px);
-  border: 1px solid #cbd3cb;
+  border: 1px solid var(--color-line-strong);
   border-radius: 5px;
   background: var(--color-surface);
   color: var(--color-ink);
-  box-shadow: 0 7px 24px #273f2a14;
+  box-shadow: 0 7px 24px var(--color-shadow);
 }
 .template-editor-popups .template-editor-completion { width: 380px; max-width: calc(100vw - 24px); }
 .template-editor-popups .template-editor-completion > ul {
@@ -100,7 +100,7 @@
   touch-action: manipulation;
 }
 /* Match the native tooltip/list structure so these states outrank CM's theme. */
-.template-editor-popups .template-editor-completion > ul > li.template-editor-completion-option:hover { background: #f1f5ef; color: var(--color-primary-hover); }
+.template-editor-popups .template-editor-completion > ul > li.template-editor-completion-option:hover { background: var(--color-hover); color: var(--color-primary-hover); }
 .template-editor-popups .template-editor-completion > ul > li.template-editor-completion-option[aria-selected="true"] { background: var(--color-tint); color: var(--color-primary-hover); }
 .template-editor-popups .template-editor-completion > ul > li.template-editor-completion-option:hover .cm-completionDetail,
 .template-editor-popups .template-editor-completion > ul > li.template-editor-completion-option[aria-selected="true"] .cm-completionDetail { color: var(--color-primary-hover); }
@@ -109,7 +109,7 @@
 .template-editor-popups .cm-completionMatchedText { font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
 .template-editor-popups .cm-tooltip-lint { max-width: min(360px, calc(100vw - 24px)); margin: 0; padding: 7px 10px; list-style: none; font-size: 12px; overflow-wrap: anywhere; }
 .template-editor-popups .cm-diagnostic { margin: 0; padding: 3px 0; border: 0; white-space: pre-wrap; }
-.template-editor-popups .cm-diagnostic-error { color: #aa3838; }
+.template-editor-popups .cm-diagnostic-error { color: var(--color-danger-ink); }
 .template-editor-popups .cm-diagnosticSource { display: block; color: var(--color-muted); font-size: 11px; }
 
 @media (max-width: 600px) {

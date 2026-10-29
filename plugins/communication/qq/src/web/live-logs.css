@@ -9,16 +9,16 @@
 .qq-live-logs .qq-live-logs-status strong[data-state="connected"] { color: var(--color-primary-hover); }
 .qq-live-logs .qq-live-logs-count { flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .qq-live-logs .qq-error p { margin: 0; }
-.qq-live-logs .qq-live-logs-scroller { min-width: 0; max-width: 100%; max-height: min(60vh, 640px); overflow-y: auto; overflow-x: hidden; padding-right: 8px; scrollbar-width: thin; scrollbar-color: #aab9ad #f3f4f2; }
+.qq-live-logs .qq-live-logs-scroller { min-width: 0; max-width: 100%; max-height: min(60vh, 640px); overflow-y: auto; overflow-x: hidden; padding-right: 8px; scrollbar-width: thin; scrollbar-color: var(--color-scrollbar-thumb) var(--color-scrollbar-track); }
 .qq-live-logs .qq-live-logs-scroller:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
 .qq-live-logs .qq-live-logs-list { list-style: none; margin: 0; padding: 0; }
 .qq-live-logs .qq-live-log-row { min-width: 0; padding: 10px 0; border-bottom: 1px solid var(--color-line); content-visibility: auto; contain-intrinsic-size: auto 92px; }
 .qq-live-logs .qq-live-log-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 10px; min-width: 0; color: var(--color-muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .qq-live-logs .qq-live-log-heading time { font-variant-numeric: tabular-nums; }
 .qq-live-logs .qq-live-log-heading strong { min-width: 0; color: var(--color-ink); font-size: 12px; font-weight: 550; }
-.qq-live-logs .qq-live-log-level[data-level="info"] { color: #445249; }
-.qq-live-logs .qq-live-log-level[data-level="warn"] { color: #7b581c; }
-.qq-live-logs .qq-live-log-level[data-level="error"] { color: #a33434; }
+.qq-live-logs .qq-live-log-level[data-level="info"] { color: var(--color-ink-strong); }
+.qq-live-logs .qq-live-log-level[data-level="warn"] { color: var(--color-warning-ink); }
+.qq-live-logs .qq-live-log-level[data-level="error"] { color: var(--color-danger-ink); }
 .qq-live-logs .qq-live-log-identifiers { display: flex; flex-wrap: wrap; gap: 2px 14px; margin: 4px 0 0; font-size: 11px; line-height: 1.65; }
 .qq-live-logs .qq-live-log-identifiers > div { display: flex; gap: 4px; min-width: 0; max-width: 100%; }
 .qq-live-logs .qq-live-log-identifiers dt { flex-shrink: 0; color: var(--color-muted); }

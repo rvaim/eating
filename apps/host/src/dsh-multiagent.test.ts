@@ -16,7 +16,7 @@ import { isJsonObject } from '@eating/plugin-sdk'
 import { DshPlugin } from '../../../plugins/harness/dsh/src/backend/adapter'
 import { EatingHost } from './app'
 import qqEntry from '../../../plugins/communication/qq/src/server'
-import { DshRuntimeInstallation } from '../../../plugins/harness/dsh/src/backend/runtime'
+import { testRuntimeBin, testSystemDsh } from '../../../tests/fixtures/system-dsh'
 import { readModelFixtureBatch } from '../../../tests/fixtures/openai'
 import type { ModelFixtureRequest } from '../../../tests/fixtures/openai'
 import { startOneBotFixture } from '../../../tests/fixtures/onebot'
@@ -65,10 +65,8 @@ describe.runIf(Boolean(runtimeDirectory))('真实DSH原生多代理隔离', () =
   it('awaits child initialization, isolates system/tools and returns actual MCP→OneBot results to its parent', async () => {
     const home = await isolatedHome()
     const rootId = randomUUID(), childId = randomUUID()
-    const runtime = new DshRuntimeInstallation(resolve(runtimeDirectory!))
-    cleanups.push(() => runtime.dispose())
-    const paths = runtime.resolve()
-    const runtimeRequire = createRequire(join(dirname(dirname(paths.dshBin)), 'package.json'))
+    const runtimeBin = testRuntimeBin(resolve(runtimeDirectory!))
+    const runtimeRequire = createRequire(join(dirname(dirname(runtimeBin)), 'package.json'))
     const packageEntry = (name: string) => runtimeRequire.resolve(`@deepseek-ai/${name}`)
     const onebot = await startOneBotFixture(); cleanups.push(() => onebot.close())
     const sockets = new Set<WebSocket>()
@@ -129,7 +127,7 @@ export function apply(ctx){
     const disabled = ['llm-deepseek', 'tool-fs', 'tool-working-directory', 'persistent-bash', 'persistent-pwsh', 'mcp-resources', 'terminal-bash', 'terminal-pwsh', 'pty', 'subprocess']
     const patch = join(home, 'poc.patch.yml')
     await writeFile(patch, disabled.map(id => `- id: ${id}\n  disabled: true\n`).join('') + '- insert:\n' + [
-      { id: 'poc-provider', name: paths.providerEntry, config: { providers: { fixture: { api: 'openai-completions', baseURL: model.endpoint, apiKeyEnv: 'EATING_POC_MODEL_KEY', models: [{ id: 'fixture-model', input: ['text'], reasoningEfforts: false }] } } } },
+      { id: 'poc-provider', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: { fixture: { api: 'openai-completions', baseURL: model.endpoint, apiKeyEnv: 'EATING_POC_MODEL_KEY', models: [{ id: 'fixture-model', input: ['text'], reasoningEfforts: false }] } } } },
       { id: 'native-subagents', name: packageEntry('dsh-subagent') },
       { id: 'native-spawn', name: packageEntry('dsh-subagent-spawn-in-process') },
       { id: 'native-query', name: packageEntry('dsh-session-query-sqlite'), config: { path: ':memory:', openAt: 'never' } },
@@ -138,7 +136,7 @@ export function apply(ctx){
     const workspace = join(home, 'workspace'); await mkdir(workspace)
     const sdkRequire = createRequire(new URL('../../../plugins/harness/dsh/package.json', import.meta.url))
     const sdk = await import(/* @vite-ignore */ pathToFileURL(sdkRequire.resolve('@deepseek-ai/dsh-sdk-client')).href) as { DeepSeekHarness: new (options: object) => { start(): Promise<void>; run(input: string, options: object): Promise<{ finalResponse: string; events: Array<{ type: string; data: unknown }>; notifications: Array<{ method: string; params: Record<string, unknown> }> }>; close(): Promise<void> } }
-    const harness = new sdk.DeepSeekHarness({ dshBin: paths.dshBin, profile: 'sdk-minimal', patches: [patch], cwd: workspace, processCwd: workspace, dshHome: join(home, 'dsh-home'), provider: 'fixture', model: 'fixture-model', initializeTimeoutMs: 15000, requestTimeoutMs: 20000, disposeEofGraceMs: 500, disposeGraceMs: 500,
+    const harness = new sdk.DeepSeekHarness({ dshBin: runtimeBin, profile: 'sdk-minimal', patches: [patch], cwd: workspace, processCwd: workspace, dshHome: join(home, 'dsh-home'), provider: 'fixture', model: 'fixture-model', initializeTimeoutMs: 15000, requestTimeoutMs: 20000, disposeEofGraceMs: 500, disposeGraceMs: 500,
       env: { EATING_POC_MODEL_KEY: 'fixture-poc-model-key', PATH: process.env.PATH, HOME: join(home, 'runtime-home'), DSH_HOME: join(home, 'dsh-home'), DSH_AGENTS_HOME: join(home, 'agents-home') } })
     cleanups.push(() => harness.close())
     await harness.start()
@@ -163,7 +161,7 @@ export function apply(ctx){
 
   it('uses the production bridge, scoped Host MCP, persistent child identity and offline native session reader', async () => {
     const home = await isolatedHome()
-    const installation = new DshRuntimeInstallation(resolve(runtimeDirectory!)); cleanups.push(() => installation.dispose())
+    const systemDsh = () => testSystemDsh(resolve(runtimeDirectory!))
     const onebot = await startOneBotFixture(); cleanups.push(() => onebot.close())
     let currentBatch = ''
     let currentType = ''
@@ -194,7 +192,7 @@ export function apply(ctx){
       return '子Agent处理完成。'
     })
     let plugin!: DshPlugin
-    const entry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) { plugin = new DshPlugin(context, { runtime: installation }); return plugin } }
+    const entry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) { plugin = new DshPlugin(context, { locateSystemDsh: systemDsh }); return plugin } }
     const host = new EatingHost({ dataDirectory: home, entries: [qqEntry, entry], port: 0, allowedUiOrigins: [] }); cleanups.push(() => host.close())
     const url = await host.listen()
     const bootstrap = await fetch(url + '/api/bootstrap'), cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!
@@ -275,7 +273,7 @@ export function apply(ctx){
 
   it('lets the main Agent query then send through two native calls in one verified batch using the same child', async () => {
     const home = await isolatedHome()
-    const installation = new DshRuntimeInstallation(resolve(runtimeDirectory!)); cleanups.push(() => installation.dispose())
+    const systemDsh = () => testSystemDsh(resolve(runtimeDirectory!))
     const onebot = await startOneBotFixture(); cleanups.push(() => onebot.close())
     let contextRef = ''
     const model = await modelFixture((request, index) => {
@@ -301,7 +299,7 @@ export function apply(ctx){
       return 'MAIN-FINAL：已核对查询和发送的分阶段结果。'
     })
     let plugin!: DshPlugin
-    const entry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) { plugin = new DshPlugin(context, { runtime: installation }); return plugin } }
+    const entry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) { plugin = new DshPlugin(context, { locateSystemDsh: systemDsh }); return plugin } }
     const host = new EatingHost({ dataDirectory: home, entries: [qqEntry, entry], port: 0, allowedUiOrigins: [] }); cleanups.push(() => host.close())
     const url = await host.listen(), bootstrap = await fetch(url + '/api/bootstrap'), cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!
     const boot: unknown = await bootstrap.json(); if (!isJsonObject(boot)) throw new Error('Invalid bootstrap')

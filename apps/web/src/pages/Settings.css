@@ -17,21 +17,21 @@
 .settings-field { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 0 24px; margin-bottom: 23px; }
 .settings-field > label { padding-top: 9px; font-size: 13px; font-weight: 550; }
 .settings-field-content { min-width: 0; }
-.settings-field input, .settings-field select { width: 100%; min-width: 0; max-width: 670px; height: 42px; padding: 8px 12px; border: 1px solid #849289; border-radius: 5px; background: var(--color-surface); color: var(--color-ink); font-size: 13px; }
-.settings-field input:hover, .settings-field select:hover { border-color: #6e8776; }
+.settings-field input, .settings-field select { width: 100%; min-width: 0; max-width: 670px; height: 42px; padding: 8px 12px; border: 1px solid var(--color-line-input); border-radius: 5px; background: var(--color-surface); color: var(--color-ink); font-size: 13px; }
+.settings-field input:hover, .settings-field select:hover { border-color: var(--color-line-input-hover); }
 .settings-field input:focus, .settings-field select:focus { border-color: var(--color-primary); }
-.settings-field input:disabled, .settings-field select:disabled { background: #f5f7f3; color: var(--color-muted); cursor: not-allowed; }
-.settings-field.is-invalid input, .settings-field.is-invalid select { border-color: #b64a4a; }
+.settings-field input:disabled, .settings-field select:disabled { background: var(--color-surface-sunken); color: var(--color-muted); cursor: not-allowed; }
+.settings-field.is-invalid input, .settings-field.is-invalid select { border-color: var(--color-line-invalid); }
 .settings-number-input { display: flex; align-items: center; width: 240px; max-width: 100%; gap: 10px; }
 .settings-number-input input { flex: 1; font-variant-numeric: tabular-nums; }
 .settings-number-input > span { flex-shrink: 0; min-width: 24px; color: var(--color-muted); font-size: 12px; }
 .settings-field-hint, .settings-field-error { max-width: 65ch; margin-top: 6px; font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
 .settings-field-hint { color: var(--color-muted); }
-.settings-field-error { color: #aa3838; }
-.settings-storage-risk { max-width: 65ch; margin-top: 8px; color: #7b581c; font-size: 12px; overflow-wrap: anywhere; }
+.settings-field-error { color: var(--color-danger-ink); }
+.settings-storage-risk { max-width: 65ch; margin-top: 8px; color: var(--color-warning-ink); font-size: 12px; overflow-wrap: anywhere; }
 .settings-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 28px; padding: 22px 0 0 156px; border-top: 1px solid var(--color-line); }
 .settings-save-state { color: var(--color-muted); font-size: 11px; }
-.settings-inline-confirmation { display: flex; flex-direction: column; gap: 14px; margin-top: 19px; padding: 18px; border: 1px solid #e5d2cc; border-radius: var(--radius); background: #fdf9f7; color: #77625d; font-size: 12px; overflow-wrap: anywhere; }
+.settings-inline-confirmation { display: flex; flex-direction: column; gap: 14px; margin-top: 19px; padding: 18px; border: 1px solid var(--color-line-warm); border-radius: var(--radius); background: var(--color-danger-surface); color: var(--color-warm-ink); font-size: 12px; overflow-wrap: anywhere; }
 .settings-confirm-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .settings-confirm-checkbox { display: flex; align-items: flex-start; gap: 9px; color: var(--color-ink); font-size: 13px; cursor: pointer; }
 .settings-confirm-checkbox input { flex-shrink: 0; width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--color-primary); }
@@ -45,7 +45,7 @@
 .settings-clear-heading { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px 24px; }
 .settings-clear-heading > div { flex: 1; min-width: 200px; }
 .settings-clear-heading p { max-width: 65ch; margin-top: 5px; color: var(--color-muted); font-size: 12px; }
-.settings-clear-trigger { flex-shrink: 0; color: #77726b; padding-top: 0; }
+.settings-clear-trigger { flex-shrink: 0; color: var(--color-trigger-ink); padding-top: 0; }
 .settings-clear-trigger:hover { color: var(--color-danger); }
 @media (max-width: 1100px) {
   .settings-field { grid-template-columns: 112px minmax(0, 1fr); column-gap: 16px; }

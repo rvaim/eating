@@ -105,7 +105,7 @@ describe('self-contained published-API DSH runtime bridge', () => {
     const f = await fixture()
     await turn()
     expect(f.bridge.name).toBe('eating-runtime-bridge')
-    expect(f.bridge.inject).toEqual(['sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'agents', 'subagents', 'agentPresets', 'eatingNativeWeb'])
+    expect(f.bridge.inject).toEqual(['sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'agents', 'subagents', 'agentPresets'])
     expect(getRuntimeBridgeSource()).not.toMatch(/from ['"](?:@|\.\.)/)
     expect(f.section.current).toMatchObject({ name: 'eating:owner-system', order: 0, complete: true, interpolate: false })
     expect(f.section.current?.text()).toBe('主人策略 {{不解释外部变量}}')

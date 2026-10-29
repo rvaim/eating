@@ -3,7 +3,7 @@ import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DshRuntimeInstallation } from './runtime'
+import { testRuntimeBin } from '../../../../../tests/fixtures/system-dsh'
 
 const runtimeDirectory = process.env.EATING_DSH_TEST_RUNTIME
 const stops: Array<() => unknown | Promise<unknown>> = []
@@ -14,8 +14,7 @@ interface ClockSession { readonly id: string; readonly header: object; readonly 
 type Decision = { readonly kind: 'continue'; readonly messages: readonly ClockMessage[] } | { readonly kind: 'reject' }
 type Hook = (input: { agent: { session: ClockSession }; turn: number; step: number; signal: AbortSignal }, next: () => Promise<Decision>) => Promise<Decision>
 async function fixture() {
-  const runtime = new DshRuntimeInstallation(resolve(runtimeDirectory!)); stops.push(() => runtime.dispose())
-  const request = createRequire(runtime.resolve().dshBin)
+  const request = createRequire(testRuntimeBin(resolve(runtimeDirectory!)))
   const load = (name: string) => import(/* @vite-ignore */ pathToFileURL(request.resolve(`@deepseek-ai/${name}`)).href)
   const [cordis, projection, time, native, llm] = await Promise.all([load('cordis'), load('dsh-session-projection'), load('dsh-time-context'), load('dsh-session'), load('dsh-llm')])
   let now = Date.parse('2026-10-29T12:00:00Z')

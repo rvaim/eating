@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AgentInvocationScope } from '@eating/plugin-sdk'
 import type { AgentBinding } from './agent-control'
-import { DshRuntimeInstallation } from './runtime'
+import { testRuntimeBin } from '../../../../../tests/fixtures/system-dsh'
 import { listNativeSessions, nativeReaderOptions, readNativeSession } from './session-view'
 
 const runtimeDirectory = process.env.EATING_DSH_TEST_RUNTIME
@@ -25,8 +25,8 @@ function fingerprint(root: string): Record<string, string> {
 }
 async function fixture() {
   const home = directory()
-  const installation = new DshRuntimeInstallation(resolve(runtimeDirectory!)); stops.push(() => installation.dispose())
-  const dshBin = installation.resolve().dshBin
+
+  const dshBin = testRuntimeBin(resolve(runtimeDirectory!))
   const request = createRequire(dshBin)
   const load = (name: string) => import(/* @vite-ignore */ pathToFileURL(request.resolve(`@deepseek-ai/${name}`)).href)
   const [cordis, jsonl, native, llm, projections] = await Promise.all([load('cordis'), load('dsh-session-persistence-jsonl'), load('dsh-session'), load('dsh-llm'), load('dsh-session-format-catalog/message-projections')])

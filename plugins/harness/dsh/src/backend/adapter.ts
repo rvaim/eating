@@ -1,14 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants, chmodSync, closeSync, existsSync, fsyncSync, lstatSync, openSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import { DeepSeekHarness } from '@deepseek-ai/dsh-sdk-client'
 import type { DeepSeekHarnessOptions, HarnessSession } from '@deepseek-ai/dsh-sdk-client'
 import { PlatformError, composeAgentPrompt } from '@eating/plugin-sdk'
 import type { BackendPlugin, ConnectionStatus, HarnessDeliveryBatch, HarnessDeliveryReceipt, HarnessHostServices, HarnessMessageSink, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { DshConfigurationFile, DshSessionFile, parseConfiguration, prepareRestrictedDirectory, readRestrictedJson, writeRestrictedJson } from './config'
 import type { DshConfiguration, DshSessionMetadata } from './config'
-import { DSH_VERSION, DshRuntimeInstallation } from './runtime'
+import { locateSystemDsh } from './system-dsh'
+import type { SystemDshLocation } from './system-dsh'
 import { getRuntimeBridgeSource } from './runtime-bridge'
 import { DshAgentControl } from './agent-control'
 import type { AgentBinding } from './agent-control'
@@ -16,8 +17,6 @@ import { listNativeSessions, nativeReaderOptions, readNativeSession } from './se
 import { listModels, testModelConnection } from './model-service'
 import { agentInstanceLabel } from './agent-label'
 import { DshModelCapabilitiesFile } from './model-capabilities'
-import { NATIVE_WEB_MODULES, prepareNativeWebProfile } from './native-web'
-import { getNativeWebRuntimeSource } from './native-web-runtime'
 
 export interface DshHarnessClient {
   start(): Promise<void>
@@ -27,13 +26,13 @@ export interface DshHarnessClient {
 }
 
 export interface DshAdapterOptions {
-  readonly runtime?: Pick<DshRuntimeInstallation, 'getStatus' | 'install' | 'resolve' | 'dispose'>
+  /** Tests replace discovery with a fixture installation. */
+  readonly locateSystemDsh?: () => SystemDshLocation | null
   readonly createHarness?: (options: DeepSeekHarnessOptions) => DshHarnessClient
   readonly pollIntervalMs?: number
   readonly startupTimeoutMs?: number
   readonly readyTimeoutMs?: number
   readonly closeTimeoutMs?: number
-  readonly resolveNativeModules?: (dshBin: string) => Readonly<Record<string, string>>
 }
 
 interface BatchIdentity {
@@ -87,21 +86,17 @@ export function createRuntimeEnvironment(dataDirectory: string, configuration: D
     EATING_DSH_BRIDGE_DIRECTORY: join(root, 'bridge'), EATING_DSH_BRIDGE_NONCE: nonce, EATING_DSH_SESSION_ID: sessionId }
 }
 
-export function resolveNativeRuntimeModules(dshBin: string): Readonly<Record<string, string>> {
-  const request = createRequire(dshBin)
-  return Object.fromEntries(['dsh-subagent', 'dsh-subagent-spawn-in-process', 'dsh-session-query-sqlite', 'dsh-agent-preset-registry', ...NATIVE_WEB_MODULES].map(name => [name, request.resolve(`@deepseek-ai/${name}`)]))
-}
-
-export function createRuntimePatch(resolved: { readonly providerEntry: string; readonly mcpEntry: string }, bridgePath: string, configuration: DshConfiguration, modules: Readonly<Record<string, string>>, imageInput = false): string {
+/** Official package names resolve from the system DSH installation (inside app.asar when packaged). */
+export function createRuntimePatch(bridgePath: string, configuration: DshConfiguration, imageInput = false): string {
   const provider = { providers: { 'eating-openai': { api: 'openai-completions', baseURL: configuration.endpoint,
     apiKeyEnv: 'EATING_DSH_API_KEY', models: [{ id: configuration.model, input: imageInput ? ['text', 'image'] : ['text'], reasoningEfforts: false }] } } }
   const disabled = ['llm-deepseek', 'tool-fs', 'tool-working-directory', 'persistent-bash', 'persistent-pwsh', 'mcp-resources', 'terminal-bash', 'terminal-pwsh', 'pty']
   const rows = [
-    { id: 'llm-pi-ai', name: resolved.providerEntry, config: provider },
-    { id: 'subagent', name: modules['dsh-subagent'], config: { maxDepth: 1, maxActiveSubagents: 8 } },
-    { id: 'subagent-spawn-in-process', name: modules['dsh-subagent-spawn-in-process'] },
-    { id: 'session-query-sqlite', name: modules['dsh-session-query-sqlite'], config: { path: ':memory:', openAt: 'never' } },
-    { id: 'agent-preset-registry', name: modules['dsh-agent-preset-registry'], config: { default: 'eating-main' } },
+    { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: provider },
+    { id: 'subagent', name: '@deepseek-ai/dsh-subagent', config: { maxDepth: 1, maxActiveSubagents: 8 } },
+    { id: 'subagent-spawn-in-process', name: '@deepseek-ai/dsh-subagent-spawn-in-process' },
+    { id: 'session-query-sqlite', name: '@deepseek-ai/dsh-session-query-sqlite', config: { path: ':memory:', openAt: 'never' } },
+    { id: 'agent-preset-registry', name: '@deepseek-ai/dsh-agent-preset-registry', config: { default: 'eating-main' } },
     { id: 'eating-owner-bridge', name: bridgePath },
   ]
   return disabled.map(id => `- id: ${id}\n  disabled: true\n`).join('') + '- insert:\n' + rows.map(row => `    - ${JSON.stringify(row)}\n`).join('')
@@ -112,7 +107,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.5.1'
+  readonly version = '0.6.3'
   readonly tools = []
   readonly capabilities = [
     { id: 'dsh.fixed-session', name: '固定 DSH 主会话', support: 'supported' as const, description: '使用独立官方 DSH 运行时与固定原生会话；可靠交接须经持久屏障。' },
@@ -123,7 +118,8 @@ export class DshPlugin implements BackendPlugin {
   private readonly configurationFile: DshConfigurationFile
   private readonly sessionFile: DshSessionFile
   private readonly modelCapabilities: DshModelCapabilitiesFile
-  private readonly runtime: Pick<DshRuntimeInstallation, 'getStatus' | 'install' | 'resolve' | 'dispose'>
+  private readonly locateSystem: () => SystemDshLocation | null
+  private readonly launcherPath: string
   private readonly createHarness: (options: DeepSeekHarnessOptions) => DshHarnessClient
   private readonly bridgeDirectory: string
   private readonly agentControl: DshAgentControl
@@ -137,13 +133,11 @@ export class DshPlugin implements BackendPlugin {
   private delivery: AbortController | null = null
   private connectTask: Promise<void> | null = null
   private stopTask: Promise<void> | null = null
-  private installTask: Promise<void> | null = null
-  private installController: AbortController | null = null
   private runTask: Promise<void> | null = null
   private nonce = ''
   private state: ConnectionStatus['state'] = 'disconnected'
   private runtimeReady = false
-  private nativeWebReady = false
+  private system: SystemDshLocation | null = null
   private busy = false
   private closed = false
   private lastError: string | null = null
@@ -161,7 +155,9 @@ export class DshPlugin implements BackendPlugin {
     this.metadata = this.sessionFile.read()
     this.bridgeDirectory = prepareRestrictedDirectory(join(context.dataDirectory, 'bridge'))
     this.agentControl = new DshAgentControl(context.dataDirectory, this.host)
-    this.runtime = options.runtime ?? new DshRuntimeInstallation(context.dataDirectory)
+    this.locateSystem = options.locateSystemDsh ?? (() => locateSystemDsh())
+    this.launcherPath = fileURLToPath(new URL(import.meta.url.endsWith('.ts') ? '../../launch/dsh-system.mjs' : './launch/dsh-system.mjs', import.meta.url))
+    this.system = this.locateSystem()
     this.createHarness = options.createHarness ?? (configuration => new DeepSeekHarness(configuration))
   }
 
@@ -171,13 +167,12 @@ export class DshPlugin implements BackendPlugin {
   }
 
   getPublicConfiguration(): JsonObject {
-    const installation = this.runtime.getStatus()
     const { apiKey, ...configuration } = this.configuration
     return { ...configuration, apiKeyConfigured: Boolean(apiKey), configurationPath: this.configurationFile.filePath,
       dataDirectory: this.configurationFile.directory, updatedAt: this.configurationFile.updatedAt,
-      runtimeStatus: { version: DSH_VERSION, installed: installation.state === 'ready', installing: installation.state === 'installing',
-        progress: installation.state === 'installing' ? '正在安装独立官方 DSH 运行时。' : null, lastError: this.lastError ?? installation.error, ready: this.runtimeReady, busy: this.busy,
-        sessionId: this.metadata?.sessionId ?? null, lastOutcome: this.metadata?.lastOutcome ?? null, nativeWeb: { ready: this.nativeWebReady } },
+      runtimeStatus: { system: { found: this.system !== null, path: this.system?.bin ?? null, version: this.system?.version ?? null, source: this.system?.source ?? null },
+        lastError: this.lastError, ready: this.runtimeReady, busy: this.busy,
+        sessionId: this.metadata?.sessionId ?? null, lastOutcome: this.metadata?.lastOutcome ?? null },
       warning: this.configuration.endpoint.startsWith('http:') && !['127.0.0.1', '[::1]', 'localhost'].includes(new URL(this.configuration.endpoint).hostname)
         ? '远端 HTTP 模型地址会明文传输请求与 API 密钥，建议使用 HTTPS。' : null }
   }
@@ -207,22 +202,16 @@ export class DshPlugin implements BackendPlugin {
 
   private async startRuntime(): Promise<void> {
     if (!this.configuration.endpoint || !this.configuration.model) throw failure('NOT_CONFIGURED', '请先保存 OpenAI 兼容地址与模型名称。', 'not-sent')
-    if (this.installTask) throw failure('RUNTIME_INSTALLING', 'DSH 运行时正在安装，请等待安装完成。', 'not-sent')
     if (this.stopTask) await this.stopTask
     if (this.client) await this.stopRuntime()
-    const installation = this.runtime.getStatus()
-    if (installation.state === 'missing') throw failure('RUNTIME_NOT_INSTALLED', '尚未安装专属 DSH 运行时，请先执行安装。', 'not-sent')
-    if (installation.state === 'installing') throw failure('RUNTIME_INSTALLING', 'DSH 运行时正在安装，请等待安装完成。', 'not-sent')
-    let resolved: ReturnType<DshRuntimeInstallation['resolve']>
-    try { resolved = this.runtime.resolve() }
-    catch { throw failure('RUNTIME_INVALID', '专属 DSH 运行时损坏或版本不匹配，请检查安装状态。', 'not-sent') }
+    this.system = this.locateSystem()
+    if (!this.system) throw failure('DSH_NOT_INSTALLED', '未检测到系统安装的 DSH。请先安装 DeepSeek Harness 桌面应用，再启动此插件。', 'not-sent')
     const controller = new AbortController()
     this.lifetime = controller
     this.state = 'connecting'
     this.lastError = null
     this.nonce = randomUUID()
     try {
-      const nativeModules = (this.options.resolveNativeModules ?? resolveNativeRuntimeModules)(resolved.dshBin)
       await this.agentControl.start(this.nonce)
       if (!this.metadata) {
         this.metadata = { sessionId: randomUUID(), created: false }
@@ -230,20 +219,20 @@ export class DshPlugin implements BackendPlugin {
       }
       const metadata = this.metadata
       const sessionId = metadata.sessionId
-      for (const directory of ['runtime-home', 'dsh-home', 'agents-home', 'workspace']) prepareRestrictedDirectory(join(this.context.dataDirectory, directory))
-      if (!this.options.resolveNativeModules) await prepareNativeWebProfile(this.bridgeDirectory, nativeModules, this.configuration, writePrivateSource)
+      for (const directory of ['dsh-home', 'agents-home', 'workspace']) prepareRestrictedDirectory(join(this.context.dataDirectory, directory))
       this.publishPolicy()
       if (metadata.activeBatchId && metadata.digest) this.publishExpected({ nonce: this.nonce, sessionId, batchId: metadata.activeBatchId, digest: metadata.digest })
       else this.clearUnownedExpected()
       const bridgePath = join(this.bridgeDirectory, 'runtime-bridge.mjs')
       const patchPath = join(this.bridgeDirectory, 'runtime.patch.yaml')
-      writePrivateSource(join(this.bridgeDirectory, 'native-web.mjs'), getNativeWebRuntimeSource())
       writePrivateSource(bridgePath, getRuntimeBridgeSource())
-      writePrivateSource(patchPath, createRuntimePatch(resolved, bridgePath, this.configuration, nativeModules, this.modelCapabilities.read().imageInput))
+      writePrivateSource(patchPath, createRuntimePatch(bridgePath, this.configuration, this.modelCapabilities.read().imageInput))
       const workspace = join(resolve(this.context.dataDirectory), 'workspace')
-      const client = this.createHarness({ dshBin: resolved.dshBin, profile: 'sdk-minimal', patches: [patchPath],
+      const client = this.createHarness({ dshBin: this.launcherPath, profile: 'sdk-minimal', patches: [patchPath],
         dshHome: join(resolve(this.context.dataDirectory), 'dsh-home'), env: { ...createRuntimeEnvironment(this.context.dataDirectory, this.configuration, this.nonce, sessionId),
-          EATING_DSH_TIME_CONTEXT_ENTRY: nativeModules['dsh-time-context'], EATING_DSH_CONTROL_URL: this.agentControl.url, EATING_DSH_CONTROL_TOKEN: this.agentControl.token, EATING_DSH_MCP_ENTRY: resolved.mcpEntry, EATING_DSH_TASK_TIMEOUT: String(this.configuration.timeoutMs) },
+          EATING_DSH_SYSTEM_BIN: this.system!.bin, EATING_DSH_TIME_CONTEXT_ENTRY: '@deepseek-ai/dsh-time-context',
+          EATING_DSH_CONTROL_URL: this.agentControl.url, EATING_DSH_CONTROL_TOKEN: this.agentControl.token,
+          EATING_DSH_MCP_ENTRY: '@deepseek-ai/dsh-mcp-client', EATING_DSH_TASK_TIMEOUT: String(this.configuration.timeoutMs) },
         processCwd: workspace, cwd: workspace, provider: 'eating-openai', model: this.configuration.model, maxTokens: this.configuration.maxTokens,
         initializeTimeoutMs: MAX_STARTUP_MS, requestTimeoutMs: this.configuration.timeoutMs,
         shutdownTimeoutMs: 500, disposeEofGraceMs: 1000, disposeGraceMs: 1000 })
@@ -266,8 +255,6 @@ export class DshPlugin implements BackendPlugin {
         if (!metadata.created) this.saveMetadata({ ...metadata, created: true })
       })(), Math.max(1, startupDeadline - Date.now()), failure('RUNTIME_START_FAILED', 'DSH 启动或固定会话恢复失败；未创建替代会话。'), controller.signal)
       if (controller.signal.aborted || this.closed || !ready) throw failure('RUNTIME_INTERRUPTED', 'DSH 启动已中断。')
-      await this.pollFile(join(this.bridgeDirectory, 'native-web-ready.json'), value => this.validNativeWebEntry(value), Math.min(this.options.readyTimeoutMs ?? MAX_READY_MS, Math.max(1, startupDeadline - Date.now())), controller.signal)
-      this.nativeWebReady = true
       const bridgeReady: JsonObject = ready
       if (metadata.activeBatchId && metadata.digest) {
         if (bridgeReady.recovery !== 'persisted' || bridgeReady.batchId !== metadata.activeBatchId) {
@@ -296,12 +283,6 @@ export class DshPlugin implements BackendPlugin {
       if (interrupted && !cleanupFailed) throw failure('RUNTIME_INTERRUPTED', 'DSH 启动已中断。', 'not-sent')
       throw error instanceof PlatformError ? error : failure('RUNTIME_START_FAILED', this.lastError ?? 'DSH 启动失败，请检查独立运行时与模型配置。')
     }
-  }
-
-  private validNativeWebEntry(value: JsonObject): boolean {
-    if (!this.matchesRuntime(value) || typeof value.url !== 'string') return false
-    try { const url = new URL(value.url); return url.protocol === 'http:' && url.hostname === '127.0.0.1' && Boolean(url.port) && url.pathname === '/' && url.searchParams.has('token') && !url.username && !Reflect.get(url, 'pass' + 'word') }
-    catch { return false }
   }
 
   private matchesRuntime(value: JsonObject): boolean {
@@ -487,7 +468,6 @@ export class DshPlugin implements BackendPlugin {
 
   private async stopRuntime(): Promise<void> {
     this.runtimeReady = false
-    this.nativeWebReady = false
     this.detach?.(); this.detach = null
     this.lifetime?.abort()
     this.delivery?.abort()
@@ -519,11 +499,10 @@ export class DshPlugin implements BackendPlugin {
       if (this.client || this.connectTask || this.stopTask || this.runtimeReady) throw failure('MODEL_CAPABILITIES_RUNTIME_ACTIVE', '请先完全停止 DSH，再保存模型图片输入能力。', 'not-sent')
       return { ...this.modelCapabilities.update(input) }
     }
-    if (operation === 'open-native-web') {
-      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length) throw new PlatformError('NATIVE_WEB_INPUT_INVALID', '原生会话页入口参数无效。', 400, 'not-sent')
-      const value = this.nativeWebReady && this.runtimeReady && this.client ? readRestrictedJson(join(this.bridgeDirectory, 'native-web-ready.json')) : null
-      if (!value || !this.validNativeWebEntry(value)) throw failure('NATIVE_WEB_NOT_READY', 'DSH 原生 Web 尚未就绪，请先启动 DSH。', 'not-sent')
-      return { url: value.url!, rootSessionId: this.metadata!.sessionId }
+    if (operation === 'detect-system-dsh') {
+      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length) throw new PlatformError('SYSTEM_DSH_INPUT_INVALID', '系统 DSH 检测参数无效。', 400, 'not-sent')
+      this.system = this.locateSystem()
+      return { found: this.system !== null, path: this.system?.bin ?? null, version: this.system?.version ?? null, source: this.system?.source ?? null }
     }
     if (operation === 'list-models' || operation === 'test-connection') {
       const controller = new AbortController(); this.managementRequests.add(controller)
@@ -535,23 +514,19 @@ export class DshPlugin implements BackendPlugin {
         if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length) throw new PlatformError('SESSION_VIEW_INPUT_INVALID', '会话读取参数无效。', 400, 'not-sent')
         return { sessions: [], truncated: false, refreshedAt: new Date().toISOString() }
       }
-      const resolved = this.runtime.resolve()
-      const options = nativeReaderOptions(this.context.dataDirectory, resolved.dshBin, this.metadata?.sessionId ?? null, this.agentControl.list(), [this.configuration.apiKey, this.agentControl.token], this.runtimeReady, this.host.readOwnerConfiguration().agentTypes)
-      return (operation === 'list-sessions' ? await listNativeSessions(options, input) : await readNativeSession(options, input)) as unknown as JsonValue
+      const options = nativeReaderOptions(this.context.dataDirectory, this.system?.bin ?? '', this.metadata?.sessionId ?? null, this.agentControl.list(), [this.configuration.apiKey, this.agentControl.token], this.runtimeReady, this.host.readOwnerConfiguration().agentTypes)
+      try {
+        return (operation === 'list-sessions' ? await listNativeSessions(options, input) : await readNativeSession(options, input)) as unknown as JsonValue
+      } catch (error) {
+        // Reading native logs needs the official session packages, which live inside
+        // the DSH application bundle and cannot be imported by the Host process.
+        if (this.system?.source === 'path' || this.system?.source === 'common' || this.system?.source === 'application') {
+          throw failure('SESSION_VIEW_UNAVAILABLE', '使用系统 DSH 时无法离线读取会话（其内部模块位于应用包内）。请在 DSH 桌面应用中查看会话。', 'not-sent')
+        }
+        throw error
+      }
     }
-    if (operation !== 'install-runtime') throw new PlatformError('MANAGEMENT_OPERATION_NOT_FOUND', 'DSH 未提供此管理操作。', 404, 'not-sent')
-    if (this.client || this.connectTask) throw failure('RUNTIME_BUSY', '请先停止 DSH，再安装独立运行时。', 'not-sent')
-    if (this.installTask) return { started: true }
-    const controller = new AbortController()
-    this.installController = controller
-    this.lastError = null
-    this.installTask = this.runtime.install(controller.signal).catch(() => {
-      if (!this.closed) this.lastError = 'DSH 独立运行时安装失败，请检查网络与磁盘空间。'
-    }).finally(() => {
-      if (this.installController === controller) this.installController = null
-      this.installTask = null
-    })
-    return { started: true }
+    throw new PlatformError('MANAGEMENT_OPERATION_NOT_FOUND', 'DSH 未提供此管理操作。', 404, 'not-sent')
   }
 
   async invoke(_name: string, _input: unknown, _requestId: string): Promise<JsonValue> {
@@ -561,9 +536,6 @@ export class DshPlugin implements BackendPlugin {
   async dispose(): Promise<void> {
     this.closed = true
     for (const controller of this.managementRequests) controller.abort()
-    this.installController?.abort()
-    this.runtime.dispose()
-    try { await this.disconnect() }
-    finally { await this.installTask }
+    await this.disconnect()
   }
 }

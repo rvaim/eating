@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
-import { AlertCircle, Check, Download, Info, RefreshCw } from 'lucide-react'
+import { AlertCircle, Check, Info, RefreshCw } from 'lucide-react'
 import type { PluginConfiguration } from '@eating/plugin-core'
 import { isJsonObject } from '@eating/plugin-sdk'
 import type { ConnectionStatus } from '@eating/plugin-sdk'
@@ -10,25 +10,20 @@ import './i18n'
 import type { DshTranslationKey } from './i18n'
 import { SessionDashboard } from './SessionDashboard'
 import { ModelCapabilitiesSettings } from './ModelCapabilities'
-import { NativeWebEntry } from './NativeWebEntry'
-import { readModels, readModelTest, readNativeWebStatus } from './panel-data'
-import type { ModelOption, ModelTestResult, NativeWebStatus } from './panel-data'
+import { readModels, readModelTest, readSystemDsh } from './panel-data'
+import type { ModelOption, ModelTestResult, SystemDshStatus } from './panel-data'
 import './panel.css'
 
-type Operation = 'save' | 'install' | 'connect' | 'disconnect'
+type Operation = 'save' | 'connect' | 'disconnect' | 'detect'
 type ModelOperation = 'list-models' | 'test-connection'
 type PanelTab = 'configuration' | 'sessions'
 interface RuntimeStatus {
-  readonly version: string
-  readonly installed: boolean
-  readonly installing: boolean
-  readonly progress: string | null
+  readonly system: SystemDshStatus
   readonly lastError: string | null
   readonly ready: boolean
   readonly busy: boolean
   readonly sessionId: string | null
   readonly lastOutcome: string | null
-  readonly nativeWeb: NativeWebStatus
 }
 interface PublicConfiguration {
   readonly displayName: string
@@ -73,7 +68,7 @@ const stateKeys: Record<ConnectionStatus['state'], DshTranslationKey> = {
   connected: 'state.connected', reconnecting: 'state.reconnecting', error: 'state.error',
 }
 const uncertainKeys: Record<Operation, DshTranslationKey> = {
-  save: 'uncertain.save', install: 'uncertain.install', connect: 'uncertain.connect', disconnect: 'uncertain.disconnect',
+  save: 'uncertain.save', connect: 'uncertain.connect', disconnect: 'uncertain.disconnect', detect: 'uncertain.detect',
 }
 const outcomeKeys: Readonly<Record<string, DshTranslationKey>> = {
   pending: 'outcome.pending', durable: 'outcome.durable', unknown: 'outcome.unknown',
@@ -112,15 +107,14 @@ function readConfiguration(value: unknown): PublicConfiguration {
     || typeof value.autoConnect !== 'boolean' || typeof value.timeoutMs !== 'number' || typeof value.maxTokens !== 'number'
     || typeof value.apiKeyConfigured !== 'boolean' || !isJsonObject(value.runtimeStatus)) throw incompatible()
   const runtime = value.runtimeStatus
-  if (typeof runtime.version !== 'string' || ['installed', 'installing', 'ready', 'busy'].some(key => typeof runtime[key] !== 'boolean')
-    || ['progress', 'lastError', 'sessionId', 'lastOutcome'].some(key => runtime[key] !== null && typeof runtime[key] !== 'string')) throw incompatible()
+  if (!['ready', 'busy'].every(key => typeof runtime[key] === 'boolean')
+    || ['lastError', 'sessionId', 'lastOutcome'].some(key => runtime[key] !== null && typeof runtime[key] !== 'string')) throw incompatible()
   return {
     displayName: value.displayName, endpoint: value.endpoint, model: value.model, autoConnect: value.autoConnect,
     timeoutMs: value.timeoutMs, maxTokens: value.maxTokens, apiKeyConfigured: value.apiKeyConfigured,
-    runtimeStatus: { version: runtime.version, installed: runtime.installed === true, installing: runtime.installing === true,
-      progress: runtime.progress as string | null, lastError: runtime.lastError as string | null, ready: runtime.ready === true,
-      busy: runtime.busy === true, sessionId: runtime.sessionId as string | null, lastOutcome: runtime.lastOutcome as string | null,
-      nativeWeb: readNativeWebStatus(runtime.nativeWeb) },
+    runtimeStatus: { system: readSystemDsh(runtime.system),
+      lastError: runtime.lastError as string | null, ready: runtime.ready === true,
+      busy: runtime.busy === true, sessionId: runtime.sessionId as string | null, lastOutcome: runtime.lastOutcome as string | null },
     ...(typeof value.configurationPath === 'string' ? { configurationPath: value.configurationPath } : {}),
     ...(typeof value.dataDirectory === 'string' ? { dataDirectory: value.dataDirectory } : {}),
     ...(typeof value.warning === 'string' ? { warning: value.warning } : {}),
@@ -283,7 +277,7 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
   const starting = state === 'connecting' || state === 'reconnecting'
   const active = state === 'connected'
   const configured = Boolean(saved?.endpoint.trim() && saved.model.trim())
-  const blocked = operation !== null || modelOperation !== null || capabilitySaving || runtime?.installing === true || starting || !visible || refreshFailure !== null || uncertain !== null
+  const blocked = operation !== null || modelOperation !== null || capabilitySaving || starting || !visible || refreshFailure !== null || uncertain !== null
 
   async function requestModel(next: ModelOperation) {
     if (!plugin?.enabled || !saved?.endpoint.trim() || next === 'test-connection' && !configured || dirtyRef.current || blocked || actionLock.current || tab !== 'configuration') return
@@ -329,8 +323,8 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
       setFieldIssues(issues)
       if (Object.keys(issues).length > 0) { setActionFailure({ code: 'INVALID_CONFIGURATION', error: { code: 'INVALID_CONFIGURATION' }, messageKey: 'validation.configuration', outcome: 'not-sent' }); return }
     }
-    if (next === 'connect' && (dirtyRef.current || !configured || !runtime?.installed || active)) return
-    if (next === 'install' && runtime?.installed || next === 'disconnect' && !active && state !== 'error') return
+    if (next === 'connect' && (dirtyRef.current || !configured || !runtime?.system.found || active)) return
+    if (next === 'disconnect' && !active && state !== 'error') return
     actionLock.current = true; setOperation(next); setResult(''); setActionFailure(null)
     ++generation.current; readController.current?.abort(); setReading(false)
     const controller = new AbortController()
@@ -347,11 +341,7 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
         dirtyRef.current = false; setDirty(false); setDraft(makeDraft(response)); setModels(null); setModelTest(null); setModelFailure(null)
         setPlugin(current => current ? { ...current, configuration: response } : current)
         setResult('result.saved'); callbacks.current.onFeedback(translate('dsh', 'feedback.saved'))
-      } else if (next === 'install') {
-        await hostRequest<unknown>('/plugins/dsh/manage', { method: 'POST', signal: controller.signal, body: { operation: 'install-runtime', input: {} } })
-        if (!mounted.current || controller.signal.aborted) return
-        setResult('result.install')
-      } else {
+      } else if (next === 'disconnect' || next === 'connect') {
         await hostRequest<unknown>(`/plugins/dsh/${next}`, { method: 'POST', signal: controller.signal, body: {} })
         if (!mounted.current || controller.signal.aborted) return
         setResult(next === 'connect' ? 'result.connect' : 'result.disconnect')
@@ -373,12 +363,33 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
       if (mounted.current) setOperation(null)
     }
   }
+  async function detectSystem() {
+    if (!plugin || !visible || actionLock.current || blocked) return
+    actionLock.current = true; setOperation('detect'); setResult(''); setActionFailure(null)
+    const controller = new AbortController(); actionController.current = controller
+    try {
+      await hostRequest<unknown>('/plugins/dsh/manage', { method: 'POST', signal: controller.signal, body: { operation: 'detect-system-dsh', input: {} } })
+      if (!mounted.current || controller.signal.aborted) return
+      setResult('result.detected')
+      await refreshWorkspace(true)
+      if (mounted.current && !controller.signal.aborted) void callbacks.current.onRefresh?.().catch(() => {})
+    } catch (error) {
+      if (!mounted.current || controller.signal.aborted) return
+      setActionFailure(failureFrom(error))
+    } finally {
+      if (actionController.current === controller) actionController.current = null
+      actionLock.current = false
+      if (mounted.current) setOperation(null)
+    }
+  }
+
   const fieldErrors = Object.fromEntries(Object.entries(fieldIssues).map(([name, issue]) => [name, validationMessage(issue)]))
   const id = (name: string) => `${prefix}-${name}`
   const describedBy = (name: string) => `${id(name)}-hint${fieldErrors[name] ? ` ${id(name)}-error` : ''}`
   const processing = t(active && runtime?.ready ? runtime.busy ? 'processing.busy' : 'processing.idle' : starting ? 'processing.starting' : 'processing.stopped')
-  const runtimeLabel = t(runtime?.installing ? 'runtime.installing' : runtime?.installed ? 'runtime.installed' : 'runtime.missing')
-  const runtimeHelp = t(runtime?.installing ? 'runtime.help.installing' : runtime?.installed ? configured ? 'runtime.help.configured' : 'runtime.help.unconfigured' : 'runtime.help.missing')
+  const systemFound = runtime?.system.found === true
+  const runtimeLabel = t(systemFound ? 'system.detected' : 'system.missing')
+  const runtimeHelp = t(systemFound ? configured ? 'system.help.configured' : 'system.help.unconfigured' : 'system.help.missing')
   const outcomeKey = runtime?.lastOutcome ? outcomeKeys[runtime.lastOutcome] : undefined
 
   return <div className="dsh-panel">
@@ -398,16 +409,17 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
     </div>
     <div role="tabpanel" id={id('panel-configuration')} aria-labelledby={id('tab-configuration')} hidden={tab !== 'configuration'}>
     {saved && runtime && <section className="dsh-runtime" aria-labelledby={id('runtime-title')}>
-      <div className="dsh-runtime-heading"><div><h3 id={id('runtime-title')}>{t('runtime.title')}</h3><p>{runtime.version ? t('runtime.versionedStatus', { status: runtimeLabel, version: runtime.version }) : runtimeLabel}</p></div><button type="button" className="button button-secondary" disabled={blocked || !plugin?.enabled || runtime.installed || active} onClick={() => void mutate('install')}><Download size={16} aria-hidden="true" />{t(operation === 'install' || runtime.installing ? 'action.installing' : runtime.installed ? 'action.installed' : 'action.install')}</button></div>
+      <div className="dsh-runtime-heading"><div><h3 id={id('runtime-title')}>{t('system.title')}</h3><p>{runtime.system.version ? t('system.versionedStatus', { status: runtimeLabel, version: runtime.system.version }) : runtimeLabel}</p></div><button type="button" className="button button-secondary" disabled={blocked || !plugin?.enabled || operation !== null} onClick={() => void detectSystem()}><RefreshCw size={16} aria-hidden="true" />{t(operation === 'detect' ? 'action.detecting' : 'action.detect')}</button></div>
       <p className="dsh-help">{runtimeHelp}</p>
-      {runtime.progress && <p className="dsh-progress" role="status">{t('runtime.progress')}</p>}
+      {runtime.system.path && <p className="dsh-help"><code>{runtime.system.path}</code></p>}
+      {!systemFound && <div className="dsh-notice"><Info size={16} aria-hidden="true" /><p>{t('system.installGuide')}</p></div>}
       {runtime.lastError && <ErrorNotice failure={runtimeFailure('HARNESS_RUNTIME_ERROR', runtime.lastError)} />}
     </section>}
     {draft && <section aria-labelledby={id('configuration-title')}>
       <div className="section-heading"><h3 id={id('configuration-title')}>{t('configuration.title')}</h3><p>{t('configuration.description')}</p></div>
       {saved?.warning && <div className="dsh-notice"><Info size={16} aria-hidden="true" /><p>{t('notice.httpWarning')}</p></div>}
       <form className="form-fields" noValidate onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void mutate('save') }}>
-        <fieldset className="dsh-fieldset" disabled={operation !== null || modelOperation !== null || runtime?.installing || starting || !visible}>
+        <fieldset className="dsh-fieldset" disabled={operation !== null || modelOperation !== null || starting || !visible}>
           <Field id={id('displayName')} label={t('field.displayName.label')} hint={t('field.displayName.hint')} error={fieldErrors.displayName}><input id={id('displayName')} maxLength={80} value={draft.displayName} autoComplete="off" aria-describedby={describedBy('displayName')} aria-invalid={Boolean(fieldErrors.displayName)} onChange={event => updateDraft('displayName', event.target.value)} /></Field>
           <Field id={id('endpoint')} label={t('field.endpoint.label')} hint={t('field.endpoint.hint')} error={fieldErrors.endpoint}><input id={id('endpoint')} type="url" value={draft.endpoint} placeholder={t('field.endpoint.placeholder')} autoComplete="off" spellCheck={false} aria-describedby={describedBy('endpoint')} aria-invalid={Boolean(fieldErrors.endpoint)} onChange={event => updateDraft('endpoint', event.target.value)} /></Field>
           <Field id={id('model')} label={t('field.model.label')} hint={t('field.model.hint')} error={fieldErrors.model}><input id={id('model')} value={draft.model} maxLength={160} autoComplete="off" spellCheck={false} aria-describedby={describedBy('model')} aria-invalid={Boolean(fieldErrors.model)} onChange={event => updateDraft('model', event.target.value)} /></Field>
@@ -428,19 +440,18 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
           <label className="check-field"><input type="checkbox" checked={draft.autoConnect} onChange={event => updateDraft('autoConnect', event.target.checked)} /><span><strong>{t('field.autoConnect.label')}</strong><small>{t('field.autoConnect.hint')}</small></span></label>
         </fieldset>
         <p className="dsh-save-warning">{t('notice.saveStopsRuntime')}</p>
-        <div className="form-actions"><button className="button button-primary" type="submit" disabled={blocked || !plugin?.enabled}>{t(operation === 'save' ? 'action.saving' : 'action.save')}</button><button className="button button-secondary" type="button" disabled={blocked || dirty || !configured || !runtime?.installed || !plugin?.enabled || active} onClick={() => void mutate('connect')}>{t(operation === 'connect' || starting ? 'action.starting' : 'action.start')}</button><button className="button button-secondary" type="button" disabled={blocked || !active && state !== 'error'} onClick={() => void mutate('disconnect')}>{t(operation === 'disconnect' ? 'action.stopping' : 'action.stop')}</button><span className="save-indicator">{t(dirty ? 'saveHint.dirty' : !configured ? 'saveHint.unconfigured' : !runtime?.installed ? 'saveHint.missingRuntime' : 'saveHint.saved')}</span></div>
+        <div className="form-actions"><button className="button button-primary" type="submit" disabled={blocked || !plugin?.enabled}>{t(operation === 'save' ? 'action.saving' : 'action.save')}</button><button className="button button-secondary" type="button" disabled={blocked || dirty || !configured || !systemFound || !plugin?.enabled || active} onClick={() => void mutate('connect')}>{t(operation === 'connect' || starting ? 'action.starting' : 'action.start')}</button><button className="button button-secondary" type="button" disabled={blocked || !active && state !== 'error'} onClick={() => void mutate('disconnect')}>{t(operation === 'disconnect' ? 'action.stopping' : 'action.stop')}</button><span className="save-indicator">{t(dirty ? 'saveHint.dirty' : !configured ? 'saveHint.unconfigured' : !systemFound ? 'saveHint.missingRuntime' : 'saveHint.saved')}</span></div>
       </form>
       {result && <p className="dsh-result" role="status"><Check size={15} aria-hidden="true" />{t(result)}</p>}
       <ErrorNotice failure={actionFailure} />
       {uncertain && <div className="dsh-unknown"><strong>{t(uncertainKeys[uncertain.operation])}</strong><p>{t('uncertain.description')}</p><button type="button" className="button button-secondary" disabled={reading || refreshFailure !== null || readSerial <= uncertain.afterRead} onClick={() => { setUncertain(null); setActionFailure(null); setResult('result.confirmed') }}>{t('uncertain.confirm')}</button></div>}
     </section>}
-    <ModelCapabilitiesSettings routeKey={JSON.stringify([saved?.endpoint, saved?.model])} active={tab === 'configuration' && visible} enabled={plugin?.enabled === true} runtimeActive={active || starting || runtime?.ready === true || runtime?.busy === true} busy={operation !== null || modelOperation !== null || refreshFailure !== null || uncertain !== null || runtime?.installing === true} actionLock={actionLock} onBusy={setCapabilitySaving} />
-    {runtime && <dl className="dsh-details"><div><dt>{t('details.processing')}</dt><dd>{refreshFailure ? t('state.unconfirmed') : processing}</dd></div>{runtime.sessionId && <div><dt>{t('details.sessionId')}</dt><dd>{runtime.sessionId}</dd></div>}{runtime.version && <div><dt>{t('details.version')}</dt><dd>{runtime.version}</dd></div>}{runtime.lastOutcome && <div><dt>{t('details.outcome')}</dt><dd>{outcomeKey ? t(outcomeKey) : runtime.lastOutcome}</dd></div>}</dl>}
+    <ModelCapabilitiesSettings routeKey={JSON.stringify([saved?.endpoint, saved?.model])} active={tab === 'configuration' && visible} enabled={plugin?.enabled === true} runtimeActive={active || starting || runtime?.ready === true || runtime?.busy === true} busy={operation !== null || modelOperation !== null || refreshFailure !== null || uncertain !== null} actionLock={actionLock} onBusy={setCapabilitySaving} />
+    {runtime && <dl className="dsh-details"><div><dt>{t('details.processing')}</dt><dd>{refreshFailure ? t('state.unconfirmed') : processing}</dd></div>{runtime.sessionId && <div><dt>{t('details.sessionId')}</dt><dd>{runtime.sessionId}</dd></div>}{runtime.system.version && <div><dt>{t('details.version')}</dt><dd>{runtime.system.version}</dd></div>}{runtime.lastOutcome && <div><dt>{t('details.outcome')}</dt><dd>{outcomeKey ? t(outcomeKey) : runtime.lastOutcome}</dd></div>}</dl>}
     {(saved?.dataDirectory || saved?.configurationPath) && <details className="dsh-file-details"><summary>{t('details.files')}</summary><dl className="dsh-details">{saved.dataDirectory && <div><dt>{t('details.dataDirectory')}</dt><dd>{saved.dataDirectory}</dd></div>}{saved.configurationPath && <div><dt>{t('details.configurationPath')}</dt><dd>{saved.configurationPath}</dd></div>}</dl></details>}
     <div className="dsh-notice dsh-boundary"><Info size={16} aria-hidden="true" /><p>{t('notice.authentication')}</p></div>
     </div>
     <div role="tabpanel" id={id('panel-sessions')} aria-labelledby={id('tab-sessions')} hidden={tab !== 'sessions'}>
-      {tab === 'sessions' && <NativeWebEntry enabled={plugin?.enabled === true} ready={active && runtime?.ready === true && runtime.nativeWeb.ready && refreshFailure === null && operation === null} active={tab === 'sessions'} />}
       {tab === 'sessions' && visible && <SessionDashboard enabled={plugin?.enabled === true} />}
     </div>
   </div>

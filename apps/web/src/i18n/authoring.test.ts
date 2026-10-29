@@ -47,6 +47,18 @@ describe('设置和创作双语资源', () => {
     }
   })
 
+  it('平台分组使用双语导航与列表名，保留来源名称原文', () => {
+    for (const [locale, section, list] of [['zh-CN', '平台提示词', 'Test / 平台原名 提示词'], ['en-US', 'Platform prompts', 'Test / 平台原名 prompts']] as const) {
+      setLocale(locale)
+      expect(translate('authoring', 'nav.platforms')).toBe(section)
+      expect(translate('authoring', 'nav.platformDocuments', { platform: 'Test / 平台原名' })).toBe(list)
+    }
+    for (const resources of Object.values(authoringResources)) {
+      expect(resources).not.toHaveProperty('nav.plugins')
+      expect(resources).not.toHaveProperty('nav.agents')
+    }
+  })
+
   it('英语数量采用单复数，协议起始标记保持原样', () => {
     setLocale('en-US')
     expect(translate('settings', 'count.messages', { count: 1, formattedCount: '1' })).toBe('1 message')

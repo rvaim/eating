@@ -1,6 +1,6 @@
 # Eating QQ 配置与功能测试
 
-Eating 使用 QQ OneBot v11 插件，需要已登录 QQ 并开启 OneBot 的协议端；Eating 不实现 QQ 登录协议。本轮主应用／Host／Web0.9.0，三个共享包均2.0.0、QQ0.9.0、DSH0.4.0，插件仅接受apiVersion2。主人手动功能测试保留官方 38 公开 API 与 1 框架 quick 操作，共 39 项；受控子代理只开放各类型实际允许且主人勾选的工具。未实现空间／评论／反向连接占位已删除，实际可用性仍取决于协议端实现及 QQ 权限。完整标准目录见[OneBot 覆盖清单](../technical/OneBot标准功能覆盖.md)。
+Eating 使用 QQ OneBot v11 插件，需要已登录 QQ 并开启 OneBot 的协议端；Eating 不实现 QQ 登录协议。当前主应用／Host／Web0.9.1，三个共享包均2.0.0、QQ0.9.1、DSH0.4.1，插件仅接受apiVersion2。主人手动功能测试保留官方 38 公开 API 与 1 框架 quick 操作，共 39 项；受控子代理只开放各类型实际允许且主人勾选的工具。未实现空间／评论／反向连接占位已删除，实际可用性仍取决于协议端实现及 QQ 权限。完整标准目录见[OneBot 覆盖清单](../technical/OneBot标准功能覆盖.md)。
 
 ## 构建、安装与启动
 

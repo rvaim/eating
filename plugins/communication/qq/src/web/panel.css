@@ -9,9 +9,9 @@
 .qq-connection-strip strong { font-size: 14px; font-weight: 600; }
 .qq-connection-strip span { color: var(--color-muted); font-size: 12px; overflow-wrap: anywhere; }
 .qq-connection-strip .text-button { flex-shrink: 0; padding-top: 1px; }
-.qq-tabs { position: sticky; top: calc(0px - var(--content-inset-block-start, 0px)); z-index: 2; display: flex; gap: 4px; overflow-x: auto; overscroll-behavior-x: contain; margin-bottom: 27px; border-bottom: 1px solid var(--color-line); background: var(--color-surface); scrollbar-width: thin; scrollbar-color: #aab9ad #f3f4f2; }
-.qq-panel [role="tabpanel"] :is(input, select, textarea, button, summary, [tabindex]) { scroll-margin-block-start: 76px; }
-.qq-tabs button { flex: 0 0 auto; min-height: 44px; padding: 10px 15px; margin-bottom: 5px; border: 1px solid transparent; border-radius: 5px; background: transparent; font-size: 13px; color: #59625c; }
+.qq-tabs { position: sticky; top: calc(0px - var(--content-inset-block-start)); z-index: 2; display: flex; gap: 4px; overflow-x: auto; overscroll-behavior-x: contain; max-width: none; margin-inline: calc(0px - var(--content-inset-inline-start)) calc(0px - var(--content-inset-inline-end)); padding: var(--panel-tab-padding-block) var(--content-inset-inline-end) var(--panel-tab-padding-block) var(--content-inset-inline-start); margin-bottom: 24px; border-bottom: 1px solid var(--color-line); background: var(--color-surface); scrollbar-width: thin; scrollbar-color: #aab9ad #f3f4f2; }
+.qq-panel [role="tabpanel"] :is(input, select, textarea, button, summary, [tabindex]) { scroll-margin-block-start: calc(var(--panel-tab-rail-block-size) + 20px); }
+.qq-tabs button { flex: 0 0 auto; min-height: var(--panel-tab-min-block-size); padding: 10px 15px; margin: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; font-size: 13px; color: #59625c; }
 .qq-tabs button:hover { background: #f0f3ed; }
 .qq-tabs button[aria-selected="true"] { color: var(--color-primary-hover); background: #e8eee7; font-weight: 600; }
 .qq-tabs button:focus-visible { outline-offset: -3px; }

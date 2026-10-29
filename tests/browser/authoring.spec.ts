@@ -150,6 +150,7 @@ test.describe('提示词与人格的真实持久编辑', () => {
     await expect(page.getByRole('button', { name: /定位变量错误 1/ })).toBeVisible()
     await editor.fill('主文档专属草稿')
     const groupBefore = (await snapshot(page)).prompts.find(doc => doc.id === 'agent:qq.group')!.body
+    await promptNav(page).getByRole('button', { name: 'QQ', exact: true }).click()
     await promptNav(page).getByRole('button', { name: 'QQ 群聊', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'QQ 群聊', exact: true })).toBeVisible()
     await expect(editor).toHaveText(groupBefore, { useInnerText: true })

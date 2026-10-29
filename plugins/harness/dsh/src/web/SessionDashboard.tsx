@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { AlertCircle, ChevronRight, RefreshCw } from 'lucide-react'
 import type { HarnessSessionContent, HarnessSessionList, HarnessSessionRecord, HarnessSessionSummary } from '@eating/plugin-sdk'
@@ -24,7 +24,7 @@ function SessionRecord({ record }: { readonly record: HarnessSessionRecord }) {
 
 /** Explicit reads of the current Harness's native sessions, with no polling or subscriptions. */
 export function SessionDashboard({ enabled }: { readonly enabled: boolean }) {
-  const { t, formatDateTime, formatNumber } = useI18n('dsh')
+  const { t, locale, formatDateTime, formatNumber } = useI18n('dsh')
   const prefix = useId()
   const [list, setList] = useState<HarnessSessionList | null>(null)
   const [content, setContent] = useState<HarnessSessionContent | null>(null)
@@ -35,6 +35,44 @@ export function SessionDashboard({ enabled }: { readonly enabled: boolean }) {
   const generation = useRef(0)
   const controller = useRef<AbortController | null>(null)
   const selection = useRef<string | null>(null)
+  const dashboardRef = useRef<HTMLElement>(null)
+  const layoutRef = useRef<HTMLDivElement>(null)
+  const navigationRef = useRef<HTMLElement>(null)
+  const hasSessions = Boolean(list?.sessions.length)
+
+  useLayoutEffect(() => {
+    const dashboard = dashboardRef.current, layout = layoutRef.current, navigation = navigationRef.current
+    if (!hasSessions || !dashboard || !layout || !navigation) return
+    let viewport = dashboard.parentElement
+    while (viewport && !/auto|scroll/.test(getComputedStyle(viewport).overflowY)) viewport = viewport.parentElement
+    if (!viewport) return
+    const scrollport = viewport
+    let frame: number | null = null
+    const measure = () => {
+      frame = null
+      const bounds = scrollport.getBoundingClientRect(), region = layout.getBoundingClientRect()
+      const parentStyle = getComputedStyle(scrollport), navigationStyle = getComputedStyle(navigation)
+      const gap = parseFloat(parentStyle.getPropertyValue('--panel-sticky-gap'))
+      const stickyTop = bounds.top + scrollport.clientTop + parseFloat(parentStyle.paddingTop) + parseFloat(navigationStyle.top)
+      const top = Math.max(region.top + parseFloat(getComputedStyle(layout).paddingTop), stickyTop)
+      const bottom = Math.min(bounds.top + scrollport.clientTop + scrollport.clientHeight - gap, region.bottom)
+      const available = `${Math.max(44, Math.floor(bottom - top))}px`
+      if (navigation.style.getPropertyValue('--session-navigation-available-block-size') !== available) navigation.style.setProperty('--session-navigation-available-block-size', available)
+      const height = `${navigation.offsetHeight}px`
+      if (dashboard.style.getPropertyValue('--session-navigation-sticky-block-size') !== height) dashboard.style.setProperty('--session-navigation-sticky-block-size', height)
+    }
+    const schedule = () => { if (frame === null) frame = requestAnimationFrame(measure) }
+    const observer = new ResizeObserver(schedule)
+    observer.observe(scrollport); observer.observe(dashboard); observer.observe(layout); observer.observe(navigation)
+    scrollport.addEventListener('scroll', schedule, { passive: true })
+    measure()
+    return () => {
+      observer.disconnect(); scrollport.removeEventListener('scroll', schedule)
+      if (frame !== null) cancelAnimationFrame(frame)
+      navigation.style.removeProperty('--session-navigation-available-block-size')
+      dashboard.style.removeProperty('--session-navigation-sticky-block-size')
+    }
+  }, [hasSessions, locale])
 
   useEffect(() => {
     mounted.current = true
@@ -89,7 +127,7 @@ export function SessionDashboard({ enabled }: { readonly enabled: boolean }) {
   const sessionTitle = (session: HarnessSessionSummary) => session.pluginId && session.targetId && session.conversationKind
     ? t(`sessions.target.${session.conversationKind}`, { plugin: session.pluginId, target: session.targetId }) : session.title || t('sessions.untitled')
 
-  return <section className="dsh-sessions" aria-labelledby={`${prefix}-heading`}>
+  return <section ref={dashboardRef} className="dsh-sessions" aria-labelledby={`${prefix}-heading`}>
     <div className="dsh-sessions-heading"><div><h3 id={`${prefix}-heading`}>{t('sessions.title')}</h3><p>{t('sessions.description')}</p></div><button className="button button-secondary" type="button" disabled={!enabled || loading === 'list'} onClick={() => void refresh()}><RefreshCw size={15} aria-hidden="true" />{t(loading === 'list' ? 'sessions.refreshing' : 'sessions.refresh')}</button></div>
     <p className="dsh-session-privacy">{t('sessions.privacy')}</p>
     {error !== null && <div className="dsh-error" role="alert"><AlertCircle size={16} aria-hidden="true" /><div><p>{getErrorMessage(error, t('sessions.error'))}</p><small>{t('error.code', { code: failureCode })}</small></div></div>}
@@ -99,8 +137,8 @@ export function SessionDashboard({ enabled }: { readonly enabled: boolean }) {
     {list && <>
       <div className="dsh-sessions-meta"><span>{t('sessions.count', { count: rows.length, value: formatNumber(rows.length) })}</span><span>{t('sessions.refreshed', { time: formatDateTime(list.refreshedAt) })}</span></div>
       {list.truncated && <p className="dsh-session-warning" role="status">{t('sessions.truncated', { limit: formatNumber(100) })}</p>}
-      {rows.length === 0 ? <p className="dsh-session-empty">{t('sessions.empty')}</p> : <div className="dsh-session-layout">
-        <nav className="dsh-session-navigation" aria-label={t('sessions.navigation')}><ul>{rows.map(({ session, depth, issue }) => <li key={session.id} style={{ '--session-depth': Math.min(depth, 5) } as CSSProperties}>
+      {rows.length === 0 ? <p className="dsh-session-empty">{t('sessions.empty')}</p> : <div ref={layoutRef} className="dsh-session-layout">
+        <nav ref={navigationRef} className="dsh-session-navigation" aria-label={t('sessions.navigation')}><ul>{rows.map(({ session, depth, issue }) => <li key={session.id} style={{ '--session-depth': Math.min(depth, 5) } as CSSProperties}>
           <button type="button" className="dsh-session-select" aria-current={selected === session.id ? 'true' : undefined} disabled={loading === 'list'} onClick={() => void read(session.id)}>
             <span className="dsh-session-title"><ChevronRight size={14} aria-hidden="true" /><span dir="auto">{sessionTitle(session)}</span></span>
             <span className="dsh-session-subtitle">{session.parentId === null ? t('sessions.main') : t('sessions.child')} · {t(statusKeys[session.status]!)}</span>

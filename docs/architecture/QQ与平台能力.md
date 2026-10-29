@@ -1,6 +1,6 @@
 # Eating QQ 与平台能力架构
 
-更新：2026-10-29。QQ0.9.0通过公开SDK2.0.0与API2接入Host，提供正式OneBot v11连接、39项工具、身份及受控代理类型。默认不兼容旧Eating版本，规则见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)；实际流程见[操作说明](../operations/QQ配置与功能测试.md)。
+更新：2026-10-29。QQ0.9.1通过公开SDK2.0.0与API2接入Host，提供正式OneBot v11连接、39项工具、身份及受控代理类型。默认不兼容旧Eating版本，规则见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)；实际流程见[操作说明](../operations/QQ配置与功能测试.md)。
 
 ## 职责和数据流
 

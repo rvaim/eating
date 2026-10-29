@@ -61,7 +61,7 @@ class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly kind = 'communication' as const
   readonly name = 'QQ'
-  readonly version = '0.9.0'
+  readonly version = '0.9.1'
   readonly logs = new LiveLogChannel()
   readonly tools = qqTools
   readonly capabilities = [

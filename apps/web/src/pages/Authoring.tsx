@@ -11,6 +11,7 @@ import './Authoring.css'
 export interface AuthoringProps {
   readonly mode: 'prompts' | 'personas'
   readonly selectedId: string | null
+  readonly pluginDisplayNames: Readonly<Record<string, string>>
   readonly onSelect: (id: string) => void
   readonly onFeedback: (message: string) => void
 }
@@ -156,9 +157,11 @@ function updatedLabel(value: string | null): string {
     : authoringText('updated.label', { date: formatDateTime(date, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) })
 }
 
-export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringProps) {
+export function Authoring({ mode, selectedId, pluginDisplayNames, onSelect, onFeedback }: AuthoringProps) {
   const { t, formatNumber } = useI18n('authoring')
   const [snapshot, setSnapshot] = useState<AuthoringSnapshot | null>(null)
+  const [expandedPlugins, setExpandedPlugins] = useState<ReadonlySet<string>>(() => new Set())
+  const promptNavigation = useRef<HTMLElement>(null)
   const [drafts, setDrafts] = useState<Readonly<Record<string, Draft>>>({})
   const [operation, setOperation] = useState<{ readonly kind: Operation; readonly key: string | null } | null>({ kind: 'read', key: null })
   const [readError, setReadError] = useState<{ readonly key: string | null; readonly error: unknown } | null>(null)
@@ -191,9 +194,27 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
   const groups = [
     { key: 'common', documents: documents.filter(doc => doc.id === 'common' || doc.id === 'subagent') },
     { key: 'main', documents: documents.filter(doc => doc.id === 'main') },
-    { key: 'plugins', documents: documents.filter(doc => doc.scope === 'plugin') },
-    { key: 'agents', documents: documents.filter(doc => doc.scope === 'agent') },
   ]
+  const platformGroups = useMemo(() => {
+    const byPlugin = new Map<string, PromptDocument[]>()
+    for (const doc of snapshot?.prompts ?? []) {
+      if ((doc.scope !== 'plugin' && doc.scope !== 'agent') || !doc.pluginId) continue
+      const group = byPlugin.get(doc.pluginId) ?? []
+      group.push(doc)
+      byPlugin.set(doc.pluginId, group)
+    }
+    return [...byPlugin.keys()].sort().map(pluginId => ({ pluginId, documents: byPlugin.get(pluginId)!.sort((a, b) => {
+      if (a.scope !== b.scope) return a.scope === 'plugin' ? -1 : 1
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+    }) }))
+  }, [snapshot?.prompts])
+  const selectedPluginId = selectedPrompt?.pluginId
+  useEffect(() => {
+    if (!selectedPluginId) return
+    setExpandedPlugins(current => current.has(selectedPluginId) ? current : new Set([...current, selectedPluginId]))
+    const frame = window.requestAnimationFrame(() => promptNavigation.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }))
+    return () => window.cancelAnimationFrame(frame)
+  }, [selection.key, selectedPluginId])
   const selectedKey = useRef(selection.key)
   selectedKey.current = selection.key
   const currentDraft = drafts[selection.key] ?? null
@@ -455,21 +476,53 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
     }
   }
 
+  function promptItem(doc: PromptDocument) {
+    return <button type="button" disabled={mutating} className={`platform-nav-item authoring-prompt-item ${resolvedId === doc.id ? 'is-selected' : ''}`} aria-current={resolvedId === doc.id ? 'page' : undefined} onClick={() => choose(doc.id)}>
+      <FileText size={18} aria-hidden="true" /><span title={promptTitle(doc)}>{promptTitle(doc)}</span>
+      {doc.available === false ? <small className="authoring-source-label">{t('source.unavailableLabel')}</small> : doc.enabled === false && <small className="authoring-source-label">{t('source.disabledLabel')}</small>}
+      {drafts[`prompts:${doc.id}`] && isDirty(drafts[`prompts:${doc.id}`]!) && <span className="authoring-draft-mark" aria-label={t('status.unsaved')} />}
+      {resolvedId === doc.id && <ChevronRight size={15} className="nav-chevron" aria-hidden="true" />}
+    </button>
+  }
+
   function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); void mutate('save') }
 
   return <div className="robot-workspace authoring-workspace">
     <aside className="platform-sidebar authoring-sidebar">
       <p className="platform-nav-heading">{t(mode === 'prompts' ? 'nav.prompts' : 'nav.personas')}{mode === 'personas' && snapshot && <span>{formatNumber(snapshot.personas.length)}</span>}</p>
-      <nav aria-label={t(mode === 'prompts' ? 'nav.prompts' : 'nav.personaList')}>
-        {mode === 'prompts' ? !snapshot ? <p className="authoring-sidebar-state">{t(busy ? 'nav.loadingPrompts' : 'nav.promptsNotLoaded')}</p> : groups.filter(group => group.documents.length > 0).map(group => <div className="authoring-prompt-group" key={group.key} role="group" aria-label={t(`nav.${group.key}`)}>
-          <p className="authoring-group-heading">{t(`nav.${group.key}`)}</p>
-          {group.documents.map(doc => <button key={doc.id} type="button" disabled={mutating} className={`platform-nav-item authoring-prompt-item ${resolvedId === doc.id ? 'is-selected' : ''}`} aria-current={resolvedId === doc.id ? 'page' : undefined} onClick={() => choose(doc.id)}>
-            <FileText size={18} aria-hidden="true" /><span title={promptTitle(doc)}>{promptTitle(doc)}</span>
-            {doc.available === false ? <small className="authoring-source-label">{t('source.unavailableLabel')}</small> : doc.enabled === false && <small className="authoring-source-label">{t('source.disabledLabel')}</small>}
-            {drafts[`prompts:${doc.id}`] && isDirty(drafts[`prompts:${doc.id}`]!) && <span className="authoring-draft-mark" aria-label={t('status.unsaved')} />}
-            {resolvedId === doc.id && <ChevronRight size={15} className="nav-chevron" aria-hidden="true" />}
-          </button>)}
-        </div>) : <>
+      <nav ref={promptNavigation} aria-label={t(mode === 'prompts' ? 'nav.prompts' : 'nav.personaList')}>
+        {mode === 'prompts' ? !snapshot ? <p className="authoring-sidebar-state">{t(busy ? 'nav.loadingPrompts' : 'nav.promptsNotLoaded')}</p> : <>
+          {groups.filter(group => group.documents.length > 0).map(group => <div className="authoring-prompt-group" key={group.key} role="group" aria-label={t(`nav.${group.key}`)}>
+            <p className="authoring-group-heading">{t(`nav.${group.key}`)}</p>
+            <ul className="authoring-document-list">{group.documents.map(doc => <li key={doc.id}>{promptItem(doc)}</li>)}</ul>
+          </div>)}
+          {platformGroups.length > 0 && <div className="authoring-prompt-group authoring-platform-section" role="group" aria-label={t('nav.platforms')}>
+            <p className="authoring-group-heading">{t('nav.platforms')}</p>
+            <ul className="authoring-platform-list">{platformGroups.map(group => {
+              const name = Object.hasOwn(pluginDisplayNames, group.pluginId) ? pluginDisplayNames[group.pluginId]! : group.pluginId
+              const expanded = expandedPlugins.has(group.pluginId)
+              const unavailable = group.documents.every(doc => doc.available === false)
+              const disabled = group.documents.every(doc => doc.enabled === false)
+              const unsaved = group.documents.some(doc => drafts[`prompts:${doc.id}`] && isDirty(drafts[`prompts:${doc.id}`]!))
+              const listId = `authoring-platform-${group.pluginId}`
+              return <li className="authoring-platform-group" key={group.pluginId} data-plugin-id={group.pluginId}>
+                <button type="button" className={`platform-nav-item authoring-platform-toggle ${selectedPluginId === group.pluginId ? 'has-selection' : ''}`} aria-expanded={expanded} aria-controls={listId} onClick={() => setExpandedPlugins(current => {
+                  const next = new Set(current)
+                  if (next.has(group.pluginId)) next.delete(group.pluginId)
+                  else next.add(group.pluginId)
+                  return next
+                })}>
+                  <ChevronRight size={18} className="authoring-group-chevron" aria-hidden="true" /><span title={name}>{name}</span>
+                  {unavailable ? <small className="authoring-source-label">{t('source.unavailableLabel')}</small> : disabled && <small className="authoring-source-label">{t('source.disabledLabel')}</small>}
+                  {unsaved && <span className="authoring-draft-mark" aria-label={t('status.unsaved')} />}
+                </button>
+                <ul id={listId} className="authoring-platform-documents" aria-label={t('nav.platformDocuments', { platform: name })} hidden={!expanded}>
+                  {group.documents.map(doc => <li key={doc.id}>{promptItem(doc)}</li>)}
+                </ul>
+              </li>
+            })}</ul>
+          </div>}
+        </> : <>
           {!snapshot ? <p className="authoring-sidebar-state">{t(busy ? 'nav.loadingPersonas' : 'nav.personasNotLoaded')}</p> : snapshot.personas.length === 0 ? <p className="authoring-sidebar-state">{t('nav.personasEmpty')}</p> : snapshot.personas.map(persona => <button key={persona.id} type="button" disabled={mutating} className={`platform-nav-item authoring-persona-item ${resolvedId === persona.id ? 'is-selected' : ''}`} aria-current={resolvedId === persona.id ? 'page' : undefined} onClick={() => choose(persona.id)}><UserRound size={18} aria-hidden="true" /><span title={persona.name}>{persona.name}</span>{snapshot.activePersonaId === persona.id && <small className="authoring-active-label">{t('status.active')}</small>}{drafts[`personas:${persona.id}`] && isDirty(drafts[`personas:${persona.id}`]!) && <span className="authoring-draft-mark" aria-label={t('status.unsaved')} />}</button>)}
           <button type="button" disabled={!snapshot || mutating} className={`platform-nav-item authoring-new-button ${snapshot && resolvedId === 'new' ? 'is-selected' : ''}`} aria-current={snapshot && resolvedId === 'new' ? 'page' : undefined} onClick={() => choose('new')}><Plus size={18} aria-hidden="true" /><span>{t('persona.new')}</span></button>
         </>}

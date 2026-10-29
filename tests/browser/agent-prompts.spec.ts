@@ -66,8 +66,14 @@ test.describe('动态代理提示词与已保存组合', () => {
     await page.getByRole('button', { name: /^(保存提示词|Save prompt)$/ }).click()
     await expect(page.locator('.authoring-result.authoring-notice-success')).toBeVisible()
   }
+  async function expandPlatform(page: Page, pluginId: string) {
+    const toggle = navigation(page).locator(`.authoring-platform-group[data-plugin-id="${pluginId}"] > button`)
+    if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  }
   async function choose(page: Page, document: PromptDocument) {
-    await navigation(page).getByRole('button', { name: document.title, exact: true }).click()
+    if (document.pluginId) await expandPlatform(page, document.pluginId)
+    await navigation(page).getByRole('button', { name: document.localizedTitles?.['zh-CN'] ?? document.title, exact: true }).click()
     await expect(page).toHaveURL(`${url}/#prompts/${encodeURIComponent(document.id)}`)
     await expect(editor(page)).toHaveText(document.body, { useInnerText: true })
   }
@@ -240,6 +246,7 @@ test.describe('动态代理提示词与已保存组合', () => {
     await page.setViewportSize({ width: 1280, height: 420 })
     await page.goto(`${url}/#prompts/common`)
     await expect(editor(page)).toBeVisible()
+    await expandPlatform(page, 'qq')
     await editor(page).fill('Language draft {{主人}} {{管理员}}')
     const mutations: string[] = []
     page.on('request', request => { if (request.method() === 'POST') mutations.push(request.url()) })

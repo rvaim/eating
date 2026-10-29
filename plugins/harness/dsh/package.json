@@ -1,6 +1,6 @@
 {
   "name": "@eating/plugin-dsh",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "description": "Eating 独立 DeepSeek Harness 适配插件，提供固定主会话与 QQ MCP 接入",
   "files": ["dist"],

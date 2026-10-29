@@ -77,7 +77,7 @@ h3 { font-size: 15px; font-weight: 600; }
 .nav-chevron { margin-left: auto; }
 .platform-nav-divider { height: 1px; background: var(--color-line); margin: 9px 12px; }
 .platform-sidebar-footer { display: flex; gap: 9px; margin: auto 10px 0; padding-top: 25px; color: var(--color-muted); font-size: 11px; line-height: 1.9; }
-.robot-content { --content-inset-block-start: 31px; padding: var(--content-inset-block-start) 44px 48px; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior-y: none; }
+.robot-content { --content-inset-block-start: 31px; --content-inset-inline-start: 44px; --content-inset-inline-end: 44px; --panel-tab-padding-block: 8px; --panel-tab-min-block-size: 44px; --panel-tab-rail-block-size: calc(var(--panel-tab-min-block-size) + 2 * var(--panel-tab-padding-block) + 1px); --panel-sticky-gap: 12px; padding: var(--content-inset-block-start) var(--content-inset-inline-end) 48px var(--content-inset-inline-start); min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior-y: none; }
 .panel-title-row { display: flex; gap: 13px; align-items: center; flex-wrap: wrap; }
 .panel-description { margin-top: 7px; color: var(--color-muted); font-size: 13px; }
 .panel-description strong { color: #445249; font-weight: 550; }
@@ -204,13 +204,13 @@ h3 { font-size: 15px; font-weight: 600; }
 .panel-error p { margin: 8px 0 16px; font-size: 12px; }
 .skip-link { position: fixed; z-index: 20; top: -80px; left: 16px; padding: 10px 16px; background: var(--color-primary); color: #fff; border-radius: 5px; }
 .skip-link:focus { top: 10px; }
-@media (min-width: 1700px) { .robot-content { padding-right: max(44px, calc((100vw - 1500px) / 2)); } }
+@media (min-width: 1700px) { .robot-content { --content-inset-inline-end: max(44px, calc((100vw - 1500px) / 2)); } }
 @media (max-width: 1100px) {
   .app-shell { grid-template-columns: 172px minmax(0, 1fr); }
   .global-sidebar { padding-left: 12px; padding-right: 12px; }
   .robot-workspace { grid-template-columns: 175px minmax(0, 1fr); }
   .page-header, .catalog-container { padding-left: 28px; padding-right: 28px; }
-  .robot-content { padding-left: 28px; padding-right: 28px; }
+  .robot-content { --content-inset-inline-start: 28px; --content-inset-inline-end: 28px; }
   .field { grid-template-columns: 95px minmax(0, 1fr); column-gap: 16px; }
   .form-actions { padding-left: 111px; }
   .check-field, .form-result { margin-left: 111px; }
@@ -227,7 +227,7 @@ h3 { font-size: 15px; font-weight: 600; }
   .global-sidebar-footer { padding: 18px 0 0; width: 42px; justify-content: center; }
   .robot-workspace { grid-template-columns: 158px minmax(0, 1fr); }
   .platform-sidebar { padding-left: 10px; padding-right: 10px; }
-  .robot-content { --content-inset-block-start: 27px; padding: var(--content-inset-block-start) 25px 35px; }
+  .robot-content { --content-inset-block-start: 27px; --content-inset-inline-start: 25px; --content-inset-inline-end: 25px; padding-bottom: 35px; }
   .field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 20px; }
   .field label { padding: 0; }
   .field-hint, .field-error { margin-top: 0; }
@@ -262,7 +262,7 @@ h3 { font-size: 15px; font-weight: 600; }
   .platform-nav-item { width: auto; flex-shrink: 0; min-height: 38px; padding: 8px 10px; gap: 7px; font-size: 12px; }
   .platform-nav-item svg { width: 15px; height: 15px; }
   .nav-chevron { display: none; }
-  .robot-content { --content-inset-block-start: 24px; flex: 1; padding: var(--content-inset-block-start) 20px 32px; }
+  .robot-content { --content-inset-block-start: 24px; --content-inset-inline-start: 20px; --content-inset-inline-end: 20px; flex: 1; padding-bottom: 32px; }
   h2 { font-size: 22px; }
   .panel-description { font-size: 12px; }
   .example-notice { margin-top: 20px; font-size: 11px; }

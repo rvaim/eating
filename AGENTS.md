@@ -10,7 +10,7 @@
 - OneBot v11 的正式参数、消息形态和协议别名，以及 OpenAI 接口支持，是当前外部协议能力，不属于旧 Eating API 兼容，不因本规则删除。
 - 删除兼容代码不授权删除、重置或自动转换用户真实数据。没有明确数据处置指令时保留原文件，让用户显式选择当前格式的数据或新的 `EATING_HOME`。
 
-本轮按用户顺序先提交多代理基线 `efbd70e`，再删除兼容、补 README 与文档，验证后提交并推送到用户指定的 `https://github.com/rvaim/eating`。该授权仅覆盖本轮提交和推送；不得 force push、改写旧历史或自动发布版本。
+此前已按用户要求先提交多代理基线efbd70e，再清理旧兼容并以b28593d提交推送。当前用户另行明确授权平台提示词折叠、看板导航和吸顶页签修复，要求更新文档后提交并推送到https://github.com/rvaim/eating。授权限于当前任务；不得force push、改写历史或自动发布版本。
 
 ## 项目不变量
 
@@ -33,7 +33,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`。
 
-当前应用／Host／Web0.9.0，三个共享包2.0.0，QQ0.9.0、DSH0.4.0；插件唯一 API2。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host 按验证后的安装产物加载，插件只导入公开 SDK，不引用应用内部或其他插件实现。
+当前应用／Host／Web0.9.1，三个共享包2.0.0，QQ0.9.1、DSH0.4.1；插件唯一 API2。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host 按验证后的安装产物加载，插件只导入公开 SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -65,7 +65,7 @@ MCP scope、Prompt、Preset 不等于 OneBot 远端资源或 OS 沙箱。文件�
 
 ## UI 与文档
 
-保持白绿风格、固定视口、主区／二级栏独立滚动、页签完整吸顶范围、键盘焦点可达。保留[滚动回归](tests/browser/scrolling.spec.ts)，不能只凭 DOM 坐标宣称绘制正确。
+保持白绿风格、固定视口、主区／二级栏独立滚动、页签完整吸顶范围、键盘焦点可达。平台提示词按pluginId合为一个可折叠条目，名称来自当前目录元数据，折叠不能改变编辑器／路由／草稿。看板正文滚动时会话导航保持可见，长目录自身滚动；页签使用宿主边距与统一上下留白，正文末端／页脚不能推出导航。保留[滚动回归](tests/browser/scrolling.spec.ts)与[看板布局回归](tests/browser/panel-layout.spec.ts)，不能只凭DOM坐标宣称绘制正确。
 
 固定 UI 文案、ARIA、诊断、补全、错误、数值和日期使用模块双语资源及公开 ui-sdk；默认简体中文，可切英文。locale 不进入网络 effect 或重挂 key，不能丢草稿／选区／撤销或触发保存／发送。用户内容、Key、URL、模型名、消息与 canonical 变量不翻译。严格 CSP 不增加 unsafe-eval。
 
@@ -73,7 +73,7 @@ README 用中文作为标准入口；其他文档标题／文件名中文，技�
 
 ## Git 与完成条件
 
-所有提交使用中文标题和说明，包含“修改原因”“修改内容”，必要时列“验证结果”。先提交再重构的顺序必须履行，提交与推送按用户明确授权分别执行。
+所有提交使用中文标题和说明，包含“修改原因”“修改内容”，必要时列“验证结果”。用户要求先提交再重构时履行指定顺序；当前任务的提交与推送按其明确授权执行。
 
 ```text
 用中文概括本次修改

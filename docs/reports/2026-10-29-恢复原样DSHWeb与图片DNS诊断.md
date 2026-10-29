@@ -21,7 +21,7 @@
 
 ## 验证进度
 
-完整构建及严格类型通过。最终显式EATING_DSH_TEST_RUNTIME运行48文件1139/1139（62.19秒），包括全部真实SDK／Web／图片回环与时间读取用例；Eating主人入口、Harness管理页15/15浏览器（16.2秒）。原生Web定向真实用例1/1通过（4.034秒）：官方首次Continue通过settings.mutate持久化；session/create成功；官方侧栏／输入框与页面完整，无Eating DOM／CSS／LocaleBridge；系统light／dark切换正常；通过官方设置保存dark后切系统light仍dark，SDK完整重启后主题和首次确认均保留，原root UUID不变。两图`.review/official-native-web-light.png`及`official-native-web-dark.png`已实际读取。全量最终计数与实际同步在下节补记。
+完整构建及严格类型通过。最终显式EATING_DSH_TEST_RUNTIME运行48文件1139/1139（62.19秒），包括全部真实SDK／Web／图片回环与时间读取用例；Eating主人入口、Harness管理页15/15浏览器（16.2秒）。原生Web定向真实用例1/1通过（4.034秒）：官方首次Continue通过settings.mutate持久化；session/create成功；官方侧栏／输入框与页面完整，无Eating DOM／CSS／LocaleBridge；系统light／dark切换正常；通过官方设置保存dark后切系统light仍dark，SDK完整重启后主题和首次确认均保留，原root UUID不变。两图`.review/official-native-web-light.png`及`official-native-web-dark.png`已实际读取；原地址部署结果见下节。
 
 该验收定位并修复了三项接入错误：官方settings namespace依原Loader row ID，不能加Eating前缀；官方配置写回条件使用模块name，必须保官方bare specifier，不能用绝对路径再由Loader转file URL导致条件不匹配；官方Web行放CLI overlay会锁住设置，现通过公开initProfile放在Eating专属Profile自身可写层，只首次插入，保留后续用户patch。没有绕过首次确认或修改官方ConfigEditor。
 
@@ -49,4 +49,10 @@
 
 ## 现场同步
 
-待官方原生页面验收后，停止当前Eating、私有备份、安装0.5.1并保原Key／人格／原生UUID／能力配置和当前运行选择。实际原地址检查、版本、进程与Git结果完成后追加；不将隔离通过当现场已更新。
+已在实际实例完成更新。停机前确认QQ／Harness连接、busy=false、pending=0；完整私有备份至`~/.eating-backups/2026-10-29-restore-official-web/`，仅主人可读。标准API3安装器更新DSH0.5.1后、重启前对10个受保护文件逐项SHA256核对全相同，包括连接／密钥配置、主会话、绑定、图片能力、账号配置及原生日志；没有清空或回滚数据。
+
+现原5180／5181运行QQ0.10.0、DSH0.5.1，二者connected，nativeWeb.ready=true，用户已开启的imageInput仍true。受管开发服务为`bash-134e4f1a4cad41dc`；仍使用本次EATING_AUTO_CONNECT=false先启动，再恢复切换前运行选择，不改变保存偏好。
+
+实际浏览器从Eating的“打开DSH原生Web”入口新开页面，官方deepseek品牌／侧栏／新会话／插件／自动化任务／输入框均存在。Eating自定义DOM为0，__EATING_NATIVE_WEB__、强制LocaleBridge及自定义CSS均不存在，pageerror=0。真实深浅图在`.impeccable/review/official-web-restored-live/official-native-live-{dark,light}.png`，已实际读取；没有在真实资料中发送试验消息或接受声明。关闭旧自定义会话标签后需从新入口重开。
+
+主体代码提交736e335；本段现场证据另作中文提交并正常推送。图片仅完成只读诊断，代码／DNS／代理策略与本次前完全相同，真实取图仍需按上节方案处理。

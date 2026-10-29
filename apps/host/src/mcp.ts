@@ -6,8 +6,10 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js'
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { BackendPlugin, PluginToolDefinition } from '@eating/plugin-sdk'
+import { assertToolResultFormat, toolResult } from './tool-results'
 
 function describeTool(tool: PluginToolDefinition): Tool {
+  assertToolResultFormat(tool)
   return {
     name: tool.name,
     title: tool.title,
@@ -46,12 +48,9 @@ function createServer(plugin: BackendPlugin): Server {
     const requestId = acceptsRequestId && typeof args.request_id === 'string' ? args.request_id : randomUUID()
     const input = acceptsRequestId && args.request_id === undefined ? { ...args, request_id: requestId } : args
     try {
+      assertToolResultFormat(tool)
       const result = await plugin.invoke(tool.name, input, requestId)
-      return {
-        isError: false,
-        structuredContent: { result, request_id: requestId },
-        content: [{ type: 'text', text: JSON.stringify(result) }],
-      }
+      return toolResult(tool, result, requestId)
     } catch (error) {
       // Unexpected exceptions may contain credentials, request headers or stacks.
       // Only the plugin's intentional public PlatformError crosses this boundary.

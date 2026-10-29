@@ -42,7 +42,7 @@ function defineTool(action: string, title: string, description: string, properti
   const readOnly = options.readOnly ?? false
   return {
     name: options.name ?? `qq_${action}`, title, description, protocolAction: action,
-    readOnly, destructive: options.destructive ?? false,
+    readOnly, destructive: options.destructive ?? false, resultFormat: 'json',
     ...(options.sensitiveResult ? { sensitiveResult: true } : {}),
     inputSchema: {
       type: 'object',

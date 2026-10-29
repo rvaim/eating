@@ -25,8 +25,8 @@ function deferred<T>() {
 // Test-only backend: no platform account, websocket, Harness, credentials or storage.
 function fakePlugin(implementation?: BackendPlugin['invoke']) {
   const tools: PluginToolDefinition[] = [
-    { name: 'inspect', title: 'Inspect a value', description: 'Read a test value.', inputSchema: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'], additionalProperties: false }, readOnly: true, destructive: false },
-    { name: 'remove', title: 'Remove a value', description: 'Remove a test value.', inputSchema: { type: 'object', properties: { value: { type: 'string' }, request_id: { type: 'string', minLength: 8 } }, required: ['value', 'request_id'], additionalProperties: false }, readOnly: false, destructive: true },
+    { name: 'inspect', title: 'Inspect a value', description: 'Read a test value.', inputSchema: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'], additionalProperties: false }, readOnly: true, destructive: false, resultFormat: 'json' },
+    { name: 'remove', title: 'Remove a value', description: 'Remove a test value.', inputSchema: { type: 'object', properties: { value: { type: 'string' }, request_id: { type: 'string', minLength: 8 } }, required: ['value', 'request_id'], additionalProperties: false }, readOnly: false, destructive: true, resultFormat: 'json' },
   ]
   const invoke = vi.fn<BackendPlugin['invoke']>(implementation ?? (async (name, input, requestId) => {
     if (!isJsonObject(input) || typeof input.value !== 'string') throw new PlatformError('INVALID_INPUT', 'value must be a string.', 400, 'not-sent')
@@ -124,6 +124,18 @@ describe('per-plugin official MCP Streamable HTTP', () => {
     await vi.waitFor(() => expect(host.activeCount()).toBe(0))
   })
 
+  it('delivers declared image blocks through the official MCP client', async () => {
+    const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a4WQAAAAASUVORK5CYII='
+    const { plugin, tools } = fakePlugin(async (): Promise<JsonValue> => ({ content: [{ type: 'text', text: 'A received image' }, { type: 'image', mimeType: 'image/png', data }], structuredContent: { mimeType: 'image/png' } }))
+    tools.push({ name: 'image', title: 'Image', description: 'Image fixture', readOnly: true, destructive: false, resultFormat: 'content', inputSchema: { type: 'object', additionalProperties: false } })
+    const { client } = await connect((await endpoint(plugin)).url)
+    const result = await client.callTool({ name: 'image', arguments: {} })
+    expect(result.isError).toBe(false)
+    expect(result.content).toEqual([{ type: 'text', text: 'A received image' }, { type: 'image', mimeType: 'image/png', data }])
+    expect(result.structuredContent).toMatchObject({ mimeType: 'image/png' })
+    expect(JSON.stringify(result.structuredContent)).not.toContain(data)
+  })
+
   it('returns primitive JSON tool data as valid structured MCP content', async () => {
     const { plugin } = fakePlugin(async () => 42)
     const { client } = await connect((await endpoint(plugin)).url)
@@ -161,7 +173,7 @@ describe('per-plugin official MCP Streamable HTTP', () => {
 
   it('rejects a non-read-only tool that does not declare request_id even when a caller supplies one', async () => {
     const { plugin, tools, invoke } = fakePlugin()
-    tools.push({ name: 'send', title: 'Send a value', description: 'Send a test value.', inputSchema: { type: 'object', properties: { value: { type: 'string' } } }, readOnly: false, destructive: false })
+    tools.push({ name: 'send', title: 'Send a value', description: 'Send a test value.', inputSchema: { type: 'object', properties: { value: { type: 'string' } } }, readOnly: false, destructive: false, resultFormat: 'json' })
     const { client } = await connect((await endpoint(plugin)).url)
     const result = await client.callTool({ name: 'send', arguments: { value: 'item', request_id: 'persistent-send-key' } })
     expect(result).toMatchObject({ isError: true, structuredContent: { code: 'REQUEST_ID_REQUIRED', outcome: 'not-sent' } })

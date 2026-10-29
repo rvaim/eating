@@ -203,7 +203,7 @@ describe(`pinned OneBot v11 ${ONEBOT_V11_REVISION}: real Host and official MCP`,
     expect(fixture.handshakes[0]?.url).toBe('/')
   })
 
-  it('publishes exactly 38 public tools plus the hidden action, complete schemas and truthful metadata', async () => {
+  it('publishes 38 public and one hidden standard tool plus one separate image extension with truthful metadata', async () => {
     const context = await configuredHost()
     const { client } = await mcpClient(context)
     const tools = (await client.listTools()).tools
@@ -213,8 +213,9 @@ describe(`pinned OneBot v11 ${ONEBOT_V11_REVISION}: real Host and official MCP`,
     const expectedActions = [...ONEBOT_V11_PUBLIC_ACTIONS, ...ONEBOT_V11_HIDDEN_ACTIONS]
     expect(ONEBOT_V11_CASES.map(row => row.action)).toEqual(expectedActions)
     expect(new Set(ONEBOT_V11_CASES.map(row => row.name)).size).toBe(39)
-    expect(tools.map(tool => tool.name).sort()).toEqual(ONEBOT_V11_CASES.map(row => row.name).sort())
-    expect(published.map(value => object(value).protocolAction).sort()).toEqual([...expectedActions].sort())
+    expect(tools.map(tool => tool.name).sort()).toEqual([...ONEBOT_V11_CASES.map(row => row.name), 'qq_view_received_image'].sort())
+    expect(published.map(object).filter(tool => tool.protocolAction !== undefined).map(tool => tool.protocolAction).sort()).toEqual([...expectedActions].sort())
+    expect(published.map(object).filter(tool => tool.protocolAction === undefined)).toEqual([expect.objectContaining({ name: 'qq_view_received_image', resultFormat: 'content', readOnly: true, destructive: false })])
     expect(ONEBOT_V11_CASES.filter(row => !row.readOnly)).toHaveLength(20)
     for (const row of ONEBOT_V11_CASES) {
       const tool = tools.find(value => value.name === row.name)!

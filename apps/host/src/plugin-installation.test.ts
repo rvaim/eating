@@ -56,7 +56,7 @@ async function makePackage(version = '0.2.0', id = 'qq', backend?: string): Prom
     'ui/style.css': `.plugin { color: #3876b6; } /* ${version} */\n`,
   }
   const manifest: PluginPackageManifest = {
-    schemaVersion: 1, id, name: 'QQ', description: '独立构建插件测试', version, kind: 'communication', apiVersion: 2,
+    schemaVersion: 1, id, name: 'QQ', description: '独立构建插件测试', version, kind: 'communication', apiVersion: 3, assets: [],
     storageDirectory: id === 'qq' ? 'qq-bot' : `${id}-bot`, backend: 'server.mjs',
     frontend: { entry: 'ui/index.js', style: 'ui/style.css', order: 10, brandColor: '#3876b6', icon: 'message-circle' },
     integrity: Object.fromEntries(Object.entries(files).map(([entry, data]) => [entry, createHash('sha256').update(data).digest('hex')])),
@@ -75,6 +75,26 @@ async function expectCleanTransaction(): Promise<void> {
 }
 
 describe('independent plugin directory packages', () => {
+  it('installs declared native client assets with hashes and rejects later tampering', async () => {
+    const source = await makePackage('1.0.0')
+    const asset = 'native-client/client.js', data = 'globalThis.fixtureNativeClient = true;'
+    await mkdir(join(source.directory, 'native-client'))
+    await writeFile(join(source.directory, asset), data)
+    const manifest = { ...source.manifest, assets: [asset], integrity: { ...source.manifest.integrity, [asset]: createHash('sha256').update(data).digest('hex') } }
+    await writeFile(join(source.directory, 'eating-plugin.json'), JSON.stringify(manifest))
+    const installed = await installPluginPackage(home, source.directory)
+    expect(await readFile(join(installed.directory, asset), 'utf8')).toBe(data)
+    expect((await loadInstalledPluginPackages(home))[0]!.manifest.assets).toEqual([asset])
+    await writeFile(join(installed.directory, asset), 'changed')
+    await expect(loadInstalledPluginPackages(home)).rejects.toMatchObject({ code: 'PLUGIN_INTEGRITY_MISMATCH' })
+    await expectCleanTransaction()
+  })
+
+  it.each([['../outside.js'], ['ui/index.js'], ['UI/index.js'], ['eating-plugin.json'], ['one/client.js', 'one/client.js'], ['one/client.js', 'one/CLIENT.js'], ['client.svg']].map(assets => ({ assets })))('rejects unsafe or duplicate asset declarations %j', async ({ assets }) => {
+    const source = await makePackage('1.0.0')
+    expect(() => parsePluginPackageManifest({ ...source.manifest, assets })).toThrow()
+  })
+
   it('installs an independent Harness package using dsh storage with verified hashes', async () => {
     const source = await makePackage('1.0.0', 'dsh')
     const manifest = { ...source.manifest, kind: 'harness' as const, storageDirectory: 'dsh' }
@@ -399,7 +419,7 @@ describe('plugin package trust boundaries', () => {
   })
 
   it.each([
-    { schemaVersion: 2 }, { apiVersion: 1 }, { apiVersion: 3 }, { kind: 'unknown' }, { id: '../escape' }, { id: 'con' },
+    { schemaVersion: 2 }, { apiVersion: 1 }, { apiVersion: 2 }, { apiVersion: 4 }, { kind: 'unknown' }, { id: '../escape' }, { id: 'con' },
     { version: '../escape' }, { version: '01.2.0' }, { version: '1.0.0-01' }, { storageDirectory: '../bot' }, { storageDirectory: 'foo' },
     { name: '' }, { description: 42 }, { backend: 'other.mjs' }, { unknown: true }, { integrity: {} },
     { frontend: { entry: 'ui/index.js', style: 'ui/style.css', order: 0, brandColor: 'javascript:evil', icon: 'message-circle' } },

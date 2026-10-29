@@ -89,7 +89,7 @@ describe('QQ generic schema form arguments', () => {
   })
 
   it('honors schema types for future tools without a business-specific form catalog', () => {
-    const future: PluginToolDefinition = { name: 'future_tool', title: 'Future', description: '', readOnly: true, destructive: false,
+    const future: PluginToolDefinition = { name: 'future_tool', title: 'Future', description: '', readOnly: true, destructive: false, resultFormat: 'json',
       inputSchema: { type: 'object', properties: { choice: { enum: [false, 2] }, amount: { type: 'number' }, list: { type: 'array', items: { type: 'string' } } }, additionalProperties: false } }
     const fields = schemaFields(future)
     const result = parseToolArguments(future, fields, { choice: 'false', amount: '1.5', list: '["用户内容"]' }, {}, requestId)

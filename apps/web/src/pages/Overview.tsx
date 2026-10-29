@@ -58,7 +58,7 @@ export function Overview({ snapshot, onRobots, onRegister }: {
         {deliveryError && <p className="subtle" role="alert">{getErrorMessage(deliveryError, t('overview.deliveryError'))}</p>}
         <a className="text-button" href="#settings/queue">{t('overview.manageQueue')}<ArrowRight size={14} /></a>
       </section>
-      <aside className="version-note"><h3>{t('overview.processingTitle')}</h3><p>{t('overview.acceptedDescription')}</p><p>{t('overview.processingDescription')}</p><span>Eating 0.9</span></aside>
+      <aside className="version-note"><h3>{t('overview.processingTitle')}</h3><p>{t('overview.acceptedDescription')}</p><p>{t('overview.processingDescription')}</p><span>Eating 0.10</span></aside>
     </div>
   </main>
 }

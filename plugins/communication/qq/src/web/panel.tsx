@@ -11,6 +11,8 @@ import './panel.css'
 import { capabilityDescription, capabilityTitle, parameterDescription, parameterLabel, parameterOptionLabel, toolDescription, toolSchemaHelp, toolTitle } from './i18n'
 import type { QQMessage, QQTranslationKey } from './i18n'
 import { LiveLogs } from './live-logs'
+import { ImageResult, readImagePreview } from './ImageResult'
+import type { ImagePreviewResult } from './ImageResult'
 import { AgentPolicyFields, agentPolicyDraft } from './agent-policy-fields'
 import { isJsonObject } from '@eating/plugin-sdk'
 
@@ -42,6 +44,7 @@ interface Execution {
   arguments: JsonObject
   startedAt: string
   result?: JsonValue
+  contentResult?: true
   failure?: Failure
   pending: boolean
 }
@@ -164,7 +167,7 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
       if (!isJsonObject(response) || response.protocolVersion !== 1 || !Array.isArray(response.plugins)) throw new HostApiError('INVALID_HOST_RESPONSE', translate('common', 'errors.INVALID_HOST_RESPONSE'))
       const qq = response.plugins.find(entry => entry.id === 'qq')
       if (!qq) { setRefreshFailure(localFailure('PLUGIN_NOT_FOUND', 'error.pluginNotLoaded')); return }
-      if (!isJsonObject(qq) || typeof qq.enabled !== 'boolean' || !isJsonObject(qq.status) || !['unconfigured', 'disconnected', 'connecting', 'connected', 'reconnecting', 'error'].includes(String(qq.status.state)) || !Array.isArray(qq.agentTypes) || !Array.isArray(qq.tools) || !Array.isArray(qq.capabilities)) throw new HostApiError('INVALID_HOST_RESPONSE', translate('common', 'errors.INVALID_HOST_RESPONSE'))
+      if (!isJsonObject(qq) || typeof qq.enabled !== 'boolean' || !isJsonObject(qq.status) || !['unconfigured', 'disconnected', 'connecting', 'connected', 'reconnecting', 'error'].includes(String(qq.status.state)) || !Array.isArray(qq.agentTypes) || !Array.isArray(qq.tools) || qq.tools.some(item => !isJsonObject(item) || !['json', 'content'].includes(String(item.resultFormat))) || !Array.isArray(qq.capabilities)) throw new HostApiError('INVALID_HOST_RESPONSE', translate('common', 'errors.INVALID_HOST_RESPONSE'))
       setWorkspace(response); setPlugin(qq); setRefreshFailure(null)
       try {
         const configuration = publicConfiguration(qq.configuration)
@@ -359,6 +362,9 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
   const [schemaError, setSchemaError] = useState<QQMessage | undefined>()
   const [validationFailure, setValidationFailure] = useState<Failure | null>(null)
   const [execution, setExecution] = useState<Execution | null>(null)
+  const [imagePreview, setImagePreview] = useState<ImagePreviewResult | null>(null)
+  const availability = useRef(active && enabled)
+  availability.current = active && enabled
   const [history, setHistory] = useState<Execution[]>([])
   const alive = useRef(false)
   const controllerRef = useRef<AbortController | null>(null)
@@ -374,8 +380,9 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
       pendingSensitive.current = false; actionLock.current = false
       setPending(false); onBusyRef.current(false)
     }
-    setExecution(current => current?.tool.sensitiveResult ? null : current)
-    setHistory(current => current.some(item => item.tool.sensitiveResult) ? current.filter(item => !item.tool.sensitiveResult) : current)
+    setImagePreview(null)
+    setExecution(current => current?.tool.sensitiveResult || current?.tool.resultFormat === 'content' ? null : current)
+    setHistory(current => current.some(item => item.tool.sensitiveResult || item.tool.resultFormat === 'content') ? current.filter(item => !item.tool.sensitiveResult && item.tool.resultFormat === 'json') : current)
   }, [actionLock])
   useEffect(() => {
     alive.current = true
@@ -421,7 +428,7 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
     setErrors(current => ({ ...current, [key]: undefined }))
   }
   function remember(run: Execution) {
-    if (!run.tool.sensitiveResult) setHistory(current => [...current, run].slice(-historyLimit))
+    if (!run.tool.sensitiveResult && run.tool.resultFormat === 'json') setHistory(current => [...current, run].slice(-historyLimit))
   }
   async function execute(retry?: Execution) {
     const selected = retry?.tool ?? tool
@@ -437,7 +444,8 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
     const run: Execution = { tool: selected, requestId: retry?.requestId ?? requestId, arguments: input.arguments, startedAt: new Date().toISOString(), pending: true }
     const currentGeneration = ++generation.current
     const controller = new AbortController()
-    controllerRef.current = controller; pendingSensitive.current = selected.sensitiveResult === true
+    controllerRef.current = controller; pendingSensitive.current = selected.sensitiveResult === true || selected.resultFormat === 'content'
+    setImagePreview(null)
     actionLock.current = true; setPending(true); onBusy(true); setValidationFailure(null)
     if (execution && !retry) remember(execution)
     setExecution(run)
@@ -446,12 +454,18 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
         name: selected.name, arguments: run.arguments, requestId: run.requestId,
         ...(!selected.readOnly || selected.destructive ? { confirmed: true } : {}),
       } })
-      if (!alive.current || currentGeneration !== generation.current || controller.signal.aborted) return
-      setExecution({ ...run, pending: false, result: response.result }); setRequestId(crypto.randomUUID())
+      if (!alive.current || currentGeneration !== generation.current || controller.signal.aborted || selected.resultFormat === 'content' && (!availability.current || document.hidden)) return
+      if (!isJsonObject(response) || response.ok !== true || response.requestId !== run.requestId || !Object.hasOwn(response, 'result')) throw new HostApiError('INVALID_HOST_RESPONSE', '', 'failed')
+      if (selected.resultFormat === 'content') {
+        setImagePreview(readImagePreview(response.result))
+        setExecution({ ...run, pending: false, contentResult: true })
+      } else setExecution({ ...run, pending: false, result: response.result })
+      setRequestId(crypto.randomUUID())
       onFeedback(t('tests.completeFeedback'))
     } catch (error) {
-      if (!alive.current || currentGeneration !== generation.current || controller.signal.aborted) return
-      const failure = failureFrom(error)
+      if (!alive.current || currentGeneration !== generation.current || controller.signal.aborted || selected.resultFormat === 'content' && (!availability.current || document.hidden)) return
+      const failure = selected.resultFormat === 'content' && error instanceof HostApiError && error.code === 'INVALID_HOST_RESPONSE'
+        ? localFailure('INVALID_HOST_RESPONSE', 'image.invalid') : failureFrom(error)
       setExecution({ ...run, pending: false, failure })
       if (failure.outcome !== 'unknown') setRequestId(crypto.randomUUID())
     } finally {
@@ -477,6 +491,7 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
           }}>{tools.map(item => <option key={item.name} value={item.name} title={item.protocolAction}>{t(!item.readOnly || item.destructive ? 'tests.tool.action' : 'tests.tool.readOnly', { title: toolTitle(item) })}</option>)}</select>
         </FormField>
         {tool && <><p className="qq-tool-description">{toolDescription(tool)}</p><details className="qq-tool-help"><summary>{t('tests.parameterHelp')}</summary><p>{toolSchemaHelp(tool)}</p>{tool.protocolAction && <p>{t('tests.protocolAction', { action: tool.protocolAction })}</p>}</details></>}
+        {tool?.resultFormat === 'content' && <p className="qq-sensitive" role="note">{t('image.extension')} {t('image.previewHelp')}</p>}
         {tool?.sensitiveResult && <p className="qq-sensitive" role="note">{t('tests.sensitiveHelp')}</p>}
         {fields.map(({ key, schema, required, kind, options }) => {
           const fieldId = `${prefix}-arg-${key}`
@@ -515,7 +530,9 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
       <div className="qq-actions"><button type="button" className="button button-secondary" disabled={!unknownReviewed || pending || mutationBusy || !enabled || ((!execution.tool.readOnly || execution.tool.destructive) && !confirmed)} onClick={() => void execute(execution)}>{t('action.retryRequest')}</button>
         <button type="button" className="button button-secondary" disabled={!unknownReviewed || pending || mutationBusy} onClick={allowNewRequest}>{t('action.newRequest')}</button></div><p className="qq-help">{t('tests.unknown.newRequestHelp')}</p>
     </div>}
+    {pending && execution?.tool.resultFormat === 'content' && <button type="button" className="button button-secondary qq-image-cancel" onClick={clearSensitive}>{t('image.cancel')}</button>}
     {execution && <ExecutionResult execution={execution} onFeedback={onFeedback} />}
+    {imagePreview && active && enabled && !document.hidden && <ImageResult result={imagePreview} onClear={clearSensitive} />}
     <p className="qq-help">{t('tests.historyHelp', { limit: formatNumber(historyLimit) })}</p>
     {history.length > 0 && <details className="qq-history"><summary>{t('tests.history', { count: history.length, value: formatNumber(history.length) })}</summary>{[...history].reverse().map((item, index) => <ExecutionResult key={`${item.requestId}-${item.startedAt}-${index}`} execution={item} onFeedback={onFeedback} />)}</details>}
   </>
@@ -525,8 +542,8 @@ function ExecutionResult({ execution, onFeedback }: { execution: Execution; onFe
   return <div className="qq-execution"><div className="qq-execution-heading"><strong>{toolTitle(execution.tool)}</strong><span>{t(execution.pending ? 'execution.pending' : execution.failure ? execution.failure.outcome === 'unknown' ? 'execution.unknown' : 'execution.failed' : 'execution.complete')}</span></div>
     {execution.tool.sensitiveResult && <p className="qq-sensitive" role="note">{t('tests.sensitiveResult')}</p>}
     <p className="qq-help">{t('execution.started', { time: formatDateTime(execution.startedAt), id: execution.requestId })}</p><ErrorNotice failure={execution.failure ?? null} />
-    <JsonPreview label={t('execution.json')} value={{ name: execution.tool.name, requestId: execution.requestId, arguments: execution.arguments, startedAt: execution.startedAt,
-      ...(execution.pending ? { state: 'pending' } : execution.failure ? { error: { message: execution.failure.message, code: execution.failure.code, outcome: execution.failure.outcome } } : { result: execution.result }) }} onFeedback={onFeedback} />
+    {execution.tool.resultFormat === 'content' ? <p className="qq-help">{t('image.safeResult')}</p> : <JsonPreview label={t('execution.json')} value={{ name: execution.tool.name, requestId: execution.requestId, arguments: execution.arguments, startedAt: execution.startedAt,
+      ...(execution.pending ? { state: 'pending' } : execution.failure ? { error: { message: execution.failure.message, code: execution.failure.code, outcome: execution.failure.outcome } } : { result: execution.result }) }} onFeedback={onFeedback} />}
   </div>
 }
 

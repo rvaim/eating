@@ -1,3 +1,14 @@
+.dsh-native-entry { padding: 24px 0; border-bottom: 1px solid var(--color-line); }
+.dsh-native-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.dsh-native-heading h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.dsh-native-heading p { max-width: 72ch; margin-top: 5px; color: var(--color-muted); font-size: 12px; }
+.dsh-native-heading .button { flex-shrink: 0; min-height: 44px; }
+.dsh-capabilities { margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--color-line); }
+.dsh-capabilities .section-heading { margin-bottom: 20px; }
+.dsh-capabilities .check-field { max-width: 75ch; }
+.dsh-capability-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.dsh-capability-actions .button { min-height: 44px; }
+@media (max-width: 600px) { .dsh-native-heading { flex-wrap: wrap; gap: 14px; } }
 .dsh-panel { display: contents; }
 .dsh-panel > * { max-width: 1050px; min-width: 0; }
 .dsh-panel [hidden] { display: none !important; }

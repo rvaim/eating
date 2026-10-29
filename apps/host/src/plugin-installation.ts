@@ -50,10 +50,10 @@ function validEntry(value: unknown): value is string {
 
 /** Parses data only. Approval of the local executable source belongs to the caller. */
 export function parsePluginPackageManifest(value: unknown): PluginPackageManifest {
-  if (!isJsonObject(value) || !exactKeys(value, ['schemaVersion', 'id', 'name', 'description', 'version', 'kind', 'apiVersion', 'storageDirectory', 'backend', 'frontend', 'integrity'])) {
+  if (!isJsonObject(value) || !exactKeys(value, ['schemaVersion', 'id', 'name', 'description', 'version', 'kind', 'apiVersion', 'storageDirectory', 'backend', 'frontend', 'assets', 'integrity'])) {
     throw failure('INVALID_PLUGIN_MANIFEST', '插件清单字段不完整或含有未知字段。')
   }
-  if (value.schemaVersion !== 1 || value.apiVersion !== 2) throw failure('INCOMPATIBLE_PLUGIN_API', '仅支持 schemaVersion 1 / SDK apiVersion 2 的插件包。')
+  if (value.schemaVersion !== 1 || value.apiVersion !== 3) throw failure('INCOMPATIBLE_PLUGIN_API', '仅支持 schemaVersion 1 / SDK apiVersion 3 的插件包。')
   if (!validId(value.id) || !validVersion(value.version) || !validId(value.storageDirectory)
     || (value.kind !== 'communication' && value.kind !== 'harness') || (value.kind === 'communication' && !value.storageDirectory.endsWith('-bot'))
     || typeof value.name !== 'string' || !value.name.trim() || value.name.length > 100
@@ -69,18 +69,26 @@ export function parsePluginPackageManifest(value: unknown): PluginPackageManifes
     || typeof frontend.icon !== 'string' || !validId(frontend.icon)) {
     throw failure('INVALID_PLUGIN_MANIFEST', '插件入口必须是 server.mjs、ui/index.js 和 ui/style.css，且前端元数据必须有效。')
   }
+  if (!Array.isArray(value.assets) || value.assets.length > 32) throw failure('INVALID_PLUGIN_ASSETS', '插件附加资源列表或路径无效。')
+  const assets = value.assets.map(asset => {
+    if (!validEntry(asset) || !/\.(?:mjs|js|json|css)$/u.test(asset) || asset === MANIFEST) throw failure('INVALID_PLUGIN_ASSETS', '插件附加资源列表或路径无效。')
+    return asset
+  })
+  if (new Set([...ENTRIES, ...assets].map(entry => entry.toLowerCase())).size !== ENTRIES.length + assets.length) throw failure('INVALID_PLUGIN_ASSETS', '插件附加资源包含重复路径。')
+  const entries = [...ENTRIES, ...assets]
   const integrity = value.integrity
-  if (!isJsonObject(integrity) || !exactKeys(integrity, ENTRIES)
-    || !ENTRIES.every(entry => typeof integrity[entry] === 'string' && /^[0-9a-f]{64}$/.test(integrity[entry]))) {
+  if (!isJsonObject(integrity) || !exactKeys(integrity, entries)
+    || !entries.every(entry => typeof integrity[entry] === 'string' && /^[0-9a-f]{64}$/.test(integrity[entry]))) {
     throw failure('INVALID_PLUGIN_INTEGRITY', '插件必须为每个声明入口提供准确的 SHA-256 摘要。')
   }
   // Canonical field order also makes immutable-version comparisons independent of JSON formatting.
   return {
     schemaVersion: 1, id: value.id, name: value.name, description: value.description,
-    version: value.version, kind: value.kind, apiVersion: 2, storageDirectory: value.storageDirectory,
+    version: value.version, kind: value.kind, apiVersion: 3, storageDirectory: value.storageDirectory,
     backend: value.backend,
     frontend: { entry: frontend.entry, style: frontend.style, order: frontend.order, brandColor: frontend.brandColor, icon: frontend.icon },
-    integrity: Object.fromEntries(ENTRIES.map(entry => [entry, integrity[entry] as string])),
+    assets: [...assets],
+    integrity: Object.fromEntries(entries.map(entry => [entry, integrity[entry] as string])),
   }
 }
 
@@ -151,23 +159,34 @@ function parseJson(data: Buffer, code: string): unknown {
   catch { throw failure(code, '插件清单或安装索引不是有效 JSON。') }
 }
 
-async function checkPackageTree(directory: string): Promise<void> {
-  await checkedDirectory(directory)
-  for (const [parent, expected] of [[directory, [MANIFEST, 'server.mjs', 'ui']], [join(directory, 'ui'), ['index.js', 'style.css']]] as const) {
+async function checkPackageTree(directory: string, assets: readonly string[]): Promise<void> {
+  const files = new Set<string>([MANIFEST, ...ENTRIES, ...assets])
+  const directories = new Map<string, Set<string>>([['', new Set()]])
+  for (const file of files) {
+    const parts = file.split('/')
+    for (let index = 0; index < parts.length; index += 1) {
+      const parent = parts.slice(0, index).join('/'), child = parts[index]!, path = parts.slice(0, index + 1).join('/')
+      if (files.has(parent)) throw failure('INVALID_PLUGIN_ASSETS', '插件资源文件与目录存在冲突。')
+      if (!directories.has(parent)) directories.set(parent, new Set())
+      directories.get(parent)!.add(child)
+      if (index < parts.length - 1 && !directories.has(path)) directories.set(path, new Set())
+    }
+  }
+  for (const [relativePath, expected] of directories) {
+    const parent = join(directory, relativePath)
     await checkedDirectory(parent)
     const entries = await readdir(parent)
-    if (entries.length !== expected.length || entries.some(entry => !(expected as readonly string[]).includes(entry))) {
-      throw failure('UNDECLARED_PLUGIN_FILE', '插件包仅允许清单及三个已声明的独立构建入口，不允许额外文件。')
-    }
+    if (entries.length !== expected.size || entries.some(entry => !expected.has(entry))) throw failure('UNDECLARED_PLUGIN_FILE', '插件包包含未声明的文件或目录。')
     for (const entry of entries) {
+      const path = relativePath ? `${relativePath}/${entry}` : entry
       const stat = await lstat(join(parent, entry))
-      if (stat.isSymbolicLink() || (entry === 'ui' ? !stat.isDirectory() : !stat.isFile())) throw failure('UNSAFE_PLUGIN_PATH', '插件包不允许符号链接或特殊文件。')
+      if (stat.isSymbolicLink() || (directories.has(path) ? !stat.isDirectory() : !stat.isFile())) throw failure('UNSAFE_PLUGIN_PATH', '插件包不允许符号链接或特殊文件。')
     }
   }
 }
 
 async function verifyPackage(directory: string, expected?: ActivePlugin): Promise<Snapshot> {
-  await checkPackageTree(directory)
+  await checkedDirectory(directory)
   const manifestBytes = await readBounded(join(directory, MANIFEST), MAX_MANIFEST_BYTES)
   let manifest: PluginPackageManifest
   try { manifest = parsePluginPackageManifest(parseJson(manifestBytes, 'INVALID_PLUGIN_MANIFEST')) }
@@ -175,16 +194,17 @@ async function verifyPackage(directory: string, expected?: ActivePlugin): Promis
     if (error instanceof PlatformError) throw error
     throw failure('INVALID_PLUGIN_MANIFEST', '插件清单无法安全解析。')
   }
+  await checkPackageTree(directory, manifest.assets)
   if (expected && (manifest.id !== expected.id || manifest.version !== expected.version)) throw failure('PLUGIN_IDENTITY_MISMATCH', '安装索引与插件清单身份或版本不一致。')
   let size = manifestBytes.length
   const files = new Map<string, Buffer>()
-  for (const entry of ENTRIES) {
+  for (const entry of [...ENTRIES, ...manifest.assets]) {
     const data = await readBounded(join(directory, entry), MAX_PACKAGE_BYTES - size)
     size += data.length
     if (createHash('sha256').update(data).digest('hex') !== manifest.integrity[entry]) throw failure('PLUGIN_INTEGRITY_MISMATCH', `插件入口 ${entry} 的 SHA-256 校验失败，禁止加载。`)
     files.set(entry, data)
   }
-  await checkPackageTree(directory)
+  await checkPackageTree(directory, manifest.assets)
   return { manifest, files }
 }
 
@@ -370,11 +390,17 @@ export async function installPluginPackage(home: string, sourceDirectory: string
     await mkdir(join(stagePath, 'ui'), { mode: 0o700 })
     const manifestData = Buffer.from(`${JSON.stringify(snapshot.manifest, null, 2)}\n`)
     for (const [entry, data] of [[MANIFEST, manifestData], ...snapshot.files] as [string, Buffer][]) {
+      await mkdir(dirname(join(stagePath, entry)), { recursive: true, mode: 0o700 })
       const handle = await open(join(stagePath, entry), 'wx', 0o600)
       try { await handle.writeFile(data); await handle.sync() } finally { await handle.close() }
     }
     await verifyPackage(stagePath, snapshot.manifest)
-    await syncDirectory(join(stagePath, 'ui'))
+    const assetDirectories = new Set<string>(['ui'])
+    for (const entry of snapshot.files.keys()) {
+      let parent = dirname(entry)
+      while (parent !== '.') { assetDirectories.add(parent); parent = dirname(parent) }
+    }
+    for (const directory of [...assetDirectories].sort((a, b) => b.split('/').length - a.split('/').length)) await syncDirectory(join(stagePath, directory))
     await syncDirectory(stagePath)
     return await withIndexTransaction(root, plugins, async () => {
       try {

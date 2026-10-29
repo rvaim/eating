@@ -35,6 +35,16 @@ async function buildPlugin(source) {
   if (pkg.version !== manifest.version) throw new Error('插件包与清单版本必须一致。')
   const output = resolve(directory, 'dist')
   await mkdir(resolve(output, 'ui'), { recursive: true })
+  if (manifest.id === 'dsh') {
+    const nativeOutput = resolve(output, 'native-client')
+    await mkdir(nativeOutput, { recursive: true })
+    await build({ ...common, platform: 'node', packages: 'external', entryPoints: [resolve(directory, 'src/native-client/host.ts')], outfile: resolve(nativeOutput, 'host.mjs') })
+    const client = await build({ bundle: true, platform: 'browser', packages: 'external', target: 'es2022', format: 'cjs', jsx: 'automatic', minify: true, write: false,
+      entryPoints: [resolve(directory, 'src/native-client/client.tsx')], define: { 'process.env.NODE_ENV': '"production"' }, logLevel: 'warning' })
+    if (client.outputFiles.length !== 1) throw new Error('原生客户端必须作为一个自包含模块构建。')
+    await writeFile(resolve(nativeOutput, 'client.js'), `window.__ModuleLoader__.load({id:"@eating/dsh-native-web",factory(require){const module={exports:{}};const exports=module.exports;\n${client.outputFiles[0].text}\nreturn module.exports;}});\n`)
+    await writeFile(resolve(nativeOutput, 'package.json'), await readFile(resolve(directory, 'src/native-client/package.json')))
+  }
   await build({ ...common, platform: 'node', entryPoints: [resolve(directory, 'src/server.ts')], outfile: resolve(output, manifest.backend), banner: { js: requireBanner }, metafile: true }).then(result => {
     for (const path of Object.keys(result.metafile.inputs)) if (/apps\//.test(path)) throw new Error('插件后台不得依赖应用内部源码：' + path)
   })
@@ -47,7 +57,7 @@ async function buildPlugin(source) {
     for (const file of result.outputFiles) await writeFile(file.path.endsWith('.css') ? resolve(output, manifest.frontend.style) : resolve(output, manifest.frontend.entry), file.contents)
   })
   const integrity = {}
-  for (const name of [manifest.backend, manifest.frontend.entry, manifest.frontend.style]) integrity[name] = createHash('sha256').update(await readFile(resolve(output, name))).digest('hex')
+  for (const name of [manifest.backend, manifest.frontend.entry, manifest.frontend.style, ...manifest.assets]) integrity[name] = createHash('sha256').update(await readFile(resolve(output, name))).digest('hex')
   await writeFile(resolve(output, 'eating-plugin.json'), JSON.stringify({ ...manifest, integrity }, null, 2) + '\n')
   console.log(`插件产物：${relative(root, output)}，${manifest.id}@${manifest.version}，API v${manifest.apiVersion}`)
 }

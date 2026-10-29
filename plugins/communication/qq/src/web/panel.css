@@ -1,3 +1,11 @@
+.qq-image-result { min-width: 0; margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--color-line); }
+.qq-image-result h4 { margin: 0; font-size: 14px; font-weight: 600; }
+.qq-image-result .button, .qq-image-cancel { min-height: 44px; }
+.qq-image-cancel { margin-top: 16px; }
+.qq-image-parts { display: grid; gap: 16px; margin-top: 18px; }
+.qq-image-parts > p { max-width: 75ch; white-space: pre-wrap; font-size: 13px; }
+.qq-result-image { display: block; max-width: 100%; max-height: min(600px, 65dvh); width: auto; height: auto; object-fit: contain; object-position: left top; border: 1px solid var(--color-line); border-radius: 5px; }
+.qq-image-metadata { margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-muted); font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .qq-panel { display: contents; }
 .qq-panel > * { max-width: 1050px; min-width: 0; }
 .qq-panel p { overflow-wrap: anywhere; }

@@ -17,12 +17,15 @@ vi.mock('./backend/onebot', () => ({ OneBotClient: class {
   connect = vi.fn(async () => {})
   async dispose() {}
 } }))
+const imageDownload = vi.hoisted(() => vi.fn(async (_url: string) => ({ mimeType: 'image/png' as const, bytes: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=', 'base64') })))
+vi.mock('./backend/media', async importOriginal => ({ ...await importOriginal<typeof import('./backend/media')>(), downloadQQImage: imageDownload }))
 
 const roots: string[] = []
 const plugins: BackendPlugin[] = []
 afterEach(async () => {
   for (const plugin of plugins.splice(0)) await plugin.dispose()
   transport.clients.splice(0)
+  imageDownload.mockClear()
   const parent = realpathSync(tmpdir())
   for (const root of roots.splice(0)) {
     const target = realpathSync(root)
@@ -183,5 +186,92 @@ describe('QQ agent policy backend integration', () => {
     await expect(plugin.invokeScoped!('qq_send_private_message', { user_id: 234567, message: 'hello', request_id: 'host-agent:next-id' }, 'host-agent:next-id', scope)).rejects.toMatchObject({ code: 'AGENT_SCOPE_VIOLATION' })
     expect(plugin.agentTypes?.every(type => type.enabledTools.length === 0)).toBe(true)
     expect(client.call).toHaveBeenCalledTimes(calls)
+  })
+
+  it('registers a separate content tool without modifying the standard OneBot catalog', () => {
+    const { plugin } = fixture()
+    expect(plugin.tools).toHaveLength(40)
+    expect(plugin.tools.filter(tool => tool.protocolAction)).toHaveLength(39)
+    expect(plugin.tools.find(tool => tool.name === 'qq_view_received_image')).toMatchObject({ readOnly: true, destructive: false, resultFormat: 'content', title: '查看本会话图片' })
+    expect(plugin.agentTypes?.every(type => type.availableTools.includes('qq_view_received_image') && type.defaultTools.includes('qq_view_received_image') && type.enabledTools.includes('qq_view_received_image'))).toBe(true)
+  })
+
+  it('preserves saved tool selections without implicitly enabling the new image extension', async () => {
+    const { plugin, directory } = fixture()
+    const agentTools = { 'qq.private': ['qq_get_message'], 'qq.group': ['qq_get_group_info'] }
+    await savePolicy(plugin, { agentTools })
+    const file = String(plugin.getPublicConfiguration().configurationPath)
+    const bytes = readFileSync(file, 'utf8')
+    const reopened = fixture(directory)
+    expect(reopened.plugin.getPublicConfiguration().agentTools).toEqual(agentTools)
+    expect(reopened.plugin.agentTypes?.every(type => !type.enabledTools.includes('qq_view_received_image'))).toBe(true)
+    expect(readFileSync(file, 'utf8')).toBe(bytes)
+    await expect(reopened.plugin.invokeScoped!('qq_view_received_image', { message_id: '12', image_id: 'image-a' }, 'blocked-image', scopeFor(reopened.plugin))).rejects.toMatchObject({ code: 'AGENT_SCOPE_VIOLATION' })
+    expect(reopened.client.call).not.toHaveBeenCalled()
+  })
+
+  it('requeries OneBot after reopening and returns images without creating an action receipt', async () => {
+    const { plugin, directory } = fixture()
+    await savePolicy(plugin)
+    const reopened = fixture(directory)
+    const message = { message_id: 12, message_type: 'private', self_id: 123456, sender: { user_id: 234567 }, message: [{ type: 'image', data: { file: 'image-a', url: 'https://cdn.example.test/image?signature=fixture-secret' } }] }
+    reopened.client.call.mockResolvedValueOnce(message)
+    const result = await reopened.plugin.invokeScoped!('qq_view_received_image', { message_id: '12', image_id: 'image-a' }, 'image-request', scopeFor(reopened.plugin))
+    expect(result).toMatchObject({ content: [{ type: 'text' }, { type: 'image', mimeType: 'image/png', data: expect.any(String) }], structuredContent: { messageId: '12', imageId: 'image-a' } })
+    expect(JSON.stringify(result)).not.toContain('fixture-secret')
+    expect(reopened.client.call).toHaveBeenCalledExactlyOnceWith('get_msg', { message_id: 12 }, { timeoutMs: 10000, readOnly: true })
+    expect(imageDownload).toHaveBeenCalledExactlyOnceWith('https://cdn.example.test/image?signature=fixture-secret')
+    expect(reopened.executeIdempotent).not.toHaveBeenCalled()
+  })
+
+  it('checks account, instance, message and resource references before a scoped image query', async () => {
+    const { plugin, client } = fixture()
+    const scope = scopeFor(plugin)
+    for (const input of [{ message_id: '13', image_id: 'image-a' }, { message_id: '12', image_id: 'other-image' }, { message_id: '12', image_id: 'image-a', instance_id: '00000000-0000-4000-8000-000000000000' }]) await expect(plugin.invokeScoped!('qq_view_received_image', input, 'denied-image', scope)).rejects.toMatchObject({ code: 'AGENT_SCOPE_VIOLATION' })
+    client.status = { ...client.status, accountId: '999999' }
+    await expect(plugin.invokeScoped!('qq_view_received_image', { message_id: '12', image_id: 'image-a' }, 'denied-account', scope)).rejects.toMatchObject({ code: 'AGENT_SCOPE_VIOLATION' })
+    expect(client.call).not.toHaveBeenCalled()
+    expect(imageDownload).not.toHaveBeenCalled()
+  })
+
+  it('rejects cross-message image references even when each reference is independently granted', async () => {
+    const { plugin, client } = fixture()
+    const scope = { ...scopeFor(plugin), resourceIds: ['image-a', 'image-b'] }
+    client.call.mockResolvedValueOnce({ message_id: 12, message_type: 'private', sender: { user_id: 234567 }, message: [{ type: 'image', data: { file: 'image-b', url: 'https://cdn.example.test/b' } }] })
+    await expect(plugin.invokeScoped!('qq_view_received_image', { message_id: '12', image_id: 'image-a' }, 'wrong-image-pair', scope)).rejects.toMatchObject({ code: 'AGENT_SCOPE_VIOLATION' })
+    expect(imageDownload).not.toHaveBeenCalled()
+  })
+
+  it('lets owners read verified images while rejecting arbitrary local references', async () => {
+    const { plugin, client, executeIdempotent } = fixture()
+    const message = { message_id: 12, message_type: 'private', sender: { user_id: 234567 }, message: [{ type: 'image', data: { file: 'image-a', url: 'https://cdn.example.test/image' } }] }
+    client.call.mockResolvedValue(message)
+    await expect(plugin.invoke('qq_view_received_image', { message_id: '12', image_id: 'image-a' }, 'owner-image')).resolves.toHaveProperty('content')
+    await expect(plugin.invoke('qq_view_received_image', { message_id: '12', image_id: '/etc/passwd' }, 'owner-local-path')).rejects.toMatchObject({ code: 'AGENT_SCOPE_VIOLATION' })
+    expect(imageDownload).toHaveBeenCalledTimes(1)
+    expect(executeIdempotent).not.toHaveBeenCalled()
+  })
+
+  it('rechecks a permission revoked while the image is downloading', async () => {
+    const { plugin, client } = fixture()
+    const scope = scopeFor(plugin)
+    client.call.mockResolvedValueOnce({ message_id: 12, message_type: 'private', sender: { user_id: 234567 }, message: [{ type: 'image', data: { file: 'image-a', url: 'https://cdn.example.test/image' } }] })
+    imageDownload.mockImplementationOnce(async () => {
+      await savePolicy(plugin, { agentTools: { 'qq.private': [], 'qq.group': [] } })
+      return { mimeType: 'image/png', bytes: Buffer.from('fixture') }
+    })
+    await expect(plugin.invokeScoped!('qq_view_received_image', { message_id: '12', image_id: 'image-a' }, 'revoked-image', scope)).rejects.toMatchObject({ code: 'AGENT_SCOPE_VIOLATION' })
+  })
+
+  it('preserves original structured event content and decodes only true CQ receive segments', () => {
+    const { client, events } = fixture()
+    const message = [{ type: 'image', data: { file: 'image-a', url: 'https://cdn.example.test/image' } }, { type: 'text', data: { text: '[CQ:image,file=not-granted]' } }]
+    client.options.onEvent(incoming(234567, message))
+    expect(events[0]?.content).toBe(message)
+    expect(events[0]?.resourceIds).toEqual(['image-a'])
+    const cq = '&#91;CQ:image,file=not-granted&#93; [CQ:image,file=image&#44;a&amp;b]'
+    client.options.onEvent(incoming(234567, cq))
+    expect(events[1]?.content).toBe(cq)
+    expect(events[1]?.resourceIds).toEqual(['image,a&b'])
   })
 })

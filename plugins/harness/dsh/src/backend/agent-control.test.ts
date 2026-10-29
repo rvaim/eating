@@ -4,6 +4,7 @@ import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { HarnessDeliveryBatch, HarnessHostServices, HarnessOwnerConfiguration } from '@eating/plugin-sdk'
 import { DshAgentControl } from './agent-control'
+import { agentInstanceLabel } from './agent-label'
 
 const stops: Array<() => Promise<unknown> | void> = []
 afterEach(async () => { for (const stop of stops.splice(0).reverse()) await stop() })
@@ -25,6 +26,28 @@ function fixture() {
 }
 
 describe('trusted native Agent control boundary', () => {
+  it('labels verified account identities without changing binding keys or native UUIDs', () => {
+    const f = fixture()
+    const first = f.control.bind(f.batch, parentId)
+    const again = f.control.bind({ ...f.batch, batchId: 'b'.repeat(64) }, parentId)
+    const switched = f.control.bind({ ...f.batch, batchId: 'c'.repeat(64), events: f.batch.events.map(event => ({ ...event, accountId: '101' })) }, parentId)
+    expect(again.key).toBe(first.key)
+    expect(again.scope.agentId).toBe(first.scope.agentId)
+    expect(switched.key).not.toBe(first.key)
+    expect(switched.scope.agentId).not.toBe(first.scope.agentId)
+    expect(agentInstanceLabel(first.scope, f.owner.agentTypes[0]!.pluginName)).toBe('QQ-100-私聊-200')
+    expect(agentInstanceLabel(switched.scope, f.owner.agentTypes[0]!.pluginName)).toBe('QQ-101-私聊-200')
+    const reopened = new DshAgentControl(f.directory, f.host); stops.push(() => reopened.close())
+    expect(reopened.list().map(binding => binding.scope.accountId)).toEqual(['100', '101'])
+    expect(reopened.list()[0]!.scope.agentId).toBe(first.scope.agentId)
+  })
+
+  it('uses supplied platform metadata verbatim and the canonical ID when metadata is absent', () => {
+    const scope = { pluginId: 'example.chat', accountId: 'account-42', kind: 'group' as const, targetId: 'group-24' }
+    expect(agentInstanceLabel(scope, 'Example Chat')).toBe('Example Chat-account-42-群聊-group-24')
+    expect(agentInstanceLabel(scope)).toBe('example.chat-account-42-群聊-group-24')
+    expect(agentInstanceLabel({ ...scope, pluginId: 'qq' })).toBe('qq-account-42-群聊-group-24')
+  })
   it('reserves one UUID for the verified tuple and persists identifiers without message bodies or bearer tokens', () => {
     const f = fixture(), first = f.control.bind(f.batch, parentId), second = f.control.bind({ ...f.batch, batchId: 'b'.repeat(64) }, parentId)
     expect(first.scope.agentId).toBe(second.scope.agentId)

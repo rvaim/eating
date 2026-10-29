@@ -177,8 +177,8 @@ test.describe('视口框架、独立滚动区与 QQ 固定页签', () => {
       const labels = copy[language]
       await expect(page.locator('.qq-connection-strip')).toContainText('123456789')
       await page.getByRole('tab', { name: labels.mcp, exact: true }).click()
-      await expect(page.locator('.qq-capability-list > li')).toHaveCount(40)
-      await expect(page.locator('.qq-capability-list > li > code')).toHaveCount(39)
+      await expect(page.locator('.qq-capability-list > li')).toHaveCount(41)
+      await expect(page.locator('.qq-capability-list > li > code')).toHaveCount(40)
       const pane = rightPane(page)
       const before = await chromePositions(page)
       expect(await scrollTop(pane)).toBe(0)
@@ -186,7 +186,7 @@ test.describe('视口框架、独立滚动区与 QQ 固定页签', () => {
       expect((await box(tabbar(page))).y).toBeGreaterThanOrEqual(strip.y + strip.height - 1)
       expect((await box(tabbar(page))).y).toBeGreaterThan((await box(pane)).y + 40)
       const mutations: string[] = []
-      page.on('request', request => { if (request.method() === 'POST') mutations.push(request.url()) })
+      page.on('request', request => { if (request.method() === 'POST' && !(request.url().endsWith('/api/plugins/dsh/manage') && request.postDataJSON()?.operation === 'get-model-capabilities')) mutations.push(request.url()) })
 
       await wheel(page, pane, 650)
       await expect.poll(() => scrollTop(pane)).toBeGreaterThan(0)
@@ -226,7 +226,7 @@ test.describe('视口框架、独立滚动区与 QQ 固定页签', () => {
     await chooseLanguage(page, 'en-US')
     const pane = rightPane(page)
     const mutations: string[] = []
-    page.on('request', request => { if (request.method() === 'POST') mutations.push(request.url()) })
+    page.on('request', request => { if (request.method() === 'POST' && !(request.url().endsWith('/api/plugins/dsh/manage') && request.postDataJSON()?.operation === 'get-model-capabilities')) mutations.push(request.url()) })
     const name = page.getByLabel('Display name', { exact: true })
     await name.fill('Unsaved connection draft')
     await wheelToTop(page, pane)
@@ -321,8 +321,8 @@ test.describe('视口框架、独立滚动区与 QQ 固定页签', () => {
     await chooseLanguage(page, 'en-US')
     await page.getByLabel('Display name', { exact: true }).fill('Mobile draft survives resize')
     await page.getByRole('tab', { name: 'MCP tools', exact: true }).click()
-    await expect(page.locator('.qq-capability-list > li')).toHaveCount(40)
-      await expect(page.locator('.qq-capability-list > li > code')).toHaveCount(39)
+    await expect(page.locator('.qq-capability-list > li')).toHaveCount(41)
+      await expect(page.locator('.qq-capability-list > li > code')).toHaveCount(40)
     const pane = rightPane(page)
     const sidebar = secondSidebar(page)
     const categories = sidebar.getByRole('button')
@@ -357,7 +357,7 @@ test.describe('视口框架、独立滚动区与 QQ 固定页签', () => {
     await page.goto(`${url}/#overview`)
     await chooseLanguage(page, 'en-US')
     const mutations: string[] = []
-    page.on('request', request => { if (request.method() === 'POST') mutations.push(request.url()) })
+    page.on('request', request => { if (request.method() === 'POST' && !(request.url().endsWith('/api/plugins/dsh/manage') && request.postDataJSON()?.operation === 'get-model-capabilities')) mutations.push(request.url()) })
     const routes = ['overview', 'harness/dsh', 'settings/delivery', 'settings/queue', 'prompts/main']
     for (const route of routes) await test.step(route, async () => {
       await page.goto(`${url}/#${route}`)

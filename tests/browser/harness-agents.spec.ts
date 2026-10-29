@@ -64,6 +64,7 @@ test.describe('Harness 模型连接与手动原生会话看板（本地夹具）
       return new Proxy(original, { get(target, key) {
         if (key === 'updateConfiguration') return async (input: unknown) => { const result = await target.updateConfiguration(input); configuration = parseConfiguration(input, configuration); return result }
         if (key === 'manage') return async (operation: string, input: unknown): Promise<JsonValue> => {
+          if (operation === 'get-model-capabilities') return target.manage!(operation, input)
           operations.push({ operation, input })
           if (operation === 'list-models') return { models: (await listModels(configuration)).models.map(model => ({ ...model })) }
           if (operation === 'test-connection') return testModelConnection(configuration)

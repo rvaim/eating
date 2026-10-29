@@ -239,13 +239,18 @@ export function apply(ctx){
       await walk(join(home, 'harness/dsh/dsh-home/sessions')); return values
     }
     const beforeRead = await fingerprints()
+    const catalog = host.getWorkspace().plugins
+    if (!Array.isArray(catalog)) throw new Error('No plugin catalog')
+    const qqPlugin = catalog.find(value => isJsonObject(value) && value.id === 'qq')
+    if (!isJsonObject(qqPlugin) || !isJsonObject(qqPlugin.status) || typeof qqPlugin.status.accountId !== 'string') throw new Error('No verified QQ account')
+    const accountId = qqPlugin.status.accountId
     const offline = await plugin.manage('list-sessions', {})
-    expect(offline).toMatchObject({ sessions: expect.arrayContaining([expect.objectContaining({ parentId: null }), expect.objectContaining({ agentTypeId: 'qq.private', title: 'qq-private-987654321', pluginId: 'qq', conversationKind: 'private', targetId: '987654321', updatedAt: null })]) })
+    expect(offline).toMatchObject({ sessions: expect.arrayContaining([expect.objectContaining({ parentId: null }), expect.objectContaining({ agentTypeId: 'qq.private', title: `QQ-${accountId}-私聊-987654321`, accountId, pluginName: 'QQ', pluginId: 'qq', conversationKind: 'private', targetId: '987654321', updatedAt: null })]) })
     if (!isJsonObject(offline) || !Array.isArray(offline.sessions)) throw new Error('No native session rows')
     const child = offline.sessions.find(row => isJsonObject(row) && row.agentTypeId === 'qq.private')
     if (!isJsonObject(child)) throw new Error('No native private child')
     const content = await plugin.manage('read-session', { sessionId: child.id!, limit: 200 })
-    expect(content).toMatchObject({ records: expect.arrayContaining([expect.objectContaining({ kind: 'agent/inbox/spliced', role: 'user' }), expect.objectContaining({ role: 'assistant' }), expect.objectContaining({ role: 'tool' })]) })
+    expect(content).toMatchObject({ records: expect.arrayContaining([expect.objectContaining({ role: 'user', classification: 'agent-message' }), expect.objectContaining({ role: 'assistant' }), expect.objectContaining({ role: 'tool' })]) })
     expect(JSON.stringify(content)).toContain('外部上下文只进入user数据')
     expect(JSON.stringify(content)).not.toContain('production-bridge-fixture-key')
     expect(JSON.stringify(content)).not.toContain('fixture-cookie-value')

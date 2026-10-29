@@ -84,7 +84,7 @@ test.describe('完整 OneBot 工具的通用面板', () => {
   test('三十九项双语目录、帮助和390px布局完整，切换语言保留草稿与请求ID', async ({ page }, testInfo) => {
     await configure(page)
     const panel = page.getByRole('tabpanel', { name: '功能测试', exact: true })
-    await expect(page.getByLabel('测试功能', { exact: true }).locator('option')).toHaveCount(39)
+    await expect(page.getByLabel('测试功能', { exact: true }).locator('option')).toHaveCount(40)
     await chooseLanguage(page, 'en-US')
     const selector = page.getByLabel('Test function', { exact: true })
     const names = await selector.locator('option').evaluateAll(options => options.map(option => (option as HTMLOptionElement).value))

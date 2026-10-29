@@ -124,6 +124,7 @@ test.describe('Harness 独立面板与泛型目录', () => {
     const connection = delay()
     await page.route('**/api/workspace', route => json(route, { ...initial, plugins: initial.plugins.map(plugin => plugin.id === 'dsh' ? { ...plugin, configuration, status } : plugin) }))
     await page.route('**/api/plugins/dsh/manage', async route => {
+      if (route.request().postDataJSON().operation === 'get-model-capabilities') { await route.continue(); return }
       installCount++
       expect(route.request().postDataJSON()).toEqual({ operation: 'install-runtime', input: {} })
       runtime.installing = true; runtime.progress = '界面夹具：正在安装'

@@ -9,8 +9,10 @@ import type { ConfigurationValidation, PluginPanelProps } from '@eating/ui-sdk'
 import './i18n'
 import type { DshTranslationKey } from './i18n'
 import { SessionDashboard } from './SessionDashboard'
-import { readModels, readModelTest } from './panel-data'
-import type { ModelOption, ModelTestResult } from './panel-data'
+import { ModelCapabilitiesSettings } from './ModelCapabilities'
+import { NativeWebEntry } from './NativeWebEntry'
+import { readModels, readModelTest, readNativeWebStatus } from './panel-data'
+import type { ModelOption, ModelTestResult, NativeWebStatus } from './panel-data'
 import './panel.css'
 
 type Operation = 'save' | 'install' | 'connect' | 'disconnect'
@@ -26,6 +28,7 @@ interface RuntimeStatus {
   readonly busy: boolean
   readonly sessionId: string | null
   readonly lastOutcome: string | null
+  readonly nativeWeb: NativeWebStatus
 }
 interface PublicConfiguration {
   readonly displayName: string
@@ -116,7 +119,8 @@ function readConfiguration(value: unknown): PublicConfiguration {
     timeoutMs: value.timeoutMs, maxTokens: value.maxTokens, apiKeyConfigured: value.apiKeyConfigured,
     runtimeStatus: { version: runtime.version, installed: runtime.installed === true, installing: runtime.installing === true,
       progress: runtime.progress as string | null, lastError: runtime.lastError as string | null, ready: runtime.ready === true,
-      busy: runtime.busy === true, sessionId: runtime.sessionId as string | null, lastOutcome: runtime.lastOutcome as string | null },
+      busy: runtime.busy === true, sessionId: runtime.sessionId as string | null, lastOutcome: runtime.lastOutcome as string | null,
+      nativeWeb: readNativeWebStatus(runtime.nativeWeb) },
     ...(typeof value.configurationPath === 'string' ? { configurationPath: value.configurationPath } : {}),
     ...(typeof value.dataDirectory === 'string' ? { dataDirectory: value.dataDirectory } : {}),
     ...(typeof value.warning === 'string' ? { warning: value.warning } : {}),
@@ -177,6 +181,7 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
   const [visible, setVisible] = useState(() => !document.hidden)
   const [tab, setTab] = useState<PanelTab>('configuration')
   const [modelOperation, setModelOperation] = useState<ModelOperation | null>(null)
+  const [capabilitySaving, setCapabilitySaving] = useState(false)
   const [models, setModels] = useState<readonly ModelOption[] | null>(null)
   const [modelTest, setModelTest] = useState<ModelTestResult | null>(null)
   const [modelFailure, setModelFailure] = useState<Failure | null>(null)
@@ -278,7 +283,7 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
   const starting = state === 'connecting' || state === 'reconnecting'
   const active = state === 'connected'
   const configured = Boolean(saved?.endpoint.trim() && saved.model.trim())
-  const blocked = operation !== null || modelOperation !== null || runtime?.installing === true || starting || !visible || refreshFailure !== null || uncertain !== null
+  const blocked = operation !== null || modelOperation !== null || capabilitySaving || runtime?.installing === true || starting || !visible || refreshFailure !== null || uncertain !== null
 
   async function requestModel(next: ModelOperation) {
     if (!plugin?.enabled || !saved?.endpoint.trim() || next === 'test-connection' && !configured || dirtyRef.current || blocked || actionLock.current || tab !== 'configuration') return
@@ -429,11 +434,13 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
       <ErrorNotice failure={actionFailure} />
       {uncertain && <div className="dsh-unknown"><strong>{t(uncertainKeys[uncertain.operation])}</strong><p>{t('uncertain.description')}</p><button type="button" className="button button-secondary" disabled={reading || refreshFailure !== null || readSerial <= uncertain.afterRead} onClick={() => { setUncertain(null); setActionFailure(null); setResult('result.confirmed') }}>{t('uncertain.confirm')}</button></div>}
     </section>}
+    <ModelCapabilitiesSettings routeKey={JSON.stringify([saved?.endpoint, saved?.model])} active={tab === 'configuration' && visible} enabled={plugin?.enabled === true} runtimeActive={active || starting || runtime?.ready === true || runtime?.busy === true} busy={operation !== null || modelOperation !== null || refreshFailure !== null || uncertain !== null || runtime?.installing === true} actionLock={actionLock} onBusy={setCapabilitySaving} />
     {runtime && <dl className="dsh-details"><div><dt>{t('details.processing')}</dt><dd>{refreshFailure ? t('state.unconfirmed') : processing}</dd></div>{runtime.sessionId && <div><dt>{t('details.sessionId')}</dt><dd>{runtime.sessionId}</dd></div>}{runtime.version && <div><dt>{t('details.version')}</dt><dd>{runtime.version}</dd></div>}{runtime.lastOutcome && <div><dt>{t('details.outcome')}</dt><dd>{outcomeKey ? t(outcomeKey) : runtime.lastOutcome}</dd></div>}</dl>}
     {(saved?.dataDirectory || saved?.configurationPath) && <details className="dsh-file-details"><summary>{t('details.files')}</summary><dl className="dsh-details">{saved.dataDirectory && <div><dt>{t('details.dataDirectory')}</dt><dd>{saved.dataDirectory}</dd></div>}{saved.configurationPath && <div><dt>{t('details.configurationPath')}</dt><dd>{saved.configurationPath}</dd></div>}</dl></details>}
     <div className="dsh-notice dsh-boundary"><Info size={16} aria-hidden="true" /><p>{t('notice.authentication')}</p></div>
     </div>
     <div role="tabpanel" id={id('panel-sessions')} aria-labelledby={id('tab-sessions')} hidden={tab !== 'sessions'}>
+      {tab === 'sessions' && <NativeWebEntry enabled={plugin?.enabled === true} ready={active && runtime?.ready === true && runtime.nativeWeb.ready && refreshFailure === null && operation === null} active={tab === 'sessions'} />}
       {tab === 'sessions' && visible && <SessionDashboard enabled={plugin?.enabled === true} />}
     </div>
   </div>

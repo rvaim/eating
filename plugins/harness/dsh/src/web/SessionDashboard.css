@@ -1,3 +1,15 @@
+.dsh-platform-messages { list-style: none; margin: 0; padding: 0; }
+.dsh-platform-messages > li + li { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--color-line); }
+.dsh-platform-sender { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline; font-size: 12px; }
+.dsh-platform-sender time { color: var(--color-muted); font-size: 11px; }
+.dsh-platform-meta, .dsh-record-source { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 9px 0; font-size: 11px; }
+.dsh-platform-meta > div, .dsh-record-source > div { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.dsh-platform-meta dt, .dsh-record-source dt { color: var(--color-muted); }
+.dsh-platform-meta dd, .dsh-record-source dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dsh-record-muted { max-width: 75ch; margin-top: 10px; color: var(--color-muted); font-size: 11px; }
+.dsh-record-context { padding-block: 14px; }
+.dsh-record-disclosure > summary { padding-block: 7px; min-height: 36px; }
+.dsh-record-outcome { color: var(--color-ink); }
 .dsh-sessions { min-width: 0; padding-top: 24px; }
 .dsh-sessions-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .dsh-sessions-heading h3 { margin: 0; font-size: 15px; font-weight: 600; }

@@ -8,7 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 export const name = 'eating-runtime-bridge';
-export const inject = ['sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'agents', 'subagents', 'agentPresets'];
+export const inject = ['sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'agents', 'subagents', 'agentPresets', 'eatingNativeWeb'];
 
 const HEX = /^[a-f0-9]{64}$/;
 const ERROR_MESSAGES = {
@@ -54,7 +54,7 @@ export function apply(ctx) {
     if (!actual.isDirectory() || actual.isSymbolicLink() || actual.dev !== directoryStat.dev || actual.ino !== directoryStat.ino || realpathSync(directory) !== directory) throw bridgeError('BRIDGE_FILE_FAILED');
   }
   function filePath(filename) {
-    if (basename(filename) !== filename || !/^(?:owner-policy|expected|ready|session-ready|error)\.json$|^ack-[a-f0-9]{64}\.json$|^\.[a-z-]+-[a-f0-9-]{36}\.tmp$/.test(filename)) throw bridgeError('BRIDGE_FILE_FAILED');
+    if (basename(filename) !== filename || !/^(?:owner-policy|expected|ready|session-ready|native-web-ready|error)\.json$|^ack-[a-f0-9]{64}\.json$|^\.[a-z-]+-[a-f0-9-]{36}\.tmp$/.test(filename)) throw bridgeError('BRIDGE_FILE_FAILED');
     const file = resolve(directory, filename);
     if (dirname(file) !== directory) throw bridgeError('BRIDGE_FILE_FAILED');
     return file;
@@ -127,6 +127,11 @@ export function apply(ctx) {
     if (!record(policy) || policy.schemaVersion !== 1 || !Number.isSafeInteger(policy.revision) || policy.revision < 0 || typeof policy.systemPrompt !== 'string' || policy.systemPrompt.length > 250000 || !Array.isArray(policy.agentTypes) || policy.agentTypes.length > 100) throw bridgeError('OWNER_POLICY_INVALID');
     return policy;
   }
+  ctx.provide('eatingNativeAgentLabels', { read() {
+    const labels = readValidatedOwnerPolicy().agentLabels;
+    if (!record(labels) || Object.entries(labels).some(([id, label]) => !opaque(id) || !opaque(label))) throw bridgeError('OWNER_POLICY_INVALID');
+    return { ...labels };
+  } });
   function readExpected() {
     let expected;
     try { expected = readJson('expected.json', true, 8192); }
@@ -243,6 +248,10 @@ export function apply(ctx) {
     if (disposed || failed) return;
     assertNoGlobalTools();
     const recovery = await inspectStoredSession();
+    await ctx.get('loader')?.await();
+    const nativeEntry = await ctx.eatingNativeWeb.entry();
+    if (!record(nativeEntry) || nativeEntry.readOnly !== true || nativeEntry.rootSessionId !== sessionId || typeof nativeEntry.url !== 'string') throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
+    atomicJson('native-web-ready.json', { schemaVersion: 1, nonce, sessionId, url: nativeEntry.url, readOnly: true });
     if (disposed || failed) return;
     atomicJson('ready.json', { schemaVersion: 1, nonce, sessionId, toolsReady: true, durabilityAvailable: true, ...recovery });
   }
@@ -252,7 +261,7 @@ export function apply(ctx) {
     activeContext = undefined;
     taskConfigurations.clear();
     for (const release of releases.splice(0).reverse()) { try { release(); } catch { /* Cordis also owns these effects. */ } }
-    for (const filename of ['ready.json', 'session-ready.json']) { try { removeOwnState(filename); } catch { /* Do not follow a replaced directory. */ } }
+    for (const filename of ['ready.json', 'session-ready.json', 'native-web-ready.json']) { try { removeOwnState(filename); } catch { /* Do not follow a replaced directory. */ } }
     disposed = true;
   }
 

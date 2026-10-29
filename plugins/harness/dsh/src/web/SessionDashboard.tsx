@@ -1,26 +1,14 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { AlertCircle, ChevronRight, RefreshCw } from 'lucide-react'
-import type { HarnessSessionContent, HarnessSessionList, HarnessSessionRecord, HarnessSessionSummary } from '@eating/plugin-sdk'
+import type { HarnessSessionContent, HarnessSessionList, HarnessSessionSummary } from '@eating/plugin-sdk'
 import { getErrorMessage, HostApiError, hostRequest, useI18n } from '@eating/ui-sdk'
-import { appendSessionRecords, readSessionContent, readSessionList, recordText, sessionRows, visibleSessionRecord } from './panel-data'
+import { appendSessionRecords, readSessionContent, readSessionList, sessionRows, visibleSessionRecord } from './panel-data'
 import type { DshTranslationKey } from './i18n'
+import { SessionRecord } from './SessionRecord'
 import './SessionDashboard.css'
 
 const statusKeys: Record<string, DshTranslationKey> = { running: 'sessions.status.running', idle: 'sessions.status.idle', stopped: 'sessions.status.stopped', unknown: 'sessions.status.unknown' }
-const roleKeys: Record<string, DshTranslationKey> = { user: 'sessions.role.user', assistant: 'sessions.role.assistant', tool: 'sessions.role.tool', system: 'sessions.role.system', action: 'sessions.role.action', result: 'sessions.role.result' }
-
-function SessionRecord({ record }: { readonly record: HarnessSessionRecord }) {
-  const { t, formatDateTime, formatNumber } = useI18n('dsh')
-  const text = recordText(record.content)
-  const label = roleKeys[record.role ?? record.kind]
-  return <li className="dsh-session-record">
-    <div className="dsh-record-heading"><strong>{label ? t(label) : record.role ?? record.kind}</strong><span>{t('sessions.sequence', { sequence: formatNumber(record.sequence) })}</span><time dateTime={record.timestamp ?? undefined}>{formatDateTime(record.timestamp)}</time></div>
-    {text !== null ? <>{text.length <= 800 ? <p className="dsh-record-text" dir="auto">{text || t('sessions.emptyText')}</p> : <details className="dsh-record-details"><summary>{t('sessions.longText')}</summary><p className="dsh-record-text" dir="auto">{text}</p></details>}</>
-      : <details className="dsh-record-details"><summary>{t('sessions.recordDetails')}</summary><pre dir="auto">{JSON.stringify(record.content, null, 2)}</pre></details>}
-    {text !== null && typeof record.content !== 'string' && record.role === 'tool' && <details className="dsh-record-details"><summary>{t('sessions.recordDetails')}</summary><pre dir="auto">{JSON.stringify(record.content, null, 2)}</pre></details>}
-  </li>
-}
 
 /** Explicit reads of the current Harness's native sessions, with no polling or subscriptions. */
 export function SessionDashboard({ enabled }: { readonly enabled: boolean }) {
@@ -124,8 +112,8 @@ export function SessionDashboard({ enabled }: { readonly enabled: boolean }) {
   const records = content?.records.filter(visibleSessionRecord) ?? []
   const selectedSummary = content?.session ?? rows.find(row => row.session.id === selected)?.session
   const failureCode = error instanceof HostApiError ? error.code : 'UNEXPECTED_ERROR'
-  const sessionTitle = (session: HarnessSessionSummary) => session.pluginId && session.targetId && session.conversationKind
-    ? t(`sessions.target.${session.conversationKind}`, { plugin: session.pluginId, target: session.targetId }) : session.title || t('sessions.untitled')
+  const sessionTitle = (session: HarnessSessionSummary) => session.pluginId && session.accountId && session.targetId && session.conversationKind
+    ? t(`sessions.target.${session.conversationKind}`, { plugin: session.pluginName || session.pluginId, account: session.accountId, target: session.targetId }) : session.title || t('sessions.untitled')
 
   return <section ref={dashboardRef} className="dsh-sessions" aria-labelledby={`${prefix}-heading`}>
     <div className="dsh-sessions-heading"><div><h3 id={`${prefix}-heading`}>{t('sessions.title')}</h3><p>{t('sessions.description')}</p></div><button className="button button-secondary" type="button" disabled={!enabled || loading === 'list'} onClick={() => void refresh()}><RefreshCw size={15} aria-hidden="true" />{t(loading === 'list' ? 'sessions.refreshing' : 'sessions.refresh')}</button></div>
@@ -152,7 +140,7 @@ export function SessionDashboard({ enabled }: { readonly enabled: boolean }) {
           {loading === 'content' && <p className="dsh-session-empty" role="status">{t('sessions.loadingContent')}</p>}
           {selected && !content && loading === null && error !== null && <button className="button button-secondary" type="button" onClick={() => void read(selected)}>{t('sessions.retryContent')}</button>}
           {content && <>
-            {records.length === 0 ? <p className="dsh-session-empty">{t('sessions.emptyContent')}</p> : <ol className="dsh-session-records">{records.map(record => <SessionRecord key={record.sequence} record={record} />)}</ol>}
+            {records.length === 0 ? <p className="dsh-session-empty">{t('sessions.emptyContent')}</p> : <ol className="dsh-session-records">{records.map(record => <SessionRecord key={record.sequence} record={record} session={content.session} />)}</ol>}
             {content.nextOffset !== null && content.records.length < 1000 && <button className="button button-secondary dsh-session-more" type="button" disabled={loading !== null} onClick={() => void read(content.session.id, content.nextOffset!)}>{t(loading === 'more' ? 'sessions.loadingMore' : 'sessions.more')}</button>}
             {content.nextOffset !== null && content.records.length >= 1000 && <p className="dsh-session-warning">{t('sessions.recordLimit', { limit: formatNumber(1000) })}</p>}
           </>}

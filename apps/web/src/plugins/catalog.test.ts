@@ -11,7 +11,7 @@ import { Overview } from '../pages/Overview'
 import { Robots } from '../pages/Robots'
 import dsh from '../../../../plugins/harness/dsh/src/web/entry'
 
-const qq: ManagedPlugin = { id: 'qq', name: 'QQ', description: '正式通讯插件', version: '0.4.0', apiVersion: 2,
+const qq: ManagedPlugin = { id: 'qq', name: 'QQ', description: '正式通讯插件', version: '0.4.0', apiVersion: 3,
   kind: 'communication', order: 10, icon: MessageCircle, brandColor: '#3876b6', defaultRegistered: true,
   initialValues: {}, validate: () => ({ valid: true, errors: {} }), summary: () => 'QQ 配置', Panel: () => createElement('p', null, 'QQ 专属面板') }
 const harness: ManagedPlugin = { ...qq, id: 'other-harness', name: '另一 Harness', description: '独立认知插件', kind: 'harness', icon: BrainCircuit,

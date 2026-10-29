@@ -71,11 +71,29 @@ export interface HarnessSessionSummary {
   readonly title: string
   readonly agentTypeId?: string
   readonly pluginId?: string
+  readonly pluginName?: string
+  readonly instanceId?: string
+  readonly accountId?: string
   readonly conversationKind?: 'private' | 'group'
   readonly targetId?: string
   readonly status: 'running' | 'idle' | 'stopped' | 'unknown'
   readonly updatedAt: string | null
   readonly configurationRevision?: number
+}
+
+export interface HarnessPlatformMessage {
+  readonly eventId: string
+  readonly pluginId: string
+  readonly instanceId: string
+  readonly accountId: string
+  readonly conversationId: string
+  readonly conversationKind: 'private' | 'group'
+  readonly senderId: string
+  readonly senderName?: string
+  readonly targetId: string
+  readonly messageId?: string
+  readonly receivedAt: string
+  readonly text?: string
 }
 
 export interface HarnessSessionRecord {
@@ -84,6 +102,15 @@ export interface HarnessSessionRecord {
   readonly kind: string
   readonly role?: string
   readonly content: JsonValue
+  readonly messageId?: string
+  readonly turn?: number
+  readonly step?: number
+  readonly callId?: string
+  readonly source?: { readonly kind: string; readonly form?: string; readonly senderSessionId?: string; readonly summary?: string; readonly provider?: string; readonly model?: string }
+  readonly classification?: 'platform-message' | 'agent-message' | 'subagent-settled' | 'time-context' | 'model-output' | 'system-context' | 'tool-call' | 'tool-result' | 'user-message' | 'runtime-context'
+  readonly platformEvents?: readonly HarnessPlatformMessage[]
+  readonly surfaceOp?: 'append' | { readonly op: 'replace'; readonly startSeq: number; readonly endSeq: number }
+  readonly sourceEventSeqs?: readonly number[]
 }
 
 export interface HarnessSessionList {

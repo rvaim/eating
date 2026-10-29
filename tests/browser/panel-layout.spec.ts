@@ -33,6 +33,7 @@ test.describe('会话导航与页签的布局', () => {
       const original = entry.create(context)
       return new Proxy(original, { get(target, key) {
         if (key === 'manage') return async (operation: string, input: { sessionId: string }): Promise<JsonValue> => {
+          if (operation === 'get-model-capabilities') return original.manage!(operation, input)
           operations.push(operation)
           if (operation === 'list-sessions') return { sessions, truncated: false, refreshedAt } as unknown as JsonValue
           if (operation !== 'read-session') throw new Error('Unexpected model or runtime operation in layout fixture')

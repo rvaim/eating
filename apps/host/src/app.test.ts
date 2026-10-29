@@ -139,7 +139,7 @@ function testEntry(id: string, kind: BackendPluginEntry['kind'], inspect: (conte
 
 function installedEntry(entry: BackendPluginEntry, home: string): BackendPluginEntry {
   return { ...entry, installed: { directory: join(home, 'package'), manifest: {
-    schemaVersion: 1, id: entry.id, name: 'Installed fixture', description: 'test', version: '1.0.0', kind: entry.kind, apiVersion: 2,
+    schemaVersion: 1, id: entry.id, name: 'Installed fixture', description: 'test', version: '1.0.0', kind: entry.kind, apiVersion: 3, assets: [],
     storageDirectory: entry.storageDirectory, backend: 'server.mjs', integrity: {},
     frontend: { entry: 'ui/index.js', style: 'ui/style.css', order: 0, brandColor: '#123456', icon: 'brain' },
   } } }

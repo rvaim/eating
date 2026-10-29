@@ -50,14 +50,14 @@ async function installRelayFixture(home: string) {
     }`,
     'ui/index.js': `export default {
       id: ${JSON.stringify(platformId)}, kind: 'communication', name: ${JSON.stringify(platformName)}, description: 'Loopback-only prompt grouping fixture',
-      version: '1.0.0', apiVersion: 2, order: 20, brandColor: '#32634e', defaultRegistered: true,
+      version: '1.0.0', apiVersion: 3, order: 20, brandColor: '#32634e', defaultRegistered: true,
       icon() { return null }, Panel() { return null }, initialValues: {}, validate() { return { valid: true, errors: {} } }, summary() { return '' }
     }`,
     'ui/style.css': '/* Temporary prompt grouping fixture has no panel styles. */\n',
   }
   const manifest: PluginPackageManifest = {
     schemaVersion: 1, id: platformId, name: platformName, description: 'Loopback-only prompt grouping fixture', version: '1.0.0',
-    kind: 'communication', apiVersion: 2, storageDirectory: 'relay-test-bot', backend: 'server.mjs',
+    kind: 'communication', apiVersion: 3, assets: [], storageDirectory: 'relay-test-bot', backend: 'server.mjs',
     frontend: { entry: 'ui/index.js', style: 'ui/style.css', order: 20, brandColor: '#32634e', icon: 'message-circle' },
     integrity: Object.fromEntries(Object.entries(files).map(([entry, body]) => [entry, createHash('sha256').update(body).digest('hex')])),
   }

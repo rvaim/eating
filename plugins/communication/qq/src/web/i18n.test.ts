@@ -3,6 +3,7 @@ import { getLocale, setLocale, translate } from '@eating/ui-sdk'
 import { isJsonObject } from '@eating/plugin-sdk'
 import type { PluginCapability, PluginToolDefinition } from '@eating/plugin-sdk'
 import { qqTools } from '../backend/operations'
+import { qqViewReceivedImageTool } from '../backend/media'
 import plugin from './entry'
 import { capabilityDescription, capabilityTitle, parameterDescription, parameterLabel, parameterOptionLabel, qqTranslations, toolDescription, toolSchemaHelp, toolTitle } from './i18n'
 
@@ -28,8 +29,8 @@ describe('QQ presentation translations', () => {
     setLocale('en-US')
     const original = JSON.stringify(qqTools)
     expect(qqTools).toHaveLength(39)
-    expect(Object.keys(qqTranslations['zh-CN']).filter(key => /^tool\.[^.]+\.title$/.test(key))).toHaveLength(39)
-    for (const tool of qqTools) {
+    expect(Object.keys(qqTranslations['zh-CN']).filter(key => /^tool\.[^.]+\.title$/.test(key))).toHaveLength(40)
+    for (const tool of [...qqTools, qqViewReceivedImageTool]) {
       expect(toolTitle(tool)).not.toMatch(/\p{Script=Han}/u)
       expect(toolDescription(tool)).not.toMatch(/\p{Script=Han}/u)
       expect(toolSchemaHelp(tool)).not.toMatch(/\p{Script=Han}|\{\{/u)
@@ -54,7 +55,7 @@ describe('QQ presentation translations', () => {
 
   it('preserves future provider metadata and unknown parameter labels verbatim', () => {
     setLocale('en-US')
-    const future: PluginToolDefinition = { name: 'qq_future_tool', title: '未来提供商标题', description: 'Provider metadata 原文', inputSchema: {}, readOnly: true, destructive: false }
+    const future: PluginToolDefinition = { name: 'qq_future_tool', title: '未来提供商标题', description: 'Provider metadata 原文', inputSchema: {}, readOnly: true, destructive: false, resultFormat: 'json' }
     expect(toolTitle(future)).toBe(future.title)
     expect(toolDescription(future)).toBe(future.description)
     expect(parameterLabel(future, 'user_id', { title: 'Provider 字段' })).toBe('Provider 字段')

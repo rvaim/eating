@@ -8,6 +8,7 @@ import { qqTools, validateToolInput, prepareOneBotCall } from './backend/operati
 import { QQConfigurationFile, readConfiguration } from './backend/config-file'
 import { QQAccountRegistry } from './backend/accounts'
 import { LiveLogChannel } from './backend/live-logs'
+import { downloadQQImage, qqViewReceivedImageTool, readQQReceivedImage } from './backend/media'
 
 type Configuration = OneBotConfig
 
@@ -61,12 +62,12 @@ class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly kind = 'communication' as const
   readonly name = 'QQ'
-  readonly version = '0.9.1'
+  readonly version = '0.10.0'
   readonly logs = new LiveLogChannel()
-  readonly tools = qqTools
+  readonly tools = [...qqTools, qqViewReceivedImageTool]
   readonly capabilities = [
     { id: 'onebot.v11.forward-websocket', name: 'OneBot v11 正向 WebSocket', support: 'supported' as const, description: '统一端点接收事件并调用标准 API，支持 Bearer 认证与有限重连。' },
-    ...qqTools.map(tool => ({ id: tool.name, name: tool.title, support: 'supported' as const, description: tool.description, toolName: tool.name })),
+    ...this.tools.map(tool => ({ id: tool.name, name: tool.title, support: 'supported' as const, description: tool.description, toolName: tool.name })),
   ]
   readonly agentInstructions = qqAgentInstructions
   get agentTypes() { return qqAgentTypes(this.configuration) }
@@ -121,6 +122,7 @@ class QQPlugin implements BackendPlugin {
     if (!tool) throw new PlatformError('AGENT_SCOPE_VIOLATION', '当前子代理未获准使用此 QQ 工具。', 403, 'not-sent')
     const params = validateToolInput(tool, input)
     assertQQAgentInvocation(name, params, scope, this.configuration, { instanceId: this.instanceId, accountId: this.client.getStatus().accountId })
+    if (name === qqViewReceivedImageTool.name) return this.viewReceivedImage(params, scope)
     return this.invoke(name, params, requestId)
   }
 
@@ -139,6 +141,7 @@ class QQPlugin implements BackendPlugin {
     if (!tool) throw new PlatformError('TOOL_NOT_FOUND', '此 QQ 功能未提供。', 404, 'not-sent')
     const params = validateToolInput(tool, input)
     if (params.instance_id !== undefined && params.instance_id !== this.instanceId) throw new PlatformError('ACCOUNT_INSTANCE_NOT_ACTIVE', '此账号实例当前未启用。本版本只支持默认账号，未自动切换。', 409, 'not-sent')
+    if (name === qqViewReceivedImageTool.name) return this.viewReceivedImage(params)
     const { action, params: forwarded } = prepareOneBotCall(tool, params)
     if (tool.protocolAction === '.handle_quick_operation' && isJsonObject(forwarded.context)
       && forwarded.context.self_id !== undefined && String(forwarded.context.self_id) !== this.client.getStatus().accountId) {
@@ -149,6 +152,21 @@ class QQPlugin implements BackendPlugin {
     const accountId = this.client.getStatus().accountId
     if (!accountId || this.client.getStatus().state !== 'connected') throw new PlatformError('NOT_CONNECTED', '账号尚未连接，未发送动作。', 409, 'not-sent')
     return this.context.executeIdempotent(this.id, action, forwarded, typeof params.request_id === 'string' ? params.request_id : requestId, execute, { instanceId: this.instanceId, accountId })
+  }
+
+  private async viewReceivedImage(params: JsonObject, scope?: AgentInvocationScope): Promise<JsonObject> {
+    const accountId = this.client.getStatus().accountId
+    if (!accountId || this.client.getStatus().state !== 'connected') throw new PlatformError('NOT_CONNECTED', '账号尚未连接，无法读取图片。', 409, 'not-sent')
+    const assertActive = () => {
+      const status = this.client.getStatus()
+      if (scope) assertQQAgentInvocation(qqViewReceivedImageTool.name, params, scope, this.configuration, { instanceId: this.instanceId, accountId: status.accountId })
+      if (status.state !== 'connected' || status.accountId !== accountId) throw new PlatformError('AGENT_SCOPE_VIOLATION', '图片读取期间账号连接已改变，未返回图片。', 403, 'not-sent')
+    }
+    return readQQReceivedImage(params, { accountId, ...(scope ? { scope } : {}) }, {
+      getMessage: messageId => this.client.call('get_msg', { message_id: messageId }, { timeoutMs: this.configuration.timeoutMs, readOnly: true }),
+      download: url => downloadQQImage(url),
+      assertActive,
+    })
   }
 
   private receiveEvent(event: JsonObject): void {

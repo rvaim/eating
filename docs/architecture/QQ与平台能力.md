@@ -1,6 +1,6 @@
 # Eating QQ 与平台能力架构
 
-更新：2026-10-29。QQ0.9.1通过公开SDK2.0.0与API2接入Host，提供正式OneBot v11连接、39项工具、身份及受控代理类型。默认不兼容旧Eating版本，规则见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)；实际流程见[操作说明](../operations/QQ配置与功能测试.md)。
+更新：2026-10-29。QQ0.10.0通过公开SDK3.0.0与唯一API3接入Host，提供正式OneBot v11连接、原39项标准工具及1项受控查看图片扩展，共40项。默认不兼容旧Eating版本，见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)；新能力边界见[ADR-0016](../decisions/ADR-0016-原生只读Web与多模态会话.md)，实际流程见[操作说明](../operations/QQ配置与功能测试.md)。
 
 ## 职责和数据流
 
@@ -15,6 +15,9 @@ flowchart TB
     Child --> MCP[独立令牌与后端 scope 校验]
     MCP --> Tools[QQ 唯一工具目录]
     Tools --> QQ
+    MCP --> Image[按本会话授权引用查看图片]
+    Image --> Attachment[标准 MCP image 与 Harness 原生附件]
+    Attachment --> Child
     UI[配置、权限、日志、测试、MCP 面板] --> API[Host 主人受控 API]
     API --> QQ
 ```
@@ -25,9 +28,9 @@ Host不生成AI回复，普通模型文本不转发QQ。QQ核对实际账号与�
 
 QQ[后台](../../plugins/communication/qq/src/server.ts)和[面板](../../plugins/communication/qq/src/web/panel.tsx)只依赖公开SDK，不引用应用内部。入口／实际插件／清单种类都为communication，缺失或API不符拒绝，不默认推断。独立产物安装方式见[工程结构](工程结构与插件发布.md)。
 
-[唯一目录](../../plugins/communication/qq/src/backend/operations.ts)同时供Host、MCP与功能测试使用：38公开标准API加1框架quick，共39项，19只读／20副作用／3敏感结果。没有任意action透传，也没有本地聊天历史工具。完整参数、正式别名及19种可发送段见[覆盖清单](../technical/OneBot标准功能覆盖.md)。OneBot标准支持不等于Eating旧API兼容。
+[唯一目录](../../plugins/communication/qq/src/backend/operations.ts)同时供Host、MCP与功能测试使用。原38公开标准API加1框架quick，共39项，仍保持19只读／20副作用／3敏感结果及OneBot JSON语义；API3的resultFormat显式为json。新增qq_view_received_image为受控只读扩展，resultFormat为content，返回标准MCP image内容，总目录40项。它与标准get_image查询职责分开，不改变原39项参数或回执。标准参数、正式别名及19种可发送段见[覆盖清单](../technical/OneBot标准功能覆盖.md)。没有任意action透传，也没有本地聊天历史工具。
 
-文本、数组和单段对象按正式schema校验。字符串默认auto_escape=true，显式false才解释CQ；forward接收后可读取，不冒充发送支持。媒体引用原样交OneBot，Eating不代下载或读取本机文件。
+文本、数组和单段对象按正式schema校验。字符串默认auto_escape=true，显式false才解释CQ；forward接收后可读取，不冒充发送支持。标准OneBot媒体发送与查询继续按协议处理file／URL／Base64，不本机读文件；查看收到的图片按下节独立受控获取真实字节。
 
 ## 当前配置、连接与身份
 
@@ -41,11 +44,23 @@ QQ[后台](../../plugins/communication/qq/src/server.ts)和[面板](../../plugin
 
 ## 代理类型与执行
 
-QQ声明qq.private／qq.group及各自规则、主委派说明和可选／默认工具。子目录从39工具派生，只包含能绑定当前会话的能力，默认适用只读加本类型明确发送；凭据、无关全局维护、通用send_msg和quick不进入当前子目录。主人手动39功能保持。
+QQ声明qq.private／qq.group及各自规则、主委派说明和可选／默认工具。子目录从当前40工具派生，只包含能绑定当前会话的能力；默认适用只读加本类型明确发送，图片查看仍受实际勾选与引用约束。凭据、无关全局维护、通用send_msg和quick不进入当前子目录，主人手动标准39项不删除。
 
 工具目录、类型勾选和实际invokeScoped共同检查权限，不能只靠提示词或隐藏名称。每次核对插件／实例／登录账号／类型／目标；消息查询／撤回只用已授权messageId，媒体／转发只用已知resourceId，递归回复／node引用同样检查。发送成功的真实message_id可继续授权本会话查询。
 
+原生执行实例显示“平台-绑定登录账号-私聊／群聊-对方／群号”，使用注册pluginName和scope.accountId，不把账号实例UUID显示成登录号。切号产生独立绑定，历史实例的账号和原生UUID不改；qq.private／qq.group仍是类型ID。实际名称与历史renderer映射见[Harness设计](Harness适配.md)。
+
 子凭据按任务发行，结束、停用、断开撤销。写请求用agentId＋原request_id命名空间，避免不同代理键冲突；Host真实回执按任务隔离，迟到旧调用不污染新集合。主收到子摘要和实际动作回执后再判断下一步，普通final不自动发送。
+
+## 受控查看收到的图片
+
+qq_view_received_image只接受当前授权账号／会话的消息及图片资源引用，message与resource须有已核验的配对关系；分别出现在不同引用集合不足以授权交叉读取。子代理不能提交任意本机路径或任意网址，获取后返回前再次检查当前权限和引用，撤权或切号后不能由迟到结果恢复访问。
+
+可用公网图片URL通过公共DNS校验并固定所选地址，禁止私网／本地目标与重定向，不把OneBot或Host鉴权头传给图片站点。读取上限5MiB、超时10秒，同时核对MIME与真实字节格式；超限、类型不符或获取失败明确报错。OneBot仅给远端路径且无可用获取接口时返回MEDIA_UNAVAILABLE，不读Eating本机文件、不登录远端服务器，也不猜下载地址。
+
+工具返回真实标准MCP image块，DSH原生MCP客户端保存为原生附件并交给明确支持image输入的执行子Agent。Host普通JSON执行记录不保存Base64；手动预览只用临时Blob，离开相关页面时revoke。Eating不新增聊天媒体库，已交模型图片可能由Harness原生附件持久化，不能宣称全链路不落盘。
+
+模型能力由主人显式声明，初始为文本，不根据型号猜视觉。纯文本模式给明确诊断；支持图像时原生wire应实际包含图像内容，不能把URL或Base64普通文字称为已看图。主Agent先取得子摘要，不默认自动把原图交主。配置与缓存时间规则见[Harness设计](Harness适配.md)。
 
 ## 队列与可靠交接
 
@@ -65,6 +80,6 @@ QQ声明qq.private／qq.group及各自规则、主委派说明和可选／默认
 
 ## 验证范围
 
-当前983项完整测试和53浏览器、5项实际SDK的证据见[本轮报告](../reports/2026-10-29-删除旧版兼容验证报告.md)。所有自动模型／OneBot为回环，未向真人试发。历史387／653等结果保留在原报告，不是当前旧库迁移承诺。
+本轮构建、严格类型、原生图片wire与浏览器验证的实际命令、结果及限制见[本轮报告](../reports/2026-10-29-原生Web时间与图片验证报告.md)。自动模型／OneBot均回环，未向真人或付费提供商试发。已验证支持图像时child请求携带真实image_url、root不自动带图，以及文本声明下明确诊断；这不等于真实模型识图准确率认证。
 
-QQ专有扩展、反向连接、通知／请求自动交接、多账号并行、所有OneBot实现／QQ权限和媒体格式、真实提供商业务、其他Harness与三平台仍需分别验证。
+QQ其他专有扩展、反向连接、通知／请求自动交接、多账号并行、所有OneBot实现／QQ权限和媒体格式、真实提供商业务、其他Harness与三平台仍需分别验证。实际部署与资料保持状态以[项目状态](../项目状态.md)为准。

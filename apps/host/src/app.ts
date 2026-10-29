@@ -66,7 +66,7 @@ export class EatingHost {
       const storageDirectories = new Set<string>()
       for (const entry of options.entries) {
         const kind = entry.kind
-        if (entry.installed && entry.installed.manifest.apiVersion !== 2) throw new PlatformError('INCOMPATIBLE_PLUGIN_API', '仅支持 SDK apiVersion 2 的插件包。', 500)
+        if (entry.installed && entry.installed.manifest.apiVersion !== 3) throw new PlatformError('INCOMPATIBLE_PLUGIN_API', '仅支持 SDK apiVersion 3 的插件包。', 500)
         if (entry.installed && entry.installed.manifest.kind !== kind) throw new Error('插件后台入口与安装清单的类型不匹配。')
         const validId = (value: string) => value.length <= 64 && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value) && !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(value)
         if (!validId(entry.id) || this.entries.has(entry.id) || !validId(entry.storageDirectory)
@@ -415,7 +415,7 @@ export class EatingHost {
     try {
       const bytes = await readFile(path)
       response.writeHead(200, { 'Content-Type': mime[extname(path)] ?? 'application/octet-stream', 'X-Content-Type-Options': 'nosniff',
-        'Content-Security-Policy': "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" })
+        'Content-Security-Policy': "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" })
       response.end(bytes)
     } catch { throw new PlatformError('NOT_FOUND', '页面资源不存在，请先构建前端。', 404) }
   }

@@ -32,6 +32,9 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
   vi.stubEnv('EATING_DSH_CONTROL_URL', 'http://127.0.0.1:1')
   vi.stubEnv('EATING_DSH_CONTROL_TOKEN', 'fixture-only-control-token')
   vi.stubEnv('EATING_DSH_MCP_ENTRY', '/fixture/mcp.mjs')
+  const clockPath = join(directory, 'clock.mjs')
+  writeFileSync(clockPath, 'export const name = \"fixture-time-context\";')
+  vi.stubEnv('EATING_DSH_TIME_CONTEXT_ENTRY', clockPath)
   const path = (name: string) => join(directory, name)
   const read = (name: string) => JSON.parse(readFileSync(path(name), 'utf8')) as Json
   const write = (name: string, value: unknown) => {
@@ -64,7 +67,8 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
   }
   const registrations: Json[] = []
   const ctx = {
-    on,
+    on, get: () => undefined, provide: vi.fn(), plugin: vi.fn(async () => {}),
+    eatingNativeWeb: { entry: vi.fn(async () => ({ url: 'http://127.0.0.1:45678/?token=fixture-only-web-token', rootSessionId: sessionId, readOnly: true })) },
     sessions: { flush, get: () => options.live ? session : undefined },
     sessionPersistence: { open, stat: vi.fn(async () => undefined) },
     systemPrompt: { section: (value: NonNullable<typeof section.current>) => { section.current = value; return () => { section.current = undefined } } },
@@ -101,7 +105,7 @@ describe('self-contained published-API DSH runtime bridge', () => {
     const f = await fixture()
     await turn()
     expect(f.bridge.name).toBe('eating-runtime-bridge')
-    expect(f.bridge.inject).toEqual(['sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'agents', 'subagents', 'agentPresets'])
+    expect(f.bridge.inject).toEqual(['sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'agents', 'subagents', 'agentPresets', 'eatingNativeWeb'])
     expect(getRuntimeBridgeSource()).not.toMatch(/from ['"](?:@|\.\.)/)
     expect(f.section.current).toMatchObject({ name: 'eating:owner-system', order: 0, complete: true, interpolate: false })
     expect(f.section.current?.text()).toBe('主人策略 {{不解释外部变量}}')

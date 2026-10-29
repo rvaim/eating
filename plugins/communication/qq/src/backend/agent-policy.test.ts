@@ -3,6 +3,7 @@ import { analyzeTemplate } from '@eating/plugin-sdk'
 import type { AgentInvocationScope, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { assertQQAgentInvocation, createDefaultAgentPolicy, defaultAgentTools, parseQQAgentPolicy, parseQQAgentPolicySave, parseQQAgentTools, parseQQIdentityList, qqAgentToolPolicy, qqAgentTypes, qqMessageResourceIds, qqSenderRole } from './agent-policy'
 import { qqTools } from './operations'
+import { qqViewReceivedImageTool } from './media'
 
 const scope: AgentInvocationScope = { agentId: 'agent-private', agentTypeId: 'qq.private', pluginId: 'qq', instanceId: 'instance-a', accountId: '123456', conversationId: 'qq:123456:private:234567', kind: 'private', targetId: '234567', messageIds: ['-12', '42'], resourceIds: ['image-a', 'forward-a'] }
 const active = { instanceId: scope.instanceId, accountId: scope.accountId }
@@ -29,13 +30,16 @@ describe('QQ agent identity and permission policy', () => {
     expect(() => parseQQIdentityList(input)).toThrowError(expect.objectContaining({ code: 'INVALID_AGENT_POLICY' }))
   })
 
-  it('derives tools from the sole catalog, excludes global capabilities, and defaults group management off', () => {
+  it('derives OneBot permissions and explicitly registers the controlled image extension', () => {
     for (const role of qqAgentTypes(policy)) {
-      expect(role.availableTools.every(name => qqTools.some(tool => tool.name === name))).toBe(true)
+      expect(role.availableTools.every(name => [...qqTools, qqViewReceivedImageTool].some(tool => tool.name === name))).toBe(true)
+      expect(role.availableTools).toContain('qq_view_received_image')
+      expect(role.defaultTools).toContain('qq_view_received_image')
       expect(role.defaultTools.every(name => role.availableTools.includes(name))).toBe(true)
       expect(role.availableTools).not.toEqual(expect.arrayContaining(['qq_get_friend_list']))
       for (const forbidden of ['qq_get_friend_list', 'qq_get_group_list', 'qq_get_cookies', 'qq_get_csrf_token', 'qq_get_credentials', 'qq_set_restart', 'qq_clean_cache', 'qq_send_message', 'qq_handle_quick_operation']) expect(role.availableTools).not.toContain(forbidden)
       expect(analyzeTemplate(role.defaultPrompt, 'agent').valid).toBe(true)
+      expect(role.defaultPrompt).not.toContain('{{当前时间}}')
       expect(role.defaultPrompt).not.toMatch(/\{\{(?:消息列表|消息内容|发送者列表)\}\}/)
     }
     expect(qqAgentToolPolicy['qq.group'].availableTools).not.toContain('qq_get_stranger_info')
@@ -54,6 +58,14 @@ describe('QQ agent identity and permission policy', () => {
 
   it.each([null, [], {}, { unknown: [] }, { 'qq.private': [] }, { 'qq.group': [] }, { 'qq.private': null, 'qq.group': [] }, { 'qq.private': 'all', 'qq.group': [] }, { 'qq.private': ['qq_missing'], 'qq.group': [] }, { 'qq.private': ['qq_send_group_message'], 'qq.group': [] }, { 'qq.private': [], 'qq.group': ['qq_get_stranger_info'] }])('rejects incomplete, unknown, or cross-role tools: %j', input => {
     expect(() => parseQQAgentTools(input)).toThrowError(expect.objectContaining({ code: 'INVALID_AGENT_POLICY' }))
+  })
+
+  it('does not add newly available tools when reading an explicit saved selection', () => {
+    const agentTools = Object.fromEntries(Object.entries(defaultAgentTools()).map(([id, tools]) => [id, tools.filter(name => name !== 'qq_view_received_image')]))
+    const saved = { ...policy, agentTools }
+    expect(parseQQAgentPolicy(saved)).toEqual(saved)
+    expect(parseQQAgentTools(agentTools)).toEqual(agentTools)
+    expect(qqAgentTypes(parseQQAgentPolicy(saved)).every(type => !type.enabledTools.includes('qq_view_received_image'))).toBe(true)
   })
 
   it('accepts complete explicit empty permissions and saves only complete policy with CAS', () => {
@@ -98,6 +110,9 @@ describe('QQ agent runtime scope enforcement', () => {
   })
 
   it('only reads granted messages and resources, including newly granted successful outputs', () => {
+    expect(() => assertQQAgentInvocation('qq_view_received_image', { message_id: '-12', image_id: 'image-a' }, scope, policy, active)).not.toThrow()
+    for (const params of [{ message_id: '555', image_id: 'image-a' }, { message_id: '-12', image_id: 'other-image' }]) expect(() => assertQQAgentInvocation('qq_view_received_image', params, scope, policy, active)).toThrowError(violation)
+    expect(() => assertQQAgentInvocation('qq_view_received_image', { message_id: '-12', image_id: 'image-a' }, scope, { ...policy, agentTools: { ...policy.agentTools, 'qq.private': [] } }, active)).toThrowError(violation)
     expect(() => assertQQAgentInvocation('qq_get_message', { message_id: -12 }, scope, policy, active)).not.toThrow()
     expect(() => assertQQAgentInvocation('qq_get_message', { message_id: 555 }, scope, policy, active)).toThrowError(violation)
     const withDelete = { ...policy, agentTools: { ...policy.agentTools, 'qq.private': [...policy.agentTools['qq.private'], 'qq_delete_message'] } }
@@ -128,8 +143,11 @@ describe('QQ agent runtime scope enforcement', () => {
 })
 
 describe('QQ receive resource grants', () => {
-  it('only collects bounded references from structured received media and forward segments', () => {
-    expect(qqMessageResourceIds('[CQ:image,file=other]')).toEqual([])
+  it('collects bounded references from structured segments or correctly decoded receive CQ segments', () => {
+    expect(qqMessageResourceIds('[CQ:image,file=other]')).toEqual(['other'])
+    expect(qqMessageResourceIds('&#91;CQ:image,file=other&#93; https://cdn.example.test/picture')).toEqual([])
+    expect(qqMessageResourceIds([{ type: 'text', data: { text: '[CQ:image,file=other]' } }])).toEqual([])
+    expect(qqMessageResourceIds('[CQ:image,file=image&#91;a&#93;&#44;b&amp;c]')).toEqual(['image[a],b&c'])
     const found = qqMessageResourceIds([{ type: 'text', data: { text: '/local/secret', file: 'not-media' } }, { type: 'image', data: { file: 'image-a', url: 'https://ignored' } }, { type: 'forward', data: { id: 'forward-a' } }, { type: 'node', data: { content: [{ type: 'record', data: { file: 'record-a' } }] } }])
     expect(found.sort()).toEqual(['image-a', 'forward-a', 'record-a'].sort())
     expect(qqMessageResourceIds(Array.from({ length: 300 }, (_, i) => ({ type: 'image', data: { file: String(i) } })))).toHaveLength(256)

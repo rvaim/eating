@@ -11,6 +11,15 @@ export function getRuntimeAgentSource(): string {
   const controlUrl = process.env.EATING_DSH_CONTROL_URL;
   const controlToken = process.env.EATING_DSH_CONTROL_TOKEN;
   const mcpEntry = process.env.EATING_DSH_MCP_ENTRY;
+  const clockEntry = process.env.EATING_DSH_TIME_CONTEXT_ENTRY;
+  if (!clockEntry || !isAbsolute(clockEntry)) throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
+  const clocks = new WeakSet();
+  async function mountClock(agent) {
+    if (clocks.has(agent)) return;
+    const Clock = await import(pathToFileURL(clockEntry).href);
+    await agent.ctx.plugin(Clock, { timeZone: 'Asia/Shanghai', refreshIntervalMs: 600000 });
+    clocks.add(agent);
+  }
   if (!controlUrl || !/^http:\/\/127\.0\.0\.1:\d+$/.test(controlUrl) || !opaque(controlToken) || !mcpEntry || !isAbsolute(mcpEntry)) throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
 
   async function control(operation, value, signal) {
@@ -126,6 +135,7 @@ export function getRuntimeAgentSource(): string {
     }
   }
   async function onAgentCreated({ agent }) {
+    await mountClock(agent);
     if (agent.id !== sessionId) { await mountChild(agent); return; }
     agent.ctx.systemPrompt.section({ name: 'eating:owner-system', order: 0, complete: true, interpolate: false, text: () => readValidatedOwnerPolicy().systemPrompt });
     agent.ctx.tools.restrict({ allow: [] });

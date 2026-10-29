@@ -22,8 +22,18 @@ export interface PluginToolDefinition {
   readonly inputSchema: JsonObject
   readonly readOnly: boolean
   readonly destructive: boolean
+  readonly resultFormat: 'json' | 'content'
   readonly protocolAction?: string
   readonly sensitiveResult?: boolean
+}
+
+export type PluginToolContent =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' }
+
+export interface PluginContentResult {
+  readonly content: readonly PluginToolContent[]
+  readonly structuredContent?: JsonObject
 }
 
 export interface PluginCapability {
@@ -224,7 +234,7 @@ export interface PluginPackageManifest {
   readonly description: string
   readonly version: string
   readonly kind: 'communication' | 'harness'
-  readonly apiVersion: 2
+  readonly apiVersion: 3
   readonly storageDirectory: string
   readonly backend: string
   readonly frontend: {
@@ -234,6 +244,7 @@ export interface PluginPackageManifest {
     readonly brandColor: string
     readonly icon: string
   }
+  readonly assets: readonly string[]
   readonly integrity: Readonly<Record<string, string>>
 }
 

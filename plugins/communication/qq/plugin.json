@@ -3,9 +3,10 @@
   "id": "qq",
   "name": "QQ",
   "description": "通过 OneBot v11 连接 QQ，接收消息并提供独立 MCP 工具。",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "kind": "communication",
-  "apiVersion": 2,
+  "apiVersion": 3,
+  "assets": [],
   "storageDirectory": "qq-bot",
   "backend": "server.mjs",
   "frontend": { "entry": "ui/index.js", "style": "ui/style.css", "order": 10, "brandColor": "#3876b6", "icon": "message-circle" }

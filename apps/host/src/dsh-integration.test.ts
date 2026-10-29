@@ -68,6 +68,7 @@ function assertDelegation(requests: readonly ModelFixtureRequest[], id: string, 
     expect(batch(request).contextRef).toBe(contextRef)
     expect(batch(request).agentTypeId).toBe(`qq.${kind}`)
     expect(messageId(request)).toBe(id)
+    expect(Object.keys(batch(request).payload).sort()).toEqual(batch(request).kind === 'root' ? ['context', 'eating', 'events'] : ['context', 'eating', 'events', 'task'])
   }
   expect(batch(requests[0]!).payload.eating).toMatchObject({ magic: 'eating-harness-delivery', sessionId: rootId, batchId: contextRef })
   expect(batch(requests[1]!).payload.eating).toEqual({ protocolVersion: 1, contextRef, agentTypeId: `qq.${kind}` })
@@ -104,7 +105,7 @@ describe.runIf(Boolean(runtimeDirectory))('真实DSH SDK → 原生主子会话 
       filter: source => !source.includes('/.installer-home') })
     const onebot = await startOneBotFixture(); stops.push(() => onebot.close())
     const selected: string[] = []
-    const model = await startOpenAiFixture({ apiKey: 'artifact-model-key', nativeDelegation: true, chooseReply: request => {
+    const model = await startOpenAiFixture({ apiKey: 'artifact-model-key', chooseReply: request => {
       const id = messageId(request); selected.push(id)
       if (!['92001', '92002'].includes(id)) throw new Error(`Unexpected installed-artifact batch ${id}`)
       return { target: 'private', targetId: '987654321', text: `独立安装产物选择回复${id}`, requestId: `sdk-artifact-send-${id}` }
@@ -201,7 +202,7 @@ describe.runIf(Boolean(runtimeDirectory))('真实DSH SDK → 原生主子会话 
     const onebot = await startOneBotFixture()
     stops.push(() => onebot.close())
     const selected: string[] = []
-    const model = await startOpenAiFixture({ apiKey: 'fixture-model-key', nativeDelegation: true, chooseReply: request => {
+    const model = await startOpenAiFixture({ apiKey: 'fixture-model-key', chooseReply: request => {
       const id = messageId(request); selected.push(id)
       if (id === '91001') return { target: 'private', targetId: '987654321', text: '由子代理工具调用选择的私聊回复', requestId: 'sdk-fixture-private-0001' }
       if (id === '91002') return null

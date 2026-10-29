@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
-import { chmodSync, mkdirSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
 import { DEFAULT_DELIVERY_SETTINGS, PlatformError, isJsonValue, isJsonObject, validateDeliverySettings } from '@eating/plugin-sdk'
 import type { DeliveryQueueStats, DeliverySettings, DeliverySettingsSnapshot, HarnessEvent, JsonObject, JsonValue, StoredMessage } from '@eating/plugin-sdk'
@@ -37,9 +38,36 @@ export interface PendingHarnessEvent { readonly event: HarnessEvent; readonly at
 
 const settingsKey = 'host:delivery-settings'
 const stateKey = 'host:delivery-queue-state'
-const compactionKey = 'host:delivery-compaction-needed'
+const schemaVersion = 1
 const dedupLifetimeMs = 24 * 60 * 60 * 1000
 const maxDedupIdentifiers = 10000
+
+/** Validate before any writable connection, PRAGMA, recovery or configuration update. */
+function requireCurrentSchema(db: DatabaseSync): void {
+  const unsupported = () => new PlatformError('UNSUPPORTED_STORAGE_SCHEMA', '此数据库的版本或结构不受支持，原数据未被更新。', 500)
+  if (db.prepare('PRAGMA user_version').get()?.user_version !== schemaVersion) throw unsupported()
+  const columns = {
+    settings: [['key', 'TEXT', 0, 1], ['value', 'TEXT', 1, 0]],
+    delivery_queue: [['sequence', 'INTEGER', 0, 1], ['event_id', 'TEXT', 1, 0], ['harness_json', 'TEXT', 1, 0], ['payload_bytes', 'INTEGER', 1, 0],
+      ['status', 'TEXT', 1, 0], ['delivery_attempts', 'INTEGER', 1, 0], ['next_attempt_at', 'INTEGER', 1, 0], ['enqueued_at', 'INTEGER', 1, 0]],
+    event_dedup: [['event_id', 'TEXT', 0, 1], ['observed_at', 'INTEGER', 1, 0], ['disposition', 'TEXT', 1, 0], ['receipt_hash', 'TEXT', 0, 0]],
+    actions: [['plugin_id', 'TEXT', 1, 1], ['request_id', 'TEXT', 1, 3], ['scope_key', 'TEXT', 1, 2], ['action', 'TEXT', 1, 0], ['params_hash', 'TEXT', 1, 0],
+      ['state', 'TEXT', 1, 0], ['created_at', 'TEXT', 1, 0], ['result_json', 'TEXT', 0, 0], ['error_code', 'TEXT', 0, 0], ['error_message', 'TEXT', 0, 0]],
+  }
+  const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map(row => row.name)
+  if (JSON.stringify(tables) !== JSON.stringify(Object.keys(columns).sort())) throw unsupported()
+  for (const [table, expected] of Object.entries(columns)) {
+    const actual = db.prepare(`PRAGMA table_info(${table})`).all().map(row => [row.name, row.type, row.notnull, row.pk])
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) throw unsupported()
+  }
+  const queueUnique = db.prepare('PRAGMA index_list(delivery_queue)').all().some(index => {
+    if (index.unique !== 1 || index.partial !== 0 || typeof index.name !== 'string') return false
+    const fields = db.prepare('SELECT name FROM pragma_index_info(?) ORDER BY seqno').all(index.name)
+    return fields.length === 1 && fields[0]?.name === 'event_id'
+  })
+  const dedupIndex = db.prepare("SELECT name FROM pragma_index_info('dedup_by_age') ORDER BY seqno").all()
+  if (!queueUnique || dedupIndex.length !== 1 || dedupIndex[0]?.name !== 'observed_at') throw unsupported()
+}
 
 function stableJson(value: JsonValue): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
@@ -82,6 +110,16 @@ export class HostStore {
   private queueState: QueueState = { nextSequence: 1, accepted: 0, rejected: 0, discarded: 0, notForwarded: 0, lastQueueError: null }
 
   constructor(readonly databasePath: string) {
+    const fresh = databasePath === ':memory:' || !existsSync(databasePath)
+    if (!fresh) {
+      const source = pathToFileURL(databasePath)
+      source.searchParams.set('mode', 'ro')
+      // A closed WAL database otherwise creates empty WAL/SHM files even on a read-only open.
+      // Existing WAL frames must remain visible for same-version crash recovery.
+      if (!existsSync(`${databasePath}-wal`)) source.searchParams.set('immutable', '1')
+      const inspection = new DatabaseSync(source.href, { readOnly: true })
+      try { requireCurrentSchema(inspection) } finally { inspection.close() }
+    }
     if (databasePath !== ':memory:') {
       mkdirSync(dirname(databasePath), { recursive: true, mode: 0o700 })
       chmodSync(dirname(databasePath), 0o700)
@@ -90,7 +128,7 @@ export class HostStore {
     try {
       if (databasePath !== ':memory:') chmodSync(databasePath, 0o600)
       this.db.exec(`
-        PRAGMA auto_vacuum = INCREMENTAL;
+        ${fresh ? 'PRAGMA auto_vacuum = INCREMENTAL;' : ''}
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = FULL;
         PRAGMA busy_timeout = 5000;
@@ -98,59 +136,50 @@ export class HostStore {
         PRAGMA journal_size_limit = 0;
       `)
       this.transaction(() => {
-        this.db.exec(`
-          CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-          CREATE TABLE IF NOT EXISTS delivery_queue (
-            sequence INTEGER PRIMARY KEY,
-            event_id TEXT NOT NULL UNIQUE,
-            harness_json TEXT NOT NULL,
-            payload_bytes INTEGER NOT NULL,
-            status TEXT NOT NULL CHECK(status IN ('pending','delivering','uncertain')),
-            delivery_attempts INTEGER NOT NULL DEFAULT 0,
-            next_attempt_at INTEGER NOT NULL DEFAULT 0,
-            enqueued_at INTEGER NOT NULL
-          );
-          CREATE TABLE IF NOT EXISTS event_dedup (
-            event_id TEXT PRIMARY KEY,
-            observed_at INTEGER NOT NULL,
-            disposition TEXT NOT NULL,
-            receipt_hash TEXT
-          );
-          CREATE INDEX IF NOT EXISTS dedup_by_age ON event_dedup(observed_at);
-          CREATE TABLE IF NOT EXISTS actions (
-            plugin_id TEXT NOT NULL,
-            request_id TEXT NOT NULL,
-            scope_key TEXT NOT NULL DEFAULT '',
-            action TEXT NOT NULL,
-            params_hash TEXT NOT NULL,
-            state TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            result_json TEXT,
-            error_code TEXT,
-            error_message TEXT,
-            PRIMARY KEY(plugin_id,scope_key,request_id)
-          );
-        `)
-        this.loadDeliveryConfiguration()
-        if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='incoming_events'").get()) this.migrateLegacyEvents()
-        this.db.prepare("UPDATE delivery_queue SET status = 'uncertain' WHERE status = 'delivering'").run()
-        if (this.deliverySettings.storageMode === 'memory') {
-          this.memoryQueue = new Map(this.queueRows().map(row => [row.event_id, row]))
-          this.db.exec('DELETE FROM delivery_queue')
+        if (fresh) {
+          this.db.exec(`
+            CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE delivery_queue (
+              sequence INTEGER PRIMARY KEY,
+              event_id TEXT NOT NULL UNIQUE,
+              harness_json TEXT NOT NULL,
+              payload_bytes INTEGER NOT NULL,
+              status TEXT NOT NULL CHECK(status IN ('pending','delivering','uncertain')),
+              delivery_attempts INTEGER NOT NULL DEFAULT 0,
+              next_attempt_at INTEGER NOT NULL DEFAULT 0,
+              enqueued_at INTEGER NOT NULL
+            );
+            CREATE TABLE event_dedup (
+              event_id TEXT PRIMARY KEY,
+              observed_at INTEGER NOT NULL,
+              disposition TEXT NOT NULL,
+              receipt_hash TEXT
+            );
+            CREATE INDEX dedup_by_age ON event_dedup(observed_at);
+            CREATE TABLE actions (
+              plugin_id TEXT NOT NULL,
+              request_id TEXT NOT NULL,
+              scope_key TEXT NOT NULL DEFAULT '',
+              action TEXT NOT NULL,
+              params_hash TEXT NOT NULL,
+              state TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              result_json TEXT,
+              error_code TEXT,
+              error_message TEXT,
+              PRIMARY KEY(plugin_id,scope_key,request_id)
+            );
+            PRAGMA user_version = ${schemaVersion};
+          `)
         }
+        this.loadDeliveryConfiguration()
+        this.db.prepare("UPDATE delivery_queue SET status = 'uncertain' WHERE status = 'delivering'").run()
         this.pruneDedup()
         this.persistSettings(this.deliverySettings, this.deliveryRevision)
         this.persistState(this.queueState)
-        this.db.exec('PRAGMA user_version = 2')
         // An interrupted outbound action is never automatically resent.
         this.db.prepare("UPDATE actions SET state = 'unknown', error_code = 'PROCESS_INTERRUPTED', error_message = '上次进程在动作结果确认前退出；请查询真实状态，不要直接重发。' WHERE state = 'running'").run()
       })
-      if (this.getSetting(compactionKey) === '1') {
-        // Rebuild the same database once; do not create a second archive of the removed chat history.
-        this.db.exec('PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE)')
-        this.db.prepare('DELETE FROM settings WHERE key=?').run(compactionKey)
-        this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
-      }
     } catch (error) { this.db.close(); throw error }
   }
 
@@ -189,35 +218,6 @@ export class HostStore {
 
   private persistSettings(values: DeliverySettings, revision: number): void { this.setSetting(settingsKey, JSON.stringify({ revision, values })) }
   private persistState(state: QueueState): void { this.setSetting(stateKey, JSON.stringify(state)) }
-
-  private migrateLegacyEvents(): void {
-    const now = Date.now()
-    const terminalCounts = this.db.prepare('SELECT harness_status,COUNT(*) AS count FROM incoming_events GROUP BY harness_status').all()
-    for (const row of terminalCounts) {
-      if (row.harness_status === 'accepted') this.queueState.accepted += Number(row.count)
-      if (row.harness_status === 'not-forwarded') this.queueState.notForwarded += Number(row.count)
-    }
-    const highest = this.db.prepare('SELECT MAX(sequence) AS sequence FROM incoming_events').get()
-    this.queueState.nextSequence = Math.max(this.queueState.nextSequence, Number(highest?.sequence ?? 0) + 1)
-    // Terminal rows never load raw_json, text or harness_json into the migration process.
-    const outstanding = this.db.prepare("SELECT sequence,event_id,harness_json,harness_status,delivery_attempts,received_at FROM incoming_events WHERE harness_status IN ('pending','delivering','uncertain') ORDER BY sequence").all()
-    for (const row of outstanding) {
-      const eventId = String(row.event_id)
-      if (!/^[a-f0-9]{64}$/.test(eventId) || typeof row.harness_json !== 'string') throw new PlatformError('STORAGE_CORRUPTED', '旧待投递记录损坏，迁移已取消并保留原库。', 500)
-      const json = serializeEnvelope(readEnvelope(row.harness_json), eventId)
-      this.insertQueueRow({ sequence: Number(row.sequence), event_id: eventId, harness_json: json, payload_bytes: Buffer.byteLength(json, 'utf8'),
-        status: row.harness_status === 'pending' ? 'pending' : 'uncertain', delivery_attempts: Number(row.delivery_attempts),
-        next_attempt_at: 0, enqueued_at: Number.isFinite(Date.parse(String(row.received_at))) ? Math.min(now, Date.parse(String(row.received_at))) : now })
-    }
-    const recent = this.db.prepare(`SELECT event_id,received_at,harness_status,receipt_id FROM incoming_events
-      WHERE julianday(received_at) >= julianday(?) ORDER BY sequence DESC LIMIT ?`).all(new Date(now - dedupLifetimeMs).toISOString(), maxDedupIdentifiers)
-    for (const row of recent) {
-      if (!/^[a-f0-9]{64}$/.test(String(row.event_id))) continue
-      this.saveDedup(String(row.event_id), String(row.harness_status), Math.min(now, Date.parse(String(row.received_at))), typeof row.receipt_id === 'string' ? row.receipt_id : null)
-    }
-    this.db.exec('DROP TABLE incoming_events')
-    this.setSetting(compactionKey, '1')
-  }
 
   private queueRows(): QueueRow[] {
     return this.db.prepare('SELECT * FROM delivery_queue ORDER BY sequence').all() as unknown as QueueRow[]
@@ -420,7 +420,7 @@ export class HostStore {
     return this.getDeliverySettingsSnapshot()
   }
 
-  markHarnessDeliveryBatch(ids: readonly string[], status: 'delivering' | 'pending' | 'uncertain', error: string | null = null, _receiptId: string | null = null, retryAt = 0): void {
+  markHarnessDeliveryBatch(ids: readonly string[], status: 'delivering' | 'pending' | 'uncertain', error: string | null = null, retryAt = 0): void {
     if (!Number.isSafeInteger(retryAt) || retryAt < 0 || !['delivering', 'pending', 'uncertain'].includes(status)) throw new PlatformError('INVALID_DELIVERY_STATE', '投递状态或重试时间无效。')
     const selected = new Set(ids)
     const rows = this.currentRows().filter(row => selected.has(row.event_id)).map(row => ({ ...row, status,

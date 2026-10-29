@@ -24,16 +24,15 @@ export class QQAccountRegistry {
       let parsed: unknown
       try { parsed = JSON.parse(readFileSync(this.indexPath, 'utf8')) }
       catch { throw new PlatformError('ACCOUNT_INDEX_CORRUPTED', 'QQ 账号索引不可读取，未覆盖原记录。', 500) }
-      if (!isJsonObject(parsed) || parsed.schemaVersion !== 1 || typeof parsed.defaultInstanceId !== 'string' || !Array.isArray(parsed.instances) || parsed.instances.length < 1 || parsed.instances.length > 100) throw new PlatformError('ACCOUNT_INDEX_CORRUPTED', 'QQ 账号索引格式或版本不兼容。', 500)
+      if (!isJsonObject(parsed) || Object.keys(parsed).some(key => !['schemaVersion', 'defaultInstanceId', 'instances'].includes(key)) || parsed.schemaVersion !== 1 || typeof parsed.defaultInstanceId !== 'string' || !Array.isArray(parsed.instances) || parsed.instances.length < 1 || parsed.instances.length > 100) throw new PlatformError('ACCOUNT_INDEX_CORRUPTED', 'QQ 账号索引格式无效或版本不支持，未覆盖原记录。', 500)
       const entries: AccountInstance[] = parsed.instances.map(entry => {
-        if (!isJsonObject(entry) || typeof entry.instanceId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}$/.test(entry.instanceId) || typeof entry.label !== 'string' || typeof entry.createdAt !== 'string') throw new PlatformError('ACCOUNT_INDEX_CORRUPTED', 'QQ 账号索引包含非法实例。', 500)
+        if (!isJsonObject(entry) || Object.keys(entry).some(key => !['instanceId', 'label', 'createdAt'].includes(key)) || typeof entry.instanceId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}$/.test(entry.instanceId) || typeof entry.label !== 'string' || typeof entry.createdAt !== 'string') throw new PlatformError('ACCOUNT_INDEX_CORRUPTED', 'QQ 账号索引包含非法实例。', 500)
         return { instanceId: entry.instanceId, label: entry.label, createdAt: entry.createdAt }
       })
       if (new Set(entries.map(entry => entry.instanceId)).size !== entries.length || !entries.some(entry => entry.instanceId === parsed.defaultInstanceId)) throw new PlatformError('ACCOUNT_INDEX_CORRUPTED', 'QQ 默认实例不存在或标识重复。', 500)
       this.instances = entries
       this.defaultInstanceId = parsed.defaultInstanceId
     } else {
-      if (existsSync(join(this.root, 'config.json'))) throw new PlatformError('ACCOUNT_MIGRATION_REQUIRED', '发现旧单文件 QQ 配置。请先明确迁移到账号实例目录，系统未覆盖原配置。', 409)
       const initial: AccountInstance = { instanceId: randomUUID(), label: '默认 QQ 账号', createdAt: new Date().toISOString() }
       this.instances = [initial]
       this.defaultInstanceId = initial.instanceId

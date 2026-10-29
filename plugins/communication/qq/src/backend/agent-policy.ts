@@ -26,25 +26,29 @@ export function parseQQIdentityList(value: unknown): string[] {
   return [...new Set(value as string[])]
 }
 
-export function parseQQAgentTools(value: unknown, previous: QQAgentTools = defaultAgentTools(), complete = false): QQAgentTools {
-  if (!isJsonObject(value) || Object.keys(value).some(key => !typeIds.includes(key as QQAgentTypeId))) invalid('QQ 代理工具配置包含未知类型。')
-  const result = defaultAgentTools()
-  for (const id of typeIds) {
-    const tools = value[id]
-    if (tools === undefined && !complete) { result[id] = [...previous[id]]; continue }
-    if (!Array.isArray(tools) || tools.some(name => typeof name !== 'string' || !qqAgentToolPolicy[id].availableTools.includes(name))) invalid('QQ 代理工具包含未知工具或不属于该会话类型的能力。')
-    result[id] = [...new Set(tools as string[])]
-  }
-  return result
+export function createDefaultAgentPolicy(): QQAgentPolicy {
+  return { owners: [], administrators: [], agentTools: defaultAgentTools(), policyRevision: 0 }
 }
 
-export function parseQQAgentPolicy(input: JsonObject, previous?: QQAgentPolicy): QQAgentPolicy {
-  const revision = input.policyRevision === undefined ? previous?.policyRevision ?? 0 : input.policyRevision
+export function parseQQAgentTools(value: unknown): QQAgentTools {
+  if (!isJsonObject(value) || Object.keys(value).some(key => !typeIds.includes(key as QQAgentTypeId)) || typeIds.some(id => !Object.hasOwn(value, id))) invalid('QQ 代理工具配置必须完整包含私聊与群聊类型，不能包含未知类型。')
+  const parseTools = (id: QQAgentTypeId): string[] => {
+    const tools = value[id]
+    if (!Array.isArray(tools) || tools.some(name => typeof name !== 'string' || !qqAgentToolPolicy[id].availableTools.includes(name))) invalid('QQ 代理工具包含未知工具或不属于该会话类型的能力。')
+    return [...new Set(tools as string[])]
+  }
+  return { 'qq.private': parseTools('qq.private'), 'qq.group': parseTools('qq.group') }
+}
+
+export function parseQQAgentPolicy(input: unknown): QQAgentPolicy {
+  const fields = ['owners', 'administrators', 'agentTools', 'policyRevision']
+  if (!isJsonObject(input) || fields.some(key => !Object.hasOwn(input, key)) || Object.keys(input).some(key => !fields.includes(key))) invalid('QQ 代理权限必须完整包含主人、管理员、工具与版本字段，不能包含未知字段。')
+  const revision = input.policyRevision
   if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) invalid('QQ 代理权限版本无效。')
   return {
-    owners: input.owners === undefined ? [...(previous?.owners ?? [])] : parseQQIdentityList(input.owners),
-    administrators: input.administrators === undefined ? [...(previous?.administrators ?? [])] : parseQQIdentityList(input.administrators),
-    agentTools: input.agentTools === undefined ? structuredClone(previous?.agentTools ?? defaultAgentTools()) : parseQQAgentTools(input.agentTools, previous?.agentTools),
+    owners: parseQQIdentityList(input.owners),
+    administrators: parseQQIdentityList(input.administrators),
+    agentTools: parseQQAgentTools(input.agentTools),
     policyRevision: revision,
   }
 }
@@ -55,7 +59,7 @@ export function parseQQAgentPolicySave(input: unknown, previous: QQAgentPolicy):
   if (typeof input.expectedRevision !== 'number' || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0) invalid('请提供有效的 QQ 代理权限版本。')
   if (input.expectedRevision !== previous.policyRevision) throw new PlatformError('AGENT_POLICY_CONFLICT', '代理权限已在其他页面更新。请保留草稿，重新读取后再保存。', 409, 'not-sent')
   if (previous.policyRevision === Number.MAX_SAFE_INTEGER) invalid('QQ 代理权限版本已达到上限。')
-  return { owners: parseQQIdentityList(input.owners), administrators: parseQQIdentityList(input.administrators), agentTools: parseQQAgentTools(input.agentTools, previous.agentTools, true), policyRevision: previous.policyRevision + 1 }
+  return { owners: parseQQIdentityList(input.owners), administrators: parseQQIdentityList(input.administrators), agentTools: parseQQAgentTools(input.agentTools), policyRevision: previous.policyRevision + 1 }
 }
 
 export function qqSenderRole(senderId: string, identity: AgentIdentityConfiguration): 'owner' | 'administrator' | 'user' {

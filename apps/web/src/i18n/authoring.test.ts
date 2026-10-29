@@ -31,11 +31,19 @@ describe('设置和创作双语资源', () => {
         expect(translate('authoring', key)).not.toBe(key)
       }
       for (const scope of TEMPLATE_SCOPES) expect(translate('authoring', `scope.${scope}`)).not.toBe(`scope.${scope}`)
-      for (const key of ['error.sourceUnavailable', 'error.agentPrompt', 'error.agentUnavailable', 'legacy.warning', 'preview.dirtyHint']) expect(translate('authoring', key)).not.toBe(key)
+      for (const key of ['error.sourceUnavailable', 'error.agentPrompt', 'error.agentUnavailable', 'preview.dirtyHint']) expect(translate('authoring', key)).not.toBe(key)
       for (const code of ['UNKNOWN_VARIABLE', 'UNAVAILABLE_VARIABLE', 'UNCLOSED_VARIABLE', 'MALFORMED_VARIABLE']) {
         const key = `editor.diagnostic.${code}`
         expect(translate('authoring', key, { name: 'custom' })).not.toBe(key)
       }
+    }
+  })
+
+  it('只保留六个当前作用域与九个受信变量的资源', () => {
+    expect(TEMPLATE_SCOPES).toHaveLength(6)
+    expect(TEMPLATE_VARIABLES).toHaveLength(9)
+    for (const resources of Object.values(authoringResources)) {
+      for (const key of ['prompt.group.title', 'prompt.private.title', 'scope.group', 'scope.private', 'nav.legacy', 'legacy.warning', 'variable.senders', 'variable.messages', 'variable.messageContent', 'variable.messageCount', 'variable.batchId']) expect(resources).not.toHaveProperty(key)
     }
   })
 

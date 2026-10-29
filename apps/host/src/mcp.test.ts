@@ -35,7 +35,7 @@ function fakePlugin(implementation?: BackendPlugin['invoke']) {
     return { value: input.value, correlation: requestId }
   }))
   const plugin: BackendPlugin = {
-    id: 'test-platform', name: 'Test Platform', version: '1.2.3', tools, capabilities: [], invoke,
+    id: 'test-platform', kind: 'communication', name: 'Test Platform', version: '1.2.3', tools, capabilities: [], invoke,
     getStatus: () => ({ state: 'disconnected', accountId: null, accountName: null, lastError: null, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 }),
     getPublicConfiguration: () => ({}), updateConfiguration: async () => ({}),
     connect: async () => {}, disconnect: async () => {}, dispose: async () => {},

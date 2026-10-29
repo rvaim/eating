@@ -137,7 +137,7 @@ export class AgentAccessRegistry {
     let lease: Lease
     const registry = this
     const view: BackendPlugin = {
-      id: plugin.id, name: plugin.name, version: plugin.version, capabilities: [],
+      id: plugin.id, kind: plugin.kind, name: plugin.name, version: plugin.version, capabilities: [],
       get tools() { registry.requireLive(lease); return registry.typeTools(actor!, plugin) },
       getStatus: () => plugin.getStatus(), getPublicConfiguration: () => ({}),
       updateConfiguration: async () => forbidden(), connect: async () => forbidden(), disconnect: async () => {}, dispose: async () => {},

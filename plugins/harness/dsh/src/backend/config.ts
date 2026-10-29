@@ -24,6 +24,7 @@ const digestPattern = /^[0-9a-f]{64}$/
 
 export function parseConfiguration(input: unknown, previous: DshConfiguration = DEFAULT_CONFIGURATION): DshConfiguration {
   if (!isJsonObject(input)) throw new PlatformError('INVALID_CONFIGURATION', 'DSH 配置必须为对象。')
+  if (Object.keys(input).some(key => !Object.hasOwn(DEFAULT_CONFIGURATION, key) && key !== 'clearApiKey')) throw new PlatformError('INVALID_CONFIGURATION', 'DSH 配置包含当前契约不支持的字段。')
   for (const name of ['displayName', 'endpoint', 'model', 'apiKey']) {
     if (input[name] !== undefined && typeof input[name] !== 'string') throw new PlatformError('INVALID_CONFIGURATION', '显示名称、地址、模型和密钥需为字符串。')
   }
@@ -125,12 +126,12 @@ export class DshConfigurationFile {
     const data = readRestrictedJson(this.filePath)
     if (!data) return { ...DEFAULT_CONFIGURATION }
     try {
-      if (data.schemaVersion !== 1 || !isJsonObject(data.configuration)) throw new Error('schema')
+      if (data.schemaVersion !== 1 || !isJsonObject(data.configuration) || typeof data.updatedAt !== 'string' || !Number.isFinite(Date.parse(data.updatedAt))) throw new Error('schema')
       const configurationValues = data.configuration
       const keys = Object.keys(DEFAULT_CONFIGURATION)
       if (keys.some(key => !Object.hasOwn(configurationValues, key)) || Object.keys(configurationValues).some(key => !keys.includes(key))) throw new Error('schema')
       const configuration = parseConfiguration(configurationValues)
-      this.updatedAt = typeof data.updatedAt === 'string' ? data.updatedAt : null
+      this.updatedAt = data.updatedAt
       return configuration
     } catch { throw new PlatformError('CONFIGURATION_CORRUPTED', 'DSH 配置格式损坏或版本不兼容，未覆盖原文件。', 500) }
   }

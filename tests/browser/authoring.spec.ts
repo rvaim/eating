@@ -287,7 +287,7 @@ test.describe('提示词与人格的真实持久编辑', () => {
 
   test('390px长正文、人格名称与原生候选浮层均不横向溢出', async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 390, height: 844 })
-    await page.goto(`${url}/#prompts/group`)
+    await page.goto(`${url}/#prompts/agent%3Aqq.group`)
     const editor = bodyEditor(page)
     await expect(editor).toBeVisible()
     await editor.fill('连续窄屏正文'.repeat(100))

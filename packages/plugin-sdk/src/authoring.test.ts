@@ -15,21 +15,18 @@ function errorCode(operation: () => unknown): string {
 }
 
 describe('authoring template catalog', () => {
-  it('exposes the fourteen real variables with a single shared scope mapping and trusted origins', () => {
-    expect(TEMPLATE_VARIABLES.map(variable => variable.name)).toEqual(['当前时间', '人格名称', '主人', '管理员', '平台', '机器人账号', '会话编号', '会话类型', '目标编号', '发送者列表', '消息列表', '消息内容', '消息数量', '批次编号'])
-    expect(new Set(TEMPLATE_VARIABLES.map(variable => variable.name)).size).toBe(14)
+  it('exposes the nine trusted variables with a single shared scope mapping and trusted origins', () => {
+    expect(TEMPLATE_VARIABLES.map(variable => variable.name)).toEqual(['当前时间', '人格名称', '主人', '管理员', '平台', '机器人账号', '会话编号', '会话类型', '目标编号'])
+    expect(new Set(TEMPLATE_VARIABLES.map(variable => variable.name)).size).toBe(9)
     for (const variable of TEMPLATE_VARIABLES) {
       const universal = ['当前时间', '人格名称', '主人', '管理员'].includes(variable.name)
-      const identity = ['平台', '机器人账号', '会话编号', '会话类型', '目标编号'].includes(variable.name)
-      expect(variable.scopes).toEqual(universal ? scopes : identity ? ['main', 'agent', 'group', 'private'] : ['group', 'private'])
-      expect(variable.origin).toBe(['主人', '管理员'].includes(variable.name) ? 'owner' : variable.name === '人格名称' ? 'persona' : variable.name === '当前时间' || identity ? 'runtime' : 'external')
+      expect(variable.scopes).toEqual(universal ? scopes : ['main', 'agent'])
+      expect(variable.origin).toBe(['主人', '管理员'].includes(variable.name) ? 'owner' : variable.name === '人格名称' ? 'persona' : 'runtime')
       expect(variable.description).not.toBe('')
       expect(Object.isFrozen(variable)).toBe(true)
       expect(Object.isFrozen(variable.scopes)).toBe(true)
     }
     expect(Object.isFrozen(TEMPLATE_VARIABLES)).toBe(true)
-    expect(TEMPLATE_VARIABLES.find(variable => variable.name === '消息内容')?.description).toBe('本批最新一条文本。')
-    expect(TEMPLATE_VARIABLES.find(variable => variable.name === '消息列表')?.description).toBe('带逐条来源的完整本批 JSON。')
   })
 })
 
@@ -63,14 +60,14 @@ describe('analyzeTemplate', () => {
   it.each(SYSTEM_TEMPLATE_SCOPES)('rejects external variables in %s with exact ranges', scope => {
     const body = '🧭{{消息内容}}'
     expect(analyzeTemplate(body, scope)).toMatchObject({ valid: false, tokens: [{ from: 2, to: body.length, valid: false }],
-      diagnostics: [{ from: 2, to: body.length, code: 'UNAVAILABLE_VARIABLE' }] })
+      diagnostics: [{ from: 2, to: body.length, code: 'UNKNOWN_VARIABLE' }] })
   })
 
-  it.each(['group', 'private'] as const)('accepts all catalog variables in %s', scope => {
+  it.each(['main', 'agent'] as const)('accepts all trusted catalog variables in %s', scope => {
     const body = TEMPLATE_VARIABLES.map(variable => `{{${variable.name}}}`).join('\n')
     const result = analyzeTemplate(body, scope)
     expect(result.valid).toBe(true)
-    expect(result.tokens).toHaveLength(14)
+    expect(result.tokens).toHaveLength(9)
     expect(result.diagnostics).toEqual([])
   })
 
@@ -163,13 +160,12 @@ function ownerConfiguration(): HarnessOwnerConfiguration {
     defaultPrompt: kind, availableTools: ['qq.send'], defaultTools: ['qq.send'], enabledTools: ['qq.send'],
     pluginId: 'qq', pluginName: 'QQ', enabled: true, identity: { owners: ['100', '200'], administrators: ['300'] } })
   return { revision: 7, prompts: [
-    { id: 'common', title: '通用', body: '通用 {{当前时间}} / {{主人}} / {{管理员}} / {{人格名称}}', revision: 2, updatedAt: null, scope: 'common' },
-    { id: 'subagent', title: '协作', body: '子代理协作', revision: 1, updatedAt: null, scope: 'subagent' },
-    { id: 'main', title: '主', body: '协调 {{平台}}/{{机器人账号}}/{{会话编号}}/{{会话类型}}/{{目标编号}}', revision: 3, updatedAt: null, scope: 'main' },
-    { id: 'agent:qq.private', title: '私聊', body: '私聊 {{目标编号}}', revision: 4, updatedAt: null, scope: 'agent', pluginId: 'qq', agentTypeId: 'qq.private' },
-    { id: 'agent:qq.group', title: '群聊', body: '群聊 {{目标编号}}', revision: 5, updatedAt: null, scope: 'agent', pluginId: 'qq', agentTypeId: 'qq.group' },
-    { id: 'plugin:qq.instructions', title: 'QQ说明', body: '插件说明', revision: 6, updatedAt: null, scope: 'plugin', pluginId: 'qq' },
-    { id: 'group', title: '旧输入', body: '{{消息内容}}', revision: 1, updatedAt: null, scope: 'group', source: 'legacy-user-input' },
+    { id: 'common', title: '通用', body: '通用 {{当前时间}} / {{主人}} / {{管理员}} / {{人格名称}}', revision: 2, updatedAt: null, scope: 'common', source: 'owner' },
+    { id: 'subagent', title: '协作', body: '子代理协作', revision: 1, updatedAt: null, scope: 'subagent', source: 'owner' },
+    { id: 'main', title: '主', body: '协调 {{平台}}/{{机器人账号}}/{{会话编号}}/{{会话类型}}/{{目标编号}}', revision: 3, updatedAt: null, scope: 'main', source: 'owner' },
+    { id: 'agent:qq.private', title: '私聊', body: '私聊 {{目标编号}}', revision: 4, updatedAt: null, scope: 'agent', source: 'plugin', pluginId: 'qq', agentTypeId: 'qq.private' },
+    { id: 'agent:qq.group', title: '群聊', body: '群聊 {{目标编号}}', revision: 5, updatedAt: null, scope: 'agent', source: 'plugin', pluginId: 'qq', agentTypeId: 'qq.group' },
+    { id: 'plugin:qq.instructions', title: 'QQ说明', body: '插件说明', revision: 6, updatedAt: null, scope: 'plugin', source: 'plugin', pluginId: 'qq' },
   ], activePersona: { id: 'shared', name: '认真生活', body: '同一人格 {{主人}} {{人格名称}}', revision: 3, createdAt: '', updatedAt: '' },
   agentTypes: [role('qq.private', 'private'), role('qq.group', 'group')],
   pluginInstructions: [{ id: 'qq.instructions', title: 'QQ说明', body: '插件说明', pluginId: 'qq', pluginName: 'QQ', enabled: true }],
@@ -178,16 +174,16 @@ function ownerConfiguration(): HarnessOwnerConfiguration {
 
 describe('prompt scopes and trusted system boundaries', () => {
   it('maps every supported prompt ID without treating arbitrary IDs as main', () => {
-    for (const id of ['common', 'subagent', 'main', 'group', 'private'] as const) expect(getPromptTemplateScope(id)).toBe(id)
+    for (const id of ['common', 'subagent', 'main'] as const) expect(getPromptTemplateScope(id)).toBe(id)
     expect(getPromptTemplateScope('agent:qq.private')).toBe('agent')
     expect(getPromptTemplateScope('plugin:qq.instructions')).toBe('plugin')
-    for (const id of ['unknown', 'agent:', 'plugin:', 'agent:qq:main', 'persona', '__proto__']) expect(getPromptTemplateScope(id)).toBeNull()
+    for (const id of ['group', 'private', 'unknown', 'agent:', 'plugin:', 'agent:qq:main', 'persona', '__proto__']) expect(getPromptTemplateScope(id)).toBeNull()
     expect(Object.isFrozen(TEMPLATE_SCOPES)).toBe(true)
     expect(Object.isFrozen(SYSTEM_TEMPLATE_SCOPES)).toBe(true)
   })
   it.each(SYSTEM_TEMPLATE_SCOPES)('blocks every external variable from %s', scope => {
-    for (const variable of TEMPLATE_VARIABLES.filter(item => item.origin === 'external')) {
-      expect(analyzeTemplate(`{{${variable.name}}}`, scope)).toMatchObject({ valid: false, diagnostics: [{ code: 'UNAVAILABLE_VARIABLE' }] })
+    for (const name of ['发送者列表', '消息列表', '消息内容', '消息数量', '批次编号']) {
+      expect(analyzeTemplate(`{{${name}}}`, scope)).toMatchObject({ valid: false, diagnostics: [{ code: 'UNKNOWN_VARIABLE' }] })
     }
     expect(analyzeTemplate('{{主人}}{{管理员}}{{当前时间}}{{人格名称}}', scope).valid).toBe(true)
   })
@@ -243,7 +239,7 @@ describe('composeAgentPrompt', () => {
     preview.bindings.主人 = 'mutated'
     expect(configuration).toEqual(before)
   })
-  it('renders trusted owner values once without interpreting their contents or promoting legacy variables', () => {
+  it('renders trusted owner values once without interpreting their contents', () => {
     const configuration = { ...ownerConfiguration(), bindings: { 主人: '{{消息内容}} $&', 管理员: '' } }
     expect(composeAgentPrompt(configuration, null, { 当前时间: 'now', 消息内容: 'external' }).systemPrompt).toContain('{{消息内容}} $&')
     expect(errorCode(() => composeAgentPrompt(configuration, null, {}))).toBe('MISSING_TEMPLATE_BINDING')
@@ -259,18 +255,39 @@ describe('composeAgentPrompt', () => {
     const configuration = ownerConfiguration()
     expect(errorCode(() => composeAgentPrompt({ ...configuration, prompts: configuration.prompts.filter(prompt => prompt.id !== id) }, 'qq.private', { 当前时间: 'now' }))).toBe('INVALID_AGENT_PROMPT')
   })
-  it('uses only the layers required by the requested agent, including when legacy templates are supplied separately', () => {
+  it('uses only the layers required by the requested agent', () => {
     const configuration = ownerConfiguration()
-    const legacyPrompts = configuration.prompts.filter(prompt => prompt.id === 'group')
-    const main = { ...configuration, legacyPrompts, prompts: configuration.prompts.filter(prompt => prompt.id !== 'subagent' && !prompt.id.startsWith('agent:')) }
+    const main = { ...configuration, prompts: configuration.prompts.filter(prompt => prompt.id !== 'subagent' && !prompt.id.startsWith('agent:')) }
     expect(composeAgentPrompt(main, null, { 当前时间: 'now' }).layers.map(layer => layer.id)).toEqual(['common', 'main', 'plugin:qq.instructions', 'persona:shared'])
-    const child = { ...configuration, legacyPrompts, prompts: configuration.prompts.filter(prompt => prompt.id !== 'main' && !prompt.id.startsWith('plugin:')) }
+    const child = { ...configuration, prompts: configuration.prompts.filter(prompt => prompt.id !== 'main' && !prompt.id.startsWith('plugin:')) }
     expect(composeAgentPrompt(child, 'qq.private', { 当前时间: 'now' }).layers.map(layer => layer.id)).toEqual(['common', 'subagent', 'agent:qq.private', 'persona:shared'])
     expect(errorCode(() => composeAgentPrompt({ ...configuration, prompts: [] }, 'unknown', {}))).toBe('AGENT_TYPE_UNAVAILABLE')
   })
+  it.each([
+    { scope: undefined }, { source: undefined }, { source: 'plugin' }, { scope: 'group' }, { source: 'legacy-user-input' },
+  ])('refuses missing or mismatched base metadata: %j', patch => {
+    const configuration = ownerConfiguration()
+    const prompts = configuration.prompts.map(prompt => prompt.id === 'common' ? { ...prompt, ...patch } : prompt)
+    expect(errorCode(() => composeAgentPrompt({ ...configuration, prompts } as unknown as HarnessOwnerConfiguration, null, { 当前时间: 'now' }))).toBe('INVALID_AGENT_PROMPT')
+  })
+  it.each([
+    { source: 'owner' }, { pluginId: 'other' }, { pluginId: undefined }, { agentTypeId: 'qq.group' },
+  ])('refuses mismatched plugin metadata: %j', patch => {
+    const configuration = ownerConfiguration()
+    const prompts = configuration.prompts.map(prompt => prompt.id === 'agent:qq.private' ? { ...prompt, ...patch } : prompt)
+    expect(errorCode(() => composeAgentPrompt({ ...configuration, prompts } as unknown as HarnessOwnerConfiguration, 'qq.private', { 当前时间: 'now' }))).toBe('INVALID_AGENT_PROMPT')
+  })
+  it('refuses removed fields and prompt kinds at the composition boundary', () => {
+    const configuration = ownerConfiguration()
+    expect(errorCode(() => composeAgentPrompt({ ...configuration, legacyPrompts: [] } as unknown as HarnessOwnerConfiguration, null, { 当前时间: 'now' }))).toBe('INVALID_AGENT_PROMPT')
+    for (const id of ['group', 'private']) {
+      const prompts = [...configuration.prompts, { ...configuration.prompts[0]!, id, scope: id }]
+      expect(errorCode(() => composeAgentPrompt({ ...configuration, prompts } as unknown as HarnessOwnerConfiguration, null, { 当前时间: 'now' }))).toBe('INVALID_AGENT_PROMPT')
+    }
+  })
   it('rejects external system variables, wrong scopes, duplicate IDs and unavailable required documents', () => {
     const configuration = ownerConfiguration()
-    for (const patch of [{ body: '{{消息内容}}' }, { scope: 'group' as const }, { source: 'legacy-user-input' as const }, { available: false }]) {
+    for (const patch of [{ body: '{{消息内容}}' }, { scope: 'subagent' as const }, { source: 'plugin' as const }, { available: false }]) {
       const prompts = configuration.prompts.map(prompt => prompt.id === 'common' ? { ...prompt, ...patch } : prompt)
       expect(() => composeAgentPrompt({ ...configuration, prompts }, null, { 当前时间: 'now', 消息内容: 'external' })).toThrow(PlatformError)
     }

@@ -114,8 +114,7 @@ export interface HarnessDeliveryReceipt {
 export interface HarnessMessageSink {
   readonly id: string
   isReady?(): boolean
-  deliver?(event: HarnessEvent, signal: AbortSignal): Promise<HarnessDeliveryReceipt>
-  deliverBatch?(batch: HarnessDeliveryBatch, signal: AbortSignal): Promise<HarnessDeliveryReceipt>
+  deliverBatch(batch: HarnessDeliveryBatch, signal: AbortSignal): Promise<HarnessDeliveryReceipt>
 }
 
 export function validateDeliverySettings(input: unknown): DeliverySettings {
@@ -143,20 +142,19 @@ export function validateDeliverySettings(input: unknown): DeliverySettings {
 export interface HarnessOwnerConfiguration {
   readonly revision: number
   readonly prompts: readonly import('./authoring.js').PromptDocument[]
-  readonly legacyPrompts?: readonly import('./authoring.js').PromptDocument[]
   readonly activePersona: import('./authoring.js').PersonaDocument | null
-  readonly agentTypes?: readonly import('./agents.js').RegisteredAgentType[]
-  readonly pluginInstructions?: readonly import('./agents.js').RegisteredAgentInstructions[]
-  readonly bindings?: Readonly<Record<string, string>>
+  readonly agentTypes: readonly import('./agents.js').RegisteredAgentType[]
+  readonly pluginInstructions: readonly import('./agents.js').RegisteredAgentInstructions[]
+  readonly bindings: Readonly<Record<string, string>>
 }
 
 export interface HarnessHostServices {
   registerSink(sink: HarnessMessageSink): () => void
   wake(): void
   readOwnerConfiguration(): HarnessOwnerConfiguration
-  getMcpConnection(pluginId: string, scope?: import('./agents.js').AgentInvocationScope): import('./agents.js').AgentMcpConnection
-  readAgentActions?(agentId: string): readonly import('./agents.js').AgentActionReceipt[]
-  revokeAgentAccess?(agentId: string): void
+  getMcpConnection(pluginId: string, scope: import('./agents.js').AgentInvocationScope): import('./agents.js').AgentMcpConnection
+  readAgentActions(agentId: string): readonly import('./agents.js').AgentActionReceipt[]
+  revokeAgentAccess(agentId: string): void
 }
 
 export interface HostPluginContext {
@@ -198,7 +196,7 @@ export interface PluginLogSource {
 }
 
 export interface BackendPlugin {
-  readonly kind?: 'communication' | 'harness'
+  readonly kind: 'communication' | 'harness'
   manage?(operation: string, input: unknown): Promise<JsonValue>
   readonly logs?: PluginLogSource
   readonly id: string
@@ -226,7 +224,7 @@ export interface PluginPackageManifest {
   readonly description: string
   readonly version: string
   readonly kind: 'communication' | 'harness'
-  readonly apiVersion: 1
+  readonly apiVersion: 2
   readonly storageDirectory: string
   readonly backend: string
   readonly frontend: {
@@ -240,7 +238,7 @@ export interface PluginPackageManifest {
 }
 
 export interface BackendPluginEntry {
-  readonly kind?: 'communication' | 'harness'
+  readonly kind: 'communication' | 'harness'
   readonly id: string
   readonly storageDirectory: string
   readonly installed?: { readonly manifest: PluginPackageManifest; readonly directory: string }

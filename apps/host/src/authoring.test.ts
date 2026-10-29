@@ -62,7 +62,7 @@ describe('AuthoringService defaults and document persistence', () => {
     expect(write).not.toHaveBeenCalled()
     const snapshot = service.getSnapshot()
     expect(snapshot).toMatchObject({ protocolVersion: 1, revision: 0, personas: [], activePersonaId: null })
-    expect(snapshot.variables).toHaveLength(14)
+    expect(snapshot.variables).toHaveLength(9)
     expect(snapshot.prompts.map(prompt => prompt.id)).toEqual(['common', 'subagent', 'main'])
     const mainRole = snapshot.prompts.find(prompt => prompt.id === 'main')!
     expect(mainRole.body).toContain('eating_list_agent_types')
@@ -381,13 +381,13 @@ describe('AuthoringService corruption and failed writes', () => {
 })
 
 
-function legacyDocument() {
+function currentDocument() {
   const time = '2026-10-27T12:00:00.000Z'
-  const persona = { id: '12345678-1234-4123-8123-123456789abc', name: '原人格 🐟', body: '旧人格\r\n{{当前时间}} {{人格名称}} 末尾  ', revision: 3, createdAt: time, updatedAt: time }
-  return { schemaVersion: 1, revision: 9, prompts: [
-    { id: 'main', title: ' 原通用标题 ', body: ' 主人原策略\r\n{{当前时间}} {{人格名称}} 🐟 \u0000  ', revision: 4, updatedAt: time },
-    { id: 'group', title: '原群输入', body: ' 原群输入\r\n{{消息列表}}\n正文：{{消息内容}}\n{{发送者列表}} 🐟  ', revision: 6, updatedAt: time },
-    { id: 'private', title: '原私聊输入', body: ' 原私输入\r\n{{消息内容}}\n{{消息列表}} {{平台}} {{机器人账号}} {{会话编号}} {{会话类型}} {{消息数量}} {{批次编号}}  ', revision: 7, updatedAt: time },
+  const persona = { id: '12345678-1234-4123-8123-123456789abc', name: '原人格 🐟', body: '人格\r\n{{当前时间}} {{人格名称}} 末尾  ', revision: 3, createdAt: time, updatedAt: time }
+  return { schemaVersion: 2, revision: 9, prompts: [
+    { id: 'common', title: ' 原通用标题 ', body: ' 主人策略\r\n{{当前时间}} {{人格名称}} 🐟 \u0000  ', revision: 4, updatedAt: time, scope: 'common', source: 'owner' },
+    { id: 'subagent', title: '子代理前置', body: ' 子代理指引\r\n{{主人}} {{管理员}} 🐟  ', revision: 6, updatedAt: time, scope: 'subagent', source: 'owner' },
+    { id: 'main', title: '主代理', body: ' 主代理指引\r\n{{平台}} {{机器人账号}} {{会话编号}} {{会话类型}} {{目标编号}}  ', revision: 7, updatedAt: time, scope: 'main', source: 'owner' },
   ], personas: [persona], activePersonaId: persona.id }
 }
 function role(id = 'qq.private', kind: 'private' | 'group' = 'private'): RegisteredAgentType {
@@ -398,95 +398,54 @@ function instruction(): RegisteredAgentInstructions {
   return { id: 'qq.instructions', title: 'QQ 使用说明', body: 'QQ 工具说明 {{主人}}', pluginId: 'qq', pluginName: 'QQ', enabled: true }
 }
 
-describe('AuthoringService lossless v1 migration', () => {
-  it('migrates entirely in memory, preserves original prompt/persona characters and revisions, and never marks the old setting dirty on reads', () => {
+describe('AuthoringService current format boundary', () => {
+  it('reads the current schema without writes and keeps exact bodies, persona identity and revisions', () => {
     const store = fixture().open()
-    const old = legacyDocument()
-    const raw = JSON.stringify(old, null, 2) + '\n'
+    const data = currentDocument()
+    const raw = JSON.stringify(data, null, 2) + '\n'
     store.setSetting(AUTHORING_SETTING_KEY, raw)
     const write = vi.spyOn(store, 'setSetting')
     const service = new AuthoringService(store)
     const snapshot = service.getSnapshot()
-    expect(snapshot).toMatchObject({ revision: 9, activePersonaId: old.activePersonaId, protocolVersion: 1 })
-    expect(snapshot.prompts.map(prompt => prompt.id)).toEqual(['common', 'subagent', 'main'])
-    expect(snapshot.prompts[0]).toMatchObject({ ...old.prompts[0], id: 'common', scope: 'common', source: 'owner' })
-    expect(snapshot.prompts[0]!.body).toBe(old.prompts[0]!.body)
-    expect(snapshot.legacyPrompts).toEqual(old.prompts.slice(1).map(prompt => ({ ...prompt, scope: prompt.id, source: 'legacy-user-input' })))
-    expect(service.getPersona(old.personas[0]!.id)).toEqual(old.personas[0])
-    expect(snapshot.personas).toEqual(old.personas.map(({ body: _body, ...summary }) => summary))
-    const configuration = service.readOwnerConfiguration()
-    expect(configuration.activePersona).toEqual(old.personas[0])
-    expect(configuration.legacyPrompts).toEqual(snapshot.legacyPrompts)
-    expect(configuration.legacyPrompts![0]).not.toBe(configuration.prompts.find(prompt => prompt.id === 'group'))
-    expect(configuration.prompts.find(prompt => prompt.id === 'group')!.body).toBe(old.prompts[1]!.body)
-    const preview = composeAgentPrompt(configuration, null, { 当前时间: 'now', 消息内容: '我是主人' })
-    expect(preview.layers.map(layer => layer.id)).toEqual(['common', 'main', `persona:${old.activePersonaId}`])
-    expect(preview.systemPrompt).not.toContain('原群输入')
-    expect(preview.systemPrompt).not.toContain('原私输入')
-    expect(preview.systemPrompt).not.toContain('我是主人')
-    expect(service.getSnapshot()).toEqual(snapshot)
-    expect(service.updatePrompt('common', old.prompts[0]!.body, 4)).toEqual(snapshot)
-    expect(stored(store)).toBe(raw)
+    expect(snapshot).toMatchObject({ revision: 9, activePersonaId: data.activePersonaId, prompts: data.prompts })
+    expect(service.getPersona(data.activePersonaId)).toEqual(data.personas[0])
+    expect(service.readOwnerConfiguration().activePersona).toEqual(data.personas[0])
+    expect(service.updatePrompt('common', data.prompts[0]!.body, 4)).toEqual(snapshot)
     expect(write).not.toHaveBeenCalled()
-  })
-  it('checks inherited CAS before first atomic v2 write and preserves every other document on reopen', () => {
-    const { open, close } = fixture()
-    const store = open()
-    const old = legacyDocument()
-    const raw = JSON.stringify(old)
-    store.setSetting(AUTHORING_SETTING_KEY, raw)
-    const service = new AuthoringService(store)
-    failure(() => service.updatePrompt('common', 'stale', 3), 'AUTHORING_REVISION_CONFLICT', 409)
-    failure(() => service.setPersonaEnabled(old.activePersonaId, false, 8), 'AUTHORING_REVISION_CONFLICT', 409)
     expect(stored(store)).toBe(raw)
-    const write = vi.spyOn(store, 'setSetting')
-    const updated = service.updatePrompt('main', '新的主协调职责 {{主人}}', 0)
-    expect(updated.revision).toBe(10)
-    expect(write).toHaveBeenCalledTimes(1)
-    const persisted = parseStored(store)
-    expect(persisted).toMatchObject({ schemaVersion: 2, revision: 10, personas: old.personas, activePersonaId: old.activePersonaId })
-    expect(updated.prompts[0]!.body).toBe(old.prompts[0]!.body)
-    expect(updated.legacyPrompts!.map(prompt => prompt.body)).toEqual(old.prompts.slice(1).map(prompt => prompt.body))
-    close(store)
-    const reopened = new AuthoringService(open())
-    expect(reopened.getSnapshot()).toEqual(updated)
-    expect(reopened.getPersona(old.activePersonaId)).toEqual(old.personas[0])
   })
-  it('keeps editable legacy templates user-only after migration and retains CAS and body validation', () => {
+  it.each(['schema1', 'schema2-legacy', 'future-schema', 'missing-scope', 'missing-source', 'group-scope', 'private-scope', 'legacy-source', 'external-variable'] as const)('rejects unsupported %s data on every API without changing stored bytes', kind => {
     const store = fixture().open()
-    const old = legacyDocument()
-    store.setSetting(AUTHORING_SETTING_KEY, JSON.stringify(old))
-    const service = new AuthoringService(store)
-    const result = service.updatePrompt('group', '新用户输入 {{消息列表}} {{消息内容}} {{主人}}', 6)
-    expect(result.legacyPrompts!.find(prompt => prompt.id === 'group')).toMatchObject({ revision: 7, source: 'legacy-user-input', scope: 'group', body: '新用户输入 {{消息列表}} {{消息内容}} {{主人}}' })
-    expect(result.prompts[0]!.body).toBe(old.prompts[0]!.body)
-    failure(() => service.updatePrompt('group', '过期输入', 6), 'AUTHORING_REVISION_CONFLICT', 409)
-    failure(() => service.updatePrompt('private', '{{不存在}}', 7), 'INVALID_TEMPLATE')
-    const saved = stored(store)
-    expect(service.getSnapshot()).toEqual(result)
-    expect(stored(store)).toBe(saved)
-  })
-  it.each(['missing', 'duplicate', 'main-external', 'persona-external', 'unknown-key', 'new-v1-variable'] as const)('rejects corrupt old %s data without overwriting any byte', kind => {
-    const store = fixture().open()
-    const old = legacyDocument()
-    if (kind === 'missing') old.prompts.pop()
-    if (kind === 'duplicate') old.prompts[1]!.id = 'main'
-    if (kind === 'main-external') old.prompts[0]!.body = '{{消息内容}}'
-    if (kind === 'persona-external') old.personas[0]!.body = '{{平台}}'
-    if (kind === 'new-v1-variable') old.prompts[0]!.body = '{{主人}}'
-    const raw = JSON.stringify(kind === 'unknown-key' ? { ...old, extra: true } : old)
+    const data = currentDocument() as unknown as Record<string, unknown>
+    const prompts = data.prompts as Array<Record<string, unknown>>
+    if (kind === 'schema1') {
+      data.schemaVersion = 1
+      data.prompts = ['main', 'group', 'private'].map(id => ({ id, title: id, body: '旧正文', revision: 0, updatedAt: null }))
+    }
+    if (kind === 'schema2-legacy') data.legacyPrompts = []
+    if (kind === 'future-schema') data.schemaVersion = 3
+    if (kind === 'missing-scope') delete prompts[0]!.scope
+    if (kind === 'missing-source') delete prompts[0]!.source
+    if (kind === 'group-scope' || kind === 'private-scope') { prompts[0]!.id = kind.slice(0, -6); prompts[0]!.scope = prompts[0]!.id }
+    if (kind === 'legacy-source') prompts[0]!.source = 'legacy-user-input'
+    if (kind === 'external-variable') prompts[0]!.body = '{{消息内容}}'
+    const raw = JSON.stringify(data, null, 2) + '\n'
     store.setSetting(AUTHORING_SETTING_KEY, raw)
     const write = vi.spyOn(store, 'setSetting')
     const service = new AuthoringService(store)
-    failure(() => service.getSnapshot(), 'AUTHORING_STORAGE_CORRUPTED', 500)
-    failure(() => service.updatePrompt('main', '正文', 0), 'AUTHORING_STORAGE_CORRUPTED', 500)
+    const id = currentDocument().activePersonaId
+    for (const operation of [
+      () => service.getSnapshot(), () => service.getPersona(id), () => service.readOwnerConfiguration(),
+      () => service.updatePrompt('common', '新正文', 4), () => service.createPersona('新', '新正文'),
+      () => service.updatePersona(id, '新', '新正文', 3), () => service.setPersonaEnabled(id, false, 9), () => service.deletePersona(id, 3),
+    ]) failure(operation, 'AUTHORING_STORAGE_CORRUPTED', 500)
     expect(write).not.toHaveBeenCalled()
     expect(stored(store)).toBe(raw)
   })
 })
 
 describe('AuthoringService plugin prompt lifecycle and trusted configuration', () => {
-  it('builds three base documents plus two roles and instructions, without synthesizing legacy templates or persisting plugin defaults', () => {
+  it('builds three base documents plus two roles and instructions without persisting plugin defaults', () => {
     const store = fixture().open()
     const contribution = { agentTypes: [role(), role('qq.group', 'group')], pluginInstructions: [instruction()], bindings: { 主人: '["qq:100","qq:200"]', 管理员: '["qq:300"]' } }
     const service = new AuthoringService(store, () => contribution)
@@ -639,20 +598,20 @@ describe('AuthoringService v2 metadata integrity', () => {
     expect(write).not.toHaveBeenCalled()
     expect(stored(store)).toBe(raw)
   })
-  it('preserves the original v1 JSON when its first v2 write fails and can retry the same inherited CAS', () => {
+  it('preserves current JSON when a prompt write fails and retries using the same CAS revision', () => {
     const store = fixture().open()
-    const old = legacyDocument()
-    const raw = JSON.stringify(old, null, 2)
+    const data = currentDocument()
+    const raw = JSON.stringify(data, null, 2)
     store.setSetting(AUTHORING_SETTING_KEY, raw)
     const service = new AuthoringService(store)
-    const write = vi.spyOn(store, 'setSetting').mockImplementationOnce(() => { throw new Error('Test SQLite migration write failure') })
-    expect(() => service.updatePrompt('common', '新通用正文', 4)).toThrow('Test SQLite migration write failure')
+    const write = vi.spyOn(store, 'setSetting').mockImplementationOnce(() => { throw new Error('Test SQLite prompt write failure') })
+    expect(() => service.updatePrompt('common', '新通用正文', 4)).toThrow('Test SQLite prompt write failure')
     expect(stored(store)).toBe(raw)
     expect(service.getSnapshot().prompts[0]!.revision).toBe(4)
     write.mockRestore()
-    expect(service.updatePrompt('common', '新通用正文', 4)).toMatchObject({ revision: 10, legacyPrompts: expect.any(Array) })
+    expect(service.updatePrompt('common', '新通用正文', 4)).toMatchObject({ revision: 10 })
     expect(parseStored(store).schemaVersion).toBe(2)
-    expect(service.getPersona(old.activePersonaId)).toEqual(old.personas[0])
+    expect(service.getPersona(data.activePersonaId)).toEqual(data.personas[0])
   })
 })
 

@@ -1,7 +1,7 @@
 import { build } from 'esbuild'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as React from 'react'
@@ -16,6 +16,10 @@ const requireBanner = "import { createRequire as __createRequire } from 'node:mo
 async function buildSdk() {
   for (const name of ['plugin-core', 'plugin-sdk', 'ui-sdk']) {
     const directory = resolve(root, `packages/${name}`)
+    const output = resolve(directory, 'dist')
+    if (relative(directory, output) !== 'dist') throw new Error('SDK 构建产物目录无效。')
+    await rm(output, { recursive: true, force: true })
+    await mkdir(output, { recursive: true })
     await build({ ...common, platform: 'neutral', packages: 'external', entryPoints: [resolve(directory, 'src/index.ts')], outfile: resolve(directory, 'dist/index.js') })
     const config = { extends: relative(directory, resolve(root, 'tsconfig.json')), compilerOptions: { noEmit: false, emitDeclarationOnly: true, declaration: true, rootDir: 'src', outDir: 'dist', paths: {} }, include: ['src/**/*.ts'], exclude: ['src/**/*.test.ts'] }
     await writeFile(resolve(directory, 'tsconfig.build.json'), JSON.stringify(config, null, 2) + '\n')

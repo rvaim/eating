@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -20,12 +21,13 @@ function deferred<T>() {
 }
 
 const cleanups: Array<() => Promise<void> | void> = []
+const nativeModules = () => Object.fromEntries(['dsh-subagent', 'dsh-subagent-spawn-in-process', 'dsh-session-query-sqlite', 'dsh-agent-preset-registry'].map(name => [name, `/fixture/runtime/${name}.mjs`]))
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
 
 function batch(id = 'a'.repeat(64), text = 'fixture external text'): HarnessDeliveryBatch {
   return { protocolVersion: 1, batchId: id, conversationId: 'qq:100:group:200', createdAt: '2026-10-27T16:00:00.000Z', reason: 'quiet-window',
     events: [{ protocolVersion: 1, eventId: 'event-fixture', pluginId: 'qq', instanceId: 'fixture-instance', platform: 'qq', accountId: '100',
-      conversationId: 'qq:100:group:200', senderId: '300', receivedAt: '2026-10-27T16:00:00.000Z', source: { trust: 'external', kind: 'group' }, content: text, text }] }
+      conversationId: 'qq:100:group:200', senderId: '300', targetId: '200', messageId: '400', resourceIds: [], receivedAt: '2026-10-27T16:00:00.000Z', source: { trust: 'external', kind: 'group', senderRole: 'user' }, content: text, text }] }
 }
 
 function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: boolean; missing?: boolean; resumeFails?: boolean; install?: (signal?: AbortSignal) => Promise<void>; adapter?: DshAdapterOptions } = {}) {
@@ -36,15 +38,13 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
     rmSync(directory, { recursive: true })
   })
   let owner: HarnessOwnerConfiguration = {
-    revision: 1,
+    revision: 1, pluginInstructions: [], bindings: { 主人: '', 管理员: '' },
     prompts: [
-      { id: 'common', title: 'common', body: 'owner common', revision: 1, updatedAt: null },
-      { id: 'subagent', title: 'subagent', body: 'owner subagent', revision: 1, updatedAt: null },
-      { id: 'agent:qq.group', title: 'group agent', body: 'owner group role', pluginId: 'qq', revision: 1, updatedAt: null },
-      { id: 'agent:qq.private', title: 'private agent', body: 'owner private role', pluginId: 'qq', revision: 1, updatedAt: null },
-      { id: 'main', title: 'main', body: 'owner main {{当前时间}} {{人格名称}}', revision: 1, updatedAt: null },
-      { id: 'group', title: 'group', body: 'group {{消息内容}} {{发送者列表}} {{消息列表}}', revision: 1, updatedAt: null },
-      { id: 'private', title: 'private', body: 'private {{消息内容}}', revision: 1, updatedAt: null },
+      { id: 'common', scope: 'common', source: 'owner', title: 'common', body: 'owner common', revision: 1, updatedAt: null },
+      { id: 'subagent', scope: 'subagent', source: 'owner', title: 'subagent', body: 'owner subagent', revision: 1, updatedAt: null },
+      { id: 'agent:qq.group', agentTypeId: 'qq.group', scope: 'agent', source: 'plugin', title: 'group agent', body: 'owner group role', pluginId: 'qq', revision: 1, updatedAt: null },
+      { id: 'agent:qq.private', agentTypeId: 'qq.private', scope: 'agent', source: 'plugin', title: 'private agent', body: 'owner private role', pluginId: 'qq', revision: 1, updatedAt: null },
+      { id: 'main', scope: 'main', source: 'owner', title: 'main', body: 'owner main {{当前时间}} {{人格名称}}', revision: 1, updatedAt: null },
     ],
     agentTypes: [
       { id: 'qq.group', title: '群聊', description: 'group', pluginId: 'qq', pluginName: 'QQ', enabled: true, identity: { owners: [], administrators: [] }, conversationKind: 'group', defaultPrompt: 'group', availableTools: ['qq_send_group_message'], defaultTools: ['qq_send_group_message'], enabledTools: ['qq_send_group_message'] },
@@ -57,7 +57,7 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
   const context: HostPluginContext = {
     dataDirectory: directory,
     harness: { registerSink: vi.fn(sink => { registered = sink; return detach }), wake: vi.fn(), readOwnerConfiguration: () => owner,
-      getMcpConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1/mcp/qq', headers: { Authorization: 'Bearer fixture-only-mcp-token' } })) },
+      readAgentActions: vi.fn(() => []), revokeAgentAccess: vi.fn(), getMcpConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1/mcp/qq', headers: { Authorization: 'Bearer fixture-only-mcp-token' } })) },
     getSetting: vi.fn(() => null), setSetting: vi.fn(), recordEvent: vi.fn(() => { throw new Error('Adapter must not record a chat copy') }),
     listMessages: vi.fn(() => []), executeIdempotent: vi.fn(async () => { throw new Error('Adapter must never forward finalResponse') }),
   }
@@ -106,7 +106,7 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
     })
     return client
   })
-  const plugin = new DshPlugin(context, { runtime, createHarness: factory, resolveNativeModules: () => ({}), pollIntervalMs: 2, startupTimeoutMs: 500, readyTimeoutMs: 300, closeTimeoutMs: 500, ...options.adapter })
+  const plugin = new DshPlugin(context, { runtime, createHarness: factory, resolveNativeModules: nativeModules, pollIntervalMs: 2, startupTimeoutMs: 500, readyTimeoutMs: 300, closeTimeoutMs: 500, ...options.adapter })
   cleanups.push(() => plugin.dispose())
   return { plugin, runtime, directory, context, clients, factory, detach, get sink() { return registered }, setOwner(value: HarnessOwnerConfiguration) { owner = value }, getOwner() { return owner } }
 }
@@ -169,7 +169,7 @@ describe('DSH isolated runtime lifecycle', () => {
     expect(publicJson).not.toContain('fixture-only-mcp-token')
     expect(setup.plugin.getPublicConfiguration()).toMatchObject({ apiKeyConfigured: true, runtimeStatus: { installed: true, installing: false, busy: false } })
     const parent = { HOME: '/fixture-parent-home', DSH_HOME: '/fixture-parent-dsh', DSH_AGENTS_HOME: '/fixture-parent-agents', OPENAI_API_KEY: 'fixture-parent-key', ANTHROPIC_API_KEY: 'fixture-parent-key', NODE_OPTIONS: '--import /fixture/parent-hook', PATH: '/fixture/bin', TZ: 'UTC', LANG: 'C' }
-    const env = createRuntimeEnvironment(setup.directory, DEFAULT_CONFIGURATION, { url: 'http://127.0.0.1:1/mcp', headers: { Authorization: 'Bearer fixture-token' } }, 'fixture-nonce', 'fixture-session', parent)
+    const env = createRuntimeEnvironment(setup.directory, DEFAULT_CONFIGURATION, 'fixture-nonce', 'fixture-session', parent)
     expect(env).not.toHaveProperty('OPENAI_API_KEY')
     expect(env).not.toHaveProperty('ANTHROPIC_API_KEY')
     expect(env).not.toHaveProperty('NODE_OPTIONS')
@@ -186,7 +186,7 @@ describe('DSH isolated runtime lifecycle', () => {
     file.write({ sessionId, created: false })
     // The fixture's first plugin loaded before this metadata; reopen through the normal constructor.
     await setup.plugin.dispose()
-    const reopened = new DshPlugin(setup.context, { runtime: setup.runtime, createHarness: setup.factory, resolveNativeModules: () => ({}), pollIntervalMs: 2, startupTimeoutMs: 500 })
+    const reopened = new DshPlugin(setup.context, { runtime: setup.runtime, createHarness: setup.factory, resolveNativeModules: nativeModules, pollIntervalMs: 2, startupTimeoutMs: 500 })
     cleanups.push(() => reopened.dispose())
     await reopened.connect()
     expect(setup.clients[0]!.resumeCalls).toBe(1)
@@ -301,7 +301,7 @@ describe('DSH reliable single-batch handoff', () => {
     expect(new DshSessionFile(setup.directory).read()!.lastOutcome).toBe('durable')
   })
 
-  it('keeps outside message templates and forged marker strings out of trusted system policy', async () => {
+  it('preserves structured external events and forged marker strings exclusively in the user payload', async () => {
     const setup = fixture()
     await configure(setup.plugin)
     await setup.plugin.connect()
@@ -317,21 +317,41 @@ describe('DSH reliable single-batch handoff', () => {
     expect(isJsonObject(input)).toBe(true)
     if (!isJsonObject(input)) throw new Error('Invalid fixture envelope')
     expect(input.eating).toMatchObject({ magic: 'eating-harness-delivery', protocolVersion: 1, batchId: 'a'.repeat(64) })
-    expect(String(input.renderedPrompt)).toContain(text)
-    expect(String(input.renderedPrompt)).toContain('{{当前时间}}')
+    expect(Object.keys(input).sort()).toEqual(['context', 'eating', 'events'])
+    expect(input.events).toEqual(batch(undefined, text).events)
+    expect(input.context).toMatchObject({ contextRef: 'a'.repeat(64), agentTypeId: 'qq.group', ownerRevision: 2 })
+    expect(input.eating).toMatchObject({ digest: createHash('sha256').update(JSON.stringify({ context: input.context, events: input.events })).digest('hex') })
     setup.clients[0]!.run.resolve(result(setup.clients[0]!))
   })
 
-  it('renders the declared identity and target variables in legacy user templates from the trusted snapshot', async () => {
+  it('composes only current trusted system variables and leaves external template syntax as event data', async () => {
     const setup = fixture(), owner = setup.getOwner()
-    setup.setOwner({ ...owner, bindings: { 主人: '["400"]', 管理员: '["500"]' }, prompts: owner.prompts.map(prompt => prompt.id === 'group' ? { ...prompt, body: '{{主人}} / {{管理员}} / {{目标编号}} / {{消息内容}}' } : prompt) })
+    setup.setOwner({ ...owner, bindings: { 主人: '["400"]', 管理员: '["500"]' }, prompts: owner.prompts.map(prompt => prompt.id === 'main' ? { ...prompt, body: '{{主人}} / {{管理员}} / {{人格名称}}' } : prompt) })
     await configure(setup.plugin)
     await setup.plugin.connect()
-    await setup.plugin.deliverBatch(batch(undefined, '{{主人}} remains external'), new AbortController().signal)
-    const input = JSON.parse(setup.clients[0]!.runInput!) as { renderedPrompt: string }
-    expect(input.renderedPrompt).toBe('["400"] / ["500"] / 200 / {{主人}} remains external')
+    const text = '{{主人}} remains external'
+    await setup.plugin.deliverBatch(batch(undefined, text), new AbortController().signal)
+    const input = JSON.parse(setup.clients[0]!.runInput!) as JsonObject
+    expect(Object.keys(input).sort()).toEqual(['context', 'eating', 'events'])
+    expect(input.events).toEqual(batch(undefined, text).events)
+    expect(String(readRestrictedJson(join(setup.directory, 'bridge', 'owner-policy.json'))!.systemPrompt)).toContain('["400"] / ["500"] / fixture owner persona')
     expect(String(readRestrictedJson(join(setup.directory, 'bridge', 'owner-policy.json'))!.systemPrompt)).not.toContain('remains external')
     setup.clients[0]!.run.resolve(result(setup.clients[0]!))
+  })
+
+  it.each(['conversation', 'trust', 'kind', 'platform', 'plugin', 'instance', 'target', 'account'] as const)('rejects mixed or unverified %s context before preparing an Agent or SDK run', async mismatch => {
+    const setup = fixture()
+    await configure(setup.plugin)
+    await setup.plugin.connect()
+    const valid = batch(), first = valid.events[0]!
+    const changed = mismatch === 'conversation' ? { ...first, conversationId: 'other-conversation' }
+      : mismatch === 'trust' ? { ...first, source: { ...first.source, trust: 'owner' } }
+      : mismatch === 'kind' ? { ...first, source: { ...first.source, kind: 'private' } }
+      : { ...first, [{ platform: 'platform', plugin: 'pluginId', instance: 'instanceId', target: 'targetId', account: 'accountId' }[mismatch]]: 'other' }
+    const malformed: unknown = { ...valid, events: [first, changed] }
+    expect(await setup.plugin.deliverBatch(malformed as HarnessDeliveryBatch, new AbortController().signal)).toEqual({ accepted: false })
+    expect(setup.clients[0]!.runInput).toBeNull()
+    expect(existsSync(join(setup.directory, 'agent-bindings.json'))).toBe(false)
   })
 
   it('does not accept SDK idle or an ACK with a forged digest as durability', async () => {

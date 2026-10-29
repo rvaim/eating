@@ -65,11 +65,11 @@ describe('HostStore outstanding delivery queue', () => {
     expect(reopened.listMessages('other-platform')).toHaveLength(1)
   })
 
-  it('preserves verified sender roles and source references across restart without upgrading older envelopes', () => {
+  it('preserves verified sender roles and source references across restart while allowing partial role metadata', () => {
     const { open, close } = fixture(), first = open()
     for (const [index, senderRole] of (['owner', 'administrator', 'user'] as const).entries()) first.recordEvent('test-platform', `role-${index}`, {}, {
       ...event(), source: { trust: 'external', kind: 'private', senderRole }, resourceIds: ['known.image', 'r'.repeat(2048)] })
-    first.recordEvent('test-platform', 'legacy-without-role', {}, event())
+    first.recordEvent('test-platform', 'partial-without-role', {}, event())
     close(first)
     const events = open().pendingHarnessEvents().map(entry => entry.event)
     expect(events.slice(0, 3).map(entry => entry.source.senderRole)).toEqual(['owner', 'administrator', 'user'])

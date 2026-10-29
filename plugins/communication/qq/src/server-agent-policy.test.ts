@@ -1,12 +1,12 @@
 import { basename, dirname, join, resolve } from 'node:path'
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInvocationScope, BackendPlugin, ConnectionStatus, HarnessEvent, HostPluginContext, JsonObject } from '@eating/plugin-sdk'
 import entry from './server'
 import { defaultAgentTools } from './backend/agent-policy'
 
-const transport = vi.hoisted(() => ({ clients: [] as Array<{ options: { onEvent: (event: JsonObject) => void }; call: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn>; status: ConnectionStatus }> }))
+const transport = vi.hoisted(() => ({ clients: [] as Array<{ options: { onEvent: (event: JsonObject) => void }; call: ReturnType<typeof vi.fn>; connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn>; status: ConnectionStatus }> }))
 vi.mock('./backend/onebot', () => ({ OneBotClient: class {
   options: { onEvent: (event: JsonObject) => void }
   call = vi.fn(async () => ({ message_id: 73 }))
@@ -14,7 +14,7 @@ vi.mock('./backend/onebot', () => ({ OneBotClient: class {
   status: ConnectionStatus = { state: 'connected', accountId: '123456', accountName: 'Fixture', lastError: null, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 }
   constructor(options: { onEvent: (event: JsonObject) => void }) { this.options = options; transport.clients.push(this) }
   getStatus() { return this.status }
-  async connect() {}
+  connect = vi.fn(async () => {})
   async dispose() {}
 } }))
 
@@ -58,26 +58,56 @@ describe('QQ agent policy backend integration', () => {
     const { plugin, client } = fixture()
     expect(plugin.getPublicConfiguration()).toMatchObject({ policyRevision: 0, owners: [], administrators: [], endpoint: '' })
     expect(plugin.getAgentIdentity!()).toEqual({ owners: [], administrators: [] })
+    expect(existsSync(String(plugin.getPublicConfiguration().configurationPath))).toBe(false)
     const result = await savePolicy(plugin, { owners: ['234567', '345678', '234567'] })
     expect(result).toMatchObject({ owners: ['234567', '345678'], administrators: ['234567', '456789'], policyRevision: 1 })
     expect(client.disconnect).not.toHaveBeenCalled()
+    expect(client.connect).not.toHaveBeenCalled()
+    const saved = JSON.parse(readFileSync(String(plugin.getPublicConfiguration().configurationPath), 'utf8'))
+    expect(saved).toMatchObject({ schemaVersion: 2, configuration: { endpoint: '', policyRevision: 1 } })
+    const reopened = fixture(dirname(dirname(dirname(String(plugin.getPublicConfiguration().configurationPath)))))
+    expect(reopened.plugin.getAgentIdentity!()).toEqual(plugin.getAgentIdentity!())
     expect(plugin.getAgentIdentity!()).toEqual({ owners: ['234567', '345678'], administrators: ['234567', '456789'] })
     expect(plugin.agentTypes).toHaveLength(2)
     expect(plugin.agentInstructions?.[0]?.id).toBe('qq.instructions')
   })
 
-  it('reads old configuration without rewriting bytes or silently assigning the login as owner', async () => {
+  it('reads a complete current configuration without rewriting bytes or assigning the login as owner', async () => {
     const { plugin, directory } = fixture()
     const file = resolve(String(plugin.getPublicConfiguration().configurationPath))
     expect(dirname(file)).toBe(resolve(directory, 'accounts', String(plugin.getPublicConfiguration().instanceId)))
-    const legacy = JSON.stringify({ schemaVersion: 1, updatedAt: '2026-10-26T00:00:00Z', configuration: { displayName: 'Old', endpoint: 'ws://127.0.0.1:3001/', accessToken: 'fixture-token', autoConnect: false, forwardToHarness: true, receiveGroups: true, timeoutMs: 10000 } })
-    writeFileSync(file, legacy)
+    await plugin.updateConfiguration({ displayName: 'Current', endpoint: 'ws://127.0.0.1:3001/', accessToken: 'fixture-token' })
+    const current = readFileSync(file, 'utf8')
     const reopened = fixture(directory)
     expect(reopened.plugin.getPublicConfiguration()).toMatchObject({ owners: [], administrators: [], policyRevision: 0, tokenConfigured: true })
     expect(reopened.plugin.getPublicConfiguration()).not.toHaveProperty('accessToken')
-    expect(readFileSync(file, 'utf8')).toBe(legacy)
+    expect(readFileSync(file, 'utf8')).toBe(current)
     reopened.client.options.onEvent(incoming(234567))
     expect(reopened.events[0]?.source).toEqual({ trust: 'external', kind: 'private', senderRole: 'user' })
+  })
+
+  it('rejects missing persisted policy, incomplete types, null fields, unknown keys and old wrappers without rewriting', async () => {
+    const { plugin, directory } = fixture()
+    await savePolicy(plugin)
+    const file = String(plugin.getPublicConfiguration().configurationPath)
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as { schemaVersion: number; updatedAt: string; configuration: JsonObject }
+    const configurations: JsonObject[] = [
+      Object.fromEntries(Object.entries(saved.configuration).filter(([key]) => !['owners', 'administrators', 'agentTools', 'policyRevision'].includes(key))),
+      { ...saved.configuration, agentTools: { 'qq.private': [] } },
+      { ...saved.configuration, agentTools: { 'qq.private': [], 'qq.group': [], unknown: [] } },
+      { ...saved.configuration, owners: null },
+      { ...saved.configuration, policyRevision: null },
+      { ...saved.configuration, oldConfiguration: {} },
+    ]
+    const invalidFiles = [
+      JSON.stringify({ ...saved, schemaVersion: 1 }),
+      ...configurations.map(configuration => JSON.stringify({ ...saved, configuration })),
+    ]
+    for (const bytes of invalidFiles) {
+      writeFileSync(file, bytes)
+      expect(() => fixture(directory)).toThrowError(expect.objectContaining({ code: 'CONFIGURATION_CORRUPTED' }))
+      expect(readFileSync(file, 'utf8')).toBe(bytes)
+    }
   })
 
   it('verifies multiple owners and administrator identities from configuration, ignoring body, nickname and group role claims', async () => {
@@ -119,16 +149,18 @@ describe('QQ agent policy backend integration', () => {
     }
   })
 
-  it('preserves permissions, revision and blank-keeps-token behavior when an older connection form saves', async () => {
+  it('preserves current policy, revision and blank-keeps-token behavior on partial connection PATCH', async () => {
     const { plugin, client } = fixture()
     await plugin.updateConfiguration({ endpoint: 'ws://127.0.0.1:3001/', accessToken: 'fixture-token' })
     await savePolicy(plugin)
     const before = plugin.getPublicConfiguration()
-    await plugin.updateConfiguration({ displayName: 'Renamed', accessToken: '', policyRevision: 0 })
+    await plugin.updateConfiguration({ displayName: 'Renamed', accessToken: '' })
     expect(plugin.getPublicConfiguration()).toMatchObject({ owners: before.owners, administrators: before.administrators, agentTools: before.agentTools, policyRevision: 1, tokenConfigured: true })
     expect(client.disconnect).toHaveBeenCalledTimes(2)
     const file = String(plugin.getPublicConfiguration().configurationPath)
     const saved = readFileSync(file, 'utf8')
+    await plugin.connect()
+    expect(client.connect).toHaveBeenCalledWith(expect.objectContaining({ accessToken: 'fixture-token', policyRevision: 1 }))
     await expect(plugin.updateConfiguration({ owners: [], administrators: [], agentTools: defaultAgentTools() })).rejects.toMatchObject({ code: 'INVALID_AGENT_POLICY' })
     expect(readFileSync(file, 'utf8')).toBe(saved)
     expect(client.disconnect).toHaveBeenCalledTimes(2)

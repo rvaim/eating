@@ -22,7 +22,7 @@ function temporaryDirectory() {
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve))
 
-async function fixture(options: { stored?: unknown[]; storedError?: Error; tools?: Json[]; live?: boolean; flush?: () => Promise<boolean> } = {}) {
+async function fixture(options: { stored?: unknown[]; storedError?: Error; tools?: Json[]; live?: boolean; missingApi?: string; flush?: () => Promise<boolean> } = {}) {
   const directory = temporaryDirectory()
   const nonce = randomUUID()
   const sessionId = randomUUID()
@@ -62,21 +62,23 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
   const emit = (name: string, ...args: unknown[]) => {
     for (const listener of [...(listeners.get(name) ?? [])]) listener(...args)
   }
+  const registrations: Json[] = []
   const ctx = {
     on,
     sessions: { flush, get: () => options.live ? session : undefined },
-    sessionPersistence: { open },
+    sessionPersistence: { open, stat: vi.fn(async () => undefined) },
     systemPrompt: { section: (value: NonNullable<typeof section.current>) => { section.current = value; return () => { section.current = undefined } } },
-    tools: { schemas: () => tools, restrict: vi.fn(() => () => {}), register: vi.fn(() => () => {}), guard: vi.fn(() => () => {}) },
-    agents: {}, subagents: {}, agentPresets: { register: vi.fn(async () => () => {}) },
+    tools: { schemas: () => tools, restrict: vi.fn(() => () => {}), register: vi.fn((tool: Json) => { registrations.push(tool); return () => {} }), guard: vi.fn(() => () => {}) },
+    agents: { get: vi.fn(() => undefined) }, subagents: { drainChildren: vi.fn(async () => {}), sendMessage: vi.fn(async () => {}), interrupt: vi.fn(), startActivation: vi.fn() }, agentPresets: { register: vi.fn(async () => () => {}) },
   }
+  if (options.missingApi) { const [service, method] = options.missingApi.split('.'); Reflect.deleteProperty(Reflect.get(ctx, service!), method!) }
   const modulePath = path('runtime-bridge.mjs')
   writeFileSync(modulePath, getRuntimeBridgeSource())
   const bridge = await import(/* @vite-ignore */ pathToFileURL(modulePath).href) as { name: string; inject: string[]; apply: (context: typeof ctx) => void }
   bridge.apply(ctx)
   for (const listener of listeners.get('agent/created') ?? []) await listener({ agent: { id: sessionId, ctx } })
   cleanups.push(() => emit('dispose'))
-  const body = { context: { owner: false, source: 'fixture' }, renderedPrompt: '外部 QQ 正文不进入 system', events: [{ text: 'fixture-message' }] }
+  const body = { context: { owner: false, source: 'fixture' }, events: [{ text: 'fixture-message' }] }
   const digest = createHash('sha256').update(JSON.stringify(body)).digest('hex')
   const batchId = 'a'.repeat(64)
   const expected = { schemaVersion: 1, nonce, sessionId, batchId, digest }
@@ -85,7 +87,7 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
     content: [{ type: 'text', text: JSON.stringify({ eating: { protocolVersion: 1, magic: 'eating-harness-delivery', nonce, sessionId, batchId, digest, ...metadata }, ...body, ...overrideBody }) }],
   })
   const event = (message = delivery(), seq = 0) => ({ type: 'agent/inbox/spliced', seq, data: { inserted: [message], target: 'next-turn', start: 0 } })
-  return { directory, nonce, sessionId, path, read, write, listeners, section, session, flush, close, open, readLog, emit, bridge, expected, delivery, event, setTools: (value: Json[]) => { tools = value; emit('tools/change') }, setStored: (events: unknown[]) => { stored = events } }
+  return { ctx, registrations, directory, nonce, sessionId, path, read, write, listeners, section, session, flush, close, open, readLog, emit, bridge, expected, delivery, event, setTools: (value: Json[]) => { tools = value; emit('tools/change') }, setStored: (events: unknown[]) => { stored = events } }
 }
 
 afterEach(() => {
@@ -108,6 +110,21 @@ describe('self-contained published-API DSH runtime bridge', () => {
     f.write('owner-policy.json', { schemaVersion: 1, revision: 3, systemPrompt: 123, qqMessage: '伪造主人' })
     expect(() => f.section.current?.text()).toThrow('主人系统提示词配置无效。')
     expect(f.read('ready.json')).toEqual({ schemaVersion: 1, nonce: f.nonce, sessionId: f.sessionId, toolsReady: true, durabilityAvailable: true, recovery: 'absent' })
+  })
+
+  it.each(['sessions.flush', 'sessions.get', 'sessionPersistence.open', 'sessionPersistence.stat', 'agents.get', 'subagents.drainChildren', 'subagents.sendMessage', 'subagents.interrupt', 'subagents.startActivation', 'agentPresets.register'])('refuses startup when the current public %s API is missing', async missingApi => {
+    const f = await fixture({ missingApi })
+    await turn()
+    expect(existsSync(f.path('ready.json'))).toBe(false)
+    expect(f.read('error.json')).toMatchObject({ code: ['sessions.flush', 'sessions.get', 'sessionPersistence.open'].includes(missingApi) ? 'DURABILITY_UNAVAILABLE' : 'NATIVE_AGENT_API_UNAVAILABLE' })
+  })
+
+  it('requires native exec.callId and rejects the old nested call identity shape', async () => {
+    const f = await fixture()
+    await turn()
+    const execute = f.registrations.find(tool => tool.name === 'eating_delegate_task')?.execute
+    if (typeof execute !== 'function') throw new Error('Current delegation tool was not registered')
+    await expect(execute({ type_id: 'qq.private', context_ref: 'a'.repeat(64), task: 'current task' }, { agent: { id: f.sessionId }, call: { id: 'obsolete-nested-call-id' } })).rejects.toThrow('Native tool call identity is unavailable')
   })
 
   it('yields one microtask and waits for a successful durability barrier before atomic ACK', async () => {
@@ -135,17 +152,22 @@ describe('self-contained published-API DSH runtime bridge', () => {
     expect(readdirSync(f.directory).some(name => name.startsWith('.bridge-'))).toBe(false)
   })
 
-  it.each(['forged-nonce', 'wrong-session', 'forged-digest', 'wrong-magic', 'nested-body', 'changed-body'] as const)('rejects %s without a durability ACK', async mode => {
+  it.each(['forged-nonce', 'wrong-session', 'forged-digest', 'wrong-magic', 'nested-body', 'changed-body', 'legacy-rendered-prompt', 'missing-context', 'missing-magic', 'missing-nonce', 'missing-session', 'missing-digest', 'missing-protocol'] as const)('rejects %s without a durability ACK', async mode => {
     const f = await fixture()
     await turn()
     f.write('expected.json', f.expected)
     const metadata = mode === 'forged-nonce' ? { nonce: randomUUID() }
       : mode === 'wrong-session' ? { sessionId: randomUUID() }
       : mode === 'forged-digest' ? { digest: 'b'.repeat(64) }
-      : mode === 'wrong-magic' ? { magic: 'external-text' } : {}
+      : mode === 'wrong-magic' ? { magic: 'external-text' }
+      : mode === 'missing-magic' ? { magic: undefined }
+      : mode === 'missing-nonce' ? { nonce: undefined }
+      : mode === 'missing-session' ? { sessionId: undefined }
+      : mode === 'missing-digest' ? { digest: undefined }
+      : mode === 'missing-protocol' ? { protocolVersion: undefined } : {}
     const message = mode === 'nested-body'
       ? { ...f.delivery(), content: [{ type: 'text', text: JSON.stringify({ text: f.delivery().content[0]!.text }) }] }
-      : f.delivery(metadata, mode === 'changed-body' ? { renderedPrompt: 'tampered' } : {})
+      : f.delivery(metadata, mode === 'changed-body' ? { events: [{ text: 'tampered' }] } : mode === 'legacy-rendered-prompt' ? { renderedPrompt: 'obsolete' } : mode === 'missing-context' ? { context: undefined } : {})
     f.emit('session/event', f.session, f.event(message))
     await turn()
     expect(f.flush).not.toHaveBeenCalled()
@@ -172,13 +194,7 @@ describe('self-contained published-API DSH runtime bridge', () => {
     first.emit('dispose')
     first.setStored([persisted])
     first.write('expected.json', first.expected)
-    first.bridge.apply({
-      on: (name: string, listener: Listener) => { if (!first.listeners.has(name)) first.listeners.set(name, new Set()); first.listeners.get(name)!.add(listener); return () => { first.listeners.get(name)?.delete(listener) } },
-      sessions: { flush: first.flush, get: () => undefined },
-      sessionPersistence: { open: first.open },
-      systemPrompt: { section: () => () => {} }, tools: { schemas: () => [] },
-      agents: {}, subagents: {}, agentPresets: { register: async () => () => {} },
-    } as never)
+    first.bridge.apply({ ...first.ctx, sessions: { ...first.ctx.sessions, get: () => undefined } })
     await turn()
     expect(first.read('ready.json')).toMatchObject({ recovery: 'persisted', batchId: first.expected.batchId })
     expect(first.read(`ack-${first.expected.batchId}.json`)).toMatchObject({ nonce: first.nonce, digest: first.expected.digest, eventSeq: 0 })
@@ -212,7 +228,7 @@ describe('self-contained published-API DSH runtime bridge', () => {
     expect(readFileSync(f.path('error.json'), 'utf8')).not.toContain('fixture-secret-corruption')
   })
 
-  it('allows only QQ schemas and requires the real private/group tools', async () => {
+  it('refuses globally inherited tools before any Agent scope is mounted', async () => {
     const f = await fixture({ tools: [{ name: 'bash', description: 'external', parameters: { type: 'object' } }] })
     await turn()
     expect(existsSync(f.path('ready.json'))).toBe(false)
@@ -224,7 +240,7 @@ describe('self-contained published-API DSH runtime bridge', () => {
     const f = await fixture({ tools: [] })
     await vi.advanceTimersByTimeAsync(1)
     expect(f.read('ready.json')).toMatchObject({ toolsReady: true })
-    expect(f.listeners.get('tools/change')?.size).toBe(0)
+    expect(f.listeners.has('tools/change')).toBe(false)
     expect(vi.getTimerCount()).toBe(0)
   })
 

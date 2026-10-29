@@ -39,7 +39,7 @@ export class HarnessGateway {
   register(sink: HarnessMessageSink): () => void {
     if (this.closed) throw new Error('Harness 消息网关已停止。')
     if (this.registration) throw new Error('同一工作区仅允许一个主要 Harness 接收者。')
-    if (typeof sink.deliverBatch !== 'function' && typeof sink.deliver !== 'function') throw new Error('Harness 接收者必须提供 deliverBatch 或 deliver 函数。')
+    if (typeof sink.deliverBatch !== 'function') throw new Error('Harness 接收者必须提供 deliverBatch 函数。')
     const registration = { sink }
     this.registration = registration
     this.notify()
@@ -58,9 +58,9 @@ export class HarnessGateway {
       protocolVersion: 1, state: sink ? 'attached' : 'not-attached', sinkId: sink?.id ?? null,
       busy: this.current !== null || this.pendingFinalization !== null, waitingForLocalCommit: this.pendingFinalization !== null,
       storageRetryAt: this.storageRetryAt || null,
-      deliveryMode: sink ? typeof sink.deliverBatch === 'function' ? 'batch' : 'per-event' : null,
+      deliveryMode: sink ? 'batch' : null,
       lastError: this.lastError, ...this.store.harnessSummary(),
-      note: 'accepted 仅表示 Harness 已可靠接管正文，不表示模型已读或动作完成。旧 deliver 接口按批内事件逐条递交，不代表一次模型请求。',
+      note: 'accepted 仅表示 Harness 已可靠接管正文，不表示模型已读或动作完成。',
     }
   }
 
@@ -135,7 +135,7 @@ export class HarnessGateway {
     try {
       if (finalization.kind === 'ack') this.store.acknowledgeHarnessBatch(finalization.ids, finalization.receiptId)
       else for (const update of finalization.updates) {
-        this.store.markHarnessDeliveryBatch(update.ids, update.status, update.error, null, update.retryAt)
+        this.store.markHarnessDeliveryBatch(update.ids, update.status, update.error, update.retryAt)
       }
       this.pendingFinalization = null
       this.storageRetryAt = 0
@@ -144,11 +144,10 @@ export class HarnessGateway {
     } catch { this.recordStorageFailure(); return false }
   }
 
-  private persistOutcome(finalization: PendingFinalization): boolean {
+  private persistOutcome(finalization: PendingFinalization): void {
     this.pendingFinalization = finalization
     const committed = this.completeFinalization()
     if (!committed && (!this.registration || this.closed)) this.settleDetachedFinalization(false)
-    return committed
   }
 
   /** No detached timer: keep one small outcome if both local writes are unavailable. */
@@ -221,34 +220,18 @@ export class HarnessGateway {
       const selection = this.selections(settings, now).filter(candidate => candidate.items.length && candidate.readyAt <= now)
         .sort((left, right) => left.items[0]!.sequence - right.items[0]!.sequence)[0]
       if (!selection) return
-      const { sink } = registration
-      if (typeof sink.deliverBatch === 'function') {
-        const events = selection.items.map(item => item.event)
-        const batch: HarnessDeliveryBatch = {
-          protocolVersion: 1, batchId: createHash('sha256').update(JSON.stringify(events.map(event => event.eventId))).digest('hex'),
-          conversationId: events[0]!.conversationId, createdAt: new Date().toISOString(), reason: selection.reason, events,
-        }
-        await this.deliver(selection.items, registration, settings, signal => sink.deliverBatch!(batch, signal))
-      } else {
-        for (const item of selection.items) {
-          if (this.registration !== registration || this.closed || !this.isReady(registration)) return
-          // A settings/capacity change may remove a selected, still-unsent item.
-          const queued = this.store.getQueuedHarnessEvents().find(current => current.event.eventId === item.event.eventId)
-          if (!queued || queued.status !== 'pending') continue
-          const currentSettings = this.store.getDeliverySettings()
-          if (queued.nextAttemptAt > Date.now() || queued.attempts >= currentSettings.maxDeliveryAttempts) break
-          const accepted = await this.deliver([queued], registration, currentSettings, signal => sink.deliver!(queued.event, signal))
-          if (!accepted) break
-        }
-      }
+      await this.deliverBatch(selection, registration, settings)
     }
   }
 
-  private async deliver(
-    items: readonly QueuedHarnessEvent[], registration: Registration, settings: DeliverySettings,
-    invoke: (signal: AbortSignal) => Promise<HarnessDeliveryReceipt>,
-  ): Promise<boolean> {
-    const ids = items.map(item => item.event.eventId)
+  private async deliverBatch(selection: BatchSelection, registration: Registration, settings: DeliverySettings): Promise<void> {
+    const items = selection.items
+    const events = items.map(item => item.event)
+    const batch: HarnessDeliveryBatch = {
+      protocolVersion: 1, batchId: createHash('sha256').update(JSON.stringify(events.map(event => event.eventId))).digest('hex'),
+      conversationId: events[0]!.conversationId, createdAt: new Date().toISOString(), reason: selection.reason, events,
+    }
+    const ids = events.map(event => event.eventId)
     this.store.markHarnessDeliveryBatch(ids, 'delivering')
     const controller = new AbortController()
     this.current = controller
@@ -259,7 +242,7 @@ export class HarnessGateway {
       receipt = await Promise.race([
         Promise.resolve().then(() => {
           if (controller.signal.aborted) throw new Error('aborted')
-          return invoke(controller.signal)
+          return registration.sink.deliverBatch(batch, controller.signal)
         }),
         new Promise<never>((_, reject) => {
           abortListener = () => reject(new Error('aborted'))
@@ -270,7 +253,7 @@ export class HarnessGateway {
     } catch {
       const error = '投递结果未知，等待适配器核对，不自动补投。'
       this.persistOutcome({ kind: 'mark', ids, error, updates: [{ ids, status: 'uncertain', error, retryAt: 0 }] })
-      return false
+      return
     } finally {
       if (timeout !== undefined) clearTimeout(timeout)
       if (abortListener) controller.signal.removeEventListener('abort', abortListener)
@@ -279,10 +262,11 @@ export class HarnessGateway {
     if (this.closed || this.registration !== registration || controller.signal.aborted) {
       const error = '投递被中断，结果未知，不自动补投。'
       this.persistOutcome({ kind: 'mark', ids, error, updates: [{ ids, status: 'uncertain', error, retryAt: 0 }] })
-      return false
+      return
     }
     if (receipt?.accepted === true && receipt.durable === true && typeof receipt.receiptId === 'string' && receipt.receiptId.trim()) {
-      return this.persistOutcome({ kind: 'ack', ids, receiptId: receipt.receiptId, error: null })
+      this.persistOutcome({ kind: 'ack', ids, receiptId: receipt.receiptId, error: null })
+      return
     }
     if (receipt?.accepted === false) {
       const currentSettings = this.store.getDeliverySettings()
@@ -298,7 +282,7 @@ export class HarnessGateway {
       const error = 'Harness 未提供可靠持久交接凭据，保留正文等待核对，不自动补投。'
       this.persistOutcome({ kind: 'mark', ids, error, updates: [{ ids, status: 'uncertain', error, retryAt: 0 }] })
     }
-    return false
+    return
   }
 
   async close(): Promise<void> {

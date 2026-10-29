@@ -8,7 +8,7 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
     name: 'QQ 示例插件',
     description: '提供本地 QQ 配置示例，不连接真实平台。',
     version: '0.1.0',
-    apiVersion: 1,
+    apiVersion: 2,
     ...overrides,
   }
 }
@@ -53,7 +53,7 @@ describe('PluginRegistry', () => {
     const registry = new PluginRegistry<PluginManifest>()
     const listener = vi.fn()
     registry.subscribe(listener)
-    const future = { ...manifest(), apiVersion: 2 } as unknown as PluginManifest
+    const future = { ...manifest(), apiVersion: 1 } as unknown as PluginManifest
 
     expect(() => registry.register(future))
       .toThrowError(expect.objectContaining({ name: 'PluginRegistrationError', code: 'incompatible-version' }))

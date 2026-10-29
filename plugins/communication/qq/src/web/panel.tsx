@@ -11,17 +11,19 @@ import './panel.css'
 import { capabilityDescription, capabilityTitle, parameterDescription, parameterLabel, parameterOptionLabel, toolDescription, toolSchemaHelp, toolTitle } from './i18n'
 import type { QQMessage, QQTranslationKey } from './i18n'
 import { LiveLogs } from './live-logs'
-import { AgentPolicyFields } from './agent-policy-fields'
+import { AgentPolicyFields, agentPolicyDraft } from './agent-policy-fields'
+import { isJsonObject } from '@eating/plugin-sdk'
 
 type Tab = 'configuration' | 'agent-policy' | 'tests' | 'mcp' | 'live-logs'
-type PublicConfiguration = Omit<OneBotConfig, 'accessToken'> & { tokenConfigured: boolean; instanceId?: string; configurationPath?: string; dataDirectory?: string }
-type Draft = Omit<OneBotConfig, 'timeoutMs'> & { timeoutMs: string; clearAccessToken: boolean }
+type ConnectionConfiguration = Pick<OneBotConfig, 'displayName' | 'endpoint' | 'accessToken' | 'autoConnect' | 'forwardToHarness' | 'receiveGroups' | 'timeoutMs'>
+type PublicConfiguration = Omit<ConnectionConfiguration, 'accessToken'> & { tokenConfigured: boolean; instanceId: string; defaultInstanceId: string; configurationPath: string; dataDirectory: string; updatedAt: string | null; instances: { instanceId: string; label: string; createdAt: string }[] }
+type Draft = Omit<ConnectionConfiguration, 'timeoutMs'> & { timeoutMs: string; clearAccessToken: boolean }
 type FieldErrors = Record<string, QQMessage | undefined>
 interface QQWorkspacePlugin {
   id: string
   enabled: boolean
   logsSupported?: boolean
-  agentTypes?: AgentTypeDefinition[]
+  agentTypes: AgentTypeDefinition[]
   configuration: JsonObject
   status: ConnectionStatus
   capabilities: PluginCapability[]
@@ -67,17 +69,26 @@ function messageLabel(message: QQMessage | undefined, field?: string): string | 
   const params = Object.fromEntries(Object.entries(message.params ?? {}).map(([key, value]) => [key, typeof value === 'number' ? formatNumber(value) : value]))
   return translate('qq', message.key, { ...params, field })
 }
-function publicConfiguration(value: JsonObject): PublicConfiguration {
-  return {
-    displayName: typeof value.displayName === 'string' ? value.displayName : '',
-    endpoint: typeof value.endpoint === 'string' ? value.endpoint : '',
-    autoConnect: value.autoConnect === true, forwardToHarness: value.forwardToHarness === true,
-    receiveGroups: value.receiveGroups === true, timeoutMs: typeof value.timeoutMs === 'number' ? value.timeoutMs : 10000,
-    tokenConfigured: value.tokenConfigured === true,
-    ...(typeof value.instanceId === 'string' ? { instanceId: value.instanceId } : {}),
-    ...(typeof value.configurationPath === 'string' ? { configurationPath: value.configurationPath } : {}),
-    ...(typeof value.dataDirectory === 'string' ? { dataDirectory: value.dataDirectory } : {}),
+export function publicConfiguration(value: unknown): PublicConfiguration {
+  const invalid = (): never => { throw new HostApiError('INVALID_HOST_RESPONSE', translate('common', 'errors.INVALID_HOST_RESPONSE')) }
+  agentPolicyDraft(value, [])
+  if (!isJsonObject(value) || Object.keys(value).some(key => !['displayName', 'endpoint', 'autoConnect', 'forwardToHarness', 'receiveGroups', 'timeoutMs', 'owners', 'administrators', 'agentTools', 'policyRevision', 'tokenConfigured', 'instanceId', 'defaultInstanceId', 'configurationPath', 'dataDirectory', 'updatedAt', 'instances'].includes(key))) return invalid()
+  if (typeof value.displayName !== 'string' || !value.displayName || value.displayName !== value.displayName.trim() || value.displayName.length > 40 || typeof value.endpoint !== 'string' || value.endpoint.length > 4096 || /[\s\u0000-\u001f\u007f]/u.test(value.endpoint)) return invalid()
+  if (value.endpoint) {
+    try {
+      const endpoint = new URL(value.endpoint)
+      if (!['ws:', 'wss:'].includes(endpoint.protocol) || !endpoint.hostname || endpoint.username || endpoint.password || value.endpoint.includes('@') || value.endpoint.includes('?') || value.endpoint.includes('#') || /\/(?:api|event)\/?$/.test(endpoint.pathname)) return invalid()
+    } catch { return invalid() }
   }
+  if (typeof value.autoConnect !== 'boolean' || typeof value.forwardToHarness !== 'boolean' || typeof value.receiveGroups !== 'boolean' || typeof value.tokenConfigured !== 'boolean' || typeof value.timeoutMs !== 'number' || !Number.isInteger(value.timeoutMs) || value.timeoutMs < 1000 || value.timeoutMs > 60000) return invalid()
+  if (typeof value.instanceId !== 'string' || !value.instanceId || typeof value.defaultInstanceId !== 'string' || !value.defaultInstanceId || typeof value.configurationPath !== 'string' || !value.configurationPath || typeof value.dataDirectory !== 'string' || !value.dataDirectory || value.updatedAt !== null && (typeof value.updatedAt !== 'string' || !Number.isFinite(Date.parse(value.updatedAt))) || !Array.isArray(value.instances) || value.instances.length < 1 || value.instances.length > 100) return invalid()
+  const instances = value.instances.map(entry => {
+    if (!isJsonObject(entry) || Object.keys(entry).some(key => !['instanceId', 'label', 'createdAt'].includes(key)) || typeof entry.instanceId !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,79}$/.test(entry.instanceId) || typeof entry.label !== 'string' || typeof entry.createdAt !== 'string' || !Number.isFinite(Date.parse(entry.createdAt))) return invalid()
+    return { instanceId: entry.instanceId, label: entry.label, createdAt: entry.createdAt }
+  })
+  if (new Set(instances.map(instance => instance.instanceId)).size !== instances.length || !instances.some(instance => instance.instanceId === value.instanceId) || !instances.some(instance => instance.instanceId === value.defaultInstanceId)) return invalid()
+  return { displayName: value.displayName, endpoint: value.endpoint, autoConnect: value.autoConnect, forwardToHarness: value.forwardToHarness, receiveGroups: value.receiveGroups, timeoutMs: value.timeoutMs, tokenConfigured: value.tokenConfigured,
+    instanceId: value.instanceId, defaultInstanceId: value.defaultInstanceId, configurationPath: value.configurationPath, dataDirectory: value.dataDirectory, updatedAt: value.updatedAt, instances }
 }
 function makeDraft(value: PublicConfiguration): Draft {
   return { displayName: value.displayName, endpoint: value.endpoint, accessToken: '', clearAccessToken: false,
@@ -119,6 +130,8 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [plugin, setPlugin] = useState<QQWorkspacePlugin | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
+  const [saved, setSaved] = useState<PublicConfiguration | null>(null)
+  const [configurationReadFailure, setConfigurationReadFailure] = useState<Failure | null>(null)
   const [dirty, setDirty] = useState(false)
   const dirtyRef = useRef(false)
   const [loading, setLoading] = useState(true)
@@ -148,13 +161,24 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
     try {
       const response = await hostRequest<Workspace>('/workspace', { signal: controller.signal })
       if (!mounted.current || controller.signal.aborted || generation !== workspaceGeneration.current) return
-      if (response.protocolVersion !== 1 || !Array.isArray(response.plugins)) { setRefreshFailure(localFailure('INVALID_HOST_RESPONSE', 'error.workspaceIncompatible')); return }
+      if (!isJsonObject(response) || response.protocolVersion !== 1 || !Array.isArray(response.plugins)) throw new HostApiError('INVALID_HOST_RESPONSE', translate('common', 'errors.INVALID_HOST_RESPONSE'))
       const qq = response.plugins.find(entry => entry.id === 'qq')
       if (!qq) { setRefreshFailure(localFailure('PLUGIN_NOT_FOUND', 'error.pluginNotLoaded')); return }
+      if (!isJsonObject(qq) || typeof qq.enabled !== 'boolean' || !isJsonObject(qq.status) || !['unconfigured', 'disconnected', 'connecting', 'connected', 'reconnecting', 'error'].includes(String(qq.status.state)) || !Array.isArray(qq.agentTypes) || !Array.isArray(qq.tools) || !Array.isArray(qq.capabilities)) throw new HostApiError('INVALID_HOST_RESPONSE', translate('common', 'errors.INVALID_HOST_RESPONSE'))
       setWorkspace(response); setPlugin(qq); setRefreshFailure(null)
-      if (!dirtyRef.current) setDraft(makeDraft(publicConfiguration(qq.configuration)))
+      try {
+        const configuration = publicConfiguration(qq.configuration)
+        agentPolicyDraft(qq.configuration, qq.agentTypes)
+        setSaved(configuration); setConfigurationReadFailure(null)
+        if (!dirtyRef.current) setDraft(makeDraft(configuration))
+      } catch (error) {
+        setSaved(null); setConfigurationReadFailure(failureFrom(error))
+      }
     } catch (error) {
-      if (mounted.current && !controller.signal.aborted && generation === workspaceGeneration.current) setRefreshFailure(failureFrom(error, 'error.refreshFailed'))
+      if (mounted.current && !controller.signal.aborted && generation === workspaceGeneration.current) {
+        setRefreshFailure(failureFrom(error, 'error.refreshFailed'))
+        if (error instanceof HostApiError && error.code === 'INVALID_HOST_RESPONSE') { setSaved(null); setConfigurationReadFailure(failureFrom(error)) }
+      }
     } finally {
       if (mounted.current && generation === workspaceGeneration.current) setLoading(false)
       if (workspaceController.current === controller) workspaceController.current = null
@@ -193,7 +217,7 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
     return errors
   }
   async function mutate(operation: 'save' | 'connect' | 'disconnect') {
-    if (!draft || !plugin || actionLock.current) return
+    if (!draft || !saved || configurationReadFailure || !plugin || actionLock.current) return
     if (operation === 'save') {
       const errors = validateDraft(draft)
       setFieldErrors(errors)
@@ -215,7 +239,10 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
           autoConnect: draft.autoConnect, forwardToHarness: draft.forwardToHarness, receiveGroups: draft.receiveGroups, timeoutMs: Number(draft.timeoutMs),
         } })
         if (!mounted.current || controller.signal.aborted) return
-        setDraft(makeDraft(publicConfiguration(response))); dirtyRef.current = false; setDirty(false)
+        const configuration = publicConfiguration(response)
+        agentPolicyDraft(response, plugin.agentTypes)
+        setSaved(configuration); setConfigurationReadFailure(null)
+        setDraft(makeDraft(configuration)); dirtyRef.current = false; setDirty(false)
         setPlugin(current => current ? { ...current, configuration: response, status: disconnectedStatus() } : current)
         setConfigurationResult({ key: 'config.saved' })
         feedbackRef.current(t('config.savedFeedback'))
@@ -230,7 +257,10 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
       try { await refreshRef.current?.() }
       catch (error) { if (mounted.current) setConfigurationFailure({ ...failureFrom(error), messageKey: 'error.refreshAfterAction' }) }
     } catch (error) {
-      if (mounted.current && !controller.signal.aborted) setConfigurationFailure(failureFrom(error))
+      if (mounted.current && !controller.signal.aborted) {
+        setConfigurationFailure(failureFrom(error))
+        if (error instanceof HostApiError && ['INVALID_HOST_RESPONSE', 'CONFIGURATION_CORRUPTED'].includes(error.code)) { setSaved(null); setConfigurationReadFailure(failureFrom(error)) }
+      }
     } finally {
       if (mutationController.current === controller) mutationController.current = null
       actionLock.current = false
@@ -248,7 +278,6 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
     event.preventDefault(); setTab(selected.id)
     document.getElementById(`${prefix}-tab-${selected.id}`)?.focus()
   }
-  const saved = plugin ? publicConfiguration(plugin.configuration) : null
   const busy = mutation !== null || testing || policySaving
   const id = (name: string) => `${prefix}-${name}`
   const describedBy = (name: string) => `${id(name)}-hint${fieldErrors[name] ? ` ${id(name)}-error` : ''}`
@@ -265,7 +294,7 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
     {loading && <p className="qq-loading" role="status">{t('loading.configuration')}</p>}
     <section hidden={tab !== 'configuration'} role="tabpanel" id={`${prefix}-panel-configuration`} aria-labelledby={`${prefix}-tab-configuration`}>
       <div className="section-heading"><h3>{t('tabs.configuration')}</h3><p>{t('config.description')}</p></div>
-      {draft && <form className="form-fields" noValidate onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void mutate('save') }}>
+      {draft && saved && !configurationReadFailure && <form className="form-fields" noValidate onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void mutate('save') }}>
         <fieldset className="qq-fieldset" disabled={busy}>
           <FormField id={id('displayName')} label={t('config.displayName.label')} hint={t('config.displayName.help')} error={messageLabel(fieldErrors.displayName)}>
             <input id={id('displayName')} aria-describedby={describedBy('displayName')} aria-invalid={Boolean(fieldErrors.displayName)} value={draft.displayName} maxLength={40} autoComplete="off" onChange={event => updateDraft('displayName', event.target.value)} />
@@ -291,11 +320,12 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
         </div>
       </form>}
       {configurationResult && <p className="qq-operation-result" role="status"><Check size={15} aria-hidden="true" />{t(configurationResult.key, { state: configurationResult.state ? t(`connection.${configurationResult.state}`) : undefined })}</p>}
+      <ErrorNotice failure={configurationReadFailure} />
       <ErrorNotice failure={configurationFailure} />
       {saved && (saved.instanceId || saved.configurationPath || saved.dataDirectory) && <details className="qq-location-details"><summary>{t('config.locations')}</summary><dl className="qq-paths">{saved.instanceId && <div><dt>{t('config.instance')}</dt><dd>{saved.instanceId}</dd></div>}{saved.configurationPath && <div><dt>{t('config.configurationPath')}</dt><dd>{saved.configurationPath}</dd></div>}{saved.dataDirectory && <div><dt>{t('config.dataDirectory')}</dt><dd>{saved.dataDirectory}</dd></div>}</dl></details>}
     </section>
     <section hidden={tab !== 'agent-policy'} role="tabpanel" id={`${prefix}-panel-agent-policy`} aria-labelledby={`${prefix}-tab-agent-policy`}>
-      {plugin && <AgentPolicyFields configuration={plugin.configuration} agentTypes={plugin.agentTypes ?? []} tools={plugin.tools} enabled={plugin.enabled} busy={busy} actionLock={actionLock} onBusy={value => { if (!mounted.current) return; setPolicySaving(value); if (value) { ++workspaceGeneration.current; workspaceController.current?.abort() } else { void refreshWorkspace(); void refreshRef.current?.().catch(error => setRefreshFailure(failureFrom(error, 'error.refreshAfterAction'))) } }} onSaved={configuration => setPlugin(current => current ? { ...current, configuration } : current)} onFeedback={onFeedback} />}
+      {plugin && <AgentPolicyFields configuration={plugin.configuration} agentTypes={plugin.agentTypes} tools={plugin.tools} enabled={plugin.enabled} configurationFailure={configurationReadFailure} busy={busy} actionLock={actionLock} onBusy={value => { if (!mounted.current) return; setPolicySaving(value); if (value) { ++workspaceGeneration.current; workspaceController.current?.abort() } else { void refreshWorkspace(); void refreshRef.current?.().catch(error => setRefreshFailure(failureFrom(error, 'error.refreshAfterAction'))) } }} onSaved={configuration => { try { const current = publicConfiguration(configuration); setSaved(current); setConfigurationReadFailure(null); setPlugin(previous => previous ? { ...previous, configuration } : previous) } catch (error) { setSaved(null); setConfigurationReadFailure(failureFrom(error)) } }} onFeedback={onFeedback} />}
     </section>
     <section hidden={tab !== 'live-logs'} role="tabpanel" id={`${prefix}-panel-live-logs`} aria-labelledby={`${prefix}-tab-live-logs`}>
       <LiveLogs active={tab === 'live-logs'} enabled={plugin?.enabled === true} available={plugin?.logsSupported === true} />

@@ -84,7 +84,7 @@ test.describe('动态代理提示词与已保存组合', () => {
   test('真实插件贡献生成目录；停用仍可编辑，卸载后保留主人正文并只读', async ({ page }, testInfo) => {
     const initial = await snapshot(page)
     expect(initial.prompts.filter(doc => ['common', 'subagent', 'main'].includes(doc.id))).toHaveLength(3)
-    expect(initial.legacyPrompts).toBeUndefined()
+    expect(initial).not.toHaveProperty('legacyPrompts')
     const agents = initial.prompts.filter(doc => getPromptTemplateScope(doc.id) === 'agent')
     const instructions = initial.prompts.filter(doc => getPromptTemplateScope(doc.id) === 'plugin')
     expect(agents.length).toBeGreaterThanOrEqual(2)
@@ -119,35 +119,38 @@ test.describe('动态代理提示词与已保存组合', () => {
     await page.screenshot({ path: testInfo.outputPath('unavailable-source.png') })
   })
 
-  test('旧 v1 读取原文不写存储，公共与旧输入分开显示，旧正文不进入系统预览', async ({ page }) => {
-    const bodies = {
-      main: '旧主提示词原文 {{当前时间}} / {{人格名称}}',
-      group: '外部群消息原文 {{消息列表}} <script>never-run</script>',
-      private: '外部私聊原文 {{消息内容}} "quoted" \\ literal',
-    }
-    const raw = JSON.stringify({ schemaVersion: 1, revision: 0, prompts: Object.entries(bodies).map(([id, body]) => ({ id, title: `旧 ${id}`, body, revision: 0, updatedAt: null })), personas: [], activePersonaId: null })
-    host!.store.setSetting('host:authoring', raw)
+  test('仅显示当前目录；旧格式明确报错且不覆盖存储，QQ 页面可独立使用', async ({ page }) => {
+    await page.goto(`${url}/#prompts/common`)
+    await expect(editor(page)).toBeVisible()
+    expect((await snapshot(page)).prompts.every(doc => ['common', 'subagent', 'main', 'agent', 'plugin'].includes(doc.scope))).toBe(true)
+    await expect(navigation(page).getByRole('group', { name: '旧消息输入模板', exact: true })).toHaveCount(0)
+    const data = { schemaVersion: 1, revision: 0, prompts: ['main', 'group', 'private'].map(id => ({ id, title: `旧 ${id}`, body: `旧正文 ${id}`, revision: 0, updatedAt: null })), personas: [], activePersonaId: null }
+    const latest = { schemaVersion: 2, revision: 0, prompts: (await snapshot(page)).prompts.filter(doc => doc.source === 'owner').map(({ id, title, body, revision, updatedAt, scope, source }) => ({ id, title, body, revision, updatedAt, scope, source })), personas: [], activePersonaId: null }
     const mutations: string[] = []
     page.on('request', request => { if (request.method() === 'POST') mutations.push(request.url()) })
-    await page.goto(`${url}/#prompts/common`)
-    await expect(editor(page)).toHaveText(bodies.main)
-    for (const id of ['group', 'private'] as const) {
-      await navigation(page).getByRole('button', { name: id === 'group' ? '旧群聊消息输入模板' : '旧私聊消息输入模板', exact: true }).click()
-      await expect(editor(page)).toHaveText(bodies[id])
-      await expect(page.locator('.authoring-legacy-warning')).toHaveText('消息输入模板，内容作为外部消息处理，不是系统规则。')
-      await expect(page.locator('.authoring-preview')).toHaveCount(0)
+    for (const unsupported of [data, { ...latest, legacyPrompts: [] }]) {
+      const raw = JSON.stringify(unsupported, null, 2) + '\n'
+      host!.store.setSetting('host:authoring', raw)
+      const failed = page.waitForResponse(response => response.url() === `${url}/api/authoring`)
+      await page.reload()
+      expect((await failed).status()).toBe(500)
+      await expect(page.locator('.authoring-notice-error')).toContainText('原数据未被覆盖')
+      await expect(editor(page)).toHaveCount(0)
+      await expect(navigation(page).getByRole('button')).toHaveCount(0)
+      expect(host!.store.getSetting('host:authoring')).toBe(raw)
+      const reloaded = page.waitForResponse(response => response.url() === `${url}/api/authoring`)
+      await page.getByRole('button', { name: '重新读取提示词', exact: true }).click()
+      expect((await reloaded).status()).toBe(500)
+      await expect(page.locator('.authoring-notice-error')).toContainText('原数据未被覆盖')
+      expect(host!.store.getSetting('host:authoring')).toBe(raw)
+      await page.goto(`${url}/#robots/qq`)
+      await expect(page.getByLabel('显示名称', { exact: true })).toBeVisible()
+      expect((await page.request.get(`${url}/api/plugins/qq/configuration`)).status()).toBe(200)
+      expect(host!.store.getSetting('host:authoring')).toBe(raw)
+      await page.goto(`${url}/#prompts/common`)
+      await expect(page.locator('.authoring-notice-error')).toContainText('原数据未被覆盖')
     }
-    const migrated = await snapshot(page)
-    expect(migrated.prompts.find(doc => doc.id === 'common')?.body).toBe(bodies.main)
-    expect(migrated.legacyPrompts?.map(doc => doc.body)).toEqual([bodies.group, bodies.private])
-    expect(host!.store.getSetting('host:authoring')).toBe(raw)
     expect(mutations).toEqual([])
-    await navigation(page).getByRole('button', { name: '主 Agent 提示词', exact: true }).click()
-    const preview = await savedPreview(page)
-    expect(preview.layers.some(layer => layer.id === 'group' || layer.id === 'private')).toBe(false)
-    expect(preview.systemPrompt).not.toContain('外部群消息原文')
-    expect(preview.systemPrompt).not.toContain('外部私聊原文')
-    expect(host!.store.getSetting('host:authoring')).toBe(raw)
   })
 
   test('保存 CAS 保留冲突草稿，预览仅组合已保存规则与同一人格及受信身份列表', async ({ page }, testInfo) => {

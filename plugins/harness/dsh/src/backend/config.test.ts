@@ -80,6 +80,28 @@ describe('DSH restricted persistence', () => {
     expect(readFileSync(file.filePath, 'utf8')).toBe(bytes)
   })
 
+  it.each(['wrong-version', 'missing-timestamp', 'missing-current-field', 'unsupported-field'] as const)('rejects %s configuration without migration or rewriting', mode => {
+    const file = new DshConfigurationFile(fixture())
+    const configuration = mode === 'missing-current-field' ? { ...DEFAULT_CONFIGURATION, timeoutMs: undefined }
+      : mode === 'unsupported-field' ? { ...DEFAULT_CONFIGURATION, messageTemplate: 'obsolete' } : DEFAULT_CONFIGURATION
+    const bytes = JSON.stringify({ schemaVersion: mode === 'wrong-version' ? 0 : 1, updatedAt: mode === 'missing-timestamp' ? undefined : '2026-10-28T00:00:00Z', configuration })
+    writeFileSync(file.filePath, bytes)
+    expect(() => file.read()).toThrowError(expect.objectContaining({ code: 'CONFIGURATION_CORRUPTED' }))
+    expect(readFileSync(file.filePath, 'utf8')).toBe(bytes)
+  })
+
+  it('rejects an unsupported configuration API field before saving', () => {
+    expect(() => parseConfiguration({ messageTemplate: 'obsolete' })).toThrowError(expect.objectContaining({ code: 'INVALID_CONFIGURATION' }))
+  })
+
+  it.each(['schema-0', 'missing-created', 'incomplete-batch'] as const)('rejects %s session metadata while preserving its original bytes', mode => {
+    const file = new DshSessionFile(fixture())
+    const bytes = JSON.stringify({ schemaVersion: mode === 'schema-0' ? 0 : 1, sessionId: '00000000-0000-4000-8000-000000000001', ...(mode !== 'missing-created' ? { created: true } : {}), ...(mode === 'incomplete-batch' ? { activeBatchId: 'a'.repeat(64) } : {}) })
+    writeFileSync(file.filePath, bytes)
+    expect(() => file.read()).toThrowError(expect.objectContaining({ code: 'SESSION_METADATA_CORRUPTED' }))
+    expect(readFileSync(file.filePath, 'utf8')).toBe(bytes)
+  })
+
   it.skipIf(process.platform === 'win32')('rejects symlink files without reading or replacing their target', () => {
     const directory = fixture()
     const target = join(directory, 'fixture-target')

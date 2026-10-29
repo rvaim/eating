@@ -53,7 +53,7 @@ export function parsePluginPackageManifest(value: unknown): PluginPackageManifes
   if (!isJsonObject(value) || !exactKeys(value, ['schemaVersion', 'id', 'name', 'description', 'version', 'kind', 'apiVersion', 'storageDirectory', 'backend', 'frontend', 'integrity'])) {
     throw failure('INVALID_PLUGIN_MANIFEST', '插件清单字段不完整或含有未知字段。')
   }
-  if (value.schemaVersion !== 1 || value.apiVersion !== 1) throw failure('INCOMPATIBLE_PLUGIN_API', '仅支持 schemaVersion 1 / SDK apiVersion 1 的插件包。')
+  if (value.schemaVersion !== 1 || value.apiVersion !== 2) throw failure('INCOMPATIBLE_PLUGIN_API', '仅支持 schemaVersion 1 / SDK apiVersion 2 的插件包。')
   if (!validId(value.id) || !validVersion(value.version) || !validId(value.storageDirectory)
     || (value.kind !== 'communication' && value.kind !== 'harness') || (value.kind === 'communication' && !value.storageDirectory.endsWith('-bot'))
     || typeof value.name !== 'string' || !value.name.trim() || value.name.length > 100
@@ -77,7 +77,7 @@ export function parsePluginPackageManifest(value: unknown): PluginPackageManifes
   // Canonical field order also makes immutable-version comparisons independent of JSON formatting.
   return {
     schemaVersion: 1, id: value.id, name: value.name, description: value.description,
-    version: value.version, kind: value.kind, apiVersion: 1, storageDirectory: value.storageDirectory,
+    version: value.version, kind: value.kind, apiVersion: 2, storageDirectory: value.storageDirectory,
     backend: value.backend,
     frontend: { entry: frontend.entry, style: frontend.style, order: frontend.order, brandColor: frontend.brandColor, icon: frontend.icon },
     integrity: Object.fromEntries(ENTRIES.map(entry => [entry, integrity[entry] as string])),

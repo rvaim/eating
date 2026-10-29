@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Check, ChevronRight, Eye, FileText, Info, Plus, Power, RefreshCw, Save, Trash2, UserRound } from 'lucide-react'
-import { TEMPLATE_SCOPES, analyzeTemplate, getPromptTemplateScope } from '@eating/plugin-sdk'
+import { TEMPLATE_SCOPES, TEMPLATE_VARIABLES, analyzeTemplate, getPromptTemplateScope } from '@eating/plugin-sdk'
 import type { AgentPromptPreview, AuthoringSnapshot, PersonaDocument, PersonaMutationResult, PersonaSummary, PromptDocument, TemplateScope } from '@eating/plugin-sdk'
 import { HostApiError, formatDateTime, getErrorMessage, getLocale, hostRequest, translate, useI18n } from '@eating/ui-sdk'
 import '../i18n/authoring'
@@ -38,20 +38,20 @@ const authoringText = (key: string, params?: Record<string, string | number | bo
 const personaIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const revisionValid = (value: number) => Number.isSafeInteger(value) && value >= 0
 const responseError = () => new HostApiError('INVALID_HOST_RESPONSE', authoringText('error.response'))
-const promptDocuments = (snapshot: AuthoringSnapshot) => [...snapshot.prompts, ...(snapshot.legacyPrompts ?? [])]
 
-function promptValid(doc: PromptDocument, legacy = false): boolean {
+function promptValid(doc: PromptDocument): boolean {
   if (!doc || typeof doc.id !== 'string') return false
   const scope = getPromptTemplateScope(doc.id)
-  return scope !== null && (legacy ? scope === 'group' || scope === 'private' : scope !== 'group' && scope !== 'private')
+  const plugin = scope === 'agent' || scope === 'plugin'
+  return scope !== null && doc.scope === scope && doc.source === (plugin ? 'plugin' : 'owner')
     && typeof doc.title === 'string' && typeof doc.body === 'string' && revisionValid(doc.revision)
     && (doc.updatedAt === null || typeof doc.updatedAt === 'string')
-    && (doc.scope === undefined || doc.scope === scope)
-    && (doc.source === undefined || (legacy ? doc.source === 'legacy-user-input' : doc.source === 'owner' || doc.source === 'plugin'))
     && (doc.localizedTitles === undefined || doc.localizedTitles !== null && typeof doc.localizedTitles === 'object' && !Array.isArray(doc.localizedTitles)
       && Object.values(doc.localizedTitles).every(title => typeof title === 'string' && title.trim().length > 0))
-    && (doc.pluginId === undefined || typeof doc.pluginId === 'string' && doc.pluginId.length > 0)
-    && (doc.agentTypeId === undefined || typeof doc.agentTypeId === 'string' && scope === 'agent' && doc.id === `agent:${doc.agentTypeId}`)
+    && (plugin ? typeof doc.pluginId === 'string' && doc.pluginId.length <= 80
+      && /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u.test(doc.pluginId)
+      && doc.id.slice(doc.id.indexOf(':') + 1).startsWith(`${doc.pluginId}.`) : doc.pluginId === undefined)
+    && (scope === 'agent' ? doc.agentTypeId === doc.id.slice(6) : doc.agentTypeId === undefined)
     && (doc.defaultBody === undefined || typeof doc.defaultBody === 'string')
     && (doc.enabled === undefined || typeof doc.enabled === 'boolean')
     && (doc.available === undefined || typeof doc.available === 'boolean')
@@ -71,13 +71,14 @@ function summaryValid(value: PersonaSummary): boolean {
 function checkSnapshot(value: AuthoringSnapshot): AuthoringSnapshot {
   if (!value || value.protocolVersion !== 1 || !revisionValid(value.revision)
     || !Array.isArray(value.prompts) || !Array.isArray(value.personas) || !Array.isArray(value.variables)
-    || value.legacyPrompts !== undefined && !Array.isArray(value.legacyPrompts)
-    || value.prompts.some(doc => !promptValid(doc)) || value.legacyPrompts?.some(doc => !promptValid(doc, true))
+    || Object.hasOwn(value, 'legacyPrompts') || value.prompts.some(doc => !promptValid(doc))
     || basePromptIds.some(id => !value.prompts.some(doc => doc.id === id))
-    || new Set(promptDocuments(value).map(doc => doc.id)).size !== promptDocuments(value).length
+    || new Set(value.prompts.map(doc => doc.id)).size !== value.prompts.length
     || value.personas.some(persona => !summaryValid(persona)) || new Set(value.personas.map(persona => persona.id)).size !== value.personas.length
     || !(value.activePersonaId === null || value.personas.some(persona => persona.id === value.activePersonaId))
-    || value.variables.some(variable => !variable || typeof variable.name !== 'string' || typeof variable.description !== 'string'
+    || value.variables.length !== TEMPLATE_VARIABLES.length || new Set(value.variables.map(variable => variable?.name)).size !== value.variables.length
+    || value.variables.some(variable => !variable || typeof variable.description !== 'string'
+      || !TEMPLATE_VARIABLES.some(supported => supported.name === variable.name && supported.origin === variable.origin)
       || !Array.isArray(variable.scopes) || variable.scopes.some((scope: TemplateScope) => !TEMPLATE_SCOPES.includes(scope)))) throw responseError()
   return value
 }
@@ -86,7 +87,7 @@ function checkPreview(value: AgentPromptPreview, agentTypeId: string | null): Ag
   if (!value || !revisionValid(value.revision) || value.agentTypeId !== agentTypeId || !Array.isArray(value.layers)
     || value.layers.length === 0 || new Set(value.layers.map(layer => layer?.id)).size !== value.layers.length
     || value.layers.some(layer => !layer || typeof layer.id !== 'string'
-      || !(getPromptTemplateScope(layer.id) !== null && !['group', 'private'].includes(layer.id)
+      || !(getPromptTemplateScope(layer.id) !== null
         || layer.id === 'persona' || layer.id.startsWith('persona:') && personaIdPattern.test(layer.id.slice(8)))
       || typeof layer.title !== 'string' || !revisionValid(layer.revision) || typeof layer.body !== 'string')
     || typeof value.systemPrompt !== 'string' || !value.bindings || typeof value.bindings !== 'object' || Array.isArray(value.bindings)) throw responseError()
@@ -107,9 +108,7 @@ function checkMutation(value: PersonaMutationResult, expectedId?: string): Perso
 }
 
 function promptDraft(doc: PromptDocument): Draft {
-  const scope = getPromptTemplateScope(doc.id)
-  if (scope === null) throw responseError()
-  return { key: `prompts:${doc.id}`, id: doc.id, scope, name: doc.title, body: doc.body, saved: doc, requiresRead: false, notice: null }
+  return { key: `prompts:${doc.id}`, id: doc.id, scope: doc.scope, name: doc.title, body: doc.body, saved: doc, requiresRead: false, notice: null }
 }
 
 function personaDraft(doc: PersonaDocument): Draft {
@@ -137,6 +136,7 @@ function errorMessage(error: unknown, kind: Operation): string {
   if (isConflict(error)) return authoringText('error.conflict')
   if (error instanceof HostApiError) {
     if (error.outcome === 'unknown' && kind !== 'read') return authoringText('error.unknown')
+    if (error.code === 'AUTHORING_STORAGE_CORRUPTED') return authoringText('error.storage')
     if (error.code === 'ACTIVE_PERSONA') return authoringText('error.activePersona')
     if (error.code === 'PROMPT_SOURCE_UNAVAILABLE') return authoringText('error.sourceUnavailable')
     if (error.code === 'INVALID_AGENT_PROMPT') return authoringText('error.agentPrompt')
@@ -183,17 +183,16 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
   feedback.current = onFeedback
   select.current = onSelect
 
-  const documents = snapshot ? promptDocuments(snapshot) : []
+  const documents = snapshot?.prompts ?? []
   const resolvedId = mode === 'prompts' ? documents.some(doc => doc.id === selectedId) ? selectedId! : 'common'
     : selectedId ?? snapshot?.activePersonaId ?? snapshot?.personas[0]?.id ?? 'new'
   const selectedPrompt = mode === 'prompts' ? documents.find(doc => doc.id === resolvedId) ?? null : null
-  const selection: Selection = { key: `${mode}:${resolvedId}`, id: resolvedId, scope: mode === 'prompts' ? getPromptTemplateScope(resolvedId) ?? 'common' : 'persona' }
+  const selection: Selection = { key: `${mode}:${resolvedId}`, id: resolvedId, scope: mode === 'prompts' ? selectedPrompt?.scope ?? 'common' : 'persona' }
   const groups = [
     { key: 'common', documents: documents.filter(doc => doc.id === 'common' || doc.id === 'subagent') },
     { key: 'main', documents: documents.filter(doc => doc.id === 'main') },
-    { key: 'plugins', documents: documents.filter(doc => getPromptTemplateScope(doc.id) === 'plugin') },
-    { key: 'agents', documents: documents.filter(doc => getPromptTemplateScope(doc.id) === 'agent') },
-    { key: 'legacy', documents: documents.filter(doc => doc.source === 'legacy-user-input' || doc.id === 'group' || doc.id === 'private') },
+    { key: 'plugins', documents: documents.filter(doc => doc.scope === 'plugin') },
+    { key: 'agents', documents: documents.filter(doc => doc.scope === 'agent') },
   ]
   const selectedKey = useRef(selection.key)
   selectedKey.current = selection.key
@@ -212,7 +211,6 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
   const title = mode === 'prompts' ? selectedPrompt ? promptTitle(selectedPrompt) : t('nav.prompts') : !snapshot ? t('persona.title') : resolvedId === 'new' ? t('persona.new') : currentDraft?.saved && 'name' in currentDraft.saved ? currentDraft.saved.name : snapshot.personas.find(persona => persona.id === resolvedId)?.name ?? t('persona.fallbackTitle')
   const sourceUnavailable = selectedPrompt?.available === false
   const sourceDisabled = selectedPrompt?.enabled === false
-  const legacy = selectedPrompt?.source === 'legacy-user-input' || selection.scope === 'group' || selection.scope === 'private'
   const canPreview = mode === 'prompts' && (selection.scope === 'main' || selection.scope === 'agent')
   const currentPreview = preview?.key === selection.key ? preview : null
   const hasUnsavedDrafts = Object.values(drafts).some(draft => isDirty(draft))
@@ -290,13 +288,13 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
       if (target?.scope === 'persona') replacement = target.id === 'new' ? emptyPersona()
         : personaDraft(checkPersona(await hostRequest<PersonaDocument>(`/personas/${encodeURIComponent(target.id)}`, { signal: ticket.controller.signal }), target.id))
       else if (target) {
-        const doc = promptDocuments(next).find(prompt => prompt.id === target.id)
+        const doc = next.prompts.find(prompt => prompt.id === target.id)
         if (!doc) throw responseError()
         replacement = promptDraft(doc)
       }
       if (!isCurrent(ticket)) return
       const nextDrafts = { ...draftsRef.current }
-      for (const doc of promptDocuments(next)) if (!nextDrafts[`prompts:${doc.id}`]) nextDrafts[`prompts:${doc.id}`] = promptDraft(doc)
+      for (const doc of next.prompts) if (!nextDrafts[`prompts:${doc.id}`]) nextDrafts[`prompts:${doc.id}`] = promptDraft(doc)
       if (replacement) nextDrafts[replacement.key] = replacement
       replaceDrafts(nextDrafts)
       replaceSnapshot(next)
@@ -321,7 +319,7 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
     const key = `${mode}:${resolvedId}`
     if (!draftsRef.current[key]) {
       if (mode === 'prompts') {
-        const doc = snapshotRef.current ? promptDocuments(snapshotRef.current).find(prompt => prompt.id === resolvedId) : undefined
+        const doc = snapshotRef.current ? snapshotRef.current.prompts.find(prompt => prompt.id === resolvedId) : undefined
         if (doc) replaceDrafts({ ...draftsRef.current, [key]: promptDraft(doc) })
       } else if (resolvedId === 'new') replaceDrafts({ ...draftsRef.current, [key]: emptyPersona() })
       else {
@@ -393,7 +391,7 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
         next = checkSnapshot(await hostRequest<AuthoringSnapshot>(`/prompts/${encodeURIComponent(draft.id)}`, {
           method: 'POST', signal: ticket.controller.signal, body: { expectedRevision: draft.saved.revision, body: draft.body },
         }))
-        const doc = promptDocuments(next).find(prompt => prompt.id === draft.id)
+        const doc = next.prompts.find(prompt => prompt.id === draft.id)
         if (!doc) throw responseError()
         savedDraft = promptDraft(doc)
         messageKey = 'success.promptSaved'
@@ -441,7 +439,7 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
 
   async function readSavedPreview() {
     if (lock.current || previewRequest.current || !selectedPrompt || !canPreview || sourceUnavailable || sourceDisabled) return
-    const agentTypeId = selection.scope === 'agent' ? selectedPrompt.agentTypeId ?? selectedPrompt.id.slice(6) : null
+    const agentTypeId = selection.scope === 'agent' ? selectedPrompt.agentTypeId! : null
     const request = { key: selection.key, controller: new AbortController() }
     previewRequest.current = request
     setPreview({ key: request.key, loading: true })
@@ -482,7 +480,6 @@ export function Authoring({ mode, selectedId, onSelect, onFeedback }: AuthoringP
       <div className="authoring-title-row"><div><div className="panel-title-row"><h2>{title}</h2>{active && <span className="status-badge authoring-active-badge"><Check size={12} aria-hidden="true" />{t('status.active')}</span>}</div><p className="panel-description">{t(mode === 'prompts' ? `prompt.${selection.scope}.description` : 'persona.description')}</p></div><button ref={readTrigger} type="button" className="button button-secondary authoring-read-button" disabled={busy} onClick={requestRead}><RefreshCw size={15} aria-hidden="true" />{t(operation?.kind === 'read' ? 'action.reading' : mode === 'prompts' ? 'action.readPrompt' : 'action.readPersona')}</button></div>
       <div className="authoring-runtime-note"><Info size={16} aria-hidden="true" /><p>{t(mode === 'prompts' ? 'prompt.runtimeNote' : 'runtimeNote')}</p></div>
       {selectedPrompt?.pluginId && <p className="authoring-source-detail">{t('source.plugin', { pluginId: selectedPrompt.pluginId })}</p>}
-      {legacy && <p className="authoring-legacy-warning" role="note"><Info size={16} aria-hidden="true" />{t('legacy.warning')}</p>}
       {(sourceUnavailable || sourceDisabled) && <p className="authoring-notice authoring-notice-info" role="status">{t(sourceUnavailable ? 'source.unavailable' : 'source.disabled')}</p>}
       {snapshotNeedsRead && <p className="authoring-notice authoring-notice-error" role="alert">{t(mode === 'prompts' ? 'read.requiredPrompt' : 'read.requiredPersona')}</p>}
       {currentReadError && <p className="authoring-notice authoring-notice-error" role="alert">{currentDraft ? t('read.errorWithDraft', { message: currentReadError }) : currentReadError}</p>}

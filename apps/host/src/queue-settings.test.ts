@@ -51,26 +51,10 @@ function payloads(test: ReturnType<typeof fixture>): Buffer {
   return Buffer.concat(['host.sqlite', 'host.sqlite-wal', 'host.sqlite-shm'].map(name => join(test.directory, name)).filter(existsSync).map(path => readFileSync(path)))
 }
 
-interface LegacyEvent { key: string; status: 'pending' | 'delivering' | 'uncertain' | 'accepted' | 'not-forwarded'; text?: string; json?: string | null; at?: string; attempts?: number }
-function seedLegacy(test: ReturnType<typeof fixture>, rows: readonly LegacyEvent[]) {
-  test.inspect(db => {
-    db.exec(`CREATE TABLE incoming_events (
-      sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, plugin_id TEXT NOT NULL,
-      deduplication_key TEXT NOT NULL, conversation_id TEXT, instance_id TEXT, received_at TEXT NOT NULL,
-      text TEXT NOT NULL, raw_json TEXT NOT NULL, harness_json TEXT, harness_status TEXT NOT NULL,
-      delivery_attempts INTEGER NOT NULL DEFAULT 0, delivery_error TEXT, receipt_id TEXT,
-      UNIQUE(plugin_id,deduplication_key));
-      CREATE INDEX events_by_conversation ON incoming_events(plugin_id,conversation_id,sequence);
-      BEGIN IMMEDIATE;`)
-    const insert = db.prepare(`INSERT INTO incoming_events(event_id,plugin_id,deduplication_key,conversation_id,instance_id,received_at,text,raw_json,harness_json,harness_status,delivery_attempts,receipt_id)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
-    for (const row of rows) {
-      const text = row.text ?? row.key
-      insert.run(hash(row.key), 'queue-test', row.key, 'test:private:queue', 'instance-one', row.at ?? new Date().toISOString(), text,
-        JSON.stringify({ raw_message: `raw-only:${text}` }), row.json === undefined ? JSON.stringify({ ...envelope(text), eventId: hash(row.key) }) : row.json,
-        row.status, row.attempts ?? 0, row.status === 'accepted' ? 'legacy-receipt' : null)
-    }
-    db.exec('COMMIT; PRAGMA wal_checkpoint(TRUNCATE)')
+function databaseFiles(test: ReturnType<typeof fixture>) {
+  return readdirSync(test.directory).sort().map(name => {
+    const path = join(test.directory, name)
+    return { name, sha256: createHash('sha256').update(readFileSync(path)).digest('hex'), mode: statSync(path).mode }
   })
 }
 
@@ -132,7 +116,7 @@ describe('HostStore queue settings and content retention', () => {
     const pending = record(store, 'pending', 'switch-mode-pending-secret')
     const delivering = record(store, 'delivering', 'switch-mode-delivering-secret')
     const uncertain = record(store, 'uncertain', 'switch-mode-uncertain-secret')
-    store.markHarnessDeliveryBatch([pending.eventId], 'pending', null, null, Date.now() + 10000)
+    store.markHarnessDeliveryBatch([pending.eventId], 'pending', null, Date.now() + 10000)
     store.markHarnessDeliveryBatch([delivering.eventId], 'delivering')
     store.markHarnessDeliveryBatch([uncertain.eventId], 'delivering')
     store.markHarnessDeliveryBatch([uncertain.eventId], 'uncertain', 'test-only-secret-error')
@@ -348,7 +332,7 @@ describe('HostStore queue settings and content retention', () => {
     const ready = record(store, 'ready')
     store.markHarnessDeliveryBatch([attempted.eventId, attempted.eventId], 'delivering')
     store.markHarnessDeliveryBatch([attempted.eventId], 'pending')
-    store.markHarnessDeliveryBatch([delayed.eventId], 'pending', null, null, Date.now() + 10000)
+    store.markHarnessDeliveryBatch([delayed.eventId], 'pending', null, Date.now() + 10000)
     expect(store.getQueuedHarnessEvents().map(item => item.attempts)).toEqual([1, 0, 0])
     expect(store.pendingHarnessEvents().map(item => item.event.eventId)).toEqual([ready.eventId])
     expect(store.pendingHarnessEvents(0)).toEqual([])
@@ -356,61 +340,79 @@ describe('HostStore queue settings and content retention', () => {
   })
 })
 
-describe('HostStore legacy history removal and bounded deduplication', () => {
-  it('keeps all legacy outstanding messages, removes terminal bodies, shrinks the same file once and preserves outbound results', async () => {
+describe('HostStore current schema admission and bounded deduplication', () => {
+  it('creates a complete current database and reopens it without changing its schema version', () => {
+    const test = fixture()
+    const store = test.open()
+    record(store, 'current-pending')
+    test.close(store)
+    expect(test.inspect(db => db.prepare('PRAGMA user_version').get()?.user_version)).toBe(1)
+    expect(test.inspect(db => db.prepare('PRAGMA auto_vacuum').get()?.auto_vacuum)).toBe(2)
+    expect(test.inspect(db => db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map(row => row.name)))
+      .toEqual(['actions', 'delivery_queue', 'event_dedup', 'settings'])
+    expect(test.open().getQueuedHarnessEvents()).toMatchObject([{ event: { text: 'current-pending' }, status: 'pending', attempts: 0 }])
+    expect(test.inspect(db => db.prepare('PRAGMA user_version').get()?.user_version)).toBe(1)
+  })
+
+  it('rejects an existing empty unversioned database instead of initializing it', () => {
+    const test = fixture()
+    test.inspect(db => db.exec('PRAGMA user_version=0'))
+    const before = databaseFiles(test)
+    expect(() => test.open()).toThrow(expect.objectContaining({ code: 'UNSUPPORTED_STORAGE_SCHEMA' }))
+    expect(databaseFiles(test)).toEqual(before)
+    expect(test.inspect(db => db.prepare('SELECT name FROM sqlite_schema').all())).toEqual([])
+  })
+
+  it.each([0, 1, 2])('rejects old history tables with version %s without creating a queue or changing original bytes', version => {
+    const test = fixture()
+    test.inspect(db => {
+      db.exec(`CREATE TABLE incoming_events(sequence INTEGER PRIMARY KEY, event_id TEXT, harness_status TEXT, raw_json TEXT, harness_json TEXT);
+        CREATE TABLE actions(plugin_id TEXT,request_id TEXT,action TEXT,params_hash TEXT,state TEXT,result_json TEXT,PRIMARY KEY(plugin_id,request_id));
+        PRAGMA user_version=${version};`)
+      db.prepare('INSERT INTO incoming_events VALUES(?,?,?,?,?)').run(1, hash('old-pending'), 'pending', '{"raw":"old raw body"}', JSON.stringify(envelope('old pending body')))
+      db.prepare('INSERT INTO incoming_events VALUES(?,?,?,?,?)').run(2, hash('old-accepted'), 'accepted', '{"raw":"old terminal body"}', JSON.stringify(envelope('old terminal body')))
+      db.prepare('INSERT INTO actions VALUES(?,?,?,?,?,?)').run('queue-test', 'saved-old-action', 'send', 'saved-hash', 'succeeded', '{"sent":"saved-ledger"}')
+    })
+    const before = databaseFiles(test)
+    expect(() => test.open()).toThrow(expect.objectContaining({ code: 'UNSUPPORTED_STORAGE_SCHEMA' }))
+    expect(databaseFiles(test)).toEqual(before)
+    expect(test.inspect(db => db.prepare('SELECT COUNT(*) AS count FROM incoming_events').get()?.count)).toBe(2)
+    expect(test.inspect(db => db.prepare('SELECT result_json FROM actions').get()?.result_json)).toBe('{"sent":"saved-ledger"}')
+    expect(test.inspect(db => db.prepare("SELECT name FROM sqlite_schema WHERE name='delivery_queue'").get())).toBeUndefined()
+  })
+
+  it.each([0, 2, 99])('rejects a complete database marked version %s before recovery or any rewrite', async version => {
     const test = fixture()
     const initial = test.open()
-    const send = vi.fn(async () => ({ id: 'sent-before-migration' }))
-    await initial.executeIdempotent('queue-test', 'send', {}, 'migration-action', send)
+    const pending = record(initial, 'interrupted-current')
+    initial.markHarnessDeliveryBatch([pending.eventId], 'delivering')
+    await initial.executeIdempotent('queue-test', 'send', {}, 'saved-current-action', async () => ({ saved: true }))
     test.close(initial)
-    const terminalSecret = `terminal-history-secret-${'old-body'.repeat(50000)}`
-    seedLegacy(test, [
-      { key: 'legacy-pending', status: 'pending', text: 'kept-pending' },
-      { key: 'legacy-delivering', status: 'delivering', text: 'kept-delivering', attempts: 2 },
-      { key: 'legacy-uncertain', status: 'uncertain', text: 'kept-uncertain', attempts: 1 },
-      { key: 'legacy-accepted', status: 'accepted', text: terminalSecret },
-      { key: 'legacy-local', status: 'not-forwarded', text: 'terminal-local-secret', json: null },
-    ])
-    const beforeBytes = statSync(test.databasePath).size
-    const store = test.open()
-    expect(store.getQueuedHarnessEvents().map(item => [item.event.text, item.status, item.attempts])).toEqual([
-      ['kept-pending', 'pending', 0], ['kept-delivering', 'uncertain', 2], ['kept-uncertain', 'uncertain', 1],
-    ])
-    expect(store.harnessSummary()).toMatchObject({ pending: 1, uncertain: 2, accepted: 1, 'not-forwarded': 1, discarded: 0, rejected: 0 })
-    expect(store.listMessages('queue-test').map(item => item.text)).toEqual(['kept-uncertain', 'kept-delivering', 'kept-pending'])
-    expect(test.inspect(db => db.prepare("SELECT name FROM sqlite_master WHERE name='incoming_events'").get())).toBeUndefined()
-    expect(test.inspect(db => db.prepare('PRAGMA user_version').get()?.user_version)).toBe(2)
-    expect(test.inspect(db => db.prepare('PRAGMA auto_vacuum').get()?.auto_vacuum)).toBe(2)
-    expect(statSync(test.databasePath).size).toBeLessThan(beforeBytes / 4)
-    expect(payloads(test).includes(Buffer.from('terminal-history-secret'))).toBe(false)
-    expect(payloads(test).includes(Buffer.from('terminal-local-secret'))).toBe(false)
-    expect(payloads(test).includes(Buffer.from('raw-only:'))).toBe(false)
-    expect(readdirSync(test.directory).every(name => ['host.sqlite', 'host.sqlite-wal', 'host.sqlite-shm'].includes(name))).toBe(true)
-    expect(record(store, 'legacy-accepted')).toEqual({ inserted: false, eventId: hash('legacy-accepted') })
-    expect(await store.executeIdempotent('queue-test', 'send', {}, 'migration-action', send)).toEqual({ id: 'sent-before-migration' })
-    expect(send).toHaveBeenCalledOnce()
-    test.close(store)
-    const reopened = test.open()
-    expect(reopened.harnessSummary()).toMatchObject({ accepted: 1, uncertain: 2, queueMessages: 3 })
+    test.inspect(db => db.exec(`UPDATE actions SET state='running'; PRAGMA user_version=${version};`))
+    const before = databaseFiles(test)
+    expect(() => test.open()).toThrow(expect.objectContaining({ code: 'UNSUPPORTED_STORAGE_SCHEMA' }))
+    expect(databaseFiles(test)).toEqual(before)
+    expect(test.inspect(db => db.prepare('SELECT status FROM delivery_queue').get()?.status)).toBe('delivering')
+    expect(test.inspect(db => db.prepare('SELECT state FROM actions').get()?.state)).toBe('running')
   })
 
-  it('retains an old backlog above the new defaults and rejects new admissions without trimming it', () => {
+  it.each([
+    ['missing table', 'DROP TABLE event_dedup'],
+    ['missing queue column', 'ALTER TABLE delivery_queue DROP COLUMN next_attempt_at'],
+    ['missing action result column', 'ALTER TABLE actions DROP COLUMN error_code'],
+    ['old action key', 'DROP TABLE actions; CREATE TABLE actions(plugin_id TEXT NOT NULL,request_id TEXT NOT NULL,action TEXT NOT NULL,params_hash TEXT NOT NULL,state TEXT NOT NULL,created_at TEXT NOT NULL,result_json TEXT,error_code TEXT,error_message TEXT,PRIMARY KEY(plugin_id,request_id))'],
+    ['missing dedup index', 'DROP INDEX dedup_by_age'],
+    ['old history beside current tables', 'CREATE TABLE incoming_events(event_id TEXT,raw_json TEXT,harness_json TEXT)'],
+  ])('rejects a current-version database with %s without repair or writes', (_reason, damage) => {
     const test = fixture()
-    seedLegacy(test, Array.from({ length: 1001 }, (_, index) => ({ key: `backlog-${index}`, status: 'pending' as const })))
-    const store = test.open()
-    expect(store.getDeliverySettingsSnapshot().queue).toMatchObject({ queuedMessages: 1001, overCapacity: true, discarded: 0 })
-    expect(record(store, 'new-backlog').admission).toBe('rejected')
-    expect(store.getQueuedHarnessEvents()).toHaveLength(1001)
-    expect(store.getQueuedHarnessEvents()[0]!.event.eventId).toBe(hash('backlog-0'))
-    expect(store.getQueuedHarnessEvents()[1000]!.event.eventId).toBe(hash('backlog-1000'))
-  })
-
-  it('rolls back the full migration if an outstanding legacy envelope is invalid', () => {
-    const test = fixture()
-    seedLegacy(test, [{ key: 'valid-before-bad', status: 'pending' }, { key: 'bad', status: 'uncertain', json: '{}' }])
-    expect(() => test.open()).toThrow(expect.objectContaining({ code: 'STORAGE_CORRUPTED' }))
-    expect(test.inspect(db => db.prepare('SELECT COUNT(*) AS count FROM incoming_events').get()?.count)).toBe(2)
-    expect(test.inspect(db => db.prepare("SELECT name FROM sqlite_master WHERE name='delivery_queue'").get())).toBeUndefined()
+    const initial = test.open()
+    initial.setSetting('fixture:preserve', 'original configuration')
+    test.close(initial)
+    test.inspect(db => db.exec(damage))
+    const before = databaseFiles(test)
+    expect(() => test.open()).toThrow(expect.objectContaining({ code: 'UNSUPPORTED_STORAGE_SCHEMA' }))
+    expect(databaseFiles(test)).toEqual(before)
+    expect(test.inspect(db => db.prepare("SELECT value FROM settings WHERE key='fixture:preserve'").get()?.value)).toBe('original configuration')
   })
 
   it('caps content-free identifiers at 10000 and expires them at 24 hours without losing outstanding deduplication', () => {

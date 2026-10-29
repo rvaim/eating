@@ -56,7 +56,7 @@ async function makePackage(version = '0.2.0', id = 'qq', backend?: string): Prom
     'ui/style.css': `.plugin { color: #3876b6; } /* ${version} */\n`,
   }
   const manifest: PluginPackageManifest = {
-    schemaVersion: 1, id, name: 'QQ', description: '独立构建插件测试', version, kind: 'communication', apiVersion: 1,
+    schemaVersion: 1, id, name: 'QQ', description: '独立构建插件测试', version, kind: 'communication', apiVersion: 2,
     storageDirectory: id === 'qq' ? 'qq-bot' : `${id}-bot`, backend: 'server.mjs',
     frontend: { entry: 'ui/index.js', style: 'ui/style.css', order: 10, brandColor: '#3876b6', icon: 'message-circle' },
     integrity: Object.fromEntries(Object.entries(files).map(([entry, data]) => [entry, createHash('sha256').update(data).digest('hex')])),
@@ -90,7 +90,7 @@ describe('independent plugin directory packages', () => {
   })
 
   it('discovers matching Harness entries and refuses missing or mismatched entry kinds', async () => {
-    const backend = `export default { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create() { return { id: 'dsh', version: '1.0.0' } } }`
+    const backend = `export default { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create() { return { id: 'dsh', kind: 'harness', version: '1.0.0' } } }`
     const source = await makePackage('1.0.0', 'dsh', backend)
     await writeFile(join(source.directory, 'eating-plugin.json'), JSON.stringify({ ...source.manifest, kind: 'harness', storageDirectory: 'dsh' }))
     await installPluginPackage(home, source.directory)
@@ -303,17 +303,17 @@ describe('independent plugin directory packages', () => {
     await expectCleanTransaction()
   })
 
-  it('uninstalls activation only, preserving bot configuration, Host history and version packages', async () => {
+  it('uninstalls activation only, preserving bot configuration, Host state and version packages', async () => {
     const source = await makePackage()
     const installed = await installPluginPackage(home, source.directory)
     await mkdir(join(home, 'bot', 'qq-bot'), { recursive: true })
     await writeFile(join(home, 'bot', 'qq-bot', 'accounts.json'), 'preserve bot data')
-    await writeFile(join(home, 'host', 'history.sqlite'), 'preserve history')
+    await writeFile(join(home, 'host', 'Eating.sqlite'), 'preserve Host state')
     await uninstallPluginPackage(home, 'qq')
     await uninstallPluginPackage(home, 'qq')
     expect(await loadInstalledPluginPackages(home)).toEqual([])
     expect(await readFile(join(home, 'bot', 'qq-bot', 'accounts.json'), 'utf8')).toBe('preserve bot data')
-    expect(await readFile(join(home, 'host', 'history.sqlite'), 'utf8')).toBe('preserve history')
+    expect(await readFile(join(home, 'host', 'Eating.sqlite'), 'utf8')).toBe('preserve Host state')
     expect((await lstat(installed.directory)).isDirectory()).toBe(true)
     await expectCleanTransaction()
   })
@@ -399,7 +399,7 @@ describe('plugin package trust boundaries', () => {
   })
 
   it.each([
-    { schemaVersion: 2 }, { apiVersion: 2 }, { kind: 'unknown' }, { id: '../escape' }, { id: 'con' },
+    { schemaVersion: 2 }, { apiVersion: 1 }, { apiVersion: 3 }, { kind: 'unknown' }, { id: '../escape' }, { id: 'con' },
     { version: '../escape' }, { version: '01.2.0' }, { version: '1.0.0-01' }, { storageDirectory: '../bot' }, { storageDirectory: 'foo' },
     { name: '' }, { description: 42 }, { backend: 'other.mjs' }, { unknown: true }, { integrity: {} },
     { frontend: { entry: 'ui/index.js', style: 'ui/style.css', order: 0, brandColor: 'javascript:evil', icon: 'message-circle' } },
@@ -466,7 +466,7 @@ describe('plugin package trust boundaries', () => {
   it('refuses incompatible or identity-mismatched installed metadata', async () => {
     const source = await makePackage()
     const installed = await installPluginPackage(home, source.directory)
-    await writeFile(join(installed.directory, 'eating-plugin.json'), JSON.stringify({ ...source.manifest, apiVersion: 2 }))
+    await writeFile(join(installed.directory, 'eating-plugin.json'), JSON.stringify({ ...source.manifest, apiVersion: 1 }))
     await expect(loadInstalledPluginPackages(home)).rejects.toMatchObject({ code: 'INCOMPATIBLE_PLUGIN_API' })
     await writeFile(join(installed.directory, 'eating-plugin.json'), JSON.stringify({ ...source.manifest, id: 'other' }))
     await expect(loadInstalledPluginPackages(home)).rejects.toMatchObject({ code: 'PLUGIN_IDENTITY_MISMATCH' })

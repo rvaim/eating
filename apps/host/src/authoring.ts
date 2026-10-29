@@ -7,18 +7,12 @@ export const AUTHORING_SETTING_KEY = 'host:authoring'
 const maxDocumentBytes = 5 * 1024 * 1024
 const maxPersonas = 100
 const baseKinds = ['common', 'subagent', 'main'] as const
-const legacyKinds = ['main', 'group', 'private'] as const
 
-interface StoredPrompt extends PromptDocument {
-  readonly scope: TemplateScope
-  readonly source: 'owner' | 'plugin' | 'legacy-user-input'
-}
 interface AuthoringData {
   schemaVersion: 2
   revision: number
   /** Three base documents plus owner overrides, never copies of unedited plugin defaults. */
-  prompts: StoredPrompt[]
-  legacyPrompts?: StoredPrompt[]
+  prompts: PromptDocument[]
   personas: PersonaDocument[]
   activePersonaId: string | null
 }
@@ -67,11 +61,9 @@ function isRevision(value: unknown): value is number {
 function isTimestamp(value: unknown): value is string {
   return typeof value === 'string' && value.length === 24 && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value
 }
-function validBody(value: unknown, scope: TemplateScope, v1 = false): value is string {
+function validBody(value: unknown, scope: TemplateScope): value is string {
   if (typeof value !== 'string' || value.length > MAX_TEMPLATE_BODY_LENGTH || !value.trim()) return false
-  const analysis = analyzeTemplate(value, scope)
-  return analysis.valid && (!v1 || analysis.tokens.every(token => token.name === '当前时间' || token.name === '人格名称'
-    || ((scope === 'group' || scope === 'private') && !['主人', '管理员', '目标编号'].includes(token.name))))
+  return analyzeTemplate(value, scope).valid
 }
 function validTitle(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= 80
@@ -87,48 +79,28 @@ function validName(value: unknown): value is string {
 function validPromptVersion(prompt: Record<string, unknown>, revision: number): boolean {
   return isRevision(prompt.revision) && prompt.revision <= revision && (prompt.revision === 0 ? prompt.updatedAt === null : isTimestamp(prompt.updatedAt))
 }
-function validatePersonas(value: Record<string, unknown>, v1: boolean): void {
+function validatePersonas(value: Record<string, unknown>): void {
   if (!Array.isArray(value.personas) || value.personas.length > maxPersonas) throw corrupted()
   const ids = new Set<string>()
   for (const persona of value.personas) {
     if (!isRecord(persona) || !exactKeys(persona, ['id', 'name', 'body', 'revision', 'createdAt', 'updatedAt'])
       || typeof persona.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(persona.id) || ids.has(persona.id)
-      || !validName(persona.name) || !validBody(persona.body, 'persona', v1) || !isRevision(persona.revision) || persona.revision < 1 || persona.revision > Number(value.revision)
+      || !validName(persona.name) || !validBody(persona.body, 'persona') || !isRevision(persona.revision) || persona.revision < 1 || persona.revision > Number(value.revision)
       || !isTimestamp(persona.createdAt) || !isTimestamp(persona.updatedAt) || persona.createdAt > persona.updatedAt) throw corrupted()
     ids.add(persona.id)
   }
   if (value.activePersonaId !== null && (typeof value.activePersonaId !== 'string' || !ids.has(value.activePersonaId))) throw corrupted()
 }
-function migrateV1(value: Record<string, unknown>): AuthoringData {
-  if (!exactKeys(value, ['schemaVersion', 'revision', 'prompts', 'personas', 'activePersonaId']) || !isRevision(value.revision)
-    || !Array.isArray(value.prompts) || value.prompts.length !== 3) throw corrupted()
-  const ids = new Set<string>()
-  for (const prompt of value.prompts) {
-    if (!isRecord(prompt) || !exactKeys(prompt, ['id', 'title', 'body', 'revision', 'updatedAt']) || !legacyKinds.includes(prompt.id as typeof legacyKinds[number])
-      || ids.has(String(prompt.id)) || !validTitle(prompt.title) || !validBody(prompt.body, prompt.id as TemplateScope, true) || !validPromptVersion(prompt, value.revision)) throw corrupted()
-    ids.add(String(prompt.id))
-  }
-  validatePersonas(value, true)
-  const oldPrompts = value.prompts as unknown as PromptDocument[]
-  const data = defaults()
-  data.revision = value.revision
-  data.prompts[0] = { ...oldPrompts.find(prompt => prompt.id === 'main')!, id: 'common', scope: 'common', source: 'owner' }
-  data.legacyPrompts = oldPrompts.filter(prompt => prompt.id !== 'main').map(prompt => ({ ...prompt, scope: prompt.id as 'group' | 'private', source: 'legacy-user-input' }))
-  data.personas = value.personas as PersonaDocument[]
-  data.activePersonaId = value.activePersonaId as string | null
-  return data
-}
 function validateData(value: unknown): AuthoringData {
   if (!isRecord(value)) throw corrupted()
-  if (value.schemaVersion === 1) return migrateV1(value)
-  if (!exactKeys(value, ['schemaVersion', 'revision', 'prompts', 'personas', 'activePersonaId'], ['legacyPrompts']) || value.schemaVersion !== 2 || !isRevision(value.revision)
+  if (!exactKeys(value, ['schemaVersion', 'revision', 'prompts', 'personas', 'activePersonaId']) || value.schemaVersion !== 2 || !isRevision(value.revision)
     || !Array.isArray(value.prompts) || value.prompts.length < 3 || value.prompts.length > MAX_REGISTERED_PROMPT_DOCUMENTS + 3) throw corrupted()
   const ids = new Set<string>()
   for (const prompt of value.prompts) {
     if (!isRecord(prompt) || typeof prompt.id !== 'string' || ids.has(prompt.id)) throw corrupted()
     const scope = getPromptTemplateScope(prompt.id)
     const plugin = scope === 'agent' || scope === 'plugin'
-    if (!scope || scope === 'group' || scope === 'private' || prompt.scope !== scope || prompt.source !== (plugin ? 'plugin' : 'owner')
+    if (!scope || prompt.scope !== scope || prompt.source !== (plugin ? 'plugin' : 'owner')
       || !exactKeys(prompt, ['id', 'title', 'body', 'revision', 'updatedAt', 'scope', 'source'], plugin ? ['pluginId', 'agentTypeId', 'defaultBody'] : [])
       || !validTitle(prompt.title) || !validBody(prompt.body, scope) || !validPromptVersion(prompt, value.revision)) throw corrupted()
     if (plugin && (typeof prompt.pluginId !== 'string' || !/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u.test(prompt.pluginId) || prompt.pluginId.length > 80
@@ -137,17 +109,7 @@ function validateData(value: unknown): AuthoringData {
     ids.add(prompt.id)
   }
   if (baseKinds.some(id => !ids.has(id))) throw corrupted()
-  if (Object.hasOwn(value, 'legacyPrompts')) {
-    if (!Array.isArray(value.legacyPrompts) || value.legacyPrompts.length !== 2) throw corrupted()
-    const legacyIds = new Set<string>()
-    for (const prompt of value.legacyPrompts) {
-      if (!isRecord(prompt) || !exactKeys(prompt, ['id', 'title', 'body', 'revision', 'updatedAt', 'scope', 'source'])
-        || (prompt.id !== 'group' && prompt.id !== 'private') || prompt.scope !== prompt.id || prompt.source !== 'legacy-user-input' || legacyIds.has(prompt.id)
-        || !validTitle(prompt.title) || !validBody(prompt.body, prompt.id) || !validPromptVersion(prompt, value.revision)) throw corrupted()
-      legacyIds.add(prompt.id)
-    }
-  }
-  validatePersonas(value, false)
+  validatePersonas(value)
   return value as unknown as AuthoringData
 }
 function summary(persona: PersonaDocument): PersonaSummary {
@@ -172,11 +134,11 @@ function requireName(name: string): string {
   if (!trimmed || trimmed.length > 80) throw new PlatformError('INVALID_PERSONA_NAME', '人格名称需为 1 至 80 个字符。')
   return trimmed
 }
-function contributedPrompts(contributions: AuthoringContributions): StoredPrompt[] {
+function contributedPrompts(contributions: AuthoringContributions): PromptDocument[] {
   const invalid = (): never => { throw new PlatformError('INVALID_AGENT_CONTRIBUTION', '插件代理提示词声明无效或数量超过上限。', 500) }
   if (!Array.isArray(contributions.agentTypes) || !Array.isArray(contributions.pluginInstructions)
     || contributions.agentTypes.length + contributions.pluginInstructions.length > MAX_REGISTERED_PROMPT_DOCUMENTS) invalid()
-  const result: StoredPrompt[] = []
+  const result: PromptDocument[] = []
   const add = (id: PromptKind, title: string, body: string, pluginId: string, scope: 'agent' | 'plugin', enabled: boolean, localizedTitles: Readonly<Record<string, string>> | undefined, agentTypeId?: string): void => {
     if (typeof pluginId !== 'string' || !/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/u.test(pluginId) || pluginId.length > 80
       || getPromptTemplateScope(id) !== scope || !id.slice(id.indexOf(':') + 1).startsWith(`${pluginId}.`) || !validTitle(title)
@@ -201,7 +163,6 @@ function prompts(data: AuthoringData, contributions: AuthoringContributions): Pr
 }
 function snapshot(data: AuthoringData, contributions: AuthoringContributions): AuthoringSnapshot {
   return { protocolVersion: 1, revision: data.revision, prompts: prompts(data, contributions),
-    ...(data.legacyPrompts === undefined ? {} : { legacyPrompts: data.legacyPrompts.map(prompt => ({ ...prompt })) }),
     personas: data.personas.map(summary), activePersonaId: data.activePersonaId,
     variables: TEMPLATE_VARIABLES.map(variable => ({ ...variable, scopes: [...variable.scopes] })) }
 }
@@ -241,20 +202,19 @@ export class AuthoringService {
     const { data, contributions } = this.state()
     const bindings: Record<string, string> = {}
     for (const variable of TEMPLATE_VARIABLES) {
-      if (variable.origin === 'external' || variable.origin === 'persona') continue
+      if (variable.origin === 'persona') continue
       const value = contributions.bindings && Object.hasOwn(contributions.bindings, variable.name) ? contributions.bindings[variable.name] : undefined
       if (value !== undefined && typeof value !== 'string') throw new PlatformError('INVALID_AGENT_CONTRIBUTION', '主人变量配置无效。', 500)
       if (value !== undefined) bindings[variable.name] = value
       else if (variable.name !== '当前时间') bindings[variable.name] = ''
     }
-    return { revision: data.revision, prompts: [...prompts(data, contributions), ...(data.legacyPrompts ?? []).map(prompt => ({ ...prompt }))],
-      ...(data.legacyPrompts === undefined ? {} : { legacyPrompts: data.legacyPrompts.map(prompt => ({ ...prompt })) }),
+    return { revision: data.revision, prompts: prompts(data, contributions),
       activePersona: data.activePersonaId === null ? null : { ...this.findPersona(data, data.activePersonaId) },
       agentTypes: structuredClone(contributions.agentTypes), pluginInstructions: structuredClone(contributions.pluginInstructions), bindings }
   }
   updatePrompt(id: string, body: string, expectedRevision: number): AuthoringSnapshot {
     const { data, contributions } = this.state()
-    const current = [...prompts(data, contributions), ...(data.legacyPrompts ?? [])].find(prompt => prompt.id === id)
+    const current = prompts(data, contributions).find(prompt => prompt.id === id)
     if (!current) throw new PlatformError('PROMPT_NOT_FOUND', '提示词不存在。', 404)
     if (current.available === false) throw new PlatformError('PROMPT_SOURCE_UNAVAILABLE', '提示词来源插件不可用，未保存修改。', 409)
     checkRevision(current.revision, expectedRevision)
@@ -263,14 +223,13 @@ export class AuthoringService {
     requireBody(body, scope)
     if (current.body === body) return snapshot(data, contributions)
     const { enabled: _enabled, available: _available, defaultBody: _defaultBody, localizedTitles: _localizedTitles, ...document } = current
-    const next: StoredPrompt = { ...document, body, scope, source: current.source!, revision: incrementRevision(current.revision), updatedAt: new Date().toISOString(),
+    const next: PromptDocument = { ...document, body, scope, source: current.source, revision: incrementRevision(current.revision), updatedAt: new Date().toISOString(),
       ...(current.source === 'plugin' ? { defaultBody: current.defaultBody! } : {}) }
-    const collection = current.source === 'legacy-user-input' ? data.legacyPrompts! : data.prompts
-    const index = collection.findIndex(prompt => prompt.id === id)
+    const index = data.prompts.findIndex(prompt => prompt.id === id)
     if (index === -1) {
       if (data.prompts.length >= MAX_REGISTERED_PROMPT_DOCUMENTS + 3) throw new PlatformError('AUTHORING_PROMPT_LIMIT_REACHED', '保存的插件提示词数量已达到上限。')
-      collection.push(next)
-    } else collection[index] = next
+      data.prompts.push(next)
+    } else data.prompts[index] = next
     this.save(data)
     return snapshot(data, contributions)
   }

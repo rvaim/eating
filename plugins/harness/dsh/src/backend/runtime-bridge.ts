@@ -16,10 +16,10 @@ const ERROR_MESSAGES = {
   OWNER_POLICY_INVALID: '主人系统提示词配置无效。',
   EXPECTED_DELIVERY_INVALID: 'DSH 待交接批次元数据无效。',
   DURABILITY_UNAVAILABLE: 'DSH 公开持久化屏障不可用。',
+  NATIVE_AGENT_API_UNAVAILABLE: 'DSH 当前公开子代理接口不可用。',
   DURABILITY_FAILED: 'DSH 会话持久化失败，未确认可靠交接。',
   SESSION_RECOVERY_FAILED: 'DSH 持久会话核对失败，未重复投递。',
-  QQ_TOOLS_UNAVAILABLE: 'QQ MCP 必需工具未在启动时限内就绪。',
-  UNEXPECTED_TOOLS: 'DSH 工具集合包含未授权的非 QQ 工具。',
+  UNEXPECTED_TOOLS: 'DSH 全局工具集合包含未授权工具。',
   BRIDGE_FILE_FAILED: 'DSH 桥接状态文件写入失败。',
 };
 
@@ -46,8 +46,6 @@ export function apply(ctx) {
   let acknowledgedBatch;
   let activeAck;
   let sessionBarrier;
-  let initializationTimer;
-  let cancelToolWait;
   const releases = [];
   const initialization = new AbortController();
 
@@ -116,8 +114,6 @@ export function apply(ctx) {
     if (disposed || failed) return;
     failed = true;
     initialization.abort();
-    if (initializationTimer) clearTimeout(initializationTimer);
-    if (cancelToolWait) cancelToolWait();
     try { removeOwnState('ready.json'); } catch { /* A replaced directory is never followed during cleanup. */ }
     try { atomicJson('error.json', { schemaVersion: 1, nonce, sessionId, code, message: ERROR_MESSAGES[code] }); }
     catch { /* The SDK startup gate also requires a fresh ready file. */ }
@@ -148,10 +144,10 @@ export function apply(ctx) {
     if (message.content.some((block) => !record(block) || block.type !== 'text' || typeof block.text !== 'string')) return undefined;
     let payload;
     try { payload = JSON.parse(message.content.map((block) => block.text).join('')); } catch { return undefined; }
-    if (!record(payload) || !record(payload.eating) || !Object.hasOwn(payload, 'context') || typeof payload.renderedPrompt !== 'string' || !Array.isArray(payload.events)) return undefined;
+    if (!record(payload) || !record(payload.eating) || !record(payload.context) || Object.keys(payload).some(key => !['eating', 'context', 'events'].includes(key)) || !Array.isArray(payload.events)) return undefined;
     const metadata = payload.eating;
     if (metadata.protocolVersion !== 1 || metadata.magic !== 'eating-harness-delivery' || !opaque(metadata.nonce) || metadata.sessionId !== sessionId || metadata.batchId !== expected.batchId || metadata.digest !== expected.digest || (!restoring && metadata.nonce !== nonce)) return undefined;
-    const digest = createHash('sha256').update(JSON.stringify({ context: payload.context, renderedPrompt: payload.renderedPrompt, events: payload.events })).digest('hex');
+    const digest = createHash('sha256').update(JSON.stringify({ context: payload.context, events: payload.events })).digest('hex');
     return digest === expected.digest ? { messageId: message.id } : undefined;
   }
   function matchEvent(event, expected, restoring) {
@@ -200,33 +196,9 @@ export function apply(ctx) {
       if (!disposed && !failed) writeAck(expected, found);
     })().catch((error) => fail(failureCode(error, 'DURABILITY_FAILED'))).finally(() => { activeAck = undefined; });
   }
-  function toolState() {
+  function assertNoGlobalTools() {
     const schemas = ctx.tools.schemas();
     if (!Array.isArray(schemas) || schemas.length !== 0) throw bridgeError('UNEXPECTED_TOOLS');
-    return true;
-  }
-  function waitForTools() {
-    return new Promise((done, reject) => {
-      let finished = false;
-      let releaseChange;
-      const finish = (error) => {
-        if (finished) return;
-        finished = true;
-        if (initializationTimer) clearTimeout(initializationTimer);
-        initializationTimer = undefined;
-        if (releaseChange) releaseChange();
-        cancelToolWait = undefined;
-        if (error) reject(error); else done();
-      };
-      const check = () => {
-        if (disposed || failed) { finish(bridgeError('QQ_TOOLS_UNAVAILABLE')); return; }
-        try { if (toolState()) finish(); } catch (error) { finish(error); }
-      };
-      releaseChange = ctx.on('tools/change', check);
-      cancelToolWait = () => finish(bridgeError('QQ_TOOLS_UNAVAILABLE'));
-      initializationTimer = setTimeout(() => finish(bridgeError('QQ_TOOLS_UNAVAILABLE')), 10000);
-      check();
-    });
   }
   async function inspectStoredSession() {
     const expected = readExpected();
@@ -263,12 +235,14 @@ export function apply(ctx) {
   }
   async function initialize() {
     if (typeof ctx.sessions.flush !== 'function' || typeof ctx.sessions.get !== 'function' || typeof ctx.sessionPersistence.open !== 'function' || typeof ctx.tools.schemas !== 'function') throw bridgeError('DURABILITY_UNAVAILABLE');
+    if (typeof ctx.sessionPersistence.stat !== 'function' || typeof ctx.agents.get !== 'function' || typeof ctx.agentPresets.register !== 'function' || ['drainChildren', 'sendMessage', 'interrupt', 'startActivation'].some(name => typeof ctx.subagents[name] !== 'function')) throw bridgeError('NATIVE_AGENT_API_UNAVAILABLE');
     readValidatedOwnerPolicy();
     await registerAgentTypes();
     const liveSession = ctx.sessions.get(sessionId);
     if (liveSession) { onCreated(liveSession); await sessionBarrier; }
     if (disposed || failed) return;
-    const [recovery] = await Promise.all([inspectStoredSession(), waitForTools()]);
+    assertNoGlobalTools();
+    const recovery = await inspectStoredSession();
     if (disposed || failed) return;
     atomicJson('ready.json', { schemaVersion: 1, nonce, sessionId, toolsReady: true, durabilityAvailable: true, ...recovery });
   }
@@ -277,8 +251,6 @@ export function apply(ctx) {
     initialization.abort();
     activeContext = undefined;
     taskConfigurations.clear();
-    if (initializationTimer) clearTimeout(initializationTimer);
-    if (cancelToolWait) cancelToolWait();
     for (const release of releases.splice(0).reverse()) { try { release(); } catch { /* Cordis also owns these effects. */ } }
     for (const filename of ['ready.json', 'session-ready.json']) { try { removeOwnState(filename); } catch { /* Do not follow a replaced directory. */ } }
     disposed = true;

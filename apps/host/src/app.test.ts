@@ -12,7 +12,7 @@ import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket from 'ws'
 import { isJsonObject } from '@eating/plugin-sdk'
-import type { BackendPlugin, BackendPluginEntry, HarnessMessageSink, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
+import type { AgentInvocationScope, BackendPlugin, BackendPluginEntry, HarnessMessageSink, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import qqEntry from '../../../plugins/communication/qq/src/server.ts'
 import { startOneBotFixture } from '../../../tests/fixtures/onebot.ts'
 import { EatingHost } from './app.ts'
@@ -127,14 +127,22 @@ async function mcpClient(context: Awaited<ReturnType<typeof createHost>>, id = '
 }
 
 function testEntry(id: string, kind: BackendPluginEntry['kind'], inspect: (context: HostPluginContext) => void, overrides: Partial<BackendPlugin> = {}): BackendPluginEntry {
-  return { id, ...(kind ? { kind } : {}), storageDirectory: kind === 'harness' ? id : `${id}-bot`, create: context => {
+  return { id, kind, storageDirectory: kind === 'harness' ? id : `${id}-bot`, create: context => {
     inspect(context)
-    return { id, ...(kind ? { kind } : {}), name: 'Host 边界测试插件', version: '1.0.0', tools: [], capabilities: [],
+    return { id, kind, name: 'Host 边界测试插件', version: '1.0.0', tools: [], capabilities: [],
       getStatus: () => ({ state: 'disconnected', accountId: null, accountName: null, connectedAt: null, lastEventAt: null, lastError: null, reconnectAttempt: 0 }),
       getPublicConfiguration: () => ({}), updateConfiguration: async () => ({}), connect: async () => {},
       disconnect: async () => {}, invoke: async () => null, dispose: async () => {}, ...overrides,
     }
   } }
+}
+
+function installedEntry(entry: BackendPluginEntry, home: string): BackendPluginEntry {
+  return { ...entry, installed: { directory: join(home, 'package'), manifest: {
+    schemaVersion: 1, id: entry.id, name: 'Installed fixture', description: 'test', version: '1.0.0', kind: entry.kind, apiVersion: 2,
+    storageDirectory: entry.storageDirectory, backend: 'server.mjs', integrity: {},
+    frontend: { entry: 'ui/index.js', style: 'ui/style.css', order: 0, brandColor: '#123456', icon: 'brain' },
+  } } }
 }
 
 function testSink(id: string): HarnessMessageSink {
@@ -161,23 +169,18 @@ afterEach(async () => {
 })
 
 describe('generic Host Harness services and management boundary', () => {
-  it('isolates Harness and communication data roots using the installed kind first and legacy entry fallback', async () => {
+  it('isolates Harness and communication roots using explicit matching entry, manifest and plugin kinds', async () => {
     const home = await temporaryHome()
     const captured = new Map<string, HostPluginContext>()
     const capture = (id: string) => (context: HostPluginContext) => { captured.set(id, context) }
-    const legacy = testEntry('legacy', undefined, capture('legacy'))
+    const communication = testEntry('comm', 'communication', capture('comm'))
     const source = testEntry('dsh', 'harness', capture('dsh'))
-    const declared = testEntry('installed', undefined, capture('installed'))
-    const installed: BackendPluginEntry = { ...declared, installed: { directory: join(home, 'package'), manifest: {
-      schemaVersion: 1, id: 'installed', name: 'Harness', description: 'test', version: '1.0.0', kind: 'harness', apiVersion: 1,
-      storageDirectory: declared.storageDirectory, backend: 'server.mjs', integrity: {},
-      frontend: { entry: 'ui/index.js', style: 'ui/style.css', order: 0, brandColor: '#123456', icon: 'brain' },
-    } } }
-    const context = await createHost(home, [legacy, source, installed])
-    expect(captured.get('legacy')?.dataDirectory).toBe(join(home, 'bot', 'legacy-bot'))
-    expect(captured.get('legacy')).not.toHaveProperty('harness')
+    const installed = installedEntry(testEntry('installed', 'harness', capture('installed')), home)
+    const context = await createHost(home, [communication, source, installed])
+    expect(captured.get('comm')?.dataDirectory).toBe(join(home, 'bot', 'comm-bot'))
+    expect(captured.get('comm')).not.toHaveProperty('harness')
     expect(captured.get('dsh')?.dataDirectory).toBe(join(home, 'harness', 'dsh'))
-    expect(captured.get('installed')?.dataDirectory).toBe(join(home, 'harness', 'installed-bot'))
+    expect(captured.get('installed')?.dataDirectory).toBe(join(home, 'harness', 'installed'))
     expect(captured.get('installed')?.harness).toBeDefined()
     for (const [id, pluginContext] of captured) {
       await mkdir(pluginContext.dataDirectory, { recursive: true })
@@ -186,9 +189,34 @@ describe('generic Host Harness services and management boundary', () => {
     expect(await readFile(join(home, 'harness', 'dsh', 'probe.txt'), 'utf8')).toBe('dsh')
     await expect(stat(join(home, 'bot', 'dsh'))).rejects.toMatchObject({ code: 'ENOENT' })
     const workspace = (await context.api('/api/workspace')).body
-    expect(pluginFrom(workspace, 'legacy').kind).toBe('communication')
+    expect(pluginFrom(workspace, 'comm').kind).toBe('communication')
     expect(pluginFrom(workspace, 'dsh').kind).toBe('harness')
     expect(pluginFrom(workspace, 'installed').kind).toBe('harness')
+  })
+
+  it('rejects a source entry without kind before executing its factory and releases its workspace lock', async () => {
+    const home = await temporaryHome()
+    const inspect = vi.fn()
+    const entry = testEntry('comm', 'communication', inspect)
+    await expect(createHost(home, [{ ...entry, kind: undefined } as unknown as BackendPluginEntry])).rejects.toThrow('插件标识、类型或数据目录声明非法')
+    expect(inspect).not.toHaveBeenCalled()
+    expect(pluginFrom((await (await createHost(home, [entry])).api('/api/workspace')).body, 'comm').kind).toBe('communication')
+  })
+
+  it.each([undefined, 'harness'] as const)('rejects a plugin whose runtime kind %s does not match its communication entry', async kind => {
+    const entry = testEntry('comm', 'communication', () => {}, { kind })
+    await expect(createHost('', [entry])).rejects.toThrow('插件后台身份或类型不匹配')
+  })
+
+  it('rejects conflicting installed kinds and an old manifest API before executing package code', async () => {
+    const home = await temporaryHome()
+    const inspect = vi.fn()
+    const entry = installedEntry(testEntry('dsh', 'harness', inspect), home)
+    const wrongKind = { ...entry, kind: 'communication' as const, storageDirectory: 'dsh-bot' }
+    await expect(createHost(home, [wrongKind])).rejects.toThrow('插件后台入口与安装清单的类型不匹配')
+    const oldApi = { ...entry, installed: { ...entry.installed!, manifest: { ...entry.installed!.manifest, apiVersion: 1 } } } as unknown as BackendPluginEntry
+    await expect(createHost(home, [oldApi])).rejects.toThrow(expect.objectContaining({ code: 'INCOMPATIBLE_PLUGIN_API' }))
+    expect(inspect).not.toHaveBeenCalled()
   })
 
   it('returns a deeply immutable owner configuration copy without any write service', async () => {
@@ -215,36 +243,56 @@ describe('generic Host Harness services and management boundary', () => {
     expect(services.readOwnerConfiguration().activePersona?.body).toBe(updated.persona.body)
   })
 
-  it('gives only Harness plugins local scoped communication MCP credentials after listen', async () => {
+  it('gives Harness plugins only scoped communication MCP credentials and requires a complete scope', async () => {
     const home = await temporaryHome()
     let harnessContext!: HostPluginContext
     let communicationContext!: HostPluginContext
-    const entries = [testEntry('comm', undefined, value => { communicationContext = value }),
-      testEntry('other', undefined, () => {}), testEntry('dsh', 'harness', value => { harnessContext = value })]
+    const scopedEntry = (id: string, inspect: (context: HostPluginContext) => void) => testEntry(id, 'communication', inspect, {
+      agentTypes: [{ id: `${id}.private`, title: '测试私聊代理', description: '测试范围', conversationKind: 'private', defaultPrompt: '测试代理', availableTools: [], defaultTools: [], enabledTools: [] }],
+      invokeScoped: async () => null,
+    })
+    const scope = (pluginId: string): AgentInvocationScope => ({ agentId: `agent-${pluginId}`, agentTypeId: `${pluginId}.private`, pluginId,
+      instanceId: 'instance-one', accountId: 'account-one', conversationId: `${pluginId}:private:target`, kind: 'private', targetId: 'target', messageIds: [], resourceIds: [] })
+    const entries = [scopedEntry('comm', value => { communicationContext = value }), scopedEntry('other', () => {}),
+      testEntry('dsh', 'harness', value => { harnessContext = value })]
     const unstarted = new EatingHost({ dataDirectory: home, entries, port: 0, allowedUiOrigins: [] })
     cleanups.push(() => unstarted.close())
     expect(communicationContext.harness).toBeUndefined()
-    expect(() => harnessContext.harness!.getMcpConnection('comm')).toThrow(expect.objectContaining({ code: 'HOST_NOT_LISTENING' }))
+    expect(() => harnessContext.harness!.getMcpConnection('comm', scope('comm'))).toThrow(expect.objectContaining({ code: 'HOST_NOT_LISTENING' }))
     expect(unstarted.store.getSetting('comm:mcp-token')).toBeNull()
     await unstarted.close()
     const context = await createHost(home, entries)
     const services = harnessContext.harness!
-    const first = services.getMcpConnection('comm'), second = services.getMcpConnection('other')
+    const first = services.getMcpConnection('comm', scope('comm')), second = services.getMcpConnection('other', scope('other'))
     expect(first.url).toBe(`${context.url}/mcp/comm`)
     expect(first.headers.Authorization?.startsWith('Bearer ')).toBe(true)
     expect(first.headers.Authorization === second.headers.Authorization).toBe(false)
-    expect(services.getMcpConnection('comm') === first).toBe(false)
+    expect(context.host.store.getSetting('comm:mcp-token')).toBeNull()
+    expect(context.host.store.getSetting('other:mcp-token')).toBeNull()
+    expect(Object.isFrozen(first)).toBe(true)
     expect(Object.isFrozen(first.headers)).toBe(true)
-    expect(() => services.getMcpConnection('dsh')).toThrow(expect.objectContaining({ code: 'PLUGIN_SCOPE_VIOLATION' }))
-    expect(() => services.getMcpConnection('missing')).toThrow(expect.objectContaining({ code: 'PLUGIN_NOT_FOUND' }))
+    for (const missingScope of [undefined, null, {}]) {
+      expect(() => services.getMcpConnection('comm', missingScope as unknown as AgentInvocationScope)).toThrow(expect.objectContaining({ code: 'AGENT_SCOPE_VIOLATION' }))
+    }
+    expect(() => services.getMcpConnection('dsh', scope('dsh'))).toThrow(expect.objectContaining({ code: 'PLUGIN_SCOPE_VIOLATION' }))
+    expect(() => services.getMcpConnection('missing', scope('missing'))).toThrow(expect.objectContaining({ code: 'PLUGIN_NOT_FOUND' }))
     const wrongScope = await http(context.url, '/mcp/other', { method: 'POST', body: { jsonrpc: '2.0', id: 1, method: 'tools/list' }, headers: { Authorization: first.headers.Authorization! } })
     expect(wrongScope.status).toBe(401)
+    const fresh = services.getMcpConnection('comm', scope('comm'))
+    expect(fresh.headers.Authorization).not.toBe(first.headers.Authorization)
+    expect(services.readAgentActions('agent-comm')).toEqual([])
+    services.revokeAgentAccess('agent-comm')
+    const revoked = await http(context.url, '/mcp/comm', { method: 'POST', body: { jsonrpc: '2.0', id: 2, method: 'tools/list' }, headers: { Authorization: fresh.headers.Authorization! } })
+    expect(revoked.status).toBe(401)
+    const ownerRegistration = await context.api('/api/plugins/comm/mcp-registration', { method: 'POST', body: {} })
+    expect(ownerRegistration.status).toBe(200)
+    expect(object(ownerRegistration.body.headers).Authorization).not.toBe(first.headers.Authorization)
     const workspace = await context.api('/api/workspace')
-    expect(workspace.text.includes(first.headers.Authorization!)).toBe(false)
+    expect(workspace.text.includes(second.headers.Authorization!)).toBe(false)
     expect((await context.api('/api/plugins/comm/disable', { method: 'POST', body: {} })).status).toBe(200)
-    expect(() => services.getMcpConnection('comm')).toThrow(expect.objectContaining({ code: 'PLUGIN_DISABLED' }))
+    expect(() => services.getMcpConnection('comm', scope('comm'))).toThrow(expect.objectContaining({ code: 'PLUGIN_DISABLED' }))
     expect((await context.api('/api/plugins/dsh/disable', { method: 'POST', body: {} })).status).toBe(200)
-    expect(() => services.getMcpConnection('other')).toThrow(expect.objectContaining({ code: 'PLUGIN_DISABLED' }))
+    expect(() => services.getMcpConnection('other', scope('other'))).toThrow(expect.objectContaining({ code: 'PLUGIN_DISABLED' }))
   })
 
   it('allows the enabled plugin to register inside connect and preserves a single primary sink', async () => {
@@ -252,6 +300,7 @@ describe('generic Host Harness services and management boundary', () => {
     const entry = testEntry('dsh', 'harness', value => { first = value }, { connect: async () => { first.harness!.registerSink(testSink('dsh')) } })
     const other = testEntry('alternate', 'harness', value => { second = value })
     const context = await createHost('', [entry, other])
+    expect(() => first.harness!.registerSink({ id: 'dsh', deliver: async () => ({ accepted: false }) } as unknown as HarnessMessageSink)).toThrow('必须提供 deliverBatch 函数')
     expect(() => first.harness!.registerSink(testSink('alternate'))).toThrow(expect.objectContaining({ code: 'PLUGIN_SCOPE_VIOLATION' }))
     expect((await context.api('/api/plugins/dsh/connect', { method: 'POST', body: {} })).status).toBe(200)
     expect(context.host.harness.getStatus()).toMatchObject({ state: 'attached', sinkId: 'dsh' })
@@ -314,7 +363,7 @@ describe('generic Host Harness services and management boundary', () => {
   it('keeps manage owner-only, validates input, and excludes management from MCP tools', async () => {
     const manage = vi.fn(async (operation: string, input: unknown) => ({ operation, supplied: input !== undefined }))
     const invoke = vi.fn(async () => null)
-    const context = await createHost('', [testEntry('dsh', 'harness', () => {}, { manage, invoke }), testEntry('comm', undefined, () => {})])
+    const context = await createHost('', [testEntry('dsh', 'harness', () => {}, { manage, invoke }), testEntry('comm', 'communication', () => {})])
     const path = '/api/plugins/dsh/manage', body = { operation: 'install', input: { source: 'approved' } }
     expect((await http(context.url, path, { method: 'POST', body })).status).toBe(401)
     expect((await http(context.url, path, { method: 'POST', body, headers: { Cookie: context.cookie } })).status).toBe(403)
@@ -701,8 +750,8 @@ describe('real Eating Host → QQ OneBot → SQLite → authenticated MCP', () =
     const corruptBytes = '{not valid QQ JSON'
     await writeFile(path, corruptBytes, { mode: 0o600 })
     // Test-only probe verifies Host fault isolation; it is never a product platform.
-    const probe: BackendPluginEntry = { id: 'isolation-probe', storageDirectory: 'isolation-probe-bot', create: () => ({
-      id: 'isolation-probe', name: '测试隔离探针', version: '1.0.0', tools: [], capabilities: [],
+    const probe: BackendPluginEntry = { id: 'isolation-probe', kind: 'communication', storageDirectory: 'isolation-probe-bot', create: () => ({
+      id: 'isolation-probe', kind: 'communication', name: '测试隔离探针', version: '1.0.0', tools: [], capabilities: [],
       getStatus: () => ({ state: 'disconnected', accountId: null, accountName: null, connectedAt: null, lastEventAt: null, lastError: null, reconnectAttempt: 0 }),
       getPublicConfiguration: () => ({}), updateConfiguration: async () => ({}), connect: async () => {},
       disconnect: async () => {}, invoke: async () => null, dispose: async () => {},

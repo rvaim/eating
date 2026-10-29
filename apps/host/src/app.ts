@@ -65,7 +65,9 @@ export class EatingHost {
       const enabledIds = persistedEnabledIds(this.store.getSetting('platforms.enabled'), options.entries.map(entry => entry.id))
       const storageDirectories = new Set<string>()
       for (const entry of options.entries) {
-        const kind = entry.installed?.manifest.kind ?? entry.kind ?? 'communication'
+        const kind = entry.kind
+        if (entry.installed && entry.installed.manifest.apiVersion !== 2) throw new PlatformError('INCOMPATIBLE_PLUGIN_API', '仅支持 SDK apiVersion 2 的插件包。', 500)
+        if (entry.installed && entry.installed.manifest.kind !== kind) throw new Error('插件后台入口与安装清单的类型不匹配。')
         const validId = (value: string) => value.length <= 64 && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value) && !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(value)
         if (!validId(entry.id) || this.entries.has(entry.id) || !validId(entry.storageDirectory)
           || !['communication', 'harness'].includes(kind) || (kind === 'communication' && !entry.storageDirectory.endsWith('-bot'))) throw new Error('插件标识、类型或数据目录声明非法。')
@@ -97,7 +99,10 @@ export class EatingHost {
         let plugin: BackendPlugin
         try { plugin = entry.create(context) }
         catch (error) { this.revokeHarnessSinks(entry.id); plugin = failedPlugin(entry, error) }
-        if (plugin.id !== entry.id) throw new Error('插件后台身份不匹配。')
+        if (plugin.id !== entry.id || plugin.kind !== kind) {
+          this.revokeHarnessSinks(entry.id)
+          throw new Error('插件后台身份或类型不匹配。')
+        }
         this.plugins.set(plugin.id, plugin)
       }
       this.allowedOrigins = new Set(options.allowedUiOrigins ?? ['http://127.0.0.1:5180', 'http://localhost:5180', 'http://127.0.0.1:4180'])
@@ -125,7 +130,7 @@ export class EatingHost {
 
   getWorkspace(): JsonObject {
     return { protocolVersion: 1, registeredIds: [...this.enabled],
-      plugins: [...this.plugins.values()].map(plugin => ({ id: plugin.id, name: plugin.name, version: plugin.version, kind: this.pluginKind(plugin.id),
+      plugins: [...this.plugins.values()].map(plugin => ({ id: plugin.id, name: plugin.name, version: plugin.version, kind: plugin.kind,
         enabled: this.enabled.has(plugin.id), logsSupported: Boolean(plugin.logs), logViewerCount: this.logStreams.get(plugin.id)?.size ?? 0, configuration: plugin.getPublicConfiguration(), frontend: this.frontendContribution(plugin.id),
         status: plugin.getStatus(), capabilities: plugin.capabilities, tools: plugin.tools, agentTypes: plugin.agentTypes ?? [] })),
       harness: this.harness.getStatus(),
@@ -260,7 +265,7 @@ export class EatingHost {
           const endpoint = `${this.url}/mcp/${id}`
           json(response, 200, { transport: 'streamable-http', url: endpoint,
             headers: { Authorization: `Bearer ${this.getMcpToken(id)}` },
-            note: '这是插件 MCP 连接参数；尚未自动注册到 Harness。请仅交给可信的主 Harness。' }); return
+            note: '这是供主人手动使用的插件 MCP 连接参数，请妥善保管。' }); return
         }
         await this.mutatePlugin(id, operation, async () => {
           if (operation === 'configuration') json(response, 200, await plugin.updateConfiguration(body))
@@ -285,11 +290,6 @@ export class EatingHost {
     }
   }
 
-  private pluginKind(id: string): 'communication' | 'harness' {
-    const entry = this.entries.get(id)
-    return entry?.installed?.manifest.kind ?? entry?.kind ?? 'communication'
-  }
-
   private requireHarnessAccess(id: string): void {
     if (this.closed) throw new PlatformError('HOST_STOPPED', 'Host 正在停止。', 503)
     if (!this.enabled.has(id)) throw new PlatformError('PLUGIN_DISABLED', 'Harness 插件已停用。', 409, 'not-sent')
@@ -301,17 +301,14 @@ export class EatingHost {
         this.requireHarnessAccess(id)
         if (this.mutations.has(id) && this.mutations.get(id) !== 'connect') throw new PlatformError('PLUGIN_BUSY', '插件正在变更，暂不能登记 Harness 接收者。', 409)
         if (sink.id !== id) throw new PlatformError('PLUGIN_SCOPE_VIOLATION', 'Harness 接收者身份必须属于当前插件。', 403)
+        if (typeof sink.deliverBatch !== 'function') throw new Error('Harness 接收者必须提供 deliverBatch 函数。')
         const detach = this.harness.register({
           id,
           isReady: () => !this.closed && this.enabled.has(id) && (sink.isReady?.() ?? true),
-          ...(typeof sink.deliverBatch === 'function' ? { deliverBatch: (batch, signal) => {
+          deliverBatch: (batch, signal) => {
             this.requireHarnessAccess(id)
-            return sink.deliverBatch!(batch, signal)
-          } } satisfies Pick<HarnessMessageSink, 'deliverBatch'> : {}),
-          ...(typeof sink.deliver === 'function' ? { deliver: (event, signal) => {
-            this.requireHarnessAccess(id)
-            return sink.deliver!(event, signal)
-          } } satisfies Pick<HarnessMessageSink, 'deliver'> : {}),
+            return sink.deliverBatch(batch, signal)
+          },
         })
         const registrations = this.sinkRegistrations.get(id) ?? new Set<() => void>()
         this.sinkRegistrations.set(id, registrations)
@@ -330,13 +327,12 @@ export class EatingHost {
         this.requireHarnessAccess(id)
         return immutableConfiguration(this.authoring.readOwnerConfiguration())
       },
-      getMcpConnection: (pluginId: string, scope?: import('@eating/plugin-sdk').AgentInvocationScope) => {
+      getMcpConnection: (pluginId: string, scope: import('@eating/plugin-sdk').AgentInvocationScope) => {
         this.requireHarnessAccess(id)
         if (!this.url) throw new PlatformError('HOST_NOT_LISTENING', 'Host 尚未监听，无法登记 MCP 连接。', 503)
-        this.requirePlugin(pluginId, true)
-        if (this.pluginKind(pluginId) !== 'communication') throw new PlatformError('PLUGIN_SCOPE_VIOLATION', 'Harness 仅可取得已启用通讯插件的 MCP 连接。', 403)
-        if (scope) return this.agentAccess.issue(id, pluginId, scope, this.url)
-        return Object.freeze({ url: `${this.url}/mcp/${pluginId}`, headers: Object.freeze({ Authorization: `Bearer ${this.getMcpToken(pluginId)}` }) })
+        if (this.requirePlugin(pluginId, true).kind !== 'communication') throw new PlatformError('PLUGIN_SCOPE_VIOLATION', 'Harness 仅可取得已启用通讯插件的 MCP 连接。', 403)
+        if (!isJsonObject(scope)) throw new PlatformError('AGENT_SCOPE_VIOLATION', '请提供当前代理的完整调用范围。', 403, 'not-sent')
+        return this.agentAccess.issue(id, pluginId, scope, this.url)
       },
       readAgentActions: (agentId: string) => { this.requireHarnessAccess(id); return this.agentAccess.actions(id, agentId) },
       revokeAgentAccess: (agentId: string) => { this.agentAccess.revokeAgent(id, agentId) },
@@ -344,7 +340,7 @@ export class EatingHost {
   }
 
   private revokeHarnessSinks(id: string): void {
-    this.agentAccess?.revokeHarness(id)
+    this.agentAccess.revokeHarness(id)
     for (const unregister of this.sinkRegistrations.get(id) ?? []) unregister()
     this.sinkRegistrations.delete(id)
   }

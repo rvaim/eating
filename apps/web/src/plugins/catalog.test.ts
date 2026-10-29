@@ -11,7 +11,7 @@ import { Overview } from '../pages/Overview'
 import { Robots } from '../pages/Robots'
 import dsh from '../../../../plugins/harness/dsh/src/web/entry'
 
-const qq: ManagedPlugin = { id: 'qq', name: 'QQ', description: '正式通讯插件', version: '0.4.0', apiVersion: 1,
+const qq: ManagedPlugin = { id: 'qq', name: 'QQ', description: '正式通讯插件', version: '0.4.0', apiVersion: 2,
   kind: 'communication', order: 10, icon: MessageCircle, brandColor: '#3876b6', defaultRegistered: true,
   initialValues: {}, validate: () => ({ valid: true, errors: {} }), summary: () => 'QQ 配置', Panel: () => createElement('p', null, 'QQ 专属面板') }
 const harness: ManagedPlugin = { ...qq, id: 'other-harness', name: '另一 Harness', description: '独立认知插件', kind: 'harness', icon: BrainCircuit,
@@ -24,9 +24,9 @@ const snapshot: WorkspaceSnapshot = { plugins: [qq, harness], configurations: { 
 afterEach(() => setLocale('zh-CN'))
 
 describe('按真实插件类型组织管理界面', () => {
-  it('失败 Harness 与缺少前端的 Harness 都保留类型，旧 QQ 缺 kind 仍是通讯', async () => {
+  it('失败面板保留当前插件显式声明的类型', async () => {
     const catalog = await loadPluginCatalog([
-      { id: 'qq', name: 'QQ', version: '0.4.0', frontend: { entry: '/invalid/index.js', style: '/invalid/style.css' } },
+      { id: 'qq', kind: 'communication', name: 'QQ', version: '0.4.0', frontend: { entry: '/invalid/index.js', style: '/invalid/style.css' } },
       { id: 'other-harness', kind: 'harness', name: '另一 Harness', version: '0.1.0', frontend: { entry: '/invalid/index.js', style: '/invalid/style.css' } },
       { id: 'headless-harness', kind: 'harness', name: '无前端 Harness', version: '0.1.0' },
     ])
@@ -38,6 +38,12 @@ describe('按真实插件类型组织管理界面', () => {
     expect(catalog[1]!.description).toContain('This plugin’s settings panel could not load')
     expect(catalog[1]!.summary({})).toContain('This plugin’s settings panel could not load')
     expect(catalog[1]!.kind).toBe('harness')
+  })
+
+  it('拒绝缺少或不支持当前种类声明的目录，不猜测通讯类型', async () => {
+    for (const entry of [{ id: 'qq', name: 'QQ' }, { id: 'qq', kind: 'unknown' }]) {
+      await expect(loadPluginCatalog([entry] as unknown as Parameters<typeof loadPluginCatalog>[0])).rejects.toThrow()
+    }
   })
 
   it('机器人目录只含通讯，Harness 目录只含已启用 Harness 并支持非 DSH 实现', () => {

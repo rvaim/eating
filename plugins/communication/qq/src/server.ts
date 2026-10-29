@@ -1,18 +1,20 @@
-import type { OneBotConfig, QQAgentPolicy } from './config'
+import type { OneBotConfig } from './config'
 import { createHash } from 'node:crypto'
 import { PlatformError, isJsonObject } from '@eating/plugin-sdk'
 import type { AgentInvocationScope, BackendPlugin, BackendPluginEntry, ConnectionStatus, HarnessEvent, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
-import { assertQQAgentInvocation, parseQQAgentPolicy, parseQQAgentPolicySave, qqAgentInstructions, qqAgentTypes, qqMessageResourceIds, qqSenderRole } from './backend/agent-policy'
+import { assertQQAgentInvocation, createDefaultAgentPolicy, parseQQAgentPolicy, parseQQAgentPolicySave, qqAgentInstructions, qqAgentTypes, qqMessageResourceIds, qqSenderRole } from './backend/agent-policy'
 import { OneBotClient } from './backend/onebot'
 import { qqTools, validateToolInput, prepareOneBotCall } from './backend/operations'
-import { QQConfigurationFile } from './backend/config-file'
+import { QQConfigurationFile, readConfiguration } from './backend/config-file'
 import { QQAccountRegistry } from './backend/accounts'
 import { LiveLogChannel } from './backend/live-logs'
 
-type Configuration = OneBotConfig & QQAgentPolicy
+type Configuration = OneBotConfig
 
-const initialConfiguration: Configuration = { displayName: 'QQ', endpoint: '', accessToken: '', autoConnect: false,
-  forwardToHarness: true, receiveGroups: true, timeoutMs: 10000, ...parseQQAgentPolicy({}) }
+function createDefaultConfiguration(): Configuration {
+  return { displayName: 'QQ', endpoint: '', accessToken: '', autoConnect: false,
+    forwardToHarness: true, receiveGroups: true, timeoutMs: 10000, ...createDefaultAgentPolicy() }
+}
 
 function asId(value: JsonValue | undefined): string | null {
   if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value)
@@ -36,35 +38,30 @@ function textFromMessage(value: JsonValue | undefined): string {
 }
 
 function parseConfiguration(input: unknown, previous: Configuration): Configuration {
-  if (!isJsonObject(input)) throw new PlatformError('INVALID_CONFIGURATION', 'QQ 配置必须是对象。')
-  const displayName = typeof input.displayName === 'string' ? input.displayName.trim() : previous.displayName
-  const endpoint = typeof input.endpoint === 'string' ? input.endpoint.trim() : previous.endpoint
-  if (!displayName || displayName.length > 40) throw new PlatformError('INVALID_CONFIGURATION', '显示名称需为1至40个字符。')
-  let normalizedEndpoint = ''
-  if (endpoint) {
-    let url: URL
-    try { url = new URL(endpoint) } catch { throw new PlatformError('INVALID_CONFIGURATION', '请填写有效的 ws:// 或 wss:// OneBot 地址。') }
-    if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.hash || url.search) throw new PlatformError('INVALID_CONFIGURATION', 'OneBot 地址只能使用 ws/wss，不要在地址中填写令牌、账号、查询参数或片段。')
-    if (/\/(?:api|event)\/?$/.test(url.pathname)) throw new PlatformError('INVALID_CONFIGURATION', '请使用同时支持 API 和事件的统一 WebSocket 端点，不要使用 /api 或 /event 分离接口。')
-    normalizedEndpoint = url.toString()
-  } else if (input.endpoint !== undefined && input.endpoint !== previous.endpoint) throw new PlatformError('INVALID_CONFIGURATION', '请填写有效的 ws:// 或 wss:// OneBot 地址。')
-  const token = input.clearAccessToken === true ? '' : typeof input.accessToken === 'string' && input.accessToken.length > 0 ? input.accessToken : previous.accessToken
-  if (token.length > 4096 || /[\r\n]/.test(token)) throw new PlatformError('INVALID_CONFIGURATION', '访问令牌格式不正确。')
-  const timeoutMs = typeof input.timeoutMs === 'number' ? input.timeoutMs : previous.timeoutMs
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 60000) throw new PlatformError('INVALID_CONFIGURATION', '请求超时需在1000至60000毫秒之间。')
-  for (const key of ['autoConnect', 'forwardToHarness', 'receiveGroups']) if (input[key] !== undefined && typeof input[key] !== 'boolean') throw new PlatformError('INVALID_CONFIGURATION', `参数 ${key} 需为布尔值。`)
-  const policy = parseQQAgentPolicy({ ...input, policyRevision: previous.policyRevision }, previous)
-  if (JSON.stringify([policy.owners, policy.administrators, policy.agentTools]) !== JSON.stringify([previous.owners, previous.administrators, previous.agentTools])) throw new PlatformError('INVALID_AGENT_POLICY', '请在代理与权限页面保存身份和工具权限。', 400, 'not-sent')
-  return { ...policy, displayName, endpoint: normalizedEndpoint, accessToken: token, timeoutMs,
-    autoConnect: typeof input.autoConnect === 'boolean' ? input.autoConnect : previous.autoConnect,
-    forwardToHarness: typeof input.forwardToHarness === 'boolean' ? input.forwardToHarness : previous.forwardToHarness,
-    receiveGroups: typeof input.receiveGroups === 'boolean' ? input.receiveGroups : previous.receiveGroups }
+  if (!isJsonObject(input) || Object.keys(input).some(key => !['displayName', 'endpoint', 'accessToken', 'autoConnect', 'forwardToHarness', 'receiveGroups', 'timeoutMs', 'clearAccessToken', 'owners', 'administrators', 'agentTools', 'policyRevision'].includes(key))) throw new PlatformError('INVALID_CONFIGURATION', 'QQ 配置必须是对象，且不能包含未知字段。')
+  if (Object.hasOwn(input, 'clearAccessToken') && typeof input.clearAccessToken !== 'boolean') throw new PlatformError('INVALID_CONFIGURATION', '清除访问令牌设置需为布尔值。')
+  const policy = parseQQAgentPolicy({
+    owners: Object.hasOwn(input, 'owners') ? input.owners : previous.owners,
+    administrators: Object.hasOwn(input, 'administrators') ? input.administrators : previous.administrators,
+    agentTools: Object.hasOwn(input, 'agentTools') ? input.agentTools : previous.agentTools,
+    policyRevision: Object.hasOwn(input, 'policyRevision') ? input.policyRevision : previous.policyRevision,
+  })
+  if (JSON.stringify(policy) !== JSON.stringify({ owners: previous.owners, administrators: previous.administrators, agentTools: previous.agentTools, policyRevision: previous.policyRevision })) throw new PlatformError('INVALID_AGENT_POLICY', '请在代理与权限页面保存身份和工具权限。', 400, 'not-sent')
+  const { clearAccessToken, ...values } = input
+  const next = readConfiguration({ ...previous, ...values,
+    displayName: typeof input.displayName === 'string' ? input.displayName.trim() : Object.hasOwn(input, 'displayName') ? input.displayName : previous.displayName,
+    endpoint: typeof input.endpoint === 'string' ? input.endpoint.trim() : Object.hasOwn(input, 'endpoint') ? input.endpoint : previous.endpoint,
+    accessToken: clearAccessToken === true ? '' : input.accessToken === '' ? previous.accessToken : Object.hasOwn(input, 'accessToken') ? input.accessToken : previous.accessToken,
+  })
+  if (Object.hasOwn(input, 'endpoint') && !next.endpoint && previous.endpoint) throw new PlatformError('INVALID_CONFIGURATION', '请填写有效的 ws:// 或 wss:// OneBot 地址。')
+  return { ...next, endpoint: next.endpoint ? new URL(next.endpoint).toString() : '' }
 }
 
 class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
+  readonly kind = 'communication' as const
   readonly name = 'QQ'
-  readonly version = '0.8.0'
+  readonly version = '0.9.0'
   readonly logs = new LiveLogChannel()
   readonly tools = qqTools
   readonly capabilities = [
@@ -84,9 +81,7 @@ class QQPlugin implements BackendPlugin {
     this.accounts = new QQAccountRegistry(context.dataDirectory)
     this.instanceId = this.accounts.defaultInstanceId
     this.file = new QQConfigurationFile(this.accounts.directoryFor(this.instanceId))
-    const saved = this.file.read()
-    const migrated = saved ? { ...initialConfiguration, ...parseQQAgentPolicy(saved) } : initialConfiguration
-    this.configuration = saved ? parseConfiguration(saved, migrated) : initialConfiguration
+    this.configuration = this.file.read() ?? createDefaultConfiguration()
     this.client = new OneBotClient({ onEvent: event => this.receiveEvent(event) })
   }
 
@@ -188,5 +183,5 @@ class QQPlugin implements BackendPlugin {
   }
 }
 
-const entry: BackendPluginEntry = { id: 'qq', storageDirectory: 'qq-bot', create: context => new QQPlugin(context) }
+const entry: BackendPluginEntry = { id: 'qq', kind: 'communication', storageDirectory: 'qq-bot', create: context => new QQPlugin(context) }
 export default entry

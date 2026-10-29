@@ -4,6 +4,8 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { QQAccountRegistry } from './accounts'
 import { QQConfigurationFile } from './config-file'
+import type { OneBotConfig } from '../config'
+import { createDefaultAgentPolicy } from './agent-policy'
 
 vi.mock('node:fs', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs')>()
@@ -32,6 +34,10 @@ function fixture() {
     rmSync(target, { recursive: true })
   })
   return { directory, root }
+}
+
+function currentConfiguration(patch: Partial<OneBotConfig> = {}): OneBotConfig {
+  return { displayName: 'Test QQ', endpoint: '', accessToken: '', autoConnect: false, forwardToHarness: true, receiveGroups: true, timeoutMs: 10000, ...createDefaultAgentPolicy(), ...patch }
 }
 
 function index(instances = [{ instanceId: secondId, label: 'Second test account', createdAt }], defaultInstanceId = secondId) {
@@ -98,6 +104,8 @@ describe('QQ stable account instance registry', () => {
     ['unsupported schema', JSON.stringify({ ...index(), schemaVersion: 2 })],
     ['missing default', JSON.stringify(index(undefined, 'missing-instance'))],
     ['empty instance set', JSON.stringify(index([]))],
+    ['unknown index field', JSON.stringify({ ...index(), oldAccount: {} })],
+    ['unknown instance field', JSON.stringify(index([{ instanceId: secondId, label: 'Test QQ', createdAt, oldField: true } as { instanceId: string; label: string; createdAt: string }]))],
   ])('rejects a corrupt index and preserves its original bytes: %s', (_name, text) => {
     const { root } = fixture()
     const file = writeIndex(root, text)
@@ -111,16 +119,18 @@ describe('QQ stable account instance registry', () => {
     expect(() => registry.directoryFor('missing-instance')).toThrowError(expect.objectContaining({ code: 'ACCOUNT_INSTANCE_NOT_FOUND' }))
   })
 
-  it('requires explicit migration when a legacy root configuration exists and preserves the data', () => {
+  it('leaves unindexed root files untouched when creating a current account registry', () => {
     const { root } = fixture()
     mkdirSync(root, { recursive: true })
     const file = join(root, 'config.json')
     const text = JSON.stringify({ endpoint: 'ws://127.0.0.1:1', accessToken: 'test-only-legacy-token' })
     writeFileSync(file, text)
-    expect(() => new QQAccountRegistry(root)).toThrowError(expect.objectContaining({ code: 'ACCOUNT_MIGRATION_REQUIRED', statusCode: 409 }))
+    const registry = new QQAccountRegistry(root)
+    expect(registry.defaultInstanceId).toMatch(uuid)
     expect(readFileSync(file, 'utf8')).toBe(text)
-    expect(existsSync(join(root, 'accounts.json'))).toBe(false)
-    expect(readdirSync(root)).toEqual(['config.json'])
+    expect(existsSync(join(root, 'accounts.json'))).toBe(true)
+    expect(readdirSync(root).sort()).toEqual(['accounts', 'accounts.json', 'config.json'])
+    expect(new QQConfigurationFile(registry.directoryFor(registry.defaultInstanceId)).read()).toBeNull()
   })
 })
 
@@ -130,7 +140,7 @@ describe('QQ per-instance restricted configuration', () => {
     const directory = registry.directoryFor(registry.defaultInstanceId)
     const file = new QQConfigurationFile(directory)
     expect(file.read()).toBeNull()
-    const first = { displayName: 'First test account', accessToken: 'test-only-first-token', endpoint: 'ws://127.0.0.1:1' }
+    const first = currentConfiguration({ displayName: 'First test account', accessToken: 'test-only-first-token', endpoint: 'ws://127.0.0.1:1' })
     file.write(first)
     expect(new QQConfigurationFile(directory).read()).toEqual(first)
     const next = { ...first, displayName: 'Updated test account', accessToken: 'test-only-updated-token' }
@@ -139,14 +149,14 @@ describe('QQ per-instance restricted configuration', () => {
     expect(reopened.read()).toEqual(next)
     expect(reopened.updatedAt).toBe(file.updatedAt)
     expect(file.updatedAt).toEqual(expect.any(String))
-    expect(JSON.parse(readFileSync(file.filePath, 'utf8'))).toEqual({ schemaVersion: 1, updatedAt: file.updatedAt, configuration: next })
+    expect(JSON.parse(readFileSync(file.filePath, 'utf8'))).toEqual({ schemaVersion: 2, updatedAt: file.updatedAt, configuration: next })
     expect(readdirSync(directory)).toEqual(['config.json'])
   })
 
   it('preserves the previous complete file and removes the temporary file if rename fails', () => {
     const registry = new QQAccountRegistry(fixture().root)
     const file = new QQConfigurationFile(registry.directoryFor(registry.defaultInstanceId))
-    const configuration = { accessToken: 'test-only-retained-token', displayName: 'Retained test account' }
+    const configuration = currentConfiguration({ accessToken: 'test-only-retained-token', displayName: 'Retained test account' })
     file.write(configuration)
     const originalBytes = readFileSync(file.filePath, 'utf8')
     const originalUpdatedAt = file.updatedAt
@@ -161,12 +171,13 @@ describe('QQ per-instance restricted configuration', () => {
   it.skipIf(process.platform === 'win32')('keeps token files at 0600 and owned configuration directories at 0700 on POSIX', () => {
     const registry = new QQAccountRegistry(fixture().root)
     const file = new QQConfigurationFile(registry.directoryFor(registry.defaultInstanceId))
-    file.write({ accessToken: 'test-only-permission-token' })
+    const configuration = currentConfiguration({ accessToken: 'test-only-permission-token' })
+    file.write(configuration)
     expect(statSync(file.filePath).mode & 0o777).toBe(0o600)
     expect(statSync(registry.indexPath).mode & 0o777).toBe(0o600)
     for (const directory of [registry.root, join(registry.root, 'accounts'), file.directory]) expect(statSync(directory).mode & 0o777).toBe(0o700)
     chmodSync(file.filePath, 0o644)
-    expect(file.read()).toEqual({ accessToken: 'test-only-permission-token' })
+    expect(file.read()).toEqual(configuration)
     expect(statSync(file.filePath).mode & 0o777).toBe(0o600)
   })
 
@@ -177,20 +188,37 @@ describe('QQ per-instance restricted configuration', () => {
     const reopened = new QQAccountRegistry(root)
     const first = new QQConfigurationFile(reopened.directoryFor(reopened.defaultInstanceId))
     const second = new QQConfigurationFile(reopened.directoryFor(secondId))
-    first.write({ displayName: 'First', accessToken: 'test-only-instance-one' })
-    second.write({ displayName: 'Second', accessToken: 'test-only-instance-two' })
-    first.write({ displayName: 'Updated first', accessToken: 'test-only-instance-one-updated' })
-    expect(new QQConfigurationFile(first.directory).read()).toEqual({ displayName: 'Updated first', accessToken: 'test-only-instance-one-updated' })
-    expect(new QQConfigurationFile(second.directory).read()).toEqual({ displayName: 'Second', accessToken: 'test-only-instance-two' })
+    first.write(currentConfiguration({ displayName: 'First', accessToken: 'test-only-instance-one' }))
+    second.write(currentConfiguration({ displayName: 'Second', accessToken: 'test-only-instance-two' }))
+    first.write(currentConfiguration({ displayName: 'Updated first', accessToken: 'test-only-instance-one-updated' }))
+    expect(new QQConfigurationFile(first.directory).read()).toEqual(currentConfiguration({ displayName: 'Updated first', accessToken: 'test-only-instance-one-updated' }))
+    expect(new QQConfigurationFile(second.directory).read()).toEqual(currentConfiguration({ displayName: 'Second', accessToken: 'test-only-instance-two' }))
     expect(first.directory).not.toBe(second.directory)
     expect(readdirSync(first.directory)).toEqual(['config.json'])
     expect(readdirSync(second.directory)).toEqual(['config.json'])
   })
 
+  it.each(Object.keys(currentConfiguration()))('rejects a missing or null saved %s without defaults or writes', key => {
+    const registry = new QQAccountRegistry(fixture().root)
+    const file = new QQConfigurationFile(registry.directoryFor(registry.defaultInstanceId))
+    const configuration = currentConfiguration()
+    const missing = Object.fromEntries(Object.entries(configuration).filter(([field]) => field !== key))
+    for (const invalid of [missing, { ...configuration, [key]: null }]) {
+      const text = JSON.stringify({ schemaVersion: 2, updatedAt: createdAt, configuration: invalid })
+      writeFileSync(file.filePath, text)
+      expect(() => file.read()).toThrowError(expect.objectContaining({ code: 'CONFIGURATION_CORRUPTED' }))
+      expect(readFileSync(file.filePath, 'utf8')).toBe(text)
+      expect(file.updatedAt).toBeNull()
+      expect(readdirSync(file.directory)).toEqual(['config.json'])
+    }
+  })
+
   it.each([
     ['invalid JSON', '{'],
-    ['unsupported schema', JSON.stringify({ schemaVersion: 2, configuration: {} })],
-    ['invalid configuration', JSON.stringify({ schemaVersion: 1, configuration: [] })],
+    ['unsupported schema', JSON.stringify({ schemaVersion: 1, updatedAt: createdAt, configuration: currentConfiguration() })],
+    ['invalid configuration', JSON.stringify({ schemaVersion: 2, updatedAt: createdAt, configuration: [] })],
+    ['missing timestamp', JSON.stringify({ schemaVersion: 2, configuration: currentConfiguration() })],
+    ['unknown wrapper field', JSON.stringify({ schemaVersion: 2, updatedAt: createdAt, configuration: currentConfiguration(), extra: true })],
   ])('rejects corrupted configuration without overwriting it: %s', (_name, text) => {
     const registry = new QQAccountRegistry(fixture().root)
     const file = new QQConfigurationFile(registry.directoryFor(registry.defaultInstanceId))

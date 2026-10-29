@@ -1,7 +1,8 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { MutableRefObject } from 'react'
+import { isJsonObject } from '@eating/plugin-sdk'
 import type { AgentTypeDefinition, JsonObject, PluginToolDefinition } from '@eating/plugin-sdk'
-import { getErrorMessage, HostApiError, hostRequest, useI18n } from '@eating/ui-sdk'
+import { getErrorMessage, HostApiError, hostRequest, translate, useI18n } from '@eating/ui-sdk'
 import type { QQAgentTools, QQAgentTypeId } from '../config'
 import { toolDescription, toolTitle } from './i18n'
 import type { QQTranslationKey } from './i18n'
@@ -19,14 +20,38 @@ export function parseIdentityText(text: string): string[] | null {
   return [...new Set(values)]
 }
 
-export function agentPolicyDraft(configuration: JsonObject, types: readonly AgentTypeDefinition[]): AgentPolicyDraft {
-  const names = (value: unknown): string[] => Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : []
-  const tools = (id: QQAgentTypeId): string[] => {
-    const type = types.find(candidate => candidate.id === id)
-    const selected = configuration.agentTools && typeof configuration.agentTools === 'object' && !Array.isArray(configuration.agentTools) ? configuration.agentTools[id] : undefined
-    return names(selected ?? type?.enabledTools)
+export function agentPolicyDraft(configuration: unknown, types: readonly AgentTypeDefinition[]): AgentPolicyDraft {
+  const invalid = (): never => { throw new HostApiError('INVALID_HOST_RESPONSE', translate('common', 'errors.INVALID_HOST_RESPONSE')) }
+  if (!isJsonObject(configuration)) return invalid()
+  if (Object.hasOwn(configuration, 'initializationError')) {
+    if (Object.keys(configuration).length !== 1 || typeof configuration.initializationError !== 'string' || !configuration.initializationError) return invalid()
+    throw new HostApiError('CONFIGURATION_CORRUPTED', configuration.initializationError)
   }
-  return { owners: names(configuration.owners).join('\n'), administrators: names(configuration.administrators).join('\n'), agentTools: { 'qq.private': tools('qq.private'), 'qq.group': tools('qq.group') }, expectedRevision: typeof configuration.policyRevision === 'number' ? configuration.policyRevision : 0 }
+  const identities = (value: unknown): string[] => {
+    if (!Array.isArray(value) || value.length > 100 || value.some(id => typeof id !== 'string' || !/^[1-9]\d{0,15}$/.test(id) || !Number.isSafeInteger(Number(id)))) return invalid()
+    return [...value] as string[]
+  }
+  const names = (value: unknown): string[] => {
+    if (!Array.isArray(value) || value.some(name => typeof name !== 'string' || !name) || new Set(value).size !== value.length) return invalid()
+    return [...value] as string[]
+  }
+  if (!Array.isArray(types) || new Set(types.map(type => type?.id)).size !== types.length) return invalid()
+  for (const type of types) {
+    if (!isJsonObject(type) || !['qq.private', 'qq.group'].includes(type.id as string) || typeof type.title !== 'string' || !type.title || typeof type.description !== 'string' || typeof type.defaultPrompt !== 'string' || type.conversationKind !== (type.id === 'qq.private' ? 'private' : 'group')
+      || type.localizedTitles !== undefined && (!isJsonObject(type.localizedTitles) || Object.values(type.localizedTitles).some(title => typeof title !== 'string'))) return invalid()
+    const available = names(type.availableTools)
+    if ([...names(type.defaultTools), ...names(type.enabledTools)].some(name => !available.includes(name))) return invalid()
+  }
+  if (!isJsonObject(configuration.agentTools) || Object.keys(configuration.agentTools).length !== 2 || Object.keys(configuration.agentTools).some(id => !['qq.private', 'qq.group'].includes(id))) return invalid()
+  const selections = configuration.agentTools
+  const selected = (id: QQAgentTypeId): string[] => {
+    const tools = names(selections[id])
+    const type = types.find(candidate => candidate.id === id)
+    if (type && tools.some(name => !type.availableTools.includes(name))) return invalid()
+    return tools
+  }
+  if (typeof configuration.policyRevision !== 'number' || !Number.isSafeInteger(configuration.policyRevision) || configuration.policyRevision < 0) return invalid()
+  return { owners: identities(configuration.owners).join('\n'), administrators: identities(configuration.administrators).join('\n'), agentTools: { 'qq.private': selected('qq.private'), 'qq.group': selected('qq.group') }, expectedRevision: configuration.policyRevision }
 }
 
 interface Props {
@@ -34,6 +59,7 @@ interface Props {
   agentTypes: readonly AgentTypeDefinition[]
   tools: readonly PluginToolDefinition[]
   enabled: boolean
+  configurationFailure?: Failure | null
   busy: boolean
   actionLock: MutableRefObject<boolean>
   onBusy: (value: boolean) => void
@@ -42,10 +68,14 @@ interface Props {
 }
 interface Failure { code: string; message: string; outcome: string }
 
-export function AgentPolicyFields({ configuration, agentTypes, tools, enabled, busy, actionLock, onBusy, onSaved, onFeedback }: Props) {
+export function AgentPolicyFields({ configuration, agentTypes, tools, enabled, configurationFailure, busy, actionLock, onBusy, onSaved, onFeedback }: Props) {
   const { t, locale, formatNumber } = useI18n('qq')
   const prefix = useId()
-  const [draft, setDraft] = useState(() => agentPolicyDraft(configuration, agentTypes))
+  const reading = useMemo(() => {
+    try { return { draft: agentPolicyDraft(configuration, agentTypes), failure: null } }
+    catch (error) { return { draft: null, failure: error instanceof HostApiError ? error : new HostApiError('INVALID_HOST_RESPONSE', translate('common', 'errors.INVALID_HOST_RESPONSE')) } }
+  }, [configuration, agentTypes])
+  const [draft, setDraft] = useState<AgentPolicyDraft | null>(() => reading.draft)
   const [dirty, setDirty] = useState(false)
   const dirtyRef = useRef(false)
   const [saving, setSaving] = useState(false)
@@ -58,7 +88,7 @@ export function AgentPolicyFields({ configuration, agentTypes, tools, enabled, b
   const onBusyRef = useRef(onBusy)
   onBusyRef.current = onBusy
   useEffect(() => { alive.current = true; return () => { alive.current = false; controller.current?.abort(); if (controller.current) { actionLock.current = false; onBusyRef.current(false) } } }, [actionLock])
-  useEffect(() => { if (!dirtyRef.current) setDraft(agentPolicyDraft(configuration, agentTypes)) }, [configuration, agentTypes])
+  useEffect(() => { if (!dirtyRef.current && reading.draft) setDraft(reading.draft) }, [reading])
 
   function update(next: AgentPolicyDraft) {
     setDraft(next); dirtyRef.current = true; setDirty(true); setSaved(false)
@@ -79,7 +109,7 @@ export function AgentPolicyFields({ configuration, agentTypes, tools, enabled, b
     }
   }
   async function save() {
-    if (actionLock.current || !enabled || !agentTypes.length) return
+    if (actionLock.current || !enabled || !agentTypes.length || !draft || reading.failure || configurationFailure || failure?.code === 'INVALID_HOST_RESPONSE' || failure?.code === 'CONFIGURATION_CORRUPTED') return
     const owners = parseIdentityText(draft.owners)
     const administrators = parseIdentityText(draft.administrators)
     const issues: typeof errors = { ...(owners === null ? { owners: 'policy.invalidIdentity' as const } : {}), ...(administrators === null ? { administrators: 'policy.invalidIdentity' as const } : {}) }
@@ -99,6 +129,12 @@ export function AgentPolicyFields({ configuration, agentTypes, tools, enabled, b
     }
   }
   const blocked = busy || saving || reloading
+  const unreadable = reading.failure ?? configurationFailure ?? (failure?.code === 'INVALID_HOST_RESPONSE' || failure?.code === 'CONFIGURATION_CORRUPTED' ? failure : null)
+  if (unreadable || !draft) return <>
+    <div className="section-heading"><h3>{t('tabs.agentPolicy')}</h3><p>{t('policy.description')}</p></div>
+    <div className="qq-error" role="alert"><div><p>{getErrorMessage(unreadable)}</p><details><summary>{t('error.details')}</summary><small>{t('error.code', { code: unreadable?.code ?? 'INVALID_HOST_RESPONSE' })}</small>{unreadable?.message && <p>{unreadable.message}</p>}</details></div></div>
+    <button type="button" className="button button-secondary" disabled={blocked} onClick={() => void discard()}>{t(reloading ? 'policy.reloading' : 'policy.discard')}</button>
+  </>
   const visibleTypes = agentTypes.filter(type => type.id === 'qq.private' || type.id === 'qq.group')
   return <>
     <div className="section-heading"><h3>{t('tabs.agentPolicy')}</h3><p>{t('policy.description')}</p></div>

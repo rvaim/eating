@@ -7,7 +7,7 @@ import '../i18n/app'
 
 export interface InstalledFrontendContribution {
   readonly id: string
-  readonly kind?: ManagedPlugin['kind']
+  readonly kind: ManagedPlugin['kind']
   readonly name?: string
   readonly version?: string
   readonly frontend?: { readonly entry: string; readonly style: string } | null
@@ -20,13 +20,14 @@ function FailedPluginPanel() {
 }
 
 function failedContribution(entry: InstalledFrontendContribution): ManagedPlugin {
-  return { id: entry.id, name: entry.name ?? entry.id, get description() { return translate('app', 'catalog.loadError') }, version: entry.version ?? '0.0.0', apiVersion: 1,
-    kind: entry.kind ?? 'communication', order: 100000, icon: Plug, brandColor: '#65736b', defaultRegistered: true,
+  return { id: entry.id, name: entry.name ?? entry.id, get description() { return translate('app', 'catalog.loadError') }, version: entry.version ?? '0.0.0', apiVersion: 2,
+    kind: entry.kind, order: 100000, icon: Plug, brandColor: '#65736b', defaultRegistered: true,
     initialValues: {}, validate: () => ({ valid: false, errors: {} }), summary: () => translate('app', 'catalog.loadError'),
     Panel: FailedPluginPanel }
 }
 
 export async function loadPluginCatalog(entries: readonly InstalledFrontendContribution[]): Promise<readonly ManagedPlugin[]> {
+  if (entries.some(entry => !entry || !['communication', 'harness'].includes(entry.kind))) throw new Error(translate('app', 'catalog.error.kindMismatch'))
   const plugins = await Promise.all(entries.map(async entry => {
     try {
       const frontend = entry.frontend
@@ -48,14 +49,14 @@ export async function loadPluginCatalog(entries: readonly InstalledFrontendContr
           const module = await import(/* @vite-ignore */ frontend.entry) as { default?: ManagedPlugin }
           const plugin = module.default
           if (!plugin || plugin.id !== entry.id || plugin.version !== entry.version || typeof plugin.Panel !== 'function'
-            || plugin.kind !== (entry.kind ?? 'communication')) throw new Error(translate('app', 'catalog.error.incompatible'))
+            || plugin.kind !== (entry.kind)) throw new Error(translate('app', 'catalog.error.incompatible'))
           validateManifest(plugin)
           return plugin
         })().catch(error => { stylesheet.remove(); loaded.delete(frontend.entry); throw error })
         loaded.set(frontend.entry, loading)
       }
       const plugin = await loading
-      if (plugin.kind !== (entry.kind ?? 'communication')) throw new Error(translate('app', 'catalog.error.kindMismatch'))
+      if (plugin.kind !== (entry.kind)) throw new Error(translate('app', 'catalog.error.kindMismatch'))
       return plugin
     } catch { return failedContribution(entry) }
   }))

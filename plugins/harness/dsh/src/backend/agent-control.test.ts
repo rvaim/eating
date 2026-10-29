@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -11,15 +11,15 @@ const parentId = '00000000-0000-4000-8000-000000000001'
 function fixture() {
   const parent = realpathSync(tmpdir()), directory = realpathSync(mkdtempSync(join(parent, 'eating-agent-control-')))
   stops.push(() => { if (realpathSync(directory) !== directory || dirname(directory) !== parent || !basename(directory).startsWith('eating-agent-control-')) throw new Error('Unsafe fixture cleanup'); rmSync(directory, { recursive: true }) })
-  const owner: HarnessOwnerConfiguration = { revision: 3, activePersona: null, prompts: [
-    { id: 'common', title: 'common', body: 'COMMON', revision: 1, updatedAt: null }, { id: 'subagent', title: 'subagent', body: 'SUBAGENT', revision: 1, updatedAt: null },
-    { id: 'main', title: 'main', body: 'MAIN', revision: 1, updatedAt: null }, { id: 'agent:qq.private', title: 'private', body: 'PRIVATE {{目标编号}}', revision: 1, updatedAt: null, pluginId: 'qq' },
+  const owner: HarnessOwnerConfiguration = { revision: 3, activePersona: null, pluginInstructions: [], bindings: { 主人: '', 管理员: '' }, prompts: [
+    { id: 'common', scope: 'common', source: 'owner', title: 'common', body: 'COMMON', revision: 1, updatedAt: null }, { id: 'subagent', scope: 'subagent', source: 'owner', title: 'subagent', body: 'SUBAGENT', revision: 1, updatedAt: null },
+    { id: 'main', scope: 'main', source: 'owner', title: 'main', body: 'MAIN', revision: 1, updatedAt: null }, { id: 'agent:qq.private', agentTypeId: 'qq.private', scope: 'agent', source: 'plugin', title: 'private', body: 'PRIVATE {{目标编号}}', revision: 1, updatedAt: null, pluginId: 'qq' },
   ], agentTypes: [{ id: 'qq.private', title: 'Private', description: 'Private target', conversationKind: 'private', defaultPrompt: 'PRIVATE', availableTools: ['send'], defaultTools: ['send'], enabledTools: ['send'], pluginId: 'qq', pluginName: 'QQ', enabled: true, identity: { owners: [], administrators: [] } }] }
   const host: HarnessHostServices = { registerSink: () => () => {}, wake: () => {}, readOwnerConfiguration: () => owner,
     getMcpConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1/mcp', headers: { Authorization: 'Bearer fixture-scoped-only-token' } })),
     readAgentActions: vi.fn(() => [{ requestId: 'request-1', tool: 'send', outcome: 'succeeded' as const }]), revokeAgentAccess: vi.fn() }
   const control = new DshAgentControl(directory, host); stops.push(() => control.close())
-  const batch: HarnessDeliveryBatch = { protocolVersion: 1, batchId: 'a'.repeat(64), conversationId: 'qq:100:private:200', createdAt: '2026-10-28T00:00:00Z', reason: 'quiet-window', events: [{ protocolVersion: 1, eventId: 'event', pluginId: 'qq', instanceId: 'instance', platform: 'qq', accountId: '100', conversationId: 'qq:100:private:200', senderId: '200', targetId: '200', messageId: '300', resourceIds: ['https://fixture.invalid/file'], receivedAt: '2026-10-28T00:00:00Z', source: { trust: 'external', kind: 'private' }, content: 'EXTERNAL-MESSAGE-BODY', text: 'EXTERNAL-MESSAGE-BODY' }] }
+  const batch: HarnessDeliveryBatch = { protocolVersion: 1, batchId: 'a'.repeat(64), conversationId: 'qq:100:private:200', createdAt: '2026-10-28T00:00:00Z', reason: 'quiet-window', events: [{ protocolVersion: 1, eventId: 'event', pluginId: 'qq', instanceId: 'instance', platform: 'qq', accountId: '100', conversationId: 'qq:100:private:200', senderId: '200', targetId: '200', messageId: '300', resourceIds: ['https://fixture.invalid/file'], receivedAt: '2026-10-28T00:00:00Z', source: { trust: 'external', kind: 'private', senderRole: 'user' }, content: 'EXTERNAL-MESSAGE-BODY', text: 'EXTERNAL-MESSAGE-BODY' }] }
   const post = async (path: string, value: object, headers: Record<string, string> = {}) => fetch(control.url + path, { method: 'POST', headers: { Authorization: `Bearer ${control.token}`, 'X-Eating-Runtime': 'fixture-runtime-nonce', 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(value) })
   return { directory, control, host, owner, batch, post }
 }
@@ -33,6 +33,14 @@ describe('trusted native Agent control boundary', () => {
     expect(stored).not.toContain('EXTERNAL-MESSAGE-BODY')
     expect(stored).not.toContain('fixture-scoped-only-token')
     expect(new DshAgentControl(f.directory, f.host).list()[0]?.scope.agentId).toBe(first.scope.agentId)
+  })
+
+  it('requires the current verified target instead of inferring one from the sender or conversation ID', () => {
+    const f = fixture()
+    const missing = { ...f.batch, events: f.batch.events.map(event => ({ ...event, targetId: undefined })) }
+    expect(() => f.control.bind(missing, parentId)).toThrow(expect.objectContaining({ code: 'AGENT_SCOPE_INVALID' }))
+    expect(f.control.list()).toEqual([])
+    expect(f.host.getMcpConnection).not.toHaveBeenCalled()
   })
 
   it('restores all 256 message references and long media IDs written by the trusted binder', () => {
@@ -60,7 +68,7 @@ describe('trusted native Agent control boundary', () => {
 
   it('rejects forged scope, old context, untrusted headers and repeated pending tasks before asking Host for MCP access', async () => {
     const f = fixture(); await f.control.start('fixture-runtime-nonce')
-    const binding = f.control.bind(f.batch, parentId), input = { agentId: binding.scope.agentId, agentTypeId: 'qq.private', contextRef: f.batch.batchId }
+    const binding = f.control.bind(f.batch, parentId), input = { agentId: binding.scope.agentId, agentTypeId: 'qq.private', contextRef: f.batch.batchId, taskId: '1'.repeat(64) }
     expect((await f.post('/prepare-task', input, { Authorization: 'Bearer forged-token' })).status).toBe(403)
     expect((await f.post('/prepare-task', { ...input, targetId: 'attacker' })).status).toBe(409)
     expect((await f.post('/prepare-task', { ...input, contextRef: 'c'.repeat(64) })).status).toBe(409)
@@ -73,8 +81,8 @@ describe('trusted native Agent control boundary', () => {
     expect((await f.post('/prepare-task', input)).status).toBe(409)
     const reopened = new DshAgentControl(f.directory, f.host); stops.push(() => reopened.close())
     expect(reopened.list()[0]?.task?.state).toBe('pending')
-    expect((await f.post('/actions', { agentId: input.agentId, contextRef: input.contextRef })).status).toBe(200)
-    expect((await f.post('/finish-task', { agentId: input.agentId, contextRef: input.contextRef, status: 'completed' })).status).toBe(200)
+    expect((await f.post('/actions', { agentId: input.agentId, contextRef: input.contextRef, taskId: input.taskId })).status).toBe(200)
+    expect((await f.post('/finish-task', { agentId: input.agentId, contextRef: input.contextRef, taskId: input.taskId, status: 'completed' })).status).toBe(200)
     expect(f.host.revokeAgentAccess).toHaveBeenCalledWith(input.agentId)
     expect((await f.post('/prepare-task', input)).status).toBe(409)
     const next = f.control.bind({ ...f.batch, batchId: 'b'.repeat(64) }, parentId)
@@ -85,7 +93,7 @@ describe('trusted native Agent control boundary', () => {
   it('allows distinct completed or failed native calls in one context and refuses replayed or stale call identities', async () => {
     const f = fixture(); await f.control.start('fixture-runtime-nonce')
     const binding = f.control.bind(f.batch, parentId)
-    const input = { agentId: binding.scope.agentId, agentTypeId: 'qq.private', contextRef: f.batch.batchId }
+    const input = { agentId: binding.scope.agentId, agentTypeId: 'qq.private', contextRef: f.batch.batchId, taskId: '1'.repeat(64) }
     const first = '1'.repeat(64), second = '2'.repeat(64), third = '3'.repeat(64)
     const finish = (taskId: string, status: string) => f.post('/finish-task', { agentId: input.agentId, contextRef: input.contextRef, taskId, status })
     expect((await f.post('/prepare-task', { ...input, taskId: first })).status).toBe(200)
@@ -94,23 +102,23 @@ describe('trusted native Agent control boundary', () => {
     expect((await f.post('/prepare-task', { ...input, taskId: first })).status).toBe(409)
     expect((await f.post('/prepare-task', { ...input, taskId: second })).status).toBe(200)
     expect((await f.post('/actions', { agentId: input.agentId, contextRef: input.contextRef, taskId: first })).status).toBe(409)
-    const revocations = vi.mocked(f.host.revokeAgentAccess!).mock.calls.length
+    const revocations = vi.mocked(f.host.revokeAgentAccess).mock.calls.length
     expect((await finish(first, 'unknown')).status).toBe(409)
-    expect(vi.mocked(f.host.revokeAgentAccess!).mock.calls).toHaveLength(revocations)
+    expect(vi.mocked(f.host.revokeAgentAccess).mock.calls).toHaveLength(revocations)
     expect((await finish(second, 'failed')).status).toBe(200)
     expect((await f.post('/prepare-task', { ...input, taskId: first })).status).toBe(409)
     expect((await f.post('/prepare-task', { ...input, taskId: third })).status).toBe(200)
     expect((await finish(third, 'unknown')).status).toBe(200)
     expect((await f.post('/prepare-task', { ...input, taskId: '4'.repeat(64) })).status).toBe(409)
     const reopened = new DshAgentControl(f.directory, f.host); stops.push(() => reopened.close())
-    expect(reopened.list()[0]?.taskRefs?.map(task => [task.taskId, task.state])).toEqual([[first, 'completed'], [second, 'failed'], [third, 'unknown']])
+    expect(reopened.list()[0]?.taskRefs.map(task => [task.taskId, task.state])).toEqual([[first, 'completed'], [second, 'failed'], [third, 'unknown']])
     expect(readFileSync(join(f.directory, 'agent-bindings.json'), 'utf8')).not.toContain('EXTERNAL-MESSAGE-BODY')
   })
 
   it('keeps at most 32 call references and refuses a 33rd call in the active context instead of forgetting replay protection', async () => {
     const f = fixture(); await f.control.start('fixture-runtime-nonce')
     const binding = f.control.bind(f.batch, parentId)
-    const input = { agentId: binding.scope.agentId, agentTypeId: 'qq.private', contextRef: f.batch.batchId }
+    const input = { agentId: binding.scope.agentId, agentTypeId: 'qq.private', contextRef: f.batch.batchId, taskId: '1'.repeat(64) }
     for (let index = 0; index < 32; index++) {
       const taskId = index.toString(16).padStart(64, '0')
       expect((await f.post('/prepare-task', { ...input, taskId })).status).toBe(200)
@@ -124,16 +132,36 @@ describe('trusted native Agent control boundary', () => {
     expect(f.control.list()[0]?.taskRefs).toHaveLength(32)
   })
 
-  it('retains whole-context replay prevention for legacy requests and persisted tasks without native call IDs', async () => {
+  it('rejects requests without native task IDs for prepare, actions and finish', async () => {
     const f = fixture(); await f.control.start('fixture-runtime-nonce')
     const binding = f.control.bind(f.batch, parentId)
     const input = { agentId: binding.scope.agentId, agentTypeId: 'qq.private', contextRef: f.batch.batchId }
-    expect((await f.post('/prepare-task', input)).status).toBe(200)
-    expect((await f.post('/finish-task', { agentId: input.agentId, contextRef: input.contextRef, status: 'completed' })).status).toBe(200)
-    const reopened = new DshAgentControl(f.directory, f.host); stops.push(() => reopened.close())
-    await reopened.start('fixture-runtime-nonce'); reopened.bind(f.batch, parentId)
-    const response = await fetch(reopened.url + '/prepare-task', { method: 'POST', headers: { Authorization: `Bearer ${reopened.token}`, 'X-Eating-Runtime': 'fixture-runtime-nonce', 'Content-Type': 'application/json' }, body: JSON.stringify({ ...input, taskId: '1'.repeat(64) }) })
-    expect(response.status).toBe(409)
-    expect(f.host.getMcpConnection).toHaveBeenCalledTimes(1)
+    expect((await f.post('/prepare-task', input)).status).toBe(409)
+    expect(f.host.getMcpConnection).not.toHaveBeenCalled()
+    const taskId = '1'.repeat(64)
+    expect((await f.post('/prepare-task', { ...input, taskId })).status).toBe(200)
+    expect((await f.post('/actions', { agentId: input.agentId, contextRef: input.contextRef })).status).toBe(409)
+    expect((await f.post('/finish-task', { agentId: input.agentId, contextRef: input.contextRef, status: 'completed' })).status).toBe(409)
+    expect(f.host.revokeAgentAccess).not.toHaveBeenCalled()
+    expect((await f.post('/finish-task', { agentId: input.agentId, contextRef: input.contextRef, taskId, status: 'completed' })).status).toBe(200)
+  })
+
+  it.each(['schema-1', 'missing-task-refs', 'missing-task-id', 'reference-without-task-id'] as const)('rejects %s persisted bindings without rewriting their bytes', mode => {
+    const f = fixture(), binding = f.control.bind(f.batch, parentId)
+    const task = { contextRef: f.batch.batchId, nonce: 'fixture-runtime-nonce', state: 'completed' }
+    const stored = mode === 'missing-task-refs' ? { ...binding, taskRefs: undefined }
+      : mode === 'missing-task-id' ? { ...binding, task }
+      : mode === 'reference-without-task-id' ? { ...binding, taskRefs: [task] } : binding
+    const file = join(f.directory, 'agent-bindings.json')
+    const bytes = JSON.stringify({ schemaVersion: mode === 'schema-1' ? 1 : 2, bindings: [stored] })
+    writeFileSync(file, bytes)
+    expect(() => new DshAgentControl(f.directory, f.host)).toThrow(expect.objectContaining({ code: 'AGENT_BINDINGS_INVALID' }))
+    expect(readFileSync(file, 'utf8')).toBe(bytes)
+  })
+
+  it.each(['getMcpConnection', 'readAgentActions', 'revokeAgentAccess'] as const)('rejects a Host missing required %s instead of treating it as an empty service', name => {
+    const f = fixture()
+    const incomplete: unknown = { ...f.host, [name]: undefined }
+    expect(() => new DshAgentControl(f.directory, incomplete as HarnessHostServices)).toThrow(expect.objectContaining({ code: 'HARNESS_SERVICES_INVALID' }))
   })
 })

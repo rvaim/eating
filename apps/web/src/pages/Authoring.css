@@ -58,8 +58,6 @@
 .authoring-source-label { order: 1; flex-basis: 100%; padding-inline-start: 26px; color: var(--color-muted); font-size: 11px; font-weight: 400; }
 .authoring-prompt-item .authoring-draft-mark { flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--color-muted); }
 .authoring-source-detail { margin: -10px 0 20px; color: var(--color-muted); font-size: 12px; overflow-wrap: anywhere; }
-.authoring-legacy-warning { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 24px; padding: 14px; border: 1px solid var(--color-secondary-border, #cbd3cb); border-radius: var(--radius); background: var(--color-tint); color: var(--color-primary-deep); font-size: 13px; overflow-wrap: anywhere; }
-.authoring-legacy-warning svg { flex-shrink: 0; margin-top: 2px; }
 .authoring-preview { min-width: 0; margin-top: 32px; padding-top: 23px; border-top: 1px solid var(--color-line); }
 .authoring-preview-heading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px 18px; }
 .authoring-preview-revision { margin-top: 20px; color: var(--color-muted); font-size: 12px; font-variant-numeric: tabular-nums; }

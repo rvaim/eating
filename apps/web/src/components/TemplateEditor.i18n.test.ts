@@ -26,7 +26,8 @@ async function editorBundle(): Promise<string> {
         import { setLocale } from '@eating/ui-sdk'
         import { TemplateEditor } from './TemplateEditor'
         const variables = [...TEMPLATE_VARIABLES.map(variable => ({ ...variable, description: 'BACKEND_DESCRIPTION_MUST_NOT_RENDER' })),
-          { name: 'future', description: 'UNSUPPORTED_VARIABLE', scopes: ['main'], origin: 'runtime' }]
+          { name: 'future', description: 'UNSUPPORTED_VARIABLE', scopes: ['main'], origin: 'runtime' },
+          { name: '消息内容', description: 'REMOVED_VARIABLE_MUST_NOT_RENDER', scopes: ['main'], origin: 'runtime' }]
         setLocale('zh-CN')
         const view = () => EditorView.findFromDOM(document.querySelector('.cm-content'))
         function Harness() {
@@ -83,7 +84,7 @@ describe('模板编辑器语言切换', () => {
       await page.evaluate('window.editorHarness.setLocale("en-US")')
       await page.getByRole('textbox', { name: 'Prompt content', exact: true }).waitFor()
       expect(await snapshot()).toEqual(before)
-      expect(await page.locator('.template-editor-diagnostics').innerText()).toContain('not available in this template')
+      expect(await page.locator('.template-editor-diagnostics').innerText()).toContain('Unknown variable “消息内容”')
       expect(await page.locator('.template-editor-diagnostics').innerText()).toContain('Unknown variable “future”')
       expect(await page.locator('.template-editor-scope').innerText()).toContain(`${TEMPLATE_VARIABLES.filter(variable => variable.scopes.includes('main')).length} available variables`)
       await page.getByRole('button', { name: 'Insert variable', exact: true }).click()
@@ -91,6 +92,7 @@ describe('模板编辑器语言切换', () => {
       expect(await page.locator('.cm-completionDetail').allTextContents()).toContain('The current time when messages are processed.')
       expect(await page.locator('.template-editor-popups').innerText()).not.toContain('BACKEND_DESCRIPTION_MUST_NOT_RENDER')
       expect(await page.locator('.template-editor-popups').innerText()).not.toContain('UNSUPPORTED_VARIABLE')
+      expect(await page.locator('.template-editor-popups').innerText()).not.toContain('REMOVED_VARIABLE_MUST_NOT_RENDER')
       await page.evaluate('window.editorHarness.setLocale("zh-CN")')
       await page.getByRole('listbox', { name: '可用变量', exact: true }).waitFor()
       expect(await page.locator('.cm-completionDetail').allTextContents()).toContain('处理消息时的当前时间。')
@@ -98,13 +100,13 @@ describe('模板编辑器语言切换', () => {
       await page.keyboard.press('Escape')
       await page.locator('.template-variable-invalid').first().hover()
       await page.locator('.cm-tooltip-lint').waitFor()
-      expect(await page.locator('.cm-tooltip-lint').innerText()).toContain('不适用于当前模板')
+      expect(await page.locator('.cm-tooltip-lint').innerText()).toContain('未知变量“消息内容”')
       await page.evaluate('window.editorHarness.setLocale("en-US")')
       await page.locator('.cm-tooltip-lint').waitFor({ state: 'hidden' })
       await page.mouse.move(0, 0)
       await page.locator('.template-variable-invalid').first().hover()
       await page.locator('.cm-tooltip-lint').waitFor()
-      expect(await page.locator('.cm-tooltip-lint').innerText()).toContain('not available in this template')
+      expect(await page.locator('.cm-tooltip-lint').innerText()).toContain('Unknown variable “消息内容”')
       expect(await snapshot()).toEqual(before)
       expect(await page.evaluate('window.editorHarness.undo()')).toBe(true)
       expect((await snapshot()).body).toBe(initialBody)

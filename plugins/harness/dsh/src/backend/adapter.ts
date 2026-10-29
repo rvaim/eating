@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { DeepSeekHarness } from '@deepseek-ai/dsh-sdk-client'
 import type { DeepSeekHarnessOptions, HarnessSession } from '@deepseek-ai/dsh-sdk-client'
-import { PlatformError, composeAgentPrompt, renderTemplate } from '@eating/plugin-sdk'
+import { PlatformError, composeAgentPrompt } from '@eating/plugin-sdk'
 import type { BackendPlugin, ConnectionStatus, HarnessDeliveryBatch, HarnessDeliveryReceipt, HarnessHostServices, HarnessMessageSink, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { DshConfigurationFile, DshSessionFile, parseConfiguration, prepareRestrictedDirectory, readRestrictedJson, writeRestrictedJson } from './config'
 import type { DshConfiguration, DshSessionMetadata } from './config'
@@ -67,8 +67,7 @@ function writePrivateSource(path: string, source: string): void {
   chmodSync(path, 0o600)
 }
 
-export function createRuntimeEnvironment(dataDirectory: string, configuration: DshConfiguration,
-  _mcp: { readonly url: string; readonly headers: Readonly<Record<string, string>> }, nonce: string, sessionId: string,
+export function createRuntimeEnvironment(dataDirectory: string, configuration: DshConfiguration, nonce: string, sessionId: string,
   parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const root = resolve(dataDirectory)
   const runtimeHome = join(root, 'runtime-home')
@@ -89,7 +88,7 @@ export function resolveNativeRuntimeModules(dshBin: string): Readonly<Record<str
   return Object.fromEntries(['dsh-subagent', 'dsh-subagent-spawn-in-process', 'dsh-session-query-sqlite', 'dsh-agent-preset-registry'].map(name => [name, request.resolve(`@deepseek-ai/${name}`)]))
 }
 
-export function createRuntimePatch(resolved: { readonly providerEntry: string; readonly mcpEntry: string }, bridgePath: string, configuration: DshConfiguration, modules: Readonly<Record<string, string>> = {}): string {
+export function createRuntimePatch(resolved: { readonly providerEntry: string; readonly mcpEntry: string }, bridgePath: string, configuration: DshConfiguration, modules: Readonly<Record<string, string>>): string {
   const provider = { providers: { 'eating-openai': { api: 'openai-completions', baseURL: configuration.endpoint,
     apiKeyEnv: 'EATING_DSH_API_KEY', models: [{ id: configuration.model, input: ['text'], reasoningEfforts: false }] } } }
   const disabled = ['llm-deepseek', 'tool-fs', 'tool-working-directory', 'persistent-bash', 'persistent-pwsh', 'mcp-resources', 'terminal-bash', 'terminal-pwsh', 'pty', 'subprocess']
@@ -109,7 +108,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.3.1'
+  readonly version = '0.4.0'
   readonly tools = []
   readonly capabilities = [
     { id: 'dsh.fixed-session', name: '固定 DSH 主会话', support: 'supported' as const, description: '使用独立官方 DSH 运行时与固定原生会话；可靠交接须经持久屏障。' },
@@ -230,7 +229,7 @@ export class DshPlugin implements BackendPlugin {
       writePrivateSource(patchPath, createRuntimePatch(resolved, bridgePath, this.configuration, nativeModules))
       const workspace = join(resolve(this.context.dataDirectory), 'workspace')
       const client = this.createHarness({ dshBin: resolved.dshBin, profile: 'sdk-minimal', patches: [patchPath],
-        dshHome: join(resolve(this.context.dataDirectory), 'dsh-home'), env: { ...createRuntimeEnvironment(this.context.dataDirectory, this.configuration, { url: '', headers: {} }, this.nonce, sessionId),
+        dshHome: join(resolve(this.context.dataDirectory), 'dsh-home'), env: { ...createRuntimeEnvironment(this.context.dataDirectory, this.configuration, this.nonce, sessionId),
           EATING_DSH_CONTROL_URL: this.agentControl.url, EATING_DSH_CONTROL_TOKEN: this.agentControl.token, EATING_DSH_MCP_ENTRY: resolved.mcpEntry, EATING_DSH_TASK_TIMEOUT: String(this.configuration.timeoutMs) },
         processCwd: workspace, cwd: workspace, provider: 'eating-openai', model: this.configuration.model, maxTokens: this.configuration.maxTokens,
         initializeTimeoutMs: MAX_STARTUP_MS, requestTimeoutMs: this.configuration.timeoutMs,
@@ -316,17 +315,13 @@ export class DshPlugin implements BackendPlugin {
     })
   }
 
-  private publishPolicy(binding?: AgentBinding, contextRef?: string): { readonly revision: number; readonly personaName: string; readonly identityBindings: Readonly<Record<string, string>>; readonly messageTemplate: (kind: 'group' | 'private') => string } {
+  private publishPolicy(binding?: AgentBinding, contextRef?: string): { readonly revision: number } {
     const owner = this.host.readOwnerConfiguration()
-    const personaName = owner.activePersona?.name ?? ''
-    const preview = composeAgentPrompt(owner, null, { 当前时间: new Date().toISOString(), 人格名称: personaName })
+    const preview = composeAgentPrompt(owner, null, { 当前时间: new Date().toISOString(), 人格名称: owner.activePersona?.name ?? '' })
     writeRestrictedJson(join(this.bridgeDirectory, 'owner-policy.json'), { schemaVersion: 1, revision: preview.revision, systemPrompt: preview.systemPrompt,
-      agentTypes: (owner.agentTypes ?? []).filter(type => type.enabled).map(type => ({ id: type.id, title: type.title, description: type.description, enabled: type.enabled })),
+      agentTypes: owner.agentTypes.filter(type => type.enabled).map(type => ({ id: type.id, title: type.title, description: type.description, enabled: type.enabled })),
       ...(binding && contextRef ? { contextRef, binding: { agentId: binding.scope.agentId, agentTypeId: binding.scope.agentTypeId, label: `${binding.scope.pluginId}-${binding.scope.kind}-${binding.scope.targetId}` } } : {}) })
-    return { revision: owner.revision, personaName, identityBindings: { 主人: owner.bindings?.主人 ?? '', 管理员: owner.bindings?.管理员 ?? '' }, messageTemplate: kind => {
-      const prompt = owner.prompts.find(candidate => candidate.id === kind)
-      return prompt?.body ?? ''
-    } }
+    return { revision: preview.revision }
   }
 
   private clearUnownedExpected(): void {
@@ -404,13 +399,7 @@ export class DshPlugin implements BackendPlugin {
       const policy = this.publishPolicy(binding, batch.batchId)
       const context = { contextRef: batch.batchId, agentTypeId: binding.scope.agentTypeId, platform: first.platform, accountId: first.accountId, instanceId: first.instanceId, conversationId: batch.conversationId,
         kind: first.source.kind, createdAt: batch.createdAt, reason: batch.reason, ownerRevision: policy.revision }
-      const renderedPrompt = renderTemplate(policy.messageTemplate(first.source.kind), first.source.kind, {
-        当前时间: new Date().toISOString(), 人格名称: policy.personaName, 平台: first.platform, 机器人账号: first.accountId,
-        会话编号: batch.conversationId, 会话类型: first.source.kind, 发送者列表: JSON.stringify([...new Set(batch.events.map(event => event.senderId))]),
-        消息列表: JSON.stringify(batch.events), 消息内容: batch.events[batch.events.length - 1]!.text, 消息数量: String(batch.events.length), 批次编号: batch.batchId,
-        目标编号: binding.scope.targetId, ...policy.identityBindings,
-      })
-      const body = { context, renderedPrompt, events: batch.events }
+      const body = { context, events: batch.events }
       const digest = createHash('sha256').update(JSON.stringify(body)).digest('hex')
       const identity = { nonce: this.nonce, sessionId: this.metadata!.sessionId, batchId: batch.batchId, digest }
       const content = JSON.stringify({ eating: { magic: 'eating-harness-delivery', protocolVersion: 1, ...identity }, ...body })

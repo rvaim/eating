@@ -17,6 +17,7 @@ import { DshPlugin } from '../../../plugins/harness/dsh/src/backend/adapter'
 import { EatingHost } from './app'
 import qqEntry from '../../../plugins/communication/qq/src/server'
 import { DshRuntimeInstallation } from '../../../plugins/harness/dsh/src/backend/runtime'
+import { readModelFixtureBatch } from '../../../tests/fixtures/openai'
 import type { ModelFixtureRequest } from '../../../tests/fixtures/openai'
 import { startOneBotFixture } from '../../../tests/fixtures/onebot'
 
@@ -37,6 +38,7 @@ async function isolatedHome() {
 
 async function modelFixture(choose: (request: ModelFixtureRequest, index: number) => { name: string; arguments: object } | string) {
   const requests: ModelFixtureRequest[] = []
+  const errors: string[] = []
   const server = createServer((request, response) => {
     void (async () => {
       if (request.url !== '/v1/chat/completions' || request.method !== 'POST') { response.writeHead(404); response.end(); return }
@@ -50,12 +52,12 @@ async function modelFixture(choose: (request: ModelFixtureRequest, index: number
       if (typeof reply === 'string') { chunk({ role: 'assistant', content: reply }, null); chunk({}, 'stop') }
       else { chunk({ role: 'assistant', tool_calls: [{ index: 0, id: `call_multiagent_${requests.length}`, type: 'function', function: { name: reply.name, arguments: JSON.stringify(reply.arguments) } }] }, null); chunk({}, 'tool_calls') }
       response.end('data: [DONE]\n\n')
-    })().catch(() => { if (!response.headersSent) response.writeHead(500); response.end() })
+    })().catch(error => { errors.push(error instanceof Error ? error.message : String(error)); if (!response.headersSent) response.writeHead(500); response.end() })
   })
   await new Promise<void>(accept => server.listen(0, '127.0.0.1', accept))
   cleanups.push(async () => { const closed = new Promise<void>(accept => server.close(() => accept())); server.closeAllConnections(); await closed })
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('No fixture port')
-  return { endpoint: `http://127.0.0.1:${address.port}/v1`, requests }
+  return { endpoint: `http://127.0.0.1:${address.port}/v1`, requests, errors }
 }
 
 // Only fixed independent npm packages and loopback protocol fixtures are executed.
@@ -156,6 +158,7 @@ export function apply(ctx){
     expect(result.notifications).toEqual(expect.arrayContaining([expect.objectContaining({ method: 'subagent.started', params: { parentSessionId: rootId, childSessionId: childId } })]))
     await harness.close()
     expect(model.requests).toHaveLength(5)
+    expect(model.errors).toEqual([])
   }, 60000)
 
   it('uses the production bridge, scoped Host MCP, persistent child identity and offline native session reader', async () => {
@@ -251,7 +254,14 @@ export function apply(ctx){
     emit(99303, true)
     await until(() => host.harness.getStatus().accepted === 3 && plugin.isReady(), 'group production delegation timed out')
     expect(onebot.requests.filter(request => request.action === 'send_group_msg')).toHaveLength(1)
+    expect(model.errors).toEqual([])
     const requests = model.requests
+    expect(requests).toHaveLength(12)
+    for (const request of requests) {
+      const batch = readModelFixtureBatch(request)
+      if (!batch) throw new Error('Missing current native batch envelope')
+      expect(Object.keys(batch.payload).sort()).toEqual(batch.kind === 'root' ? ['context', 'eating', 'events'] : ['context', 'eating', 'events', 'task'])
+    }
     const rootRequests = requests.filter(request => request.tools?.some(tool => tool.function?.name === 'eating_delegate_task'))
     expect(rootRequests.every(request => request.tools?.length === 2)).toBe(true)
     expect(requests.filter(request => request.tools?.some(tool => tool.function?.name === 'mcp__qq__qq_send_private_message')).every(request => !request.tools?.some(tool => tool.function?.name === 'mcp__qq__qq_send_group_message'))).toBe(true)
@@ -274,9 +284,15 @@ export function apply(ctx){
       }
       if (index === 1) return { name: 'mcp__qq__qq_get_stranger_info', arguments: { user_id: '987654321' } }
       if (index === 2) return 'QUERY-SUMMARY：已查询当前私聊对象资料，下一步交主Agent决定。'
-      if (index === 3) return { name: 'eating_delegate_task', arguments: { type_id: 'qq.private', context_ref: contextRef, task: '根据刚才查询的资料，向同一对象发送一次确认。' } }
+      if (index === 3) {
+        const previous: unknown = JSON.parse(String(request.messages?.find(message => message.role === 'tool' && String(message.content).includes('QUERY-SUMMARY'))?.content))
+        if (!isJsonObject(previous) || previous.status !== 'completed' || !Array.isArray(previous.actions) || previous.actions.length) throw new Error('Main Agent did not receive the completed query result before deciding to send')
+        return { name: 'eating_delegate_task', arguments: { type_id: 'qq.private', context_ref: contextRef, task: '根据刚才查询的资料，向同一对象发送一次确认。' } }
+      }
       if (index === 4) return { name: 'mcp__qq__qq_send_private_message', arguments: { user_id: '987654321', message: '同批分阶段委派确认', request_id: 'same-batch-stage-send-0001' } }
       if (index === 5) return 'SEND-SUMMARY：发送已获得真实QQ工具回执。'
+      const sent: unknown = JSON.parse(String(request.messages?.find(message => message.role === 'tool' && String(message.content).includes('SEND-SUMMARY'))?.content))
+      if (!isJsonObject(sent) || sent.status !== 'completed' || !Array.isArray(sent.actions) || sent.actions.length !== 1 || !isJsonObject(sent.actions[0]) || sent.actions[0].outcome !== 'succeeded') throw new Error('Main Agent did not receive the actual successful Host send receipt')
       return 'MAIN-FINAL：已核对查询和发送的分阶段结果。'
     })
     let plugin!: DshPlugin
@@ -297,6 +313,7 @@ export function apply(ctx){
     while (Date.now() < deadline && !(host.harness.getStatus().accepted === 1 && plugin.isReady() && model.requests.length >= 7)) await new Promise<void>(accept => setTimeout(accept, 20))
     expect(plugin.getStatus().lastError).toBeNull()
     expect(model.requests).toHaveLength(7)
+    expect(model.errors).toEqual([])
     expect(plugin.isReady()).toBe(true)
     const names = model.requests.map(request => request.tools?.map(tool => tool.function?.name) ?? [])
     expect(names[0]).toEqual(['eating_delegate_task', 'eating_list_agent_types'])
@@ -322,6 +339,7 @@ export function apply(ctx){
     expect(list.sessions).toHaveLength(2)
     const bindings: unknown = JSON.parse(await readFile(join(home, 'harness/dsh/agent-bindings.json'), 'utf8'))
     if (!isJsonObject(bindings) || !Array.isArray(bindings.bindings) || !isJsonObject(bindings.bindings[0])) throw new Error('Missing staged binding')
+    expect(bindings.schemaVersion).toBe(2)
     expect(bindings.bindings[0].taskRefs).toEqual([expect.objectContaining({ contextRef, state: 'completed' }), expect.objectContaining({ contextRef, state: 'completed' })])
     const taskRefs = bindings.bindings[0].taskRefs
     if (!Array.isArray(taskRefs) || !isJsonObject(taskRefs[0]) || !isJsonObject(taskRefs[1])) throw new Error('Missing native call references')

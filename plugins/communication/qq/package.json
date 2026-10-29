@@ -1,6 +1,6 @@
 {
   "name": "@eating/plugin-qq",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "type": "module",
   "description": "Eating QQ OneBot v11通讯插件，包含独立后台和管理面板",
   "files": [

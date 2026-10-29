@@ -3,6 +3,29 @@ import { dirname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { PlatformError, isJsonObject } from '@eating/plugin-sdk'
 import type { JsonObject } from '@eating/plugin-sdk'
+import type { OneBotConfig } from '../config'
+import { parseQQAgentPolicy } from './agent-policy'
+
+export function readConfiguration(input: unknown): OneBotConfig {
+  const fields = ['displayName', 'endpoint', 'accessToken', 'autoConnect', 'forwardToHarness', 'receiveGroups', 'timeoutMs', 'owners', 'administrators', 'agentTools', 'policyRevision']
+  if (!isJsonObject(input) || fields.some(key => !Object.hasOwn(input, key)) || Object.keys(input).some(key => !fields.includes(key))) throw new PlatformError('INVALID_CONFIGURATION', 'QQ 配置必须完整包含当前版本字段，不能包含未知字段。')
+  if (typeof input.displayName !== 'string' || input.displayName !== input.displayName.trim() || input.displayName.length < 1 || input.displayName.length > 40) throw new PlatformError('INVALID_CONFIGURATION', '显示名称需为1至40个字符。')
+  if (typeof input.endpoint !== 'string' || input.endpoint.length > 4096 || /[\s\u0000-\u001f\u007f]/u.test(input.endpoint)) throw new PlatformError('INVALID_CONFIGURATION', '请填写有效的 ws:// 或 wss:// OneBot 地址。')
+  if (input.endpoint) {
+    let url: URL
+    try { url = new URL(input.endpoint) } catch { throw new PlatformError('INVALID_CONFIGURATION', '请填写有效的 ws:// 或 wss:// OneBot 地址。') }
+    if (!['ws:', 'wss:'].includes(url.protocol) || !url.hostname || url.username || url.password || input.endpoint.includes('@') || input.endpoint.includes('?') || input.endpoint.includes('#')) throw new PlatformError('INVALID_CONFIGURATION', 'OneBot 地址只能使用 ws/wss，不要在地址中填写令牌、账号、查询参数或片段。')
+    if (/\/(?:api|event)\/?$/.test(url.pathname)) throw new PlatformError('INVALID_CONFIGURATION', '请使用同时支持 API 和事件的统一 WebSocket 端点，不要使用 /api 或 /event 分离接口。')
+  }
+  if (typeof input.accessToken !== 'string' || input.accessToken.length > 4096 || /[\r\n]/.test(input.accessToken)) throw new PlatformError('INVALID_CONFIGURATION', '访问令牌格式不正确。')
+  if (typeof input.timeoutMs !== 'number' || !Number.isInteger(input.timeoutMs) || input.timeoutMs < 1000 || input.timeoutMs > 60000) throw new PlatformError('INVALID_CONFIGURATION', '请求超时需在1000至60000毫秒之间。')
+  if (typeof input.autoConnect !== 'boolean' || typeof input.forwardToHarness !== 'boolean' || typeof input.receiveGroups !== 'boolean') throw new PlatformError('INVALID_CONFIGURATION', 'QQ 连接与消息设置必须为布尔值。')
+  return {
+    displayName: input.displayName, endpoint: input.endpoint, accessToken: input.accessToken, timeoutMs: input.timeoutMs,
+    autoConnect: input.autoConnect, forwardToHarness: input.forwardToHarness, receiveGroups: input.receiveGroups,
+    ...parseQQAgentPolicy({ owners: input.owners, administrators: input.administrators, agentTools: input.agentTools, policyRevision: input.policyRevision }),
+  }
+}
 
 export function writeRestrictedJson(filePath: string, data: JsonObject): void {
   const directory = resolve(dirname(filePath))
@@ -43,21 +66,23 @@ export class QQConfigurationFile {
     this.filePath = join(this.directory, 'config.json')
   }
 
-  read(): JsonObject | null {
+  read(): OneBotConfig | null {
     if (!existsSync(this.filePath)) return null
     if (lstatSync(this.filePath).isSymbolicLink()) throw new PlatformError('INVALID_CONFIGURATION_FILE', 'QQ 配置不能使用符号链接。', 500)
     chmodSync(this.filePath, 0o600)
     try {
       const data: unknown = JSON.parse(readFileSync(this.filePath, 'utf8'))
-      if (!isJsonObject(data) || data.schemaVersion !== 1 || !isJsonObject(data.configuration)) throw new Error('schema')
-      this.updatedAt = typeof data.updatedAt === 'string' ? data.updatedAt : null
-      return data.configuration
-    } catch { throw new PlatformError('CONFIGURATION_CORRUPTED', 'QQ 配置格式损坏或版本不兼容，未覆盖原文件。', 500) }
+      if (!isJsonObject(data) || Object.keys(data).some(key => !['schemaVersion', 'updatedAt', 'configuration'].includes(key)) || data.schemaVersion !== 2 || typeof data.updatedAt !== 'string' || !Number.isFinite(Date.parse(data.updatedAt))) throw new Error('schema')
+      const configuration = readConfiguration(data.configuration)
+      this.updatedAt = data.updatedAt
+      return configuration
+    } catch { throw new PlatformError('CONFIGURATION_CORRUPTED', 'QQ 配置格式无效或版本不支持，未覆盖原文件。', 500) }
   }
 
-  write(configuration: JsonObject): void {
+  write(configuration: OneBotConfig): void {
+    const current = readConfiguration(configuration)
     const updatedAt = new Date().toISOString()
-    writeRestrictedJson(this.filePath, { schemaVersion: 1, updatedAt, configuration })
+    writeRestrictedJson(this.filePath, { schemaVersion: 2, updatedAt, configuration: { ...current } })
     this.updatedAt = updatedAt
   }
 }

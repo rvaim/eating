@@ -79,7 +79,7 @@ export function getRuntimeAgentSource(): string {
       prepared = true;
       taskConfigurations.set(childId, configuration);
       const prompt = [{ type: 'text', text: JSON.stringify({ eating: { protocolVersion: 1, contextRef: args.context_ref, agentTypeId: args.type_id }, task: args.task,
-        context: context.payload.context, renderedPrompt: context.payload.renderedPrompt, events: context.payload.events }) }];
+        context: context.payload.context, events: context.payload.events }) }];
       let terminal;
       const stored = await ctx.sessionPersistence.stat(childId, { signal });
       if (stored) {
@@ -91,7 +91,7 @@ export function getRuntimeAgentSource(): string {
         await ctx.subagents.sendMessage(exec.agent, childId, prompt, { signal });
         submitted = true;
         const child = ctx.agents.get(childId);
-        if (child && await ctx.sessions.flush(child.session) !== true) throw new Error('Child durability is unavailable');
+        if (!child || await ctx.sessions.flush(child.session) !== true) throw new Error('Child durability is unavailable');
         if (await ctx.sessions.flush(exec.agent.session) !== true) throw new Error('Parent durability is unavailable');
         terminal = await waitForTask(ended.promise, signal);
       } else {
@@ -102,14 +102,15 @@ export function getRuntimeAgentSource(): string {
         signal.addEventListener('abort', cancel, { once: true });
         if (signal.aborted) cancel();
         const child = ctx.agents.get(childId);
-        if (child && await ctx.sessions.flush(child.session) !== true) throw new Error('Child durability is unavailable');
+        if (!child || await ctx.sessions.flush(child.session) !== true) throw new Error('Child durability is unavailable');
         if (await ctx.sessions.flush(exec.agent.session) !== true) throw new Error('Parent durability is unavailable');
         terminal = await waitForTask(activation.result, signal);
       }
       const actionsResult = await control('actions', { agentId: childId, contextRef: args.context_ref, taskId }, AbortSignal.timeout(5000));
+      if (!Array.isArray(actionsResult.actions)) throw new Error('Host action receipts are invalid');
       const status = signal.aborted ? 'unknown' : terminal.stopReason === 'completed' ? 'completed' : 'failed';
       await control('finish-task', { agentId: childId, contextRef: args.context_ref, taskId, status }, AbortSignal.timeout(5000));
-      return { childId, status, summary: lastText(terminal.output), actions: Array.isArray(actionsResult.actions) ? actionsResult.actions : [] };
+      return { childId, status, summary: lastText(terminal.output), actions: actionsResult.actions };
     } catch (error) {
       if (submitted) {
         if (activation) await activation.dispose().catch(() => {});

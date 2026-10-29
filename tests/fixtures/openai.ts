@@ -50,8 +50,7 @@ export function readModelFixtureBatch(request: ModelFixtureRequest): ModelFixtur
 /** A loopback model protocol fixture; it is never imported by production code. */
 export async function startOpenAiFixture(options: {
   readonly apiKey?: string
-  readonly nativeDelegation?: boolean
-  /** With native delegation, invoked once per fresh root batch; continuations use the saved plan. */
+  /** Invoked once per fresh root batch; continuations use the saved plan. */
   readonly chooseReply?: (request: ModelFixtureRequest, index: number) => ModelFixtureReply | null
 } = {}) {
   const requests: ModelFixtureRequest[] = []
@@ -72,48 +71,42 @@ export async function startOpenAiFixture(options: {
       let toolCall: { readonly name: string; readonly arguments: JsonObject } | undefined
       // Nonempty final text is intentional: the Host must never auto-send it to QQ.
       let text = '这是内部处理结果，由模型决定保持沉默。'
-      if (options.nativeDelegation) {
-        const batch = readModelFixtureBatch(payload)
-        if (!batch) throw new Error('Native delegation fixture requires a real Eating user batch envelope')
-        const names = payload.tools?.map(item => item.function?.name) ?? []
-        if (names.includes('eating_delegate_task')) {
-          if (batch.kind !== 'root') throw new Error('Root model request has no root delivery envelope')
-          const previous = plans.get(batch.contextRef)
-          if (previous) {
-            if (previous.reply && !JSON.stringify(payload.messages?.slice(batch.messageIndex + 1).filter(message => message.role === 'tool')).includes(`CHILD-SUMMARY:${batch.contextRef}`)) throw new Error('Root continuation is missing its actual child summary tool result')
-            text = previous.reply ? `MAIN-SUMMARY:${batch.contextRef}` : text
-          } else {
-            const reply = options.chooseReply?.(payload, requests.length - 1) ?? null
-            const eating = batch.payload.eating
-            if (!isJsonObject(eating) || typeof eating.sessionId !== 'string') throw new Error('Root batch has no native session id')
-            plans.set(batch.contextRef, { reply, rootId: eating.sessionId, childSent: false })
-            if (reply) {
-              if (batch.agentTypeId !== `qq.${reply.target}`) throw new Error('Reply plan disagrees with the verified batch Agent type')
-              toolCall = { name: 'eating_delegate_task', arguments: { type_id: batch.agentTypeId, context_ref: batch.contextRef, task: '处理本批绑定会话，依据真实消息决定回复，并向主 Agent 报告工具结果。' } }
-            }
-          }
+      const batch = readModelFixtureBatch(payload)
+      if (!batch) throw new Error('Native delegation fixture requires a real Eating user batch envelope')
+      const names = payload.tools?.map(item => item.function?.name) ?? []
+      if (names.includes('eating_delegate_task')) {
+        if (batch.kind !== 'root') throw new Error('Root model request has no root delivery envelope')
+        const previous = plans.get(batch.contextRef)
+        if (previous) {
+          if (previous.reply && !JSON.stringify(payload.messages?.slice(batch.messageIndex + 1).filter(message => message.role === 'tool')).includes(`CHILD-SUMMARY:${batch.contextRef}`)) throw new Error('Root continuation is missing its actual child summary tool result')
+          text = previous.reply ? `MAIN-SUMMARY:${batch.contextRef}` : text
         } else {
-          if (batch.kind !== 'child') throw new Error('Child model request has no child task envelope')
-          const plan = plans.get(batch.contextRef)
-          if (!plan?.reply) throw new Error('Child has no reply plan from its actual root delegation')
-          if (batch.nativeParentId && batch.nativeParentId !== plan.rootId) throw new Error('Resumed child task sender differs from its actual root')
-          const reply = plan.reply
-          const name = `mcp__qq__qq_send_${reply.target}_message`
-          if (!names.includes(name)) throw new Error('The scoped child does not expose its planned send tool')
-          if (plan.childSent) {
-            const result = payload.messages?.slice(batch.messageIndex + 1).find(message => message.role === 'tool')
-            const received: unknown = typeof result?.content === 'string' ? JSON.parse(result.content) : null
-            if (!isJsonObject(received) || typeof received.message_id !== 'number') throw new Error('Child continuation is missing its actual successful send tool result')
-            text = `CHILD-SUMMARY:${batch.contextRef}`
-          } else {
-            plan.childSent = true
-            toolCall = { name, arguments: { [reply.target === 'private' ? 'user_id' : 'group_id']: reply.targetId, message: reply.text, request_id: reply.requestId } }
+          const reply = options.chooseReply?.(payload, requests.length - 1) ?? null
+          const eating = batch.payload.eating
+          if (!isJsonObject(eating) || typeof eating.sessionId !== 'string') throw new Error('Root batch has no native session id')
+          plans.set(batch.contextRef, { reply, rootId: eating.sessionId, childSent: false })
+          if (reply) {
+            if (batch.agentTypeId !== `qq.${reply.target}`) throw new Error('Reply plan disagrees with the verified batch Agent type')
+            toolCall = { name: 'eating_delegate_task', arguments: { type_id: batch.agentTypeId, context_ref: batch.contextRef, task: '处理本批绑定会话，依据真实消息决定回复，并向主 Agent 报告工具结果。' } }
           }
         }
       } else {
-        const reply = options.chooseReply?.(payload, requests.length - 1) ?? null
-        const name = reply ? payload.tools?.find(item => item.function?.name?.endsWith(reply.target === 'private' ? 'qq_send_private_message' : 'qq_send_group_message'))?.function?.name : undefined
-        if (reply && name) toolCall = { name, arguments: { [reply.target === 'private' ? 'user_id' : 'group_id']: reply.targetId, message: reply.text, request_id: reply.requestId } }
+        if (batch.kind !== 'child') throw new Error('Child model request has no child task envelope')
+        const plan = plans.get(batch.contextRef)
+        if (!plan?.reply) throw new Error('Child has no reply plan from its actual root delegation')
+        if (batch.nativeParentId && batch.nativeParentId !== plan.rootId) throw new Error('Resumed child task sender differs from its actual root')
+        const reply = plan.reply
+        const name = `mcp__qq__qq_send_${reply.target}_message`
+        if (!names.includes(name)) throw new Error('The scoped child does not expose its planned send tool')
+        if (plan.childSent) {
+          const result = payload.messages?.slice(batch.messageIndex + 1).find(message => message.role === 'tool')
+          const received: unknown = typeof result?.content === 'string' ? JSON.parse(result.content) : null
+          if (!isJsonObject(received) || typeof received.message_id !== 'number') throw new Error('Child continuation is missing its actual successful send tool result')
+          text = `CHILD-SUMMARY:${batch.contextRef}`
+        } else {
+          plan.childSent = true
+          toolCall = { name, arguments: { [reply.target === 'private' ? 'user_id' : 'group_id']: reply.targetId, message: reply.text, request_id: reply.requestId } }
+        }
       }
       const id = `chatcmpl-fixture-${requests.length}`
       response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' })

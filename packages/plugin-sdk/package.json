@@ -1,6 +1,6 @@
 {
   "name": "@eating/plugin-sdk",
-  "version": "1.6.0",
+  "version": "2.0.0",
   "type": "module",
   "description": "Eating 插件公开后台接口、事件与能力契约",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },

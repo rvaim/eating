@@ -1,4 +1,4 @@
-import type { OneBotConfig } from '../config'
+import type { OneBotConnectionConfig } from '../config'
 import { randomUUID } from 'node:crypto'
 import WebSocket from 'ws'
 import type { RawData } from 'ws'
@@ -33,7 +33,7 @@ type PendingRequest = {
 }
 type Session = {
   generation: number
-  config: OneBotConfig
+  config: OneBotConnectionConfig
   socket: WebSocket
   pending: Map<string, PendingRequest>
   ready: boolean
@@ -55,7 +55,7 @@ function validateTimeout(value: number): number {
   return value
 }
 
-function validateConfiguration(config: OneBotConfig): OneBotConfig {
+function validateConfiguration(config: OneBotConnectionConfig): OneBotConnectionConfig {
   let endpoint: URL
   try {
     if (typeof config?.endpoint !== 'string' || config.endpoint.length > 4096
@@ -73,7 +73,7 @@ function validateConfiguration(config: OneBotConfig): OneBotConfig {
     throw new PlatformError('onebot_invalid_token', 'OneBot 访问令牌格式无效', 400, 'not-sent')
   }
   validateTimeout(config.timeoutMs)
-  return { ...config, endpoint: endpoint.href }
+  return { endpoint: endpoint.href, accessToken: config.accessToken, timeoutMs: config.timeoutMs }
 }
 
 function requestError(pending: PendingRequest, code: string, message: string, statusCode = 502): PlatformError {
@@ -90,7 +90,7 @@ export class OneBotClient {
     connectedAt: null, lastEventAt: null, reconnectAttempt: 0,
   }
   private session: Session | null = null
-  private activeConfig: OneBotConfig | null = null
+  private activeConfig: OneBotConnectionConfig | null = null
   private reconnectTimer: Timer | null = null
   private reconnectAttempt = 0
   private generation = 0
@@ -112,7 +112,7 @@ export class OneBotClient {
     return { ...this.status }
   }
 
-  async connect(config: OneBotConfig): Promise<void> {
+  async connect(config: OneBotConnectionConfig): Promise<void> {
     if (this.disposed) throw new PlatformError('onebot_disposed', 'OneBot 客户端已释放', 409, 'not-sent')
     // Validate before replacing a healthy connection. Never expose raw URLs or tokens in errors.
     const validated = validateConfiguration(config)
@@ -159,7 +159,7 @@ export class OneBotClient {
     await this.disconnect()
   }
 
-  private isActive(generation: number, config: OneBotConfig): boolean {
+  private isActive(generation: number, config: OneBotConnectionConfig): boolean {
     return !this.disposed && this.generation === generation && this.activeConfig === config
   }
 
@@ -182,7 +182,7 @@ export class OneBotClient {
     if (this.generation === generation) this.status = { ...this.status, lastError: 'OneBot 状态回调执行失败' }
   }
 
-  private open(config: OneBotConfig, generation: number, reconnecting: boolean): Promise<void> {
+  private open(config: OneBotConnectionConfig, generation: number, reconnecting: boolean): Promise<void> {
     return new Promise((resolve, reject) => {
       let socket: WebSocket
       try {
@@ -438,7 +438,7 @@ export class OneBotClient {
     if (session.socket.readyState !== WebSocket.CLOSED) session.socket.terminate()
   }
 
-  private scheduleReconnect(generation: number, config: OneBotConfig, error: PlatformError): void {
+  private scheduleReconnect(generation: number, config: OneBotConnectionConfig, error: PlatformError): void {
     if (!this.isActive(generation, config)) return
     const delay = this.reconnectDelaysMs[this.reconnectAttempt]
     if (delay === undefined) {

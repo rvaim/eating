@@ -143,7 +143,7 @@ async function createHost(withLogs = true) {
   temporaryRoots.push({ path, parent })
   const source = logSource()
   const backend: BackendPlugin = {
-    id: 'test-log', name: '测试日志插件', version: '1.0.0',
+    id: 'test-log', kind: 'communication', name: '测试日志插件', version: '1.0.0',
     ...(withLogs ? { logs: source } : {}), capabilities: [], tools: [],
     getPublicConfiguration: () => ({ autoConnect: false }),
     getStatus: () => ({ state: 'disconnected', accountId: null, accountName: null, lastError: null,
@@ -151,7 +151,7 @@ async function createHost(withLogs = true) {
     updateConfiguration: async () => ({}), connect: vi.fn(async () => {}), disconnect: vi.fn(async () => {}),
     invoke: async () => null, dispose: vi.fn(async () => {}),
   }
-  const entry: BackendPluginEntry = { id: 'test-log', storageDirectory: 'test-log-bot', create: () => backend }
+  const entry: BackendPluginEntry = { id: 'test-log', kind: 'communication', storageDirectory: 'test-log-bot', create: () => backend }
   const host = new EatingHost({ dataDirectory: path, entries: [entry], allowedUiOrigins: [], port: 0 })
   cleanups.push(() => host.close())
   const url = await host.listen()

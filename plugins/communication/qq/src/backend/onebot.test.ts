@@ -1,4 +1,4 @@
-import type { OneBotConfig } from '../config'
+import type { OneBotConnectionConfig } from '../config'
 import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
 import type { IncomingHttpHeaders } from 'node:http'
@@ -68,11 +68,8 @@ async function fixture(options: FixtureOptions = {}) {
   return { endpoint, server, peers, requests, handshakes, approvals, close }
 }
 
-function config(endpoint: string, patch: Partial<OneBotConfig> = {}): OneBotConfig {
-  return {
-    endpoint, displayName: '本地协议测试', accessToken: '', autoConnect: false,
-    forwardToHarness: false, receiveGroups: true, timeoutMs: 500, ...patch,
-  }
+function config(endpoint: string, patch: Partial<OneBotConnectionConfig> = {}): OneBotConnectionConfig {
+  return { endpoint, accessToken: '', timeoutMs: 500, ...patch }
 }
 
 function client(options: Partial<ConstructorParameters<typeof OneBotClient>[0]> = {}): OneBotClient {
@@ -109,7 +106,7 @@ describe('OneBotClient forward unified WebSocket', () => {
     expect(await errorFrom(value.call('send_msg', {}))).toMatchObject({ code: 'onebot_not_connected', outcome: 'not-sent' })
   })
 
-  it('authenticates in the header and obtains real account/health data even with autoConnect false', async () => {
+  it('authenticates in the header and obtains real account/health data after explicit connect', async () => {
     const remote = await fixture()
     const accessToken = randomUUID()
     const statuses: ConnectionStatus[] = []
@@ -412,10 +409,10 @@ describe('OneBotClient forward unified WebSocket', () => {
     expect(remote.requests.filter((request) => request.action === 'get_friend_list')).toHaveLength(1)
   })
 
-  it('treats manual disconnect as final even if autoConnect is true and rejects pending actions', async () => {
+  it('treats manual disconnect as final and rejects pending actions', async () => {
     const remote = await fixture()
     const value = client({ reconnectDelaysMs: [5, 10] })
-    await value.connect(config(remote.endpoint, { autoConnect: true }))
+    await value.connect(config(remote.endpoint))
     const pending = errorFrom(value.call('send_msg', {}, { timeoutMs: 5000 }))
     await waitFor(() => expect(remote.requests).toHaveLength(3))
     await value.disconnect()
@@ -428,7 +425,7 @@ describe('OneBotClient forward unified WebSocket', () => {
   it('cancels a scheduled reconnection when manually disconnected', async () => {
     const remote = await fixture()
     const value = client({ reconnectDelaysMs: [40] })
-    await value.connect(config(remote.endpoint, { autoConnect: true }))
+    await value.connect(config(remote.endpoint))
     remote.peers[0]!.close()
     await waitFor(() => expect(value.getStatus().state).toBe('reconnecting'))
     await value.disconnect()
@@ -514,7 +511,7 @@ describe('OneBotClient forward unified WebSocket', () => {
   it('cancels an unfinished handshake on manual disconnect and cannot be revived by late approval', async () => {
     const remote = await fixture({ holdHandshake: true })
     const value = client({ reconnectDelaysMs: [5] })
-    const connecting = errorFrom(value.connect(config(remote.endpoint, { autoConnect: true })))
+    const connecting = errorFrom(value.connect(config(remote.endpoint)))
     await waitFor(() => expect(remote.approvals).toHaveLength(1))
     await value.disconnect()
     expect(await connecting).toMatchObject({ code: 'onebot_disconnected', outcome: 'not-sent' })

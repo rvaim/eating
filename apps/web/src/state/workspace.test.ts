@@ -4,7 +4,7 @@ import type { CommunicationPlugin } from '@eating/ui-sdk'
 import type { hostRequest } from '@eating/ui-sdk'
 import { PlatformWorkspace } from './workspace'
 
-const plugin: CommunicationPlugin = { id: 'qq', name: 'QQ', description: '平台', version: '0.2.0', apiVersion: 1,
+const plugin: CommunicationPlugin = { id: 'qq', name: 'QQ', description: '平台', version: '0.2.0', apiVersion: 2,
   kind: 'communication', order: 1, icon: MessageCircle, brandColor: '#3876b6', defaultRegistered: true,
   initialValues: {}, validate: () => ({ valid: true, errors: {} }), summary: () => 'QQ', Panel: () => null }
 const disconnected = { state: 'disconnected', accountId: null, accountName: null, lastError: null, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 }

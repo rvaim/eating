@@ -1,5 +1,3 @@
-import { lookup } from 'node:dns/promises'
-import { isIP } from 'node:net'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { ClientRequest, IncomingMessage, RequestOptions } from 'node:http'
@@ -62,55 +60,30 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const IMAGE_TIMEOUT_MS = 10000
 export type QQImageMimeType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
 export type QQImageBytes = { readonly mimeType: QQImageMimeType; readonly bytes: Buffer }
-type ResolvedAddress = { readonly address: string; readonly family: number }
 export type QQImageNetwork = {
-  readonly resolve: (hostname: string) => Promise<readonly ResolvedAddress[]>
   readonly request: (url: URL, options: RequestOptions, listener: (response: IncomingMessage) => void) => ClientRequest
 }
 const publicImageNetwork: QQImageNetwork = {
-  resolve: hostname => lookup(hostname, { all: true, verbatim: true }),
   request: (url, options, listener) => (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, options, listener),
 }
 
 function mediaError(code: string, message: string, statusCode = 502): PlatformError { return new PlatformError(code, message, statusCode, 'failed') }
-function unsafeSource(): never { throw mediaError('MEDIA_UNSAFE_SOURCE', '图片资源地址不符合公开网络访问规则，未获取图片。', 403) }
+function invalidSource(): never { throw mediaError('MEDIA_INVALID_SOURCE', '图片资源地址无效，未获取图片。', 400) }
 function scopeViolation(): never { throw new PlatformError('AGENT_SCOPE_VIOLATION', '图片的账号、会话、消息或资源引用不匹配，未返回图片。', 403, 'not-sent') }
 function unavailable(): never { throw mediaError('MEDIA_UNAVAILABLE', '此消息没有可获取的图片 URL；远端文件路径无法由 Eating 读取。') }
 
-/** Restrict both literal hosts and every DNS answer, including IPv4 embedded/transition IPv6. */
-export function isPublicQQImageAddress(address: string): boolean {
-  const family = isIP(address)
-  if (family === 4) {
-    const [a, b, c] = address.split('.').map(Number) as [number, number, number, number]
-    if (a === 0 || a === 10 || a === 127 || a >= 224 || a === 100 && b >= 64 && b <= 127
-      || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168
-      || a === 192 && b === 0 && (c === 0 || c === 2) || a === 192 && b === 88 && c === 99
-      || a === 198 && (b === 18 || b === 19 || b === 51 && c === 100) || a === 203 && b === 0 && c === 113
-      || address === '168.63.129.16') return false
-    return true
-  }
-  if (family !== 6 || address.includes('.') || address.includes('%')) return false
-  const halves = address.toLowerCase().split('::')
-  const left = halves[0] ? halves[0].split(':') : []
-  const right = halves[1] ? halves[1].split(':') : []
-  const words = (halves.length === 1 ? left : [...left, ...Array<string>(8 - left.length - right.length).fill('0'), ...right]).map(part => Number.parseInt(part, 16))
-  const first = words[0]!, second = words[1]!
-  // Only global unicast, excluding protocol assignments, documentation and 6to4 tunnels.
-  return first >= 0x2000 && first <= 0x3fff && first !== 0x2002
-    && !(first === 0x2001 && (second < 0x0200 || second === 0x0db8))
-    && !(first === 0x3fff && second < 0x1000)
-}
-
+/**
+ * Only the URL shape is checked here. Name resolution and routing belong to the
+ * host network stack, so TUN/Fake-IP, system proxies, LAN OneBot caches and
+ * plain public DNS all behave the same way without per-machine settings.
+ */
 function imageSource(source: string): URL {
   let url: URL
   try {
-    if (!source || source.length > 16384 || /[\s\u0000-\u001f\u007f]/u.test(source)) unsafeSource()
+    if (!source || source.length > 16384 || /[\s\u0000-\u001f\u007f]/u.test(source)) invalidSource()
     url = new URL(source)
-  } catch { unsafeSource() }
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash || !url.hostname) unsafeSource()
-  const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  if (!isIP(host) && (!host.includes('.') || /(?:^|\.)(?:localhost|local|internal|home\.arpa)\.?$/.test(host))) unsafeSource()
-  if (isIP(host) && !isPublicQQImageAddress(host)) unsafeSource()
+  } catch { invalidSource() }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash || !url.hostname) invalidSource()
   return url
 }
 
@@ -127,28 +100,12 @@ function detectedImageMime(bytes: Buffer): QQImageMimeType | null {
   return null
 }
 
-/** The injected transport is for isolated fixtures; production always uses pinned public DNS and no redirects. */
+/** The injected transport is for isolated fixtures; production uses the host network stack and follows no redirects. */
 export async function downloadQQImage(source: string, options: { readonly timeoutMs?: number; readonly maxBytes?: number } = {}, network: QQImageNetwork = publicImageNetwork): Promise<QQImageBytes> {
   const url = imageSource(source)
   const timeoutMs = options.timeoutMs ?? IMAGE_TIMEOUT_MS
   const maxBytes = options.maxBytes ?? MAX_IMAGE_BYTES
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > IMAGE_TIMEOUT_MS || !Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_IMAGE_BYTES) throw mediaError('MEDIA_UNAVAILABLE', '图片读取限制无效。')
-  const deadline = Date.now() + timeoutMs
-  const host = url.hostname.replace(/^\[|\]$/g, '')
-  let timer: ReturnType<typeof setTimeout> | undefined
-  let addresses: readonly ResolvedAddress[]
-  try {
-    addresses = isIP(host) ? [{ address: host, family: isIP(host) }] : await Promise.race([
-      network.resolve(host), new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(mediaError('MEDIA_TIMEOUT', '图片资源读取超时。', 504)), timeoutMs) }),
-    ])
-  } catch (error) {
-    if (error instanceof PlatformError && error.code === 'MEDIA_TIMEOUT') throw error
-    throw mediaError('MEDIA_DOWNLOAD_FAILED', '图片资源域名解析失败。')
-  } finally { if (timer) clearTimeout(timer) }
-  if (!addresses.length || addresses.some(entry => !isPublicQQImageAddress(entry.address) || isIP(entry.address) !== entry.family)) unsafeSource()
-  const pinned = addresses[0]!
-  const remainingMs = deadline - Date.now()
-  if (remainingMs <= 0) throw mediaError('MEDIA_TIMEOUT', '图片资源读取超时。', 504)
   return new Promise((resolve, reject) => {
     let request: ClientRequest | undefined
     let response: IncomingMessage | undefined
@@ -160,11 +117,10 @@ export async function downloadQQImage(source: string, options: { readonly timeou
       if (error) { response?.destroy(); request?.destroy(); reject(error) }
       else resolve(result!)
     }
-    const requestTimer = setTimeout(() => finish(mediaError('MEDIA_TIMEOUT', '图片资源读取超时。', 504)), remainingMs)
+    const requestTimer = setTimeout(() => finish(mediaError('MEDIA_TIMEOUT', '图片资源读取超时。', 504)), timeoutMs)
     try {
       request = network.request(url, {
-        method: 'GET', agent: false, family: pinned.family,
-        lookup: (_hostname, _options, callback) => callback(null, pinned.address, pinned.family),
+        method: 'GET', agent: false,
         // No cookies, Authorization, referer or OneBot token are forwarded to image hosts.
         headers: { Accept: 'image/png,image/jpeg,image/webp,image/gif', 'Accept-Encoding': 'identity' },
       }, incoming => {

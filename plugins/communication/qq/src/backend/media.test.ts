@@ -1,9 +1,10 @@
 import { createServer, request as httpRequest } from 'node:http'
-import type { Server, ServerResponse } from 'node:http'
+import type { ClientRequest, Server, ServerResponse } from 'node:http'
+import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PlatformError } from '@eating/plugin-sdk'
 import type { AgentInvocationScope, JsonObject, JsonValue } from '@eating/plugin-sdk'
-import { downloadQQImage, isPublicQQImageAddress, qqReceivedMessageSegments, qqViewReceivedImageTool, readQQReceivedImage } from './media'
+import { downloadQQImage, qqReceivedMessageSegments, qqViewReceivedImageTool, readQQReceivedImage } from './media'
 import type { QQImageNetwork } from './media'
 import { qqTools, validateToolInput } from './operations'
 
@@ -34,17 +35,14 @@ async function networkFixture(serve: (response: ServerResponse) => void) {
   servers.push(server)
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Fixture address unavailable')
-  const resolve = vi.fn(async () => [{ address: '93.184.216.34', family: 4 }])
-  const lookups: Array<{ address: string; family: number }> = []
-  // Only this test transport connects to loopback. Production source/DNS validation stays enabled.
-  const request: QQImageNetwork['request'] = (url, options, listener) => {
-    options.lookup?.('cdn.example.test', {}, (error, pinned, family) => { if (error) throw error; lookups.push({ address: String(pinned), family: family! }) })
-    return httpRequest(new URL(`http://127.0.0.1:${address.port}${url.pathname}${url.search}`), { ...options, lookup: undefined, family: 4 }, listener)
-  }
-  return { network: { resolve, request: vi.fn(request) } satisfies QQImageNetwork, requests, lookups }
+  // Only this test transport connects to loopback. Production resolves and routes
+  // through the host network stack, exactly as an ordinary HTTPS client would.
+  const request: QQImageNetwork['request'] = (url, options, listener) =>
+    httpRequest(new URL(`http://127.0.0.1:${address.port}${url.pathname}${url.search}`), { ...options, agent: false }, listener)
+  return { network: { request: vi.fn(request) } satisfies QQImageNetwork, requests }
 }
 
-function noNetwork(): QQImageNetwork { return { resolve: vi.fn(async () => []), request: vi.fn(() => { throw new Error('Network must not be used') }) } }
+function noNetwork(): QQImageNetwork { return { request: vi.fn(() => { throw new Error('Network must not be used') }) } }
 
 describe('controlled received image extension', () => {
   it('keeps all standard OneBot tools and declares separate content semantics', () => {
@@ -139,40 +137,41 @@ describe('controlled received image extension', () => {
   })
 })
 
-describe('public image download boundary', () => {
-  it.each(['0.0.0.0', '10.0.0.1', '100.64.0.1', '100.100.100.200', '127.0.0.1', '169.254.169.254', '172.16.0.1', '172.31.255.255', '192.168.1.1', '192.0.0.8', '192.0.2.1', '192.88.99.1', '198.18.0.1', '198.51.100.1', '203.0.113.1', '224.0.0.1', '255.255.255.255', '168.63.129.16', '::', '::1', '::ffff:127.0.0.1', '::ffff:8.8.8.8', 'fc00::1', 'fe80::1', 'ff02::1', '64:ff9b::a00:1', '2001::1', '2001:db8::1', '2002:7f00:1::', '3fff::1'])('rejects nonpublic/special address %s', address => {
-    expect(isPublicQQImageAddress(address)).toBe(false)
-  })
-
-  it.each(['8.8.8.8', '93.184.216.34', '2606:4700:4700::1111', '2001:4860:4860::8888'])('accepts public address %s', address => {
-    expect(isPublicQQImageAddress(address)).toBe(true)
-  })
-
-  it.each(['file:///etc/passwd', 'data:image/png;base64,xxx', 'http://user:password@8.8.8.8/image', 'http://127.1/image', 'http://0x7f000001/image', 'http://2130706433/image', 'http://[::1]/image', 'http://[::ffff:127.0.0.1]/image', 'http://metadata.internal/image', 'http://localhost./image', 'http://a.local/image', 'http://a.home.arpa/image', 'https://cdn.example.test/image#secret'])('rejects unsafe URL before networking: %s', async url => {
+describe('received image download boundary', () => {
+  it.each(['file:///etc/passwd', 'data:image/png;base64,xxx', 'ftp://cdn.example.test/image.png', 'http://user:password@8.8.8.8/image', 'https://cdn.example.test/image#secret', 'https://', ''])('rejects a malformed source before networking: %s', async url => {
     const network = noNetwork()
-    await expect(downloadQQImage(url, {}, network)).rejects.toMatchObject({ code: 'MEDIA_UNSAFE_SOURCE' })
-    expect(network.resolve).not.toHaveBeenCalled()
+    await expect(downloadQQImage(url, {}, network)).rejects.toMatchObject({ code: 'MEDIA_INVALID_SOURCE' })
     expect(network.request).not.toHaveBeenCalled()
   })
 
-  it('rejects mixed/private DNS answers and keeps resolver errors free of credentials', async () => {
-    const network = { ...noNetwork(), resolve: vi.fn(async () => [{ address: '93.184.216.34', family: 4 }, { address: '127.0.0.1', family: 4 }]) }
-    await expect(downloadQQImage(signedUrl, {}, network)).rejects.toMatchObject({ code: 'MEDIA_UNSAFE_SOURCE' })
-    expect(network.request).not.toHaveBeenCalled()
-    const failingNetwork = { ...noNetwork(), resolve: vi.fn(async () => { throw new Error(signedUrl) }) }
-    const error = await downloadQQImage(signedUrl, {}, failingNetwork).catch(error => error)
-    expect(error.code).toBe('MEDIA_DOWNLOAD_FAILED')
-    expect(error.message).not.toContain('fixture-secret')
+  it.each([
+    'https://cdn.example.test/image.png',
+    'http://192.168.1.10:8080/image-cache/a.png',
+    'http://198.18.7.115/image.png',
+    'http://localhost:3000/image/a.png',
+  ])('leaves routing to the host network stack, including TUN, proxy and LAN sources: %s', async url => {
+    const fixture = await networkFixture(response => { response.writeHead(200, { 'Content-Type': 'image/png' }); response.end(png) })
+    await expect(downloadQQImage(url, {}, fixture.network)).resolves.toEqual({ mimeType: 'image/png', bytes: png })
+    expect(fixture.network.request).toHaveBeenCalledTimes(1)
   })
 
-  it('pins the sole DNS resolution in custom lookup and never sends OneBot credentials', async () => {
+  it('never sends OneBot credentials and follows no redirects', async () => {
     const fixture = await networkFixture(response => { response.writeHead(200, { 'Content-Type': 'image/png; charset=binary' }); response.end(png) })
     const result = await downloadQQImage(signedUrl, {}, fixture.network)
     expect(result).toEqual({ mimeType: 'image/png', bytes: png })
-    expect(fixture.network.resolve).toHaveBeenCalledExactlyOnceWith('cdn.example.test')
-    expect(fixture.lookups).toEqual([{ address: '93.184.216.34', family: 4 }])
     expect(fixture.requests).toEqual([{ path: '/image.png?signature=fixture-secret', authorization: undefined, cookie: undefined }])
-    expect(fixture.network.request.mock.calls[0]?.[1]).toMatchObject({ agent: false, family: 4 })
+    expect(fixture.network.request.mock.calls[0]?.[1]).toMatchObject({ agent: false })
+  })
+
+  it('reports connection failures without echoing the signed URL', async () => {
+    const network: QQImageNetwork = { request: vi.fn(() => {
+      const request = Object.assign(new EventEmitter(), { destroy: vi.fn(), end: vi.fn() }) as unknown as ClientRequest
+      queueMicrotask(() => request.emit('error', new Error(`connect ECONNREFUSED ${signedUrl}`)))
+      return request
+    }) }
+    const error = await downloadQQImage(signedUrl, {}, network).catch(error => error)
+    expect(error).toMatchObject({ code: 'MEDIA_DOWNLOAD_FAILED' })
+    expect(error.message).not.toContain('fixture-secret')
   })
 
   it('accepts a real GIF fixture and canonical image bytes', async () => {
@@ -202,10 +201,7 @@ describe('public image download boundary', () => {
     }
   })
 
-  it('bounds DNS resolution and the complete response lifetime', async () => {
-    const network = { ...noNetwork(), resolve: (): Promise<[]> => new Promise(() => {}) }
-    await expect(downloadQQImage(signedUrl, { timeoutMs: 20 }, network)).rejects.toMatchObject({ code: 'MEDIA_TIMEOUT' })
-    expect(network.request).not.toHaveBeenCalled()
+  it('bounds the complete request and response lifetime', async () => {
     const fixture = await networkFixture(response => { response.writeHead(200, { 'Content-Type': 'image/png' }); response.write(png.subarray(0, 40)) })
     await expect(downloadQQImage(signedUrl, { timeoutMs: 50 }, fixture.network)).rejects.toMatchObject({ code: 'MEDIA_TIMEOUT' })
   })

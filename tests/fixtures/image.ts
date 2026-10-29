@@ -33,13 +33,11 @@ export function createImageFixturePng(): Buffer {
   ])
 }
 
-/** Test-only transport routes a checked public source to the independent loopback fixture. */
+/** Test-only transport routes an authorized source to the independent loopback fixture. */
 export async function startImageFixture() {
   const bytes = createImageFixturePng()
   const source = 'https://cdn.example.test/received-pixel.png?signature=fixture-image-only'
   const requests: Array<{ readonly path: string | undefined; readonly headers: IncomingHttpHeaders }> = []
-  const resolutions: string[] = []
-  const pinnedLookups: Array<{ readonly address: string; readonly family: number }> = []
   const server = createServer((request, response) => {
     requests.push({ path: request.url, headers: request.headers })
     if (request.url !== '/received-pixel.png?signature=fixture-image-only') { response.writeHead(404); response.end(); return }
@@ -50,17 +48,14 @@ export async function startImageFixture() {
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Image fixture has no loopback port')
   const network: QQImageNetwork = {
-    resolve: async hostname => { resolutions.push(hostname); return [{ address: '93.184.216.34', family: 4 }] },
+    // The fixture keeps the request shape the product uses and only redirects the
+    // socket to loopback; production resolves and routes through the host stack.
     request: (url, options, listener) => {
-      if (url.href !== source || !options.lookup || options.family !== 4 || options.agent !== false) throw new Error('Image fixture received an unchecked source')
-      options.lookup('cdn.example.test', {}, (error, pinned, family) => {
-        if (error || typeof pinned !== 'string' || family !== 4 || pinned !== '93.184.216.34') throw new Error('Image fixture did not receive the checked DNS address')
-        pinnedLookups.push({ address: pinned, family })
-      })
-      return httpRequest(new URL(`http://127.0.0.1:${address.port}${url.pathname}${url.search}`), { ...options, family: 4, lookup: undefined }, listener)
+      if (url.href !== source || options.agent !== false) throw new Error('Image fixture received an unexpected source')
+      return httpRequest(new URL(`http://127.0.0.1:${address.port}${url.pathname}${url.search}`), { ...options, agent: false }, listener)
     },
   }
-  return { source, bytes, requests, resolutions, pinnedLookups, network, async close() {
+  return { source, bytes, requests, network, async close() {
     const closed = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
     server.closeAllConnections()
     await closed

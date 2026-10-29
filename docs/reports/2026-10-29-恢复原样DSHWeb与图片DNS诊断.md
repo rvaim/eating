@@ -6,7 +6,7 @@
 
 负责人明确要求“原生web保持原生，不要去修改”“不要你的只读限制，保持原始dshweb即可”。此前把原生接入扩成自定义侧栏、消息组件、浅色配色及只读层，不符合这一要求；硬编码文字颜色在深色背景也缺乏对比。当前按[ADR-0017](../decisions/ADR-0017-原样接入DSH原生Web.md)撤回这些接管，原[ADR-0016](../decisions/ADR-0016-原生只读Web与多模态会话.md)及[阶段报告](2026-10-29-原生Web时间与图片验证报告.md)保留历史事实。
 
-本轮先修Web，图片只核对真实失败原因并说明方案，不改图片／DNS／代理策略，不下载用户图片，不主动调用真人或付费模型。
+本轮先修Web；随后用户明确要求“修改读取图片的功能，让功能正常”，因此图片部分由只诊断改为修复取图实现本身。修复不改用户网络、DNS或代理配置，不主动调用真人或付费模型；真实图片只用于验证该条已授权消息能否取到字节，不保存、不展示内容。
 
 ## 修复内容
 
@@ -34,25 +34,31 @@
 仅通过当前主人接口执行标准只读qq_get_message，按用户截图的图片file精确匹配到唯一实际图片段；没有把任意URL作为输入授权。
 
 - data.file是jpg文件标识；data.url为HTTPS CDN URL，主机multimedia.nt.qq.com.cn、端口443，无本地路径、URL用户信息或私网字面IP。签名参数、消息正文和账号不进报告。
-- 当前Node系统dns.lookup(all:true,verbatim:true)唯一结果为198.18.7.115。该地址属于198.18/15保留段，生产isPublicQQImageAddress返回false，触发MEDIA_UNSAFE_SOURCE。
-- 拒绝发生在全部DNS答案检查，HTTP GET尚未发起、图片字节为零。它不是目录权限、MIME校验或“模型没看懂”的问题。
+- 修复前：Node系统dns.lookup(all:true,verbatim:true)唯一结果为198.18.7.115。该地址属于198.18/15保留段，被当时插件的地址段判断视为非公网，触发MEDIA_UNSAFE_SOURCE。
+- 拒绝发生在DNS答案检查之后、HTTP GET之前，图片字节为零。它不是目录权限、MIME校验或“模型没看懂”的问题。
 - 结果符合Fake-IP DNS映射特征，未核定哪个代理软件造成。macOS HTTP／HTTPS／SOCKS／PAC开关关闭，并不能排除TUN或DNS层映射。
-- 当前只读能力查询imageInput=true，本次错误不是图片声明关闭；没有发起真实识图请求证明提供商支持。
+- 只读能力查询imageInput=true，本次错误不是图片声明关闭。
 
-## 图片应如何修
+## 图片取图修复（已实施）
 
-优先在实际DNS／代理配置中让multimedia.nt.qq.com.cn绕过Fake-IP映射，使用真实DNS解析到公网地址，并清理相关缓存后再次核对系统lookup；Eating的资源配对和公网校验保持。若使用Mihomo／Clash类工具，可在实际配置的Fake-IP排除规则中加这个已确认域名；不能凭代理软件猜配置文件或未经确认修改。
+先验证网络本身可用：对该主机只做 TLS 握手，`198.18.7.115:443` 以 `multimedia.nt.qq.com.cn` 为 SNI 握手成功、证书校验通过（TLS1.3，61ms）。说明 TUN／Fake-IP 会把连接透明转发到真实 CDN，被拦住的只有插件自己的 DNS 预判。
 
-如果该网络必须经代理取图，则应另行接入显式受信图片代理，由代理解析真实CDN域名；保授权账号／消息／图片配对、固定源、禁凭据传播／跳转、5MiB／10秒及图片格式校验。当前transport没有显式图片代理能力，不能把系统代理开关当已经接通。
+修复只改取图一处，不做按机器区分的配置：
 
-本张图实际是CDN URL，没有证据需要读取远端路径。开放本地目录不能改变DNS结果，全局放行198.18/15或关闭SSRF也不是此次已实施方案。**本轮图片策略未修改，真实取图问题尚未修复。**
+- 删除 `dns.lookup` 预解析、地址固定和“所有解析结果必须是公网地址”的判断；解析与路由交给系统网络栈，直连、TUN／Fake-IP、系统代理和局域网 OneBot 缓存走同一条路径。
+- 保留：只读当前会话已授权的消息与图片引用、URL 必须是 http(s) 且无内嵌账号密码或片段、禁止重定向、不携带 Cookie／Authorization／OneBot 令牌、5MiB 与 10 秒上限、Content-Type 与文件头字节双重校验。
+- 新增 `MEDIA_INVALID_SOURCE` 只表示 URL 形态无效，不再用地址段判断“不安全”。
+
+QQ 插件以 0.10.1 交付（同版本内容不可替换）。同一条真实失败消息现在返回 `image/jpeg`、110000 字节、canonical base64 且 JPEG 头正确，220ms 完成；此前同一请求为 `MEDIA_UNSAFE_SOURCE`。完整构建与严格类型通过，48 文件 1103/1103（含真实 SDK／Web／图片回环）。
+
+先前“让用户改 DNS／加 Fake-IP 例外”的建议因此作废：那是把插件的错误判断转嫁给用户网络，而且别人用代理或局域网部署会更早失败。
 
 ## 现场同步
 
 已在实际实例完成更新。停机前确认QQ／Harness连接、busy=false、pending=0；完整私有备份至`~/.eating-backups/2026-10-29-restore-official-web/`，仅主人可读。标准API3安装器更新DSH0.5.1后、重启前对10个受保护文件逐项SHA256核对全相同，包括连接／密钥配置、主会话、绑定、图片能力、账号配置及原生日志；没有清空或回滚数据。
 
-现原5180／5181运行QQ0.10.0、DSH0.5.1，二者connected，nativeWeb.ready=true，用户已开启的imageInput仍true。受管开发服务为`bash-134e4f1a4cad41dc`；仍使用本次EATING_AUTO_CONNECT=false先启动，再恢复切换前运行选择，不改变保存偏好。
+现原5180／5181运行QQ0.10.1、DSH0.5.1，二者connected，nativeWeb.ready=true，用户已开启的imageInput仍true。图片修复后由受管服务`bash-2adc271cdf3b4e1c`提供，按保存的自动启动偏好连接，未改配置。
 
 实际浏览器从Eating的“打开DSH原生Web”入口新开页面，官方deepseek品牌／侧栏／新会话／插件／自动化任务／输入框均存在。Eating自定义DOM为0，__EATING_NATIVE_WEB__、强制LocaleBridge及自定义CSS均不存在，pageerror=0。真实深浅图在`.impeccable/review/official-web-restored-live/official-native-live-{dark,light}.png`，已实际读取；没有在真实资料中发送试验消息或接受声明。关闭旧自定义会话标签后需从新入口重开。
 
-主体代码提交736e335；本段现场证据另作中文提交并正常推送。图片仅完成只读诊断，代码／DNS／代理策略与本次前完全相同，真实取图仍需按上节方案处理。
+Web恢复主体提交736e335，现场证据提交821235a；图片取图修复另作中文提交并正常推送。真实取图已实测，用户网络与代理配置未改。

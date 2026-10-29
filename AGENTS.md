@@ -10,7 +10,7 @@
 - OneBot v11 的正式参数、消息形态和协议别名，以及 OpenAI 接口支持，是当前外部协议能力，不属于旧 Eating API 兼容，不因本规则删除。
 - 删除兼容代码不授权删除、重置或自动转换用户真实数据。没有明确数据处置指令时保留原文件，让用户显式选择当前格式的数据或新的 `EATING_HOME`。
 
-负责人于2026-10-29进一步明确：**“原生web保持原生，不要去修改”“不要你的只读限制，保持原始dshweb即可”。** 原生Web必须使用官方界面、侧栏、主题、消息组件及正常操作；不得注入Eating客户端、CSS、Slot替换、LocaleBridge或额外reader Peer／命令白名单／只读Controller。只保留同一Eating专属DSH进程的服务接入与主人按需取得官方鉴权入口。此前[清单](docs/plans/2026-10-29-原生Web与多模态改造确认清单.md)中的自定义显示与只读部分由本次明确纠正替代，其余受控QQ代理、time-context和MCP图片能力保留。当前任务先恢复Web并保数据同步、中文提交推送；图片仅核查真实失败原因并说明修复方案，不擅自改网络／图片策略，不清空资料、不改主DSH，不force push或自动发布。
+负责人于2026-10-29进一步明确：**“原生web保持原生，不要去修改”“不要你的只读限制，保持原始dshweb即可”。** 原生Web必须使用官方界面、侧栏、主题、消息组件及正常操作；不得注入Eating客户端、CSS、Slot替换、LocaleBridge或额外reader Peer／命令白名单／只读Controller。只保留同一Eating专属DSH进程的服务接入与主人按需取得官方鉴权入口。此前[清单](docs/plans/2026-10-29-原生Web与多模态改造确认清单.md)中的自定义显示与只读部分由本次明确纠正替代，其余受控QQ代理、time-context和MCP图片能力保留。Web恢复完成后，用户进一步明确要求“修改读取图片的功能，让功能正常”，授权修改取图实现本身：删除插件自行预判公网地址的做法，改由系统网络栈解析与路由，使直连、TUN／Fake-IP、系统代理和局域网部署一致可用；仍保会话授权引用、禁重定向、不传认证头、大小／超时与格式校验，不改用户网络或代理配置。不清空资料、不改主DSH，不force push或自动发布。
 
 ## 项目不变量
 
@@ -33,7 +33,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`。
 
-当前应用／Host／Web0.10.0，三个共享包3.0.0，QQ0.10.0、DSH0.5.1；插件唯一 API3。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前应用／Host／Web0.10.0，三个共享包3.0.0，QQ0.10.1、DSH0.5.1；插件唯一 API3。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -59,7 +59,7 @@ DSH 主只有列类型／受控委派两个原生工具；子按真实账号实�
 
 QQ保留39项标准JSON工具，另有qq_view_received_image内容扩展，共40项。手动副作用需确认和稳定request_id；子只用当前类型可范围化的已选集合，每次核对账号、目标及消息／图片引用配对，异步查询和下载后复查权限。保存读取不自动给已保存权限补新工具；本次显式部署的必要许可更新使用完整字段＋CAS且保留其他选择。
 
-MCP scope、Prompt、Preset不等于远端资源或OS沙箱。标准OneBot文件／URL／Base64仍交协议端处理；仅受控图片扩展取得真实收到段的公网URL，DNS固定、禁重定向／凭据传播，5MiB／10秒与格式校验，不接受任意URL／路径，不读磁盘或猜远端下载端点。MCP图片通过原生附件，可随原生会话持久化；Eating不新建媒体聊天库。凭据及图片payload不进普通UI执行记录，临时Blob在隐藏／离开／停用／取消时撤销；不声称全链路不落盘。
+MCP scope、Prompt、Preset不等于远端资源或OS沙箱。标准OneBot文件／URL／Base64仍交协议端处理；仅受控图片扩展取得真实收到段的图片URL，解析与路由交给系统网络栈（兼容TUN／Fake-IP、系统代理与局域网部署），禁重定向／凭据传播，5MiB／10秒与格式校验，不接受任意URL／路径，不读磁盘或猜远端下载端点。MCP图片通过原生附件，可随原生会话持久化；Eating不新建媒体聊天库。凭据及图片payload不进普通UI执行记录，临时Blob在隐藏／离开／停用／取消时撤销；不声称全链路不落盘。
 
 模型列表／最小真实连接测试使用已保存配置；选择只改草稿。图片能力独立schema1＋CAS，默认false，仅停止Harness可保存，换endpoint／model失效；声明不等于提供商已验证。API连通、运行时就绪与任务成功分别报告。
 

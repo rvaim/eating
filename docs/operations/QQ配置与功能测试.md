@@ -140,9 +140,9 @@ Cookies、CSRF Token和QQ接口凭据只在主动查询后显示，不加入普�
 
 qq_view_received_image使用当前账号／会话已经收到并核验的消息和图片资源引用，message与resource必须配对；不接受任意本机路径或任意网址。子Agent按实际类型勾选和scope调用，获取字节后还会再次检查权限，撤权／切号后的迟到结果不能恢复访问。
 
-有可用公网图片URL时受控获取，公共DNS校验并固定地址、禁止redirect且不传OneBot／Host认证；最多5MiB、10秒，同时核对MIME与真实字节格式。若协议端仅给远端路径、没有可用获取接口，会明确MEDIA_UNAVAILABLE；Eating不会读本机文件、登录远端或猜地址。
+有可用图片URL时受控获取，解析与路由交给系统网络栈（兼容TUN／Fake-IP、系统代理与局域网），禁止redirect且不传OneBot／Host认证；最多5MiB、10秒，同时核对MIME与真实字节格式。若协议端仅给远端路径、没有可用获取接口，会明确MEDIA_UNAVAILABLE；Eating不会读本机文件、登录远端或猜地址。
 
-本轮真实imageInput=true。失败图片CDN主机multimedia.nt.qq.com.cn的dns.lookup仅返回198.18.7.115，符合Fake-IP特征；当前SSRF拒绝198.18/15保留段，拦截发生在HTTP GET前，不能解释为capability=false。未查明具体代理来源，也不记录QQ标识、签名URL、rkey或消息正文。本轮不修改网络／图片策略；修复方向为用户网络DNS层恢复真实公网解析，或未来明确授权的受信图片代理，不全局放行198.18／私网、不开放目录。旧回环wire成功不代表本次真实公网图片已通。
+真实imageInput=true。此前失败是插件自身把198.18.7.115（Fake-IP特征）当内网拒绝，拦截发生在HTTP GET前，不是capability=false，也不需要用户改DNS。该预判已删除，QQ0.10.1改由系统网络栈取图，同一条真实消息取得image/jpeg、110000字节。不记录QQ标识、签名URL、rkey或消息正文。
 
 该扩展返回标准MCP image，DSH原生客户端将其转成附件并送给明确支持图片的执行子Agent，主Agent先收子摘要，不默认收原图。纯文本模式应看到明确能力诊断，不能把URL／Base64普通文字当作已看图。先按下节声明当前模型输入能力；不要为验证主动向真人或付费模型试发。
 
@@ -184,4 +184,4 @@ Host 沿用会话鉴权、ownerSession/Host/Origin 检查，最多 8 个查看�
 
 鉴权错误核对两端 token；连接错误核对端点/协议端；配置损坏保留原文件不覆写；结果未知先查真实状态；同数据根第二 Host 被锁拒绝。队列拒收、超容量、设置冲突、在途清空失败均显示真实错误，不假报成功。这些是逻辑/协议边界，不等于 OS 沙箱。
 
-复现入口为pnpm build、pnpm test与pnpm exec playwright test；完整原生实跑须显式设置独立EATING_DSH_TEST_RUNTIME，默认跳过不能记作实跑。实际构建／类型、官方原生Web与owner正常操作、图片DNS诊断、时间、独立产物及浏览器命令和最终总数见[本轮新报告](../reports/2026-10-29-恢复原样DSHWeb与图片DNS诊断.md)。[删除旧兼容阶段报告](../reports/2026-10-29-删除旧版兼容验证报告.md)保留当时983／53等证据，不代表本轮总数；旧回环wire成功也不代表此次真实公网图片已通。真实实例更新与配置／人格／原生UUID／Key保持以[项目状态](../项目状态.md)及本轮报告为准，不把隔离验证写成已部署。自动模型／OneBot仅回环，不向真人试发或开发代测付费API。
+复现入口为pnpm build、pnpm test与pnpm exec playwright test；完整原生实跑须显式设置独立EATING_DSH_TEST_RUNTIME，默认跳过不能记作实跑。实际构建／类型、官方原生Web与owner正常操作、图片取图修复、时间、独立产物及浏览器命令和最终总数见[本轮新报告](../reports/2026-10-29-恢复原样DSHWeb与图片DNS诊断.md)。[删除旧兼容阶段报告](../reports/2026-10-29-删除旧版兼容验证报告.md)保留当时983／53等证据，不代表本轮总数；旧回环wire成功也不代表此次真实公网图片已通。真实实例更新与配置／人格／原生UUID／Key保持以[项目状态](../项目状态.md)及本轮报告为准，不把隔离验证写成已部署。自动模型／OneBot仅回环，不向真人试发或开发代测付费API。

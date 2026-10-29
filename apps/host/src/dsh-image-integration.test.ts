@@ -211,8 +211,6 @@ async function runImageScenario(imageInput: boolean) {
   expect(image.requests).toHaveLength(1)
   expect(image.requests[0]?.headers.authorization).toBeUndefined()
   expect(image.requests[0]?.headers.cookie).toBeUndefined()
-  expect(image.resolutions).toEqual(['cdn.example.test'])
-  expect(image.pinnedLookups).toEqual([{ address: '93.184.216.34', family: 4 }])
   const batch = readModelFixtureBatch(model.requests[3]!)!
   const parentTool = model.requests[3]!.messages?.slice(batch.messageIndex + 1).find(message => message.role === 'tool')
   const result = object(JSON.parse(String(parentTool?.content)))

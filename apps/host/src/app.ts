@@ -31,6 +31,8 @@ export interface HostOptions {
   readonly allowedUiOrigins?: readonly string[]
   readonly staticDirectory?: string
   readonly workspaceLock?: () => void
+  /** Operational startup control; it never changes saved per-plugin preferences. */
+  readonly autoConnectOnStartup?: boolean
 }
 
 export class EatingHost {
@@ -123,7 +125,7 @@ export class EatingHost {
     this.allowedHosts.add(`localhost:${address.port}`)
     this.allowedOrigins.add(this.url)
     for (const plugin of this.plugins.values()) {
-      if (this.enabled.has(plugin.id) && plugin.getPublicConfiguration().autoConnect === true) void this.mutatePlugin(plugin.id, 'connect', () => plugin.connect()).catch(() => { /* The connector exposes the actual error in getStatus(). */ })
+      if (this.options.autoConnectOnStartup !== false && this.enabled.has(plugin.id) && plugin.getPublicConfiguration().autoConnect === true) void this.mutatePlugin(plugin.id, 'connect', () => plugin.connect()).catch(() => { /* The connector exposes the actual error in getStatus(). */ })
     }
     return this.url
   }

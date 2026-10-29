@@ -169,6 +169,18 @@ afterEach(async () => {
 })
 
 describe('generic Host Harness services and management boundary', () => {
+  it.each([false, true])('respects transient startup auto-connect=%s without changing saved preferences', async autoConnectOnStartup => {
+    const home = await temporaryHome(), connect = vi.fn(async () => {})
+    const entry = testEntry('dsh', 'harness', () => {}, { connect, getPublicConfiguration: () => ({ autoConnect: true }) })
+    const host = new EatingHost({ dataDirectory: home, entries: [entry], port: 0, autoConnectOnStartup })
+    cleanups.push(() => host.close())
+    await host.listen()
+    expect(connect).toHaveBeenCalledTimes(autoConnectOnStartup ? 1 : 0)
+    const workspace = host.getWorkspace(), plugins = workspace.plugins
+    if (!Array.isArray(plugins) || !isJsonObject(plugins[0])) throw new Error('Missing plugin')
+    expect(plugins[0].configuration).toEqual({ autoConnect: true })
+  })
+
   it('isolates Harness and communication roots using explicit matching entry, manifest and plugin kinds', async () => {
     const home = await temporaryHome()
     const captured = new Map<string, HostPluginContext>()

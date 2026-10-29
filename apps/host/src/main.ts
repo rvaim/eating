@@ -5,7 +5,9 @@ import { resolveEatingHome } from './paths'
 const port = Number(process.env.EATING_HOST_PORT ?? '5181')
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('EATING_HOST_PORT 必须是合法端口。')
 const dataDirectory = resolveEatingHome()
-const host = await createInstalledHost({ dataDirectory, port,
+const autoConnect = process.env.EATING_AUTO_CONNECT ?? 'true'
+if (autoConnect !== 'true' && autoConnect !== 'false') throw new Error('EATING_AUTO_CONNECT 必须为 true 或 false。')
+const host = await createInstalledHost({ dataDirectory, port, autoConnectOnStartup: autoConnect === 'true',
   staticDirectory: fileURLToPath(new URL('../../../dist/', import.meta.url)) })
 
 try {

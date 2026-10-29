@@ -136,7 +136,7 @@ export function getRuntimeAgentSource(): string {
   }
   async function onAgentCreated({ agent }) {
     await mountClock(agent);
-    if (agent.id !== sessionId) { await mountChild(agent); return; }
+    if (agent.id !== sessionId) { if (taskConfigurations.has(agent.id)) await mountChild(agent); return; }
     agent.ctx.systemPrompt.section({ name: 'eating:owner-system', order: 0, complete: true, interpolate: false, text: () => readValidatedOwnerPolicy().systemPrompt });
     agent.ctx.tools.restrict({ allow: [] });
     const output = { render: (_, value) => [{ type: 'text', text: JSON.stringify(value) }] };
@@ -150,6 +150,10 @@ export function getRuntimeAgentSource(): string {
   }
   async function registerAgentTypes() {
     const policy = readValidatedOwnerPolicy();
+    if (!registeredAgentTypes.has('eating-main')) {
+      releases.push(await ctx.agentPresets.register({ id: 'eating-main', name: 'Eating', description: 'Eating session', plugins: [] }));
+      registeredAgentTypes.add('eating-main');
+    }
     for (const type of policy.agentTypes) {
       if (!record(type) || !opaque(type.id) || typeof type.title !== 'string') throw bridgeError('OWNER_POLICY_INVALID');
       if (registeredAgentTypes.has(type.id)) continue;

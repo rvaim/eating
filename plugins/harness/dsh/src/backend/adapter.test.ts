@@ -87,7 +87,7 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
         const expected = readRestrictedJson(join(bridge, 'expected.json'))
         if (options.persisted) writeRestrictedJson(join(bridge, 'session-ready.json'), { schemaVersion: 1, nonce, sessionId })
         if (options.recovered && expected) ack(directory)
-        writeRestrictedJson(join(bridge, 'native-web-ready.json'), { schemaVersion: 1, nonce, sessionId, url: 'http://127.0.0.1:45678/?token=fixture-only-web-token', readOnly: true })
+        writeRestrictedJson(join(bridge, 'native-web-ready.json'), { schemaVersion: 1, nonce, sessionId, url: 'http://127.0.0.1:45678/?token=fixture-only-web-token' })
         writeRestrictedJson(join(bridge, 'ready.json'), { schemaVersion: 1, nonce, sessionId, toolsReady: true, durabilityAvailable: true,
           recovery: options.recovered ? 'persisted' : 'absent', ...(options.recovered && expected ? { batchId: expected.batchId! } : {}) })
       }),
@@ -108,7 +108,7 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
     })
     return client
   })
-  const plugin = new DshPlugin(context, { runtime, createHarness: factory, resolveNativeModules: nativeModules, resolveNativeClient: () => '/fixture/native-client/host.mjs', pollIntervalMs: 2, startupTimeoutMs: 500, readyTimeoutMs: 300, closeTimeoutMs: 500, ...options.adapter })
+  const plugin = new DshPlugin(context, { runtime, createHarness: factory, resolveNativeModules: nativeModules, pollIntervalMs: 2, startupTimeoutMs: 500, readyTimeoutMs: 300, closeTimeoutMs: 500, ...options.adapter })
   cleanups.push(() => plugin.dispose())
   return { plugin, runtime, directory, context, clients, factory, detach, get sink() { return registered }, setOwner(value: HarnessOwnerConfiguration) { owner = value }, getOwner() { return owner } }
 }
@@ -188,7 +188,7 @@ describe('DSH isolated runtime lifecycle', () => {
     file.write({ sessionId, created: false })
     // The fixture's first plugin loaded before this metadata; reopen through the normal constructor.
     await setup.plugin.dispose()
-    const reopened = new DshPlugin(setup.context, { runtime: setup.runtime, createHarness: setup.factory, resolveNativeModules: nativeModules, resolveNativeClient: () => '/fixture/native-client/host.mjs', pollIntervalMs: 2, startupTimeoutMs: 500 })
+    const reopened = new DshPlugin(setup.context, { runtime: setup.runtime, createHarness: setup.factory, resolveNativeModules: nativeModules, pollIntervalMs: 2, startupTimeoutMs: 500 })
     cleanups.push(() => reopened.dispose())
     await reopened.connect()
     expect(setup.clients[0]!.resumeCalls).toBe(1)

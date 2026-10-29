@@ -8,13 +8,13 @@ const record = (sequence: number, content: HarnessSessionRecord['content'] = 'ow
 const page = (id: string, records: readonly HarnessSessionRecord[] = [], nextOffset: number | null = null): HarnessSessionContent => ({ session: session(id), records, nextOffset, refreshedAt })
 
 describe('Harness 面板响应校验与层级', () => {
-  it('原生页面只接受严格只读快照与显式 IPv4 回环端口，不接收附带凭据字段', () => {
-    expect(readNativeWebStatus({ ready: false, readOnly: true })).toEqual({ ready: false, readOnly: true })
-    const launch = { url: 'http://127.0.0.1:54321/session/root?token=fixture-only', rootSessionId: 'root', readOnly: true }
+  it('原生页面只接受当前入口契约与显式 IPv4 回环端口，不接收附带凭据字段', () => {
+    expect(readNativeWebStatus({ ready: false })).toEqual({ ready: false })
+    const launch = { url: 'http://127.0.0.1:54321/session/root?token=fixture-only', rootSessionId: 'root' }
     expect(readNativeWebLaunch(launch)).toEqual(launch)
     for (const url of ['javascript:alert(1)', 'https://127.0.0.1:8080/', 'http://localhost:8080/', 'http://127.0.0.1/', 'http://127.0.0.1:0/', 'http://127.0.0.1:65536/', 'http://127.0.0.1:8080@evil.test/', 'http://127.0.0.1:8080\\\\evil.test/', ' http://127.0.0.1:8080/']) expect(() => readNativeWebLaunch({ ...launch, url }), url).toThrow()
     for (const value of [{ ...launch, readOnly: false }, { ...launch, token: 'fixture' }, { ...launch, rootSessionId: '' }]) expect(() => readNativeWebLaunch(value)).toThrow()
-    expect(() => readNativeWebStatus({ ready: true, readOnly: true, url: launch.url })).toThrow()
+    expect(() => readNativeWebStatus({ ready: true, url: launch.url })).toThrow()
   })
 
   it('独立能力必须已经读取完整当前版本，不用 false 补造失败读取', () => {

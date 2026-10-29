@@ -1,6 +1,6 @@
 # Eating Harness 适配设计
 
-更新：2026-10-29。用户选择的 Harness 承担认知与行动，Eating 提供连接、运行、授权和可靠交接。DSH0.5.0是当前具体适配；其他Harness不自动继承其能力。当前共享SDK3.0.0、插件唯一API3，默认不兼容旧版，见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)；本轮原生Web、时间和图片决策见[ADR-0016](../decisions/ADR-0016-原生只读Web与多模态会话.md)。
+更新：2026-10-29。用户选择的 Harness 承担认知与行动，Eating 提供连接、运行、授权和可靠交接。DSH0.5.1是当前具体适配；其他Harness不自动继承其能力。当前应用／Host／Web与QQ保持0.10.0，共享SDK3.0.0、插件唯一API3，默认不兼容旧版，见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)。时间与图片沿用[ADR-0016](../decisions/ADR-0016-原生只读Web与多模态会话.md)的相应决定；原样接入官方Web及对旧Web自定义／只读部分的替代见[ADR-0017](../decisions/ADR-0017-原样接入DSH原生Web.md)。
 
 ## 依赖与唯一控制者
 
@@ -41,7 +41,7 @@ DSH使用专属运行时、DSH_HOME、DSH_AGENTS_HOME、runtime-home和工作区
 
 主按真实context_ref与类型委派，不能传任意system／tools／persona／scope。DSH从实际批次取得targetId并预绑定插件、账号、会话和引用；不猜sender或解析会话字符串补目标。user信封只有当前context/events，子任务另含实际任务，不再有renderedPrompt。
 
-适配器使用公开Agent创建钩子、Preset和in-process原生startActivation／sendMessage。实例按plugin＋instance＋account＋conversation＋type绑定稳定UUID；每个新任务装配最新系统与精确MCP。显示名统一为“平台-绑定登录账号-私聊／群聊-目标”，平台取注册元数据真实pluginName，无元数据用canonical pluginId；账号取scope.accountId，不使用instanceId。切号区分新实例，历史归属与UUID不改。原生历史标签通过Host提供的受信agentLabels映射展示，不解析旧label猜账号。
+适配器使用公开Agent创建钩子、Preset和in-process原生startActivation／sendMessage。实例按plugin＋instance＋account＋conversation＋type绑定稳定UUID；每个新任务装配最新系统与精确MCP。创建标签和Eating离线summary统一为“平台-绑定登录账号-私聊／群聊-目标”，平台取注册元数据真实pluginName，无元数据用canonical pluginId；账号取scope.accountId，不使用instanceId。切号区分新实例，历史归属与UUID不改，不解析旧label猜账号。原生Web显示依官方机制，不再使用agentLabels前端映射，不承诺旧标题一律外观修正。
 
 同批可先查询、主看到结果后再派同一子发送。内部taskId来自公开exec.callId；同context最多32个调用，不淘汰旧ID后放行重放。重复、pending、unknown拒绝；actions／finish必须匹配当前taskId，迟到回调不能撤新权限。当前批正文RAM在主turn/end清理。
 
@@ -57,7 +57,9 @@ DSH使用专属运行时、DSH_HOME、DSH_AGENTS_HOME、runtime-home和工作区
 
 模型列表／测试仅用已保存endpoint/key，选择只写草稿。测试为最小Ping/max_tokens1，15秒、禁止重定向、解压后响应最多1MiB，错误不回显提供商正文或Key。不支持列表可手填；API连通、runtimeReady和业务成功分别表示。
 
-图片输入能力由主人单独声明，保存在专属[数据目录](../technical/数据目录与账号实例.md)的model-capabilities.json，初始imageInput=false。读取／保存走主人管理操作与revision CAS，仅runtime停止时可保存；endpoint或model变化重置false，Key／超时变化不重置。不根据模型名猜视觉能力，也不通过改声明把文本模型变成视觉模型。
+图片输入能力由主人单独声明，保存在专属[数据目录](../technical/数据目录与账号实例.md)的model-capabilities.json，初始imageInput=false。读取／保存走主人管理操作与revision CAS，仅runtime停止时可保存；endpoint或model变化重置false，Key／超时变化不重置。不根据模型名猜视觉能力，也不通过改声明把文本模型变成视觉模型。本轮真实实例imageInput=true，当前失败不能归为能力关闭。
+
+本轮图片CDN主机multimedia.nt.qq.com.cn的dns.lookup仅返回198.18.7.115，符合Fake-IP特征；SSRF对198.18/15保留段的拒绝发生在HTTP GET前。未确认具体代理来源，不记录QQ标识、签名URL、rkey或消息正文。本轮保留图片／SSRF策略，修复方向只说明用户网络DNS层恢复真实公网解析，或未来显式授权受信图片代理，不实施、不全局放行198.18／私网或开放目录。
 
 API3工具必须声明resultFormat为json或content。QQ原39项OneBot工具保持json语义；新增qq_view_received_image返回标准MCP image内容，由原生MCP客户端转为附件并进入支持视觉的子Agent请求。图片只按当前账号／会话已授权的message与resource配对读取，网络取得后再次核验权限；主Agent先取得子摘要，未默认自动接收原图。纯文本能力拒绝真实图片并给明确诊断。网络与图片校验边界见[QQ架构](QQ与平台能力.md)。
 
@@ -67,18 +69,20 @@ API3工具必须声明resultFormat为json或content。QQ原39项OneBot工具保�
 
 Host通用与QQ角色默认提示词移除动态时间行，其他规则保持。9个受信变量仍注册，主人自定义正文若再次引用当前时间，system仍会动态变化，缓存影响应如实说明。验收system前缀稳定和来源明确注入，不以日志条数或夹具结果推断提供商缓存命中率。
 
-## 原生会话看板与只读Web
+## Eating离线会话看板与官方原生Web
 
-Eating看板仅显式list／read当前根的真实parentSession子树。reader通过公开persistence读一次快照，以Session.fromRestore、currentSessionMessageProjections和surface取得有效上下文，不把inbox splice／撤回当成已进入模型的消息，不平铺失效system。保messageId、turn、step、callId、native source及surface替换关系；platformEvents保核验后的sender／account／target，没有证据不造昵称。当前binding revision不能倒灌成历史配置版本，assistant输出不表示QQ已发；原生日志事实仍保留。
+Eating自有看板仅显式list／read当前根的真实parentSession子树。离线reader通过公开persistence读一次快照，以Session.fromRestore、currentSessionMessageProjections和surface取得有效上下文，不把inbox splice／撤回当成已进入模型的消息，不平铺失效system。保messageId、turn、step、callId、native source及surface替换关系；platformEvents保核验后的sender／account／target，没有证据不造昵称。当前binding revision不能倒灌成历史配置版本，assistant输出不表示QQ已发；原生日志事实仍保留。这些summary／source展示属于Eating面板，不注入官方Web。
 
-默认每页50、列表100，最多每次扫描2000个原生日志位置；响应1MiB／单文本32K，敏感字段和内部推理过滤。停机可读、不启Agent／模型／新会话、不建Eating档案。隐藏／切离清正文，不增加会话轮询；运行中缓冲可能未写，缺证据状态unknown、更新时间空。底层可能整文件解码，不承诺大日志磁盘分页性能。
+Eating看板默认每页50、列表100，最多每次扫描2000个原生日志位置；响应1MiB／单文本32K，敏感字段和内部推理过滤。停机可读、不启Agent／模型／新会话、不建Eating档案。隐藏／切离清正文，不增加会话轮询；运行中缓冲可能未写，缺证据状态unknown、更新时间空。底层可能整文件解码，不承诺大日志磁盘分页性能。
 
-独立原生Web在同一Eating专属sdk-minimal进程加入官方必要服务、前端与Eating renderer，共用原主子会话／权限，不启动第二写进程。Eating按钮在新页签打开主人管理操作`open-native-web`返回的当前入口；返回`{url, rootSessionId, readOnly: true}`，URL仅允许127.0.0.1合法端口及鉴权交换，状态只公开nativeWeb.ready／readOnly，不放token。关闭网页不影响QQ处理，Harness停止则Web停止。
+官方原生Web与SDK挂在同一Eating专属DSH进程及注册表，共用原主子会话；挂载当前官方SessionController host、原生client roster、Gateway与owner鉴权。保持完整官方UI、主题、侧栏、会话操作、消息组件及create／prompt／settings等正常能力，cold follow按官方机制运行。web的printUrl、openBrowser、surfaceContext均为false，避免污染SDK控制通道。关闭网页不影响QQ处理，Harness停止则Web停止；不启动第二个共享会话目录写进程，不修改主DSH或官方npm源码。
 
-后端readerPeer与Gateway allowed-read同时限制当前root及后代树，处理owner默认旁路；只读不是隐藏按钮。禁止create、prompt、settings、install、file和upload，冷热follow不提升权限、不启动模型。renderer区分平台sender／account／group、主任务／子回报、框架通知、模型输出与真实工具outcome，system／time折叠，reasoning不展示。直接聊天、任意新会话及第二套配置入口不在首版。
+Eating仅提供“打开DSH原生Web”按钮：主人管理操作`open-native-web`按需返回`{url, rootSessionId}`，URL限定127.0.0.1合法端口及官方鉴权交换，普通`runtimeStatus.nativeWeb`只有`{ready}`，入口不进入普通status或模型上下文。移除readOnly字段，以及Eating readerPeer、connection隔离、HTTP写白名单、readonlyController与冷follow拦截；官方Web不施加Eating根树限制，也不通过隐藏按钮限制原生操作。
+
+删除Eating的src/native-client源码、打包与模块注入，插件assets=[]；不替换官方sidebar／composer／message renderer，不硬编码配色，不挂LocaleBridge或agentLabels前端映射。平台信封JSON与工具结果回到官方默认渲染，原生会话会按官方原样呈现JSON，不承诺旧标题一律外观修正。Eating SDK主的两个工具、按任务受限的QQ子MCP与time-context保持；官方Web创建的普通Agent不作为QQ scope child校验或报错。
 
 ## 证据与未实现范围
 
-本轮构建、严格类型、原生只读Web、图片wire、时间与浏览器的实际命令和结果统一见[原生Web时间与图片验证报告](../reports/2026-10-29-原生Web时间与图片验证报告.md)。自动模型／OneBot仅回环；图片wire验证真实图像块进入请求及文本模型拒绝行为，不验证真人付费模型的识图准确率。实际部署与资料保持状态见[项目状态](../项目状态.md)，本页不把隔离验证写成已更新真实实例。
+本轮恢复原样Web、构建／严格类型、运行验证与图片DNS根因统一见[恢复原样DSHWeb与图片DNS诊断](../reports/2026-10-29-恢复原样DSHWeb与图片DNS诊断.md)，最终计数与实际部署状态由该报告及[项目状态](../项目状态.md)记录，本页不预填已通过或已部署。此前回环图片wire仅证明夹具图像块进入请求及文本模式拒绝行为，不能据旧报告成功结论声称此次真实公网图片已通，也不证明付费提供商识图准确率。
 
 其他Harness、热切换、完整自主调度、长期记忆、OS沙箱、三平台与真实提供商端到端尚未证明。未来转换或跨Harness数据处理仍须用户明确指令，不默认迁移。

@@ -127,11 +127,6 @@ export function apply(ctx) {
     if (!record(policy) || policy.schemaVersion !== 1 || !Number.isSafeInteger(policy.revision) || policy.revision < 0 || typeof policy.systemPrompt !== 'string' || policy.systemPrompt.length > 250000 || !Array.isArray(policy.agentTypes) || policy.agentTypes.length > 100) throw bridgeError('OWNER_POLICY_INVALID');
     return policy;
   }
-  ctx.provide('eatingNativeAgentLabels', { read() {
-    const labels = readValidatedOwnerPolicy().agentLabels;
-    if (!record(labels) || Object.entries(labels).some(([id, label]) => !opaque(id) || !opaque(label))) throw bridgeError('OWNER_POLICY_INVALID');
-    return { ...labels };
-  } });
   function readExpected() {
     let expected;
     try { expected = readJson('expected.json', true, 8192); }
@@ -250,8 +245,8 @@ export function apply(ctx) {
     const recovery = await inspectStoredSession();
     await ctx.get('loader')?.await();
     const nativeEntry = await ctx.eatingNativeWeb.entry();
-    if (!record(nativeEntry) || nativeEntry.readOnly !== true || nativeEntry.rootSessionId !== sessionId || typeof nativeEntry.url !== 'string') throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
-    atomicJson('native-web-ready.json', { schemaVersion: 1, nonce, sessionId, url: nativeEntry.url, readOnly: true });
+    if (!record(nativeEntry) || nativeEntry.rootSessionId !== sessionId || typeof nativeEntry.url !== 'string') throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
+    atomicJson('native-web-ready.json', { schemaVersion: 1, nonce, sessionId, url: nativeEntry.url });
     if (disposed || failed) return;
     atomicJson('ready.json', { schemaVersion: 1, nonce, sessionId, toolsReady: true, durabilityAvailable: true, ...recovery });
   }

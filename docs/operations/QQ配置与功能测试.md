@@ -1,6 +1,6 @@
 # Eating QQ 配置与功能测试
 
-Eating 使用 QQ OneBot v11 插件，需要已登录 QQ 并开启 OneBot 的协议端；Eating 不实现 QQ 登录协议。当前主应用／Host／Web0.10.0，三个共享包均3.0.0、QQ0.10.0、DSH0.5.0，插件仅接受apiVersion3。主人手动功能测试保留官方38公开API与1框架quick操作共39项标准目录，另有qq_view_received_image受控查看图片扩展，总计40项；子代理只开放各类型实际允许且主人勾选的工具。标准工具保持JSON语义，图片扩展返回真实MCP image内容。未实现空间／评论／反向连接占位已删除，实际可用性仍取决于协议端实现及QQ权限。标准目录见[OneBot覆盖清单](../technical/OneBot标准功能覆盖.md)，本轮能力边界见[ADR-0016](../decisions/ADR-0016-原生只读Web与多模态会话.md)。
+Eating 使用 QQ OneBot v11 插件，需要已登录 QQ 并开启 OneBot 的协议端；Eating 不实现 QQ 登录协议。当前主应用／Host／Web0.10.0，三个共享包均3.0.0、QQ0.10.0、DSH0.5.1，插件仅接受apiVersion3。主人手动功能测试保留官方38公开API与1框架quick操作共39项标准目录，另有qq_view_received_image受控查看图片扩展，总计40项；子代理只开放各类型实际允许且主人勾选的工具。标准工具保持JSON语义，图片扩展返回真实MCP image内容。未实现空间／评论／反向连接占位已删除，实际可用性仍取决于协议端实现及QQ权限。标准目录见[OneBot覆盖清单](../technical/OneBot标准功能覆盖.md)，时间与图片能力见[ADR-0016](../decisions/ADR-0016-原生只读Web与多模态会话.md)，原样接入官方Web见[ADR-0017](../decisions/ADR-0017-原样接入DSH原生Web.md)。
 
 ## 构建、安装与启动
 
@@ -34,11 +34,11 @@ pnpm dev
 node apps/host/dist/main.mjs
 ```
 
-Host同源提供Web、API／MCP与插件资源，端口由EATING_HOST_PORT指定，开发代理跟随；纯Vite不提供Host能力。本轮隔离构建与验证见[验证报告](../reports/2026-10-29-原生Web时间与图片验证报告.md)，真实实例是否已停机、备份并更新完整栈以[项目状态](../项目状态.md)为准。不能只上新Web而保留旧Host／插件，也不因更新清空配置、人格或原生会话。新目录生成新账号实例／会话，不继承旧历史。
+Host同源提供Web、API／MCP与插件资源，端口由EATING_HOST_PORT指定，开发代理跟随；纯Vite不提供Host能力。本轮恢复官方Web、图片DNS诊断及构建／验证见[新报告](../reports/2026-10-29-恢复原样DSHWeb与图片DNS诊断.md)，最终计数尚未确定；真实实例是否已停机、备份并更新完整栈以[项目状态](../项目状态.md)为准。不能只上新Web而保留旧Host／插件，也不因更新清空配置、人格或原生会话。新目录生成新账号实例／会话，不继承旧历史。
 
 ## 升级与卸载
 
-本轮涉及Host／Web、三个共享包、QQ与DSH，应执行完整`pnpm build`，停Host后核对备份、安装所用QQ／DSH新产物再启动，不能只替换界面。API3清单必须有assets数组，QQ为空、DSH含原生客户端3资源，安装器验证全部路径与SHA。之后仅改QQ且已有当前SDK产物时，可用`pnpm build:plugin`。版本代码位于`plugins/<pluginId>/versions/<version>`，由`plugins/installed.json`激活；不支持运行中热更新或零中断升级。
+本轮DSH补丁为0.5.1，应用／Host／Web与QQ0.10.0、共享包3.0.0及API3保持；完整栈构建与实际更新结果以本轮新报告为准。更新产物先完整`pnpm build`，停Host后核对备份、安装所用QQ／DSH新产物再启动，不能只替换界面。API3清单必须有assets数组，QQ与DSH均为空，不再交付Eating原生客户端资源，安装器仍验证全部声明路径与SHA。之后仅改QQ且已有当前SDK产物时，可用`pnpm build:plugin`。版本代码位于`plugins/<pluginId>/versions/<version>`，由`plugins/installed.json`激活；不支持运行中热更新或零中断升级。
 
 只接受当前数据库和配置格式。旧版本、旧表、缺字段或不支持的插件API会明确拒绝，不执行转换、补齐、压缩迁移或自动删旧。若需要处理旧资料，须另有用户明确指令；默认按README使用全新EATING_HOME。当前同版正常重启和故障恢复仍支持，见[数据规范](../technical/数据目录与账号实例.md)。
 
@@ -142,6 +142,8 @@ qq_view_received_image使用当前账号／会话已经收到并核验的消息�
 
 有可用公网图片URL时受控获取，公共DNS校验并固定地址、禁止redirect且不传OneBot／Host认证；最多5MiB、10秒，同时核对MIME与真实字节格式。若协议端仅给远端路径、没有可用获取接口，会明确MEDIA_UNAVAILABLE；Eating不会读本机文件、登录远端或猜地址。
 
+本轮真实imageInput=true。失败图片CDN主机multimedia.nt.qq.com.cn的dns.lookup仅返回198.18.7.115，符合Fake-IP特征；当前SSRF拒绝198.18/15保留段，拦截发生在HTTP GET前，不能解释为capability=false。未查明具体代理来源，也不记录QQ标识、签名URL、rkey或消息正文。本轮不修改网络／图片策略；修复方向为用户网络DNS层恢复真实公网解析，或未来明确授权的受信图片代理，不全局放行198.18／私网、不开放目录。旧回环wire成功不代表本次真实公网图片已通。
+
 该扩展返回标准MCP image，DSH原生客户端将其转成附件并送给明确支持图片的执行子Agent，主Agent先收子摘要，不默认收原图。纯文本模式应看到明确能力诊断，不能把URL／Base64普通文字当作已看图。先按下节声明当前模型输入能力；不要为验证主动向真人或付费模型试发。
 
 功能测试预览只保临时Blob，离开时revoke，普通JSON执行记录不存Base64。Eating不新建媒体聊天库；已给模型的图片可由Harness原生附件持久化，离开预览并不删除原生附件。回环wire通过说明图像块进入请求，不代表真实提供商识图准确率。
@@ -156,11 +158,13 @@ qq_view_received_image使用当前账号／会话已经收到并核验的消息�
 
 实例显示名是“平台-绑定登录账号-私聊／群聊-对方／群号”，如虚构QQ-10001-群聊-30003。登录号来自真实scope.accountId，不是账号实例UUID；切号区分实例，历史归属和UUID不改。默认每页50、最多200记录、列表100，响应1MiB／单文本32K，按原生日志位置分页且最多扫描2000事件。运行中缓冲可能未落盘，未知状态／时间不伪造。
 
-在DSH面板主动打开原生Web入口，会在新页签进入同一Eating专属DSH进程；不连接用户主DSH，也不另起共享会话写进程。入口只由主人管理操作取得，状态不含鉴权token。首版仅已有当前根及子会话／工具／系统／时间查看，后端禁止直接聊天、新会话、设置、安装、文件和上传；冷热follow不提升权限、不启动模型。关网页不影响QQ自动处理，停Harness则Web一同关闭。
+在DSH面板点击“打开DSH原生Web”，主人管理操作按需取得`{url, rootSessionId}`并在新页签进入同一Eating专属DSH进程的官方鉴权入口；不连接用户主DSH，也不另起共享会话写进程。普通`runtimeStatus.nativeWeb`只有`{ready}`，删除readOnly字段，URL不进入普通status或模型上下文。挂当前官方SessionController host、client roster、Gateway和owner鉴权，完整保留官方UI／主题／侧栏／消息组件与正常会话操作；可依官方能力新建会话、发言、设置，cold follow与激活遵循官方机制。关网页不影响QQ自动处理，停Harness则Web一同关闭。
+
+原生Web完全移除Eating自定义客户端源码／打包／模块注入、sidebar／composer／message renderer、硬编码配色、LocaleBridge、agentLabels映射及readerPeer／connection隔离／HTTP写白名单／readonlyController／冷follow拦截；DSH产物assets=[]。web的printUrl／openBrowser／surfaceContext均为false，避免污染SDK。四段名称保留为创建标签和Eating离线summary，官方页面显示依官方机制，不承诺全部旧标题外观修正。平台JSON与工具结果按官方默认组件原样显示；Eating自有面板的summary／source不注入DSH。SDK主的两个工具、受限QQ子MCP及time-context保持，官方Web创建的普通Agent不作为QQ scope child报错。
 
 主子各一次官方time-context使用上海时区与原生600000ms，仅在已有合格step末尾追加来源明确的user运行时读数，冷恢复去重，无新时钟工具／scheduler／后台唤醒。通用与QQ默认system移除动态时间行；9个可信变量仍注册，若主人自定义再插当前时间，system仍动态变化，不能承诺缓存收益。
 
-隐藏或离开Eating看板会清正文，不后台轮询，不建Eating archive，也不因清Host队列删Harness原生上下文。底层可能解码整份原生日志，不保证大日志磁盘分页性能；原生Web同样读取既有会话。实际验证与限制见[本轮报告](../reports/2026-10-29-原生Web时间与图片验证报告.md)。
+隐藏或离开Eating看板会清正文，不后台轮询，不建Eating archive，也不因清Host队列删Harness原生上下文。Eating离线读取底层可能解码整份原生日志，不保证大日志磁盘分页性能；官方Web的会话读取和激活保留官方机制。实际验证与限制见[本轮新报告](../reports/2026-10-29-恢复原样DSHWeb与图片DNS诊断.md)。
 
 ## 实时日志
 
@@ -180,4 +184,4 @@ Host 沿用会话鉴权、ownerSession/Host/Origin 检查，最多 8 个查看�
 
 鉴权错误核对两端 token；连接错误核对端点/协议端；配置损坏保留原文件不覆写；结果未知先查真实状态；同数据根第二 Host 被锁拒绝。队列拒收、超容量、设置冲突、在途清空失败均显示真实错误，不假报成功。这些是逻辑/协议边界，不等于 OS 沙箱。
 
-复现入口为pnpm build、pnpm test与pnpm exec playwright test；完整原生实跑须显式设置独立EATING_DSH_TEST_RUNTIME，默认跳过不能记作实跑。实际构建／类型、原生Web权限、图片wire、时间、独立产物及浏览器命令和最终总数见[本轮报告](../reports/2026-10-29-原生Web时间与图片验证报告.md)。[删除旧兼容阶段报告](../reports/2026-10-29-删除旧版兼容验证报告.md)保留当时983／53等证据，不代表本轮总数。真实实例更新与配置／人格／原生UUID／Key保持以[项目状态](../项目状态.md)为准，不把隔离验证写成已部署。自动模型／OneBot仅回环，不向真人试发或开发代测付费API。
+复现入口为pnpm build、pnpm test与pnpm exec playwright test；完整原生实跑须显式设置独立EATING_DSH_TEST_RUNTIME，默认跳过不能记作实跑。实际构建／类型、官方原生Web与owner正常操作、图片DNS诊断、时间、独立产物及浏览器命令和最终总数见[本轮新报告](../reports/2026-10-29-恢复原样DSHWeb与图片DNS诊断.md)。[删除旧兼容阶段报告](../reports/2026-10-29-删除旧版兼容验证报告.md)保留当时983／53等证据，不代表本轮总数；旧回环wire成功也不代表此次真实公网图片已通。真实实例更新与配置／人格／原生UUID／Key保持以[项目状态](../项目状态.md)及本轮报告为准，不把隔离验证写成已部署。自动模型／OneBot仅回环，不向真人试发或开发代测付费API。

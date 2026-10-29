@@ -68,7 +68,7 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
   const registrations: Json[] = []
   const ctx = {
     on, get: () => undefined, provide: vi.fn(), plugin: vi.fn(async () => {}),
-    eatingNativeWeb: { entry: vi.fn(async () => ({ url: 'http://127.0.0.1:45678/?token=fixture-only-web-token', rootSessionId: sessionId, readOnly: true })) },
+    eatingNativeWeb: { entry: vi.fn(async () => ({ url: 'http://127.0.0.1:45678/?token=fixture-only-web-token', rootSessionId: sessionId })) },
     sessions: { flush, get: () => options.live ? session : undefined },
     sessionPersistence: { open, stat: vi.fn(async () => undefined) },
     systemPrompt: { section: (value: NonNullable<typeof section.current>) => { section.current = value; return () => { section.current = undefined } } },

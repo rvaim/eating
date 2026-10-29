@@ -23,7 +23,7 @@ const content: HarnessSessionContent = { session, refreshedAt, nextOffset: null,
 const json = (route: Route, value: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) })
 
 // All operations below are UI fixtures. They never start a native runtime or call a provider.
-test.describe('原生只读入口、独立能力与来源展示', () => {
+test.describe('DSH原生入口、独立能力与来源展示', () => {
   test.setTimeout(45_000)
   let directory: string, host: EatingHost, url: string
   let dsh: { enabled: boolean; configuration: JsonObject; status: JsonObject }
@@ -45,9 +45,9 @@ test.describe('原生只读入口、独立能力与来源展示', () => {
     dsh = initial.plugins.find(plugin => plugin.id === 'dsh')!; runtime = dsh.configuration.runtimeStatus as JsonObject
     reads = 0; opens = 0; saves = []; errors = []; readFailure = false; conflict = false; nativeGate = null
     snapshot = { schemaVersion: 1, revision: 0, imageInput: false }
-    launch = { url: url + '/native-ui-fixture/session?token=fixture-only-private-entry', rootSessionId: 'native-ui-main', readOnly: true }
+    launch = { url: url + '/native-ui-fixture/session?token=fixture-only-private-entry', rootSessionId: 'native-ui-main' }
     page.on('pageerror', error => errors.push(error.message))
-    await page.context().route('**/native-ui-fixture/**', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Native UI fixture</title><p>Read-only native fixture</p>' }))
+    await page.context().route('**/native-ui-fixture/**', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Native UI fixture</title><p>Official native fixture</p>' }))
     await page.route('**/api/workspace', route => json(route, initial))
     await page.route('**/api/plugins/dsh/manage', async route => {
       const body = route.request().postDataJSON() as { operation: string; input: JsonObject }
@@ -70,13 +70,13 @@ test.describe('原生只读入口、独立能力与来源展示', () => {
     if (target !== resolve(directory) || dirname(target) !== await realpath(tmpdir()) || !basename(target).startsWith('Eating_native_web_ui_')) throw new Error('Unsafe native UI fixture cleanup')
     await rm(target, { recursive: true }); expect(errors).toEqual([])
   })
-  const ready = (value: boolean) => { runtime.ready = value; runtime.nativeWeb = { ready: value, readOnly: true }; dsh.status.state = value ? 'connected' : 'disconnected' }
+  const ready = (value: boolean) => { runtime.ready = value; runtime.nativeWeb = { ready: value }; dsh.status.state = value ? 'connected' : 'disconnected' }
   async function open(page: Page) { await page.goto(url + '/#harness/dsh'); await expect(page.getByLabel('模型名称', { exact: true })).toBeVisible() }
   async function sessions(page: Page) { await page.getByRole('tab', { name: '会话看板', exact: true }).click() }
 
   test('只在真实就绪与启用时开放，点击获取新入口并隔离 opener/referrer，URL不出现在面板', async ({ page }, info) => {
     ready(false); await open(page); await sessions(page)
-    const button = page.getByRole('button', { name: '打开原生会话（只读）', exact: true })
+    const button = page.getByRole('button', { name: '打开DSH原生Web', exact: true })
     await expect(button).toBeDisabled(); expect(opens).toBe(0)
     ready(true); await page.getByRole('button', { name: '刷新状态', exact: true }).click(); await expect(button).toBeEnabled()
     const created = page.waitForEvent('popup'); await button.click(); const popup = await created
@@ -93,26 +93,26 @@ test.describe('原生只读入口、独立能力与来源展示', () => {
   test('拒绝外部、脚本、错误端口及非严格响应，失败只显示固定文案', async ({ page }) => {
     ready(true); await open(page); await sessions(page)
     for (const value of [
-      { url: 'https://outside.invalid/private-token', rootSessionId: 'root', readOnly: true },
-      { url: 'javascript:alert(1)', rootSessionId: 'root', readOnly: true },
-      { url: 'http://127.0.0.1:65536/private-token', rootSessionId: 'root', readOnly: true },
+      { url: 'https://outside.invalid/private-token', rootSessionId: 'root' },
+      { url: 'javascript:alert(1)', rootSessionId: 'root' },
+      { url: 'http://127.0.0.1:65536/private-token', rootSessionId: 'root' },
       { url: url + '/native-ui-fixture/', rootSessionId: 'root', readOnly: false },
-      { url: url + '/native-ui-fixture/', rootSessionId: 'root', readOnly: true, token: 'private-token' },
+      { url: url + '/native-ui-fixture/', rootSessionId: 'root', token: 'private-token' },
     ]) {
-      launch = value; await page.getByRole('button', { name: '打开原生会话（只读）', exact: true }).click()
+      launch = value; await page.getByRole('button', { name: '打开DSH原生Web', exact: true }).click()
       await expect(page.getByText('无法打开原生会话页面。请刷新运行状态后重试。', { exact: true })).toBeVisible()
       await expect.poll(() => page.context().pages().length).toBe(1)
     }
     await expect(page.locator('body')).not.toContainText('private-token')
     await page.evaluate(() => { window.open = () => null })
-    const before = opens; await page.getByRole('button', { name: '打开原生会话（只读）', exact: true }).click()
+    const before = opens; await page.getByRole('button', { name: '打开DSH原生Web', exact: true }).click()
     await expect(page.getByText(/浏览器未能打开新标签页/)).toBeVisible(); expect(opens).toBe(before)
   })
 
   test('切离时取消待打开页面，迟到入口不恢复且不泄露到反馈', async ({ page }) => {
     ready(true); let release!: () => void; nativeGate = new Promise<void>(done => { release = done })
     await open(page); await sessions(page)
-    await page.getByRole('button', { name: '打开原生会话（只读）', exact: true }).click(); await expect.poll(() => opens).toBe(1)
+    await page.getByRole('button', { name: '打开DSH原生Web', exact: true }).click(); await expect.poll(() => opens).toBe(1)
     await page.getByRole('tab', { name: '配置', exact: true }).click(); release()
     await expect.poll(() => page.context().pages().length).toBe(1)
     await sessions(page); await expect(page.locator('body')).not.toContainText('fixture-only-private-entry')

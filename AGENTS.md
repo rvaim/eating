@@ -10,7 +10,7 @@
 - OneBot v11 的正式参数、消息形态和协议别名，以及 OpenAI 接口支持，是当前外部协议能力，不属于旧 Eating API 兼容，不因本规则删除。
 - 删除兼容代码不授权删除、重置或自动转换用户真实数据。没有明确数据处置指令时保留原文件，让用户显式选择当前格式的数据或新的 `EATING_HOME`。
 
-负责人已于2026-10-29明确确认[原生Web与多模态改造清单](docs/plans/2026-10-29-原生Web与多模态改造确认清单.md)，并指示开始实施：四段实例名、可信来源展示、原生time-context、同进程只读Web和受会话限制的MCP图片。授权包括隔离验证、保持现有数据的实际Eating同步、文档与中文提交推送；不包括清空资料、启动已停止的Harness去消费暂存消息、网页发言／任意新建会话或主DSH变更。不得force push、改写历史或自动发布版本。
+负责人于2026-10-29进一步明确：**“原生web保持原生，不要去修改”“不要你的只读限制，保持原始dshweb即可”。** 原生Web必须使用官方界面、侧栏、主题、消息组件及正常操作；不得注入Eating客户端、CSS、Slot替换、LocaleBridge或额外reader Peer／命令白名单／只读Controller。只保留同一Eating专属DSH进程的服务接入与主人按需取得官方鉴权入口。此前[清单](docs/plans/2026-10-29-原生Web与多模态改造确认清单.md)中的自定义显示与只读部分由本次明确纠正替代，其余受控QQ代理、time-context和MCP图片能力保留。当前任务先恢复Web并保数据同步、中文提交推送；图片仅核查真实失败原因并说明修复方案，不擅自改网络／图片策略，不清空资料、不改主DSH，不force push或自动发布。
 
 ## 项目不变量
 
@@ -33,7 +33,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`。
 
-当前应用／Host／Web0.10.0，三个共享包3.0.0，QQ0.10.0、DSH0.5.0；插件唯一 API3。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前应用／Host／Web0.10.0，三个共享包3.0.0，QQ0.10.0、DSH0.5.1；插件唯一 API3。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -63,7 +63,7 @@ MCP scope、Prompt、Preset不等于远端资源或OS沙箱。标准OneBot文件
 
 模型列表／最小真实连接测试使用已保存配置；选择只改草稿。图片能力独立schema1＋CAS，默认false，仅停止Harness可保存，换endpoint／model失效；声明不等于提供商已验证。API连通、运行时就绪与任务成功分别报告。
 
-原生Web与SDK同一Eating进程／注册表，隔离于主DSH。浏览器必须统一reader Peer与后台白名单／会话树边界，不靠隐藏按钮或会被owner旁路的policy；禁止写操作和任意文件。冷follow不能promote／激活模型。原生客户端按插件资产独立安装，只复用同版公开服务，不修改上游文件。手动离线视图基于原生有效surface，保来源／轮次／替换关系，不能给历史倒灌最新配置版本。
+原生Web与SDK同一Eating进程／注册表，隔离于主DSH。原样挂官方SessionController、client roster、Gateway和owner鉴权，保留原生功能与行为；不再注入自定义界面／CSS或权限过滤，不覆写cold follow。原生页面可以正常新建会话、发言和执行官方操作；不得修改官方源码来适应Eating视觉。Eating自有手动离线视图仍基于有效surface与来源，不能给历史倒灌最新版本。
 
 实例名含真实绑定账号，不改UUID，不从旧label猜账号。默认系统层去实时时间；原生time-context在主、子对应scope各挂一次，上海时区、600000ms，不另加调度或时钟工具。当前9变量仍可手写使用，含动态变量的自定义正文对缓存的影响应如实报告。
 

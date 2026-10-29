@@ -63,7 +63,7 @@ export function NativeWebEntry({ enabled, ready, active }: { readonly enabled: b
     <div className="dsh-native-heading"><div><h3 id={heading}>{t('native.title')}</h3><p>{t('native.description')}</p></div>
       <button type="button" className="button button-primary" disabled={!available || pending} onClick={() => void open()}><ExternalLink size={16} aria-hidden="true" />{t(pending ? 'native.opening' : 'native.open')}</button>
     </div>
-    <p className="dsh-help" role="status">{t(!enabled ? 'native.disabled' : !ready ? 'native.unavailable' : 'native.readOnly')}</p>
+    <p className="dsh-help" role="status">{t(!enabled ? 'native.disabled' : !ready ? 'native.unavailable' : 'native.lifecycle')}</p>
     {failure && <div className="dsh-error" role="alert"><AlertCircle size={16} aria-hidden="true" /><p>{t(failure === 'blocked' ? 'native.blocked' : 'native.failed')}</p></div>}
   </section>
 }

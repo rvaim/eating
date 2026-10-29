@@ -3,8 +3,8 @@ import type { HarnessPlatformMessage, HarnessSessionContent, HarnessSessionList,
 
 export interface ModelOption { readonly id: string; readonly name?: string }
 export interface ModelTestResult { readonly ok: true; readonly model: string; readonly latencyMs: number }
-export interface NativeWebStatus { readonly ready: boolean; readonly readOnly: true }
-export interface NativeWebLaunch { readonly url: string; readonly rootSessionId: string; readonly readOnly: true }
+export interface NativeWebStatus { readonly ready: boolean }
+export interface NativeWebLaunch { readonly url: string; readonly rootSessionId: string }
 export interface ModelCapabilities { readonly schemaVersion: 1; readonly revision: number; readonly imageInput: boolean }
 export interface SessionRow { readonly session: HarnessSessionSummary; readonly depth: number; readonly issue: 'parent-missing' | 'cycle' | null }
 
@@ -16,12 +16,12 @@ function invalid(): never { throw new HostApiError('INVALID_HOST_RESPONSE', '', 
 const onlyKeys = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).every(key => keys.includes(key))
 
 export function readNativeWebStatus(value: unknown): NativeWebStatus {
-  if (!object(value) || !onlyKeys(value, ['ready', 'readOnly']) || typeof value.ready !== 'boolean' || value.readOnly !== true) return invalid()
-  return { ready: value.ready, readOnly: true }
+  if (!object(value) || !onlyKeys(value, ['ready']) || typeof value.ready !== 'boolean') return invalid()
+  return { ready: value.ready }
 }
 
 export function readNativeWebLaunch(value: unknown): NativeWebLaunch {
-  if (!object(value) || !onlyKeys(value, ['url', 'rootSessionId', 'readOnly']) || value.readOnly !== true
+  if (!object(value) || !onlyKeys(value, ['url', 'rootSessionId'])
     || !text(value.rootSessionId, 160) || !value.rootSessionId || !text(value.url, 16_384) || /[\s\\]/u.test(value.url)) return invalid()
   const match = /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})\//u.exec(value.url)
   if (!match || Number(match[1]) > 65_535) return invalid()
@@ -29,7 +29,7 @@ export function readNativeWebLaunch(value: unknown): NativeWebLaunch {
     const url = new URL(value.url)
     if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.username || url.password) return invalid()
   } catch { return invalid() }
-  return { url: value.url, rootSessionId: value.rootSessionId, readOnly: true }
+  return { url: value.url, rootSessionId: value.rootSessionId }
 }
 
 export function readModelCapabilities(value: unknown): ModelCapabilities {

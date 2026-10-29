@@ -2,7 +2,6 @@ import { createServer } from 'node:http'
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { inflateSync } from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
@@ -12,7 +11,6 @@ import { assertQQAgentInvocation, parseQQAgentPolicy } from '../../../plugins/co
 import { downloadQQImage, qqViewReceivedImageTool, readQQReceivedImage } from '../../../plugins/communication/qq/src/backend/media'
 import { validateToolInput } from '../../../plugins/communication/qq/src/backend/operations'
 import { DshPlugin } from '../../../plugins/harness/dsh/src/backend/adapter'
-import { assertNativeClient } from '../../../plugins/harness/dsh/src/backend/native-web'
 import { DshRuntimeInstallation } from '../../../plugins/harness/dsh/src/backend/runtime'
 import { startImageFixture } from '../../../tests/fixtures/image'
 import { readModelFixtureBatch } from '../../../tests/fixtures/openai'
@@ -142,8 +140,6 @@ async function runImageScenario(imageInput: boolean) {
   const installation = new DshRuntimeInstallation(resolve(runtimeDirectory!))
   cleanups.push(() => installation.dispose())
   expect(installation.getStatus().state).toBe('ready')
-  const nativeClient = fileURLToPath(new URL('../../../plugins/harness/dsh/dist/native-client/host.mjs', import.meta.url))
-  assertNativeClient(nativeClient)
   const image = await startImageFixture()
   cleanups.push(() => image.close())
   // Prove this fixture contains an actual compressed RGBA scanline before SDK admission.
@@ -160,7 +156,7 @@ async function runImageScenario(imageInput: boolean) {
   const scopes: AgentInvocationScope[] = []
   let plugin!: DshPlugin
   const dshEntry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) {
-    plugin = new DshPlugin(context, { runtime: installation, resolveNativeClient: () => nativeClient, startupTimeoutMs: 15000 })
+    plugin = new DshPlugin(context, { runtime: installation, startupTimeoutMs: 15000 })
     return plugin
   } }
   const host = new EatingHost({ dataDirectory: home, entries: [imageQQEntry(image, scopes), dshEntry], port: 0, allowedUiOrigins: [] })

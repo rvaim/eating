@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { constants, chmodSync, closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { constants, chmodSync, closeSync, existsSync, fsyncSync, lstatSync, openSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { DeepSeekHarness } from '@deepseek-ai/dsh-sdk-client'
 import type { DeepSeekHarnessOptions, HarnessSession } from '@deepseek-ai/dsh-sdk-client'
@@ -17,7 +16,7 @@ import { listNativeSessions, nativeReaderOptions, readNativeSession } from './se
 import { listModels, testModelConnection } from './model-service'
 import { agentInstanceLabel } from './agent-label'
 import { DshModelCapabilitiesFile } from './model-capabilities'
-import { NATIVE_WEB_MODULES, assertNativeClient, nativeWebCarrierSource, nativeWebControllerSource, nativeWebRows } from './native-web'
+import { NATIVE_WEB_MODULES, prepareNativeWebProfile } from './native-web'
 import { getNativeWebRuntimeSource } from './native-web-runtime'
 
 export interface DshHarnessClient {
@@ -35,7 +34,6 @@ export interface DshAdapterOptions {
   readonly readyTimeoutMs?: number
   readonly closeTimeoutMs?: number
   readonly resolveNativeModules?: (dshBin: string) => Readonly<Record<string, string>>
-  readonly resolveNativeClient?: () => string
 }
 
 interface BatchIdentity {
@@ -91,22 +89,20 @@ export function createRuntimeEnvironment(dataDirectory: string, configuration: D
 
 export function resolveNativeRuntimeModules(dshBin: string): Readonly<Record<string, string>> {
   const request = createRequire(dshBin)
-  return { ...Object.fromEntries(['dsh-subagent', 'dsh-subagent-spawn-in-process', 'dsh-session-query-sqlite', 'dsh-agent-preset-registry', ...NATIVE_WEB_MODULES].map(name => [name, request.resolve(`@deepseek-ai/${name}`)])),
-    'dsh-api-session-controller-types': request.resolve('@deepseek-ai/dsh-api-session-controller/types') }
+  return Object.fromEntries(['dsh-subagent', 'dsh-subagent-spawn-in-process', 'dsh-session-query-sqlite', 'dsh-agent-preset-registry', ...NATIVE_WEB_MODULES].map(name => [name, request.resolve(`@deepseek-ai/${name}`)]))
 }
 
-export function createRuntimePatch(resolved: { readonly providerEntry: string; readonly mcpEntry: string }, bridgePath: string, configuration: DshConfiguration, modules: Readonly<Record<string, string>>, nativeClient: string, imageInput = false): string {
+export function createRuntimePatch(resolved: { readonly providerEntry: string; readonly mcpEntry: string }, bridgePath: string, configuration: DshConfiguration, modules: Readonly<Record<string, string>>, imageInput = false): string {
   const provider = { providers: { 'eating-openai': { api: 'openai-completions', baseURL: configuration.endpoint,
     apiKeyEnv: 'EATING_DSH_API_KEY', models: [{ id: configuration.model, input: imageInput ? ['text', 'image'] : ['text'], reasoningEfforts: false }] } } }
-  const disabled = ['llm-deepseek', 'tool-fs', 'tool-working-directory', 'persistent-bash', 'persistent-pwsh', 'mcp-resources', 'terminal-bash', 'terminal-pwsh', 'pty', 'subprocess']
+  const disabled = ['llm-deepseek', 'tool-fs', 'tool-working-directory', 'persistent-bash', 'persistent-pwsh', 'mcp-resources', 'terminal-bash', 'terminal-pwsh', 'pty']
   const rows = [
-    { id: 'eating-provider', name: resolved.providerEntry, config: provider },
-    { id: 'eating-subagents', name: modules['dsh-subagent'], config: { maxDepth: 1, maxActiveSubagents: 8 } },
-    { id: 'eating-spawn', name: modules['dsh-subagent-spawn-in-process'] },
-    { id: 'eating-session-query', name: modules['dsh-session-query-sqlite'], config: { path: ':memory:', openAt: 'never' } },
-    { id: 'eating-agent-presets', name: modules['dsh-agent-preset-registry'], config: { default: 'eating-main' } },
+    { id: 'llm-pi-ai', name: resolved.providerEntry, config: provider },
+    { id: 'subagent', name: modules['dsh-subagent'], config: { maxDepth: 1, maxActiveSubagents: 8 } },
+    { id: 'subagent-spawn-in-process', name: modules['dsh-subagent-spawn-in-process'] },
+    { id: 'session-query-sqlite', name: modules['dsh-session-query-sqlite'], config: { path: ':memory:', openAt: 'never' } },
+    { id: 'agent-preset-registry', name: modules['dsh-agent-preset-registry'], config: { default: 'eating-main' } },
     { id: 'eating-owner-bridge', name: bridgePath },
-    ...nativeWebRows(modules, dirname(bridgePath), nativeClient, configuration),
   ]
   return disabled.map(id => `- id: ${id}\n  disabled: true\n`).join('') + '- insert:\n' + rows.map(row => `    - ${JSON.stringify(row)}\n`).join('')
 }
@@ -116,7 +112,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.5.0'
+  readonly version = '0.5.1'
   readonly tools = []
   readonly capabilities = [
     { id: 'dsh.fixed-session', name: '固定 DSH 主会话', support: 'supported' as const, description: '使用独立官方 DSH 运行时与固定原生会话；可靠交接须经持久屏障。' },
@@ -181,7 +177,7 @@ export class DshPlugin implements BackendPlugin {
       dataDirectory: this.configurationFile.directory, updatedAt: this.configurationFile.updatedAt,
       runtimeStatus: { version: DSH_VERSION, installed: installation.state === 'ready', installing: installation.state === 'installing',
         progress: installation.state === 'installing' ? '正在安装独立官方 DSH 运行时。' : null, lastError: this.lastError ?? installation.error, ready: this.runtimeReady, busy: this.busy,
-        sessionId: this.metadata?.sessionId ?? null, lastOutcome: this.metadata?.lastOutcome ?? null, nativeWeb: { ready: this.nativeWebReady, readOnly: true } },
+        sessionId: this.metadata?.sessionId ?? null, lastOutcome: this.metadata?.lastOutcome ?? null, nativeWeb: { ready: this.nativeWebReady } },
       warning: this.configuration.endpoint.startsWith('http:') && !['127.0.0.1', '[::1]', 'localhost'].includes(new URL(this.configuration.endpoint).hostname)
         ? '远端 HTTP 模型地址会明文传输请求与 API 密钥，建议使用 HTTPS。' : null }
   }
@@ -227,8 +223,6 @@ export class DshPlugin implements BackendPlugin {
     this.nonce = randomUUID()
     try {
       const nativeModules = (this.options.resolveNativeModules ?? resolveNativeRuntimeModules)(resolved.dshBin)
-      const nativeClient = this.options.resolveNativeClient?.() ?? fileURLToPath(new URL(import.meta.url.endsWith('.ts') ? '../../dist/native-client/host.mjs' : './native-client/host.mjs', import.meta.url))
-      if (!this.options.resolveNativeClient) assertNativeClient(nativeClient)
       await this.agentControl.start(this.nonce)
       if (!this.metadata) {
         this.metadata = { sessionId: randomUUID(), created: false }
@@ -237,25 +231,15 @@ export class DshPlugin implements BackendPlugin {
       const metadata = this.metadata
       const sessionId = metadata.sessionId
       for (const directory of ['runtime-home', 'dsh-home', 'agents-home', 'workspace']) prepareRestrictedDirectory(join(this.context.dataDirectory, directory))
+      if (!this.options.resolveNativeModules) await prepareNativeWebProfile(this.bridgeDirectory, nativeModules, this.configuration, writePrivateSource)
       this.publishPolicy()
       if (metadata.activeBatchId && metadata.digest) this.publishExpected({ nonce: this.nonce, sessionId, batchId: metadata.activeBatchId, digest: metadata.digest })
       else this.clearUnownedExpected()
       const bridgePath = join(this.bridgeDirectory, 'runtime-bridge.mjs')
       const patchPath = join(this.bridgeDirectory, 'runtime.patch.yaml')
-      if (!this.options.resolveNativeModules) {
-        const sessionPackage = dirname(dirname(nativeModules['dsh-api-session-controller']!))
-        const manifest = JSON.parse(readFileSync(join(sessionPackage, 'package.json'), 'utf8')) as { name: string; version: string; dsh?: unknown }
-        if (manifest.name !== '@deepseek-ai/dsh-api-session-controller' || manifest.version !== DSH_VERSION) throw failure('RUNTIME_INVALID', '原生 Web 客户端与运行时版本不一致。', 'not-sent')
-        const roster = prepareRestrictedDirectory(join(this.bridgeDirectory, 'session-client'))
-        writePrivateSource(join(roster, 'package.json'), JSON.stringify({ name: manifest.name, version: manifest.version, type: 'module', exports: { '.': './host.mjs', './client': './client.js' }, dsh: manifest.dsh }))
-        writePrivateSource(join(roster, 'host.mjs'), 'export function apply() {}\n')
-        writePrivateSource(join(roster, 'client.js'), readFileSync(join(sessionPackage, 'lib', 'client.js'), 'utf8'))
-      }
       writePrivateSource(join(this.bridgeDirectory, 'native-web.mjs'), getNativeWebRuntimeSource())
-      writePrivateSource(join(this.bridgeDirectory, 'native-web-carrier.mjs'), nativeWebCarrierSource())
-      writePrivateSource(join(this.bridgeDirectory, 'native-web-session-controller.mjs'), nativeWebControllerSource(nativeModules))
       writePrivateSource(bridgePath, getRuntimeBridgeSource())
-      writePrivateSource(patchPath, createRuntimePatch(resolved, bridgePath, this.configuration, nativeModules, nativeClient, this.modelCapabilities.read().imageInput))
+      writePrivateSource(patchPath, createRuntimePatch(resolved, bridgePath, this.configuration, nativeModules, this.modelCapabilities.read().imageInput))
       const workspace = join(resolve(this.context.dataDirectory), 'workspace')
       const client = this.createHarness({ dshBin: resolved.dshBin, profile: 'sdk-minimal', patches: [patchPath],
         dshHome: join(resolve(this.context.dataDirectory), 'dsh-home'), env: { ...createRuntimeEnvironment(this.context.dataDirectory, this.configuration, this.nonce, sessionId),
@@ -315,7 +299,7 @@ export class DshPlugin implements BackendPlugin {
   }
 
   private validNativeWebEntry(value: JsonObject): boolean {
-    if (!this.matchesRuntime(value) || value.readOnly !== true || typeof value.url !== 'string') return false
+    if (!this.matchesRuntime(value) || typeof value.url !== 'string') return false
     try { const url = new URL(value.url); return url.protocol === 'http:' && url.hostname === '127.0.0.1' && Boolean(url.port) && url.pathname === '/' && url.searchParams.has('token') && !url.username && !Reflect.get(url, 'pass' + 'word') }
     catch { return false }
   }
@@ -356,7 +340,6 @@ export class DshPlugin implements BackendPlugin {
     const owner = this.host.readOwnerConfiguration()
     const preview = composeAgentPrompt(owner, null, { 当前时间: new Date().toISOString(), 人格名称: owner.activePersona?.name ?? '' })
     writeRestrictedJson(join(this.bridgeDirectory, 'owner-policy.json'), { schemaVersion: 1, revision: preview.revision, systemPrompt: preview.systemPrompt,
-      agentLabels: Object.fromEntries(this.agentControl.list().map(entry => [entry.scope.agentId, agentInstanceLabel(entry.scope, owner.agentTypes.find(type => type.id === entry.scope.agentTypeId)?.pluginName)])),
       agentTypes: owner.agentTypes.filter(type => type.enabled).map(type => ({ id: type.id, title: type.title, description: type.description, enabled: type.enabled })),
       ...(binding && contextRef ? { contextRef, binding: { agentId: binding.scope.agentId, agentTypeId: binding.scope.agentTypeId, label: agentInstanceLabel(binding.scope, owner.agentTypes.find(type => type.id === binding.scope.agentTypeId)?.pluginName) } } : {}) })
     return { revision: preview.revision }
@@ -539,8 +522,8 @@ export class DshPlugin implements BackendPlugin {
     if (operation === 'open-native-web') {
       if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length) throw new PlatformError('NATIVE_WEB_INPUT_INVALID', '原生会话页入口参数无效。', 400, 'not-sent')
       const value = this.nativeWebReady && this.runtimeReady && this.client ? readRestrictedJson(join(this.bridgeDirectory, 'native-web-ready.json')) : null
-      if (!value || !this.validNativeWebEntry(value)) throw failure('NATIVE_WEB_NOT_READY', '原生只读会话页尚未就绪，请先启动 DSH。', 'not-sent')
-      return { url: value.url!, rootSessionId: this.metadata!.sessionId, readOnly: true }
+      if (!value || !this.validNativeWebEntry(value)) throw failure('NATIVE_WEB_NOT_READY', 'DSH 原生 Web 尚未就绪，请先启动 DSH。', 'not-sent')
+      return { url: value.url!, rootSessionId: this.metadata!.sessionId }
     }
     if (operation === 'list-models' || operation === 'test-connection') {
       const controller = new AbortController(); this.managementRequests.add(controller)

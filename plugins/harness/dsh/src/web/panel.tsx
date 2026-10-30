@@ -146,10 +146,9 @@ function ErrorNotice({ failure }: { readonly failure: Failure | null }) {
   if (!failure) return null
   const message = failure.messageKey ? t(failure.messageKey) : getErrorMessage(failure.error)
   return <div className="dsh-error" role="alert"><AlertCircle size={16} aria-hidden="true" /><div>
-    <p>{message}</p>
+    <p>{failure.detail ?? message}</p>
     <small>{t('error.code', { code: failure.code })}</small>
     {failure.outcome === 'unknown' && <p className="dsh-error-recovery">{t('error.unknown')}</p>}
-    {failure.detail && <details className="dsh-error-details"><summary>{t('error.details')}</summary><p>{failure.detail}</p></details>}
   </div></div>
 }
 function Field({ id, label, hint, error, children }: { readonly id: string; readonly label: string; readonly hint: string; readonly error?: string; readonly children: ReactNode }) {
@@ -413,7 +412,7 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
       <p className="dsh-help">{runtimeHelp}</p>
       {runtime.system.path && <p className="dsh-help"><code>{runtime.system.path}</code></p>}
       {!systemFound && <div className="dsh-notice"><Info size={16} aria-hidden="true" /><p>{t('system.installGuide')}</p></div>}
-      {runtime.lastError && <ErrorNotice failure={runtimeFailure('HARNESS_RUNTIME_ERROR', runtime.lastError)} />}
+      {runtime.lastError && runtime.lastError !== plugin?.status.lastError && <ErrorNotice failure={runtimeFailure('HARNESS_RUNTIME_ERROR', runtime.lastError)} />}
     </section>}
     {draft && <section aria-labelledby={id('configuration-title')}>
       <div className="section-heading"><h3 id={id('configuration-title')}>{t('configuration.title')}</h3><p>{t('configuration.description')}</p></div>

@@ -209,6 +209,36 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await expect(page.getByLabel('API Key', { exact: true })).toHaveCount(0)
   })
 
+  test('限流错误直接显示提供商原因，只出现一次并随成功状态清除', async ({ page }, testInfo) => {
+    await page.request.get(`${url}/api/bootstrap`)
+    const initial = await (await page.request.get(`${url}/api/workspace`)).json() as { plugins: { id: string; configuration: JsonObject; status: JsonObject }[] }
+    const detail = '模型服务限流（HTTP 429），请按提供商提示等待额度恢复或选择其他可用模型。 错误代码：RATE_LIMIT。 提供商详情：WorkBuddy AI: usage exceeds frequency limit; reset at 2026-10-30 10:57:58 UTC+8.'
+    let lastError: string | null = detail
+    await page.route('**/api/workspace', route => json(route, { ...initial, plugins: initial.plugins.map(plugin => plugin.id === 'dsh' ? {
+      ...plugin,
+      status: { ...plugin.status, state: 'connected', lastError },
+      configuration: { ...plugin.configuration, endpoint: 'http://127.0.0.1:1/v1', model: 'fixture-model',
+        runtimeStatus: { ...(plugin.configuration.runtimeStatus as JsonObject), ready: true, busy: false, lastError } },
+    } : plugin) }))
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await open(page)
+    const alerts = page.locator('.dsh-panel [role="alert"]')
+    await expect(alerts).toHaveCount(1)
+    await expect(alerts).toContainText('HTTP 429')
+    await expect(alerts).toContainText('2026-10-30 10:57:58 UTC+8')
+    await expect(page.getByText('运行中', { exact: true })).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath('rate-limit-dark.png'), fullPage: true })
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.emulateMedia({ colorScheme: 'light' })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await expect(alerts).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath('rate-limit-mobile.png'), fullPage: true })
+    lastError = null
+    await page.getByRole('button', { name: '刷新状态', exact: true }).click()
+    await expect(alerts).toHaveCount(0)
+    await expect(page.getByText('运行中', { exact: true })).toBeVisible()
+  })
+
   test('DSH面板资源失败仍归Harness且QQ配置继续可用', async ({ page }) => {
     await page.route('**/plugins/dsh/*/ui/index.js', route => route.abort())
     await page.goto(`${url}/#harness/dsh`)

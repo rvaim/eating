@@ -50,6 +50,24 @@ function failure(code: string, message: string, outcome: 'not-sent' | 'failed' |
   return new PlatformError(code, message, 409, outcome)
 }
 
+function modelTurnFailure(code: string, message: string, secrets: readonly string[]): string {
+  let detail = message
+  // Provider errors can echo request credentials. Redact before truncating so a
+  // credential crossing the display limit cannot leak its prefix.
+  for (const secret of secrets.filter(Boolean).sort((left, right) => right.length - left.length)) {
+    for (const value of new Set([secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)])) {
+      detail = detail.split(value).join('[REDACTED]')
+    }
+  }
+  detail = detail.replace(/\bBearer\s+[^\s"'\\]+/gi, 'Bearer [REDACTED]')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
+  if (detail.length > 2048) detail = detail.slice(0, 2048) + '…'
+  const summary = code === 'RATE_LIMIT'
+    ? '模型服务限流（HTTP 429），请按提供商提示等待额度恢复或选择其他可用模型。'
+    : 'DSH 模型本轮运行失败。'
+  return `${summary} 错误代码：${code}。${detail ? ` 提供商详情：${detail}` : ''}`
+}
+
 function bounded<T>(promise: Promise<T>, timeoutMs: number, error: PlatformError, signal?: AbortSignal): Promise<T> {
   return new Promise<T>((accept, reject) => {
     let finished = false
@@ -107,7 +125,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.6.3'
+  readonly version = '0.6.4'
   readonly tools = []
   readonly capabilities = [
     { id: 'dsh.fixed-session', name: '固定 DSH 主会话', support: 'supported' as const, description: '使用独立官方 DSH 运行时与固定原生会话；可靠交接须经持久屏障。' },
@@ -415,8 +433,14 @@ export class DshPlugin implements BackendPlugin {
       this.lastEventAt = new Date().toISOString()
       const task = run.then(result => {
         if (lifetimeSignal?.aborted || this.closed) return
-        const failed = result.events.some(event => event.type === 'turn/end' && event.data.reason.kind === 'error')
-        if (failed) this.lastError = 'DSH 模型本轮运行失败；消息交接与模型执行结果分别记录，请检查模型配置。'
+        const end = [...result.events].reverse().find(event => event.type === 'turn/end')
+        if (end?.type !== 'turn/end') return
+        if (end.data.reason.kind === 'error') {
+          const { code, message } = end.data.reason.error
+          this.lastError = modelTurnFailure(code, message, [this.configuration.apiKey, this.agentControl.token])
+        } else if (end.data.reason.kind === 'completed') {
+          this.lastError = null
+        }
       }, () => {
         if (lifetimeSignal?.aborted || this.closed) return
         this.lastError = 'DSH 本轮运行失败；已确认的交接回执不代表模型任务成功。'

@@ -271,19 +271,45 @@ describe('DSH reliable single-batch handoff', () => {
     expect(new DshSessionFile(setup.directory).read()).toMatchObject({ activeBatchId: 'b'.repeat(64), lastOutcome: 'durable' })
   })
 
-  it('reports a resolved SDK error turn with a fixed message and keeps the durable receipt separate', async () => {
+  it('reports a sanitized SDK error without hiding the provider reason or changing the durable receipt', async () => {
     const setup = fixture()
     await configure(setup.plugin)
     await setup.plugin.connect()
     const receipt = await setup.plugin.deliverBatch(batch(), new AbortController().signal)
     const client = setup.clients[0]!
     client.run.resolve({ ...result(client), events: [validatedSessionEvent({ seq: 0, type: 'turn/end', data: { turn: 0,
-      reason: { kind: 'error', error: { code: 'UNKNOWN', message: 'fixture-only-api-key raw provider failure' } } } })] })
+      reason: { kind: 'error', error: { code: 'UNKNOWN', message: `${client.launch.env!.EATING_DSH_API_KEY} raw provider failure` } } } })] })
     await vi.waitFor(() => expect(setup.plugin.isReady()).toBe(true))
     expect(receipt).toMatchObject({ accepted: true, durable: true })
     expect(setup.plugin.getStatus().lastError).toContain('模型本轮运行失败')
-    expect(JSON.stringify(setup.plugin.getPublicConfiguration())).not.toContain('fixture-only-api-key')
+    expect(setup.plugin.getStatus().lastError).toContain('[REDACTED] raw provider failure')
+    expect(JSON.stringify(setup.plugin.getPublicConfiguration())).not.toContain(client.launch.env!.EATING_DSH_API_KEY!)
     expect(new DshSessionFile(setup.directory).read()!.lastOutcome).toBe('durable')
+  })
+
+  it('shows the rate limit reason and reset time while keeping DSH ready, then clears it on a completed turn', async () => {
+    const setup = fixture()
+    await configure(setup.plugin)
+    await setup.plugin.connect()
+    const client = setup.clients[0]!
+    const sessionId = client.launch.env!.EATING_DSH_SESSION_ID!
+    const receipt = await setup.plugin.deliverBatch(batch(), new AbortController().signal)
+    client.run.resolve({ ...result(client), events: [validatedSessionEvent({ seq: 0, type: 'turn/end', data: { turn: 0,
+      reason: { kind: 'error', error: { code: 'RATE_LIMIT', message: "429: WorkBuddy AI: usage exceeds frequency limit. Resets at 2026-10-30 10:57:58 UTC+8." } } } })] })
+    await vi.waitFor(() => expect(setup.plugin.isReady()).toBe(true))
+    expect(receipt).toMatchObject({ accepted: true, durable: true })
+    expect(setup.plugin.getStatus()).toMatchObject({ state: 'connected', lastError: expect.stringContaining('模型服务限流（HTTP 429）') })
+    expect(setup.plugin.getStatus().lastError).toContain('2026-10-30 10:57:58 UTC+8')
+    expect(client.closeCalls).toBe(0)
+    vi.spyOn(client.client.session(sessionId), 'run').mockImplementationOnce(async () => {
+      ack(setup.directory)
+      return { ...result(client), events: [validatedSessionEvent({ seq: 1, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })] }
+    })
+    await setup.plugin.deliverBatch(batch('b'.repeat(64)), new AbortController().signal)
+    await vi.waitFor(() => expect(setup.plugin.isReady()).toBe(true))
+    expect(setup.plugin.getStatus().lastError).toBeNull()
+    expect(new DshSessionFile(setup.directory).read()).toMatchObject({ sessionId, lastOutcome: 'durable' })
+    expect(client.closeCalls).toBe(0)
   })
 
   it('preserves structured external events and forged marker strings exclusively in the user payload', async () => {

@@ -83,6 +83,7 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
         const expected = readRestrictedJson(join(bridge, 'expected.json'))
         if (options.persisted) writeRestrictedJson(join(bridge, 'session-ready.json'), { schemaVersion: 1, nonce, sessionId })
         if (options.recovered && expected) ack(directory)
+        writeRestrictedJson(join(bridge, 'native-web-ready.json'), { schemaVersion: 1, nonce, sessionId, url: 'http://127.0.0.1:45678/?token=fixture-web-token' })
         writeRestrictedJson(join(bridge, 'ready.json'), { schemaVersion: 1, nonce, sessionId, toolsReady: true, durabilityAvailable: true,
           recovery: options.recovered ? 'persisted' : 'absent', ...(options.recovered && expected ? { batchId: expected.batchId! } : {}) })
       }),
@@ -156,6 +157,26 @@ describe('DSH isolated runtime lifecycle', () => {
     expect(setup.clients[1]!.resumeCalls).toBe(1)
     expect(setup.clients[1]!.sessionCalls).toBe(0)
     expect(new DshSessionFile(setup.directory).read()!.sessionId).toBe(metadata.sessionId)
+  })
+
+  it('returns the current official Web entry on demand without exposing credentials in public status', async () => {
+    const setup = fixture()
+    await expect(setup.plugin.manage('open-native-web', {})).rejects.toMatchObject({ code: 'NATIVE_WEB_NOT_READY' })
+    await configure(setup.plugin)
+    await setup.plugin.connect()
+    const entry = await setup.plugin.manage('open-native-web', {})
+    expect(entry).toEqual({ url: 'http://127.0.0.1:45678/?token=fixture-web-token', rootSessionId: setup.clients[0]!.launch.env!.EATING_DSH_SESSION_ID })
+    expect(setup.plugin.getPublicConfiguration().runtimeStatus).toMatchObject({ nativeWeb: { ready: true } })
+    expect(JSON.stringify(setup.plugin.getPublicConfiguration())).not.toContain('fixture-web-token')
+    await expect(setup.plugin.manage('open-native-web', { url: 'http://example.test' })).rejects.toMatchObject({ code: 'NATIVE_WEB_INPUT_INVALID' })
+    const state = join(setup.directory, 'bridge', 'native-web-ready.json')
+    writeRestrictedJson(state, { ...readRestrictedJson(state)!, nonce: 'previous-runtime' })
+    await expect(setup.plugin.manage('open-native-web', {})).rejects.toMatchObject({ code: 'NATIVE_WEB_NOT_READY' })
+    await setup.plugin.disconnect()
+    expect(setup.plugin.getPublicConfiguration().runtimeStatus).toMatchObject({ nativeWeb: { ready: false } })
+    await expect(setup.plugin.manage('open-native-web', {})).rejects.toMatchObject({ code: 'NATIVE_WEB_NOT_READY' })
+    await expect(setup.plugin.manage('list-sessions', {})).rejects.toMatchObject({ code: 'MANAGEMENT_OPERATION_NOT_FOUND' })
+    await expect(setup.plugin.manage('read-session', {})).rejects.toMatchObject({ code: 'MANAGEMENT_OPERATION_NOT_FOUND' })
   })
 
   it('keeps API and MCP keys out of public configuration and strips inherited credentials', async () => {

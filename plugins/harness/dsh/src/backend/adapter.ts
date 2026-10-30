@@ -13,7 +13,8 @@ import type { SystemDshLocation } from './system-dsh'
 import { getRuntimeBridgeSource } from './runtime-bridge'
 import { DshAgentControl } from './agent-control'
 import type { AgentBinding } from './agent-control'
-import { listNativeSessions, nativeReaderOptions, readNativeSession } from './session-view'
+import { prepareNativeWebProfile } from './native-web'
+import { getNativeWebRuntimeSource } from './native-web-runtime'
 import { listModels, testModelConnection } from './model-service'
 import { agentInstanceLabel } from './agent-label'
 import { DshModelCapabilitiesFile } from './model-capabilities'
@@ -125,7 +126,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.6.4'
+  readonly version = '0.7.0'
   readonly tools = []
   readonly capabilities = [
     { id: 'dsh.fixed-session', name: '固定 DSH 主会话', support: 'supported' as const, description: '使用独立官方 DSH 运行时与固定原生会话；可靠交接须经持久屏障。' },
@@ -155,6 +156,7 @@ export class DshPlugin implements BackendPlugin {
   private nonce = ''
   private state: ConnectionStatus['state'] = 'disconnected'
   private runtimeReady = false
+  private nativeWebReady = false
   private system: SystemDshLocation | null = null
   private busy = false
   private closed = false
@@ -190,7 +192,7 @@ export class DshPlugin implements BackendPlugin {
       dataDirectory: this.configurationFile.directory, updatedAt: this.configurationFile.updatedAt,
       runtimeStatus: { system: { found: this.system !== null, path: this.system?.bin ?? null, version: this.system?.version ?? null, source: this.system?.source ?? null },
         lastError: this.lastError, ready: this.runtimeReady, busy: this.busy,
-        sessionId: this.metadata?.sessionId ?? null, lastOutcome: this.metadata?.lastOutcome ?? null },
+        sessionId: this.metadata?.sessionId ?? null, lastOutcome: this.metadata?.lastOutcome ?? null, nativeWeb: { ready: this.nativeWebReady } },
       warning: this.configuration.endpoint.startsWith('http:') && !['127.0.0.1', '[::1]', 'localhost'].includes(new URL(this.configuration.endpoint).hostname)
         ? '远端 HTTP 模型地址会明文传输请求与 API 密钥，建议使用 HTTPS。' : null }
   }
@@ -243,6 +245,8 @@ export class DshPlugin implements BackendPlugin {
       else this.clearUnownedExpected()
       const bridgePath = join(this.bridgeDirectory, 'runtime-bridge.mjs')
       const patchPath = join(this.bridgeDirectory, 'runtime.patch.yaml')
+      writePrivateSource(join(this.bridgeDirectory, 'native-web.mjs'), getNativeWebRuntimeSource())
+      prepareNativeWebProfile(this.bridgeDirectory, this.configuration, writePrivateSource)
       writePrivateSource(bridgePath, getRuntimeBridgeSource())
       writePrivateSource(patchPath, createRuntimePatch(bridgePath, this.configuration, this.modelCapabilities.read().imageInput))
       const workspace = join(resolve(this.context.dataDirectory), 'workspace')
@@ -273,6 +277,8 @@ export class DshPlugin implements BackendPlugin {
         if (!metadata.created) this.saveMetadata({ ...metadata, created: true })
       })(), Math.max(1, startupDeadline - Date.now()), failure('RUNTIME_START_FAILED', 'DSH 启动或固定会话恢复失败；未创建替代会话。'), controller.signal)
       if (controller.signal.aborted || this.closed || !ready) throw failure('RUNTIME_INTERRUPTED', 'DSH 启动已中断。')
+      await this.pollFile(join(this.bridgeDirectory, 'native-web-ready.json'), value => this.validNativeWebEntry(value), Math.max(1, startupDeadline - Date.now()), controller.signal)
+      this.nativeWebReady = true
       const bridgeReady: JsonObject = ready
       if (metadata.activeBatchId && metadata.digest) {
         if (bridgeReady.recovery !== 'persisted' || bridgeReady.batchId !== metadata.activeBatchId) {
@@ -301,6 +307,14 @@ export class DshPlugin implements BackendPlugin {
       if (interrupted && !cleanupFailed) throw failure('RUNTIME_INTERRUPTED', 'DSH 启动已中断。', 'not-sent')
       throw error instanceof PlatformError ? error : failure('RUNTIME_START_FAILED', this.lastError ?? 'DSH 启动失败，请检查独立运行时与模型配置。')
     }
+  }
+
+  private validNativeWebEntry(value: JsonObject): boolean {
+    if (!this.matchesRuntime(value) || typeof value.url !== 'string') return false
+    try {
+      const url = new URL(value.url)
+      return url.protocol === 'http:' && url.hostname === '127.0.0.1' && Boolean(url.port) && url.pathname === '/' && url.searchParams.has('token') && !url.username && !url.password && !url.hash
+    } catch { return false }
   }
 
   private matchesRuntime(value: JsonObject): boolean {
@@ -492,6 +506,7 @@ export class DshPlugin implements BackendPlugin {
 
   private async stopRuntime(): Promise<void> {
     this.runtimeReady = false
+    this.nativeWebReady = false
     this.detach?.(); this.detach = null
     this.lifetime?.abort()
     this.delivery?.abort()
@@ -533,22 +548,11 @@ export class DshPlugin implements BackendPlugin {
       try { return operation === 'list-models' ? { models: [...(await listModels(this.configuration, controller.signal)).models].map(model => ({ ...model })) } : { ...await testModelConnection(this.configuration, controller.signal) } }
       finally { this.managementRequests.delete(controller) }
     }
-    if (operation === 'list-sessions' || operation === 'read-session') {
-      if (!this.metadata && operation === 'list-sessions') {
-        if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length) throw new PlatformError('SESSION_VIEW_INPUT_INVALID', '会话读取参数无效。', 400, 'not-sent')
-        return { sessions: [], truncated: false, refreshedAt: new Date().toISOString() }
-      }
-      const options = nativeReaderOptions(this.context.dataDirectory, this.system?.bin ?? '', this.metadata?.sessionId ?? null, this.agentControl.list(), [this.configuration.apiKey, this.agentControl.token], this.runtimeReady, this.host.readOwnerConfiguration().agentTypes)
-      try {
-        return (operation === 'list-sessions' ? await listNativeSessions(options, input) : await readNativeSession(options, input)) as unknown as JsonValue
-      } catch (error) {
-        // Reading native logs needs the official session packages, which live inside
-        // the DSH application bundle and cannot be imported by the Host process.
-        if (this.system?.source === 'path' || this.system?.source === 'common' || this.system?.source === 'application') {
-          throw failure('SESSION_VIEW_UNAVAILABLE', '使用系统 DSH 时无法离线读取会话（其内部模块位于应用包内）。请在 DSH 桌面应用中查看会话。', 'not-sent')
-        }
-        throw error
-      }
+    if (operation === 'open-native-web') {
+      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length) throw new PlatformError('NATIVE_WEB_INPUT_INVALID', 'DSH Web 入口参数无效。', 400, 'not-sent')
+      const value = this.nativeWebReady && this.runtimeReady && this.client ? readRestrictedJson(join(this.bridgeDirectory, 'native-web-ready.json')) : null
+      if (!value || !this.validNativeWebEntry(value)) throw failure('NATIVE_WEB_NOT_READY', 'DSH Web 尚未就绪，请先启动 Harness。', 'not-sent')
+      return { url: value.url!, rootSessionId: this.metadata!.sessionId }
     }
     throw new PlatformError('MANAGEMENT_OPERATION_NOT_FOUND', 'DSH 未提供此管理操作。', 404, 'not-sent')
   }

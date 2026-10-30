@@ -154,17 +154,15 @@ qq_view_received_image使用当前账号／会话已经收到并核验的消息�
 
 图片输入能力单独读取／保存，原7字段连接配置与密钥保持。默认imageInput=false，只有主人确认当前实际服务支持图片后才声明；不按模型名自动勾选。保存需要停止runtime并通过revision CAS，冲突保留草稿；endpoint／model变化重置false，Key／超时变化不重置。能力声明不能让文本模型变成视觉模型，真实提供商识图仍需另行授权验证。
 
-会话看板手动刷新、选择原生父／子会话后读取，停机也可看已有记录，不为此启动Agent／模型／新会话。公开Session及当前message projections恢复有效surface，保消息ID／turn／step／callId／source与替换关系，不平铺已失效system、不把inbox撤回当已读。平台消息显示真实sender／接收账号／私聊目标或群号，昵称有证据才带；主任务／子回报／框架通知分开，普通模型输出不等于QQ已发。系统与运行时时间独立折叠查看，内部reasoning不展示。
+DSH插件自有会话看板已移除，会话查看与操作由官方 Web 负责；不再提供离线分页或另一套消息投影。实例创建标签继续使用真实绑定账号和目标，原生页面标题按官方机制显示。
 
-实例显示名是“平台-绑定登录账号-私聊／群聊-对方／群号”，如虚构QQ-10001-群聊-30003。登录号来自真实scope.accountId，不是账号实例UUID；切号区分实例，历史归属和UUID不改。默认每页50、最多200记录、列表100，响应1MiB／单文本32K，按原生日志位置分页且最多扫描2000事件。运行中缓冲可能未落盘，未知状态／时间不伪造。
+在DSH面板点击“打开 DSH Web”，主人管理操作按需取得`{url, rootSessionId}`并在新页签进入同一Eating专属DSH进程的官方鉴权入口；不连接用户主DSH，也不另起共享会话写进程。普通`runtimeStatus.nativeWeb`只有`{ready}`，删除readOnly字段，URL不进入普通status或模型上下文。挂当前官方SessionController host、client roster、Gateway和owner鉴权，完整保留官方UI／主题／侧栏／消息组件与正常会话操作；可依官方能力新建会话、发言、设置，cold follow与激活遵循官方机制。关网页不影响QQ自动处理，停Harness则Web一同关闭。
 
-在DSH面板点击“打开DSH原生Web”，主人管理操作按需取得`{url, rootSessionId}`并在新页签进入同一Eating专属DSH进程的官方鉴权入口；不连接用户主DSH，也不另起共享会话写进程。普通`runtimeStatus.nativeWeb`只有`{ready}`，删除readOnly字段，URL不进入普通status或模型上下文。挂当前官方SessionController host、client roster、Gateway和owner鉴权，完整保留官方UI／主题／侧栏／消息组件与正常会话操作；可依官方能力新建会话、发言、设置，cold follow与激活遵循官方机制。关网页不影响QQ自动处理，停Harness则Web一同关闭。
-
-原生Web完全移除Eating自定义客户端源码／打包／模块注入、sidebar／composer／message renderer、硬编码配色、LocaleBridge、agentLabels映射及readerPeer／connection隔离／HTTP写白名单／readonlyController／冷follow拦截；DSH产物assets=[]。web的printUrl／openBrowser／surfaceContext均为false，避免污染SDK。四段名称保留为创建标签和Eating离线summary，官方页面显示依官方机制，不承诺全部旧标题外观修正。平台JSON与工具结果按官方默认组件原样显示；Eating自有面板的summary／source不注入DSH。SDK主的两个工具、受限QQ子MCP及time-context保持，官方Web创建的普通Agent不作为QQ scope child报错。
+原生Web完全移除Eating自定义客户端源码／打包／模块注入、sidebar／composer／message renderer、硬编码配色、LocaleBridge、agentLabels映射及readerPeer／connection隔离／HTTP写白名单／readonlyController／冷follow拦截；DSH产物assets仅含launch/dsh-system.mjs启动文件。web的printUrl／openBrowser／surfaceContext均为false，避免污染SDK。四段名称保留为创建标签，官方页面显示依官方机制，不承诺全部旧标题外观修正。平台JSON与工具结果按官方默认组件原样显示；Eating自有面板的summary／source不注入DSH。SDK主的两个工具、受限QQ子MCP及time-context保持，官方Web创建的普通Agent不作为QQ scope child报错。
 
 主子各一次官方time-context使用上海时区与原生600000ms，仅在已有合格step末尾追加来源明确的user运行时读数，冷恢复去重，无新时钟工具／scheduler／后台唤醒。通用与QQ默认system移除动态时间行；9个可信变量仍注册，若主人自定义再插当前时间，system仍动态变化，不能承诺缓存收益。
 
-隐藏或离开Eating看板会清正文，不后台轮询，不建Eating archive，也不因清Host队列删Harness原生上下文。Eating离线读取底层可能解码整份原生日志，不保证大日志磁盘分页性能；官方Web的会话读取和激活保留官方机制。实际验证与限制见[本轮新报告](../reports/2026-10-29-恢复原样DSHWeb与图片DNS诊断.md)。
+Eating不建聊天archive，也不因清Host队列删除Harness原生上下文；官方Web的会话读取和激活保留官方机制。实际验证与限制见[本轮新报告](../reports/2026-10-29-恢复原样DSHWeb与图片DNS诊断.md)。
 
 ## 实时日志
 

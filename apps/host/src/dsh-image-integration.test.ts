@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { inflateSync } from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
@@ -12,13 +12,14 @@ import { downloadQQImage, qqViewReceivedImageTool, readQQReceivedImage } from '.
 import { validateToolInput } from '../../../plugins/communication/qq/src/backend/operations'
 import { DshPlugin } from '../../../plugins/harness/dsh/src/backend/adapter'
 import { testSystemDsh } from '../../../tests/fixtures/system-dsh'
+import { connectNativeWeb } from '../../../tests/fixtures/native-web'
 import { startImageFixture } from '../../../tests/fixtures/image'
 import { readModelFixtureBatch } from '../../../tests/fixtures/openai'
 import type { ModelFixtureRequest } from '../../../tests/fixtures/openai'
 import { replyOneBot, startOneBotFixture } from '../../../tests/fixtures/onebot'
 import { EatingHost } from './app'
 
-const runtimeDirectory = process.env.EATING_DSH_TEST_RUNTIME
+const systemDshBin = process.env.EATING_DSH_TEST_SYSTEM_BIN
 const cleanups: Array<() => Promise<unknown> | unknown> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
 const imageId = 'fixture-native-pixel.png'
@@ -137,7 +138,7 @@ function imageQQEntry(image: Awaited<ReturnType<typeof startImageFixture>>, scop
 
 async function runImageScenario(imageInput: boolean) {
   const home = await isolatedHome()
-  const systemDsh = () => testSystemDsh(resolve(runtimeDirectory!))
+  const systemDsh = () => testSystemDsh()
   const image = await startImageFixture()
   cleanups.push(() => image.close())
   // Prove this fixture contains an actual compressed RGBA scanline before SDK admission.
@@ -192,10 +193,13 @@ async function runImageScenario(imageInput: boolean) {
   expect(system(model.requests[0]!)).toEqual(system(model.requests[3]!))
   expect(system(model.requests[1]!)).toEqual(system(model.requests[2]!))
   const rootId = String(runtime().sessionId)
+  const web = await connectNativeWeb(await plugin.manage('open-native-web', {}), rootId)
+  expect(runtime().nativeWeb).toEqual({ ready: true })
   for (const id of [rootId, scopes[0]!.agentId]) {
-    const viewed = object(await plugin.manage('read-session', { sessionId: id, offset: 0, limit: 50 }))
-    if (!Array.isArray(viewed.records)) throw new Error('Expected native view records')
-    expect(viewed.records.map(object).filter(record => record.classification === 'time-context')).toHaveLength(1)
+    const events = await web.events(id, id === rootId ? undefined : rootId)
+    const clocks = events.filter(event => event.type === 'user/message' && isJsonObject(event.data) && isJsonObject(event.data.source) && event.data.source.kind === 'time-context')
+    expect(clocks).toHaveLength(1)
+    expect(JSON.stringify(clocks)).toContain('Asia/Shanghai')
   }
   expect(model.requests.map(request => readModelFixtureBatch(request)?.kind)).toEqual(['root', 'child', 'child', 'root'])
   expect(toolNames(model.requests[0]!)).toEqual(['eating_delegate_task', 'eating_list_agent_types'])
@@ -224,7 +228,7 @@ async function runImageScenario(imageInput: boolean) {
 }
 
 // Opt-in real native SDK/Host/DSH attachment path; all account, image and model peers are local fixtures.
-describe.runIf(Boolean(runtimeDirectory))('真实 Host MCP 图片 → DSH 附件 → 模型请求', () => {
+describe.runIf(Boolean(systemDshBin))('真实 Host MCP 图片 → DSH 附件 → 模型请求', () => {
   it('sends a decoded image_url block only after the owner explicitly enables image input', async () => {
     const { continuation, bytes } = await runImageScenario(true)
     const blocks = imagesIn(continuation)

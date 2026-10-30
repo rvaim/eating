@@ -107,7 +107,7 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await expect(page.getByText('尚未连接', { exact: true })).toBeVisible()
   })
 
-  test('界面状态夹具：异步安装、启动停止与未知结果不重复提交，390px可操作', async ({ page }, testInfo) => {
+  test('界面状态夹具：启动停止与未知结果不重复提交，原生 Web 仅在就绪后开放，390px可操作', async ({ page }, testInfo) => {
     expect((await page.request.get(`${url}/api/bootstrap`)).status()).toBe(200)
     const initialResponse = await page.request.get(`${url}/api/workspace`)
     expect(initialResponse.status()).toBe(200)
@@ -115,51 +115,42 @@ test.describe('Harness 独立面板与泛型目录', () => {
     const dsh = initial.plugins.find(plugin => plugin.id === 'dsh')!
     const configuration: JsonObject = { ...dsh.configuration, endpoint: 'https://api.example.test/v1', model: 'fixture-model' }
     const runtime = configuration.runtimeStatus as JsonObject
+    runtime.ready = false; runtime.busy = false; runtime.sessionId = null; runtime.nativeWeb = { ready: false }
     const status = { ...dsh.status, state: 'disconnected' }
-    let installCount = 0
     let connectCount = 0
     let disconnectCount = 0
     let unknown = false
-    const installation = delay()
     const connection = delay()
     await page.route('**/api/workspace', route => json(route, { ...initial, plugins: initial.plugins.map(plugin => plugin.id === 'dsh' ? { ...plugin, configuration, status } : plugin) }))
     await page.route('**/api/plugins/dsh/manage', async route => {
       if (route.request().postDataJSON().operation === 'get-model-capabilities') { await route.continue(); return }
-      installCount++
-      expect(route.request().postDataJSON()).toEqual({ operation: 'install-runtime', input: {} })
-      runtime.installing = true; runtime.progress = '界面夹具：正在安装'
-      await installation.promise
-      await json(route, { started: true })
+      throw new Error('Unexpected manage operation in harness UI fixture')
     })
     await page.route('**/api/plugins/dsh/connect', async route => {
       connectCount++
       if (unknown) { await json(route, { error: { code: 'FIXTURE_UNKNOWN', message: '界面夹具：启动结果未知', outcome: 'unknown' } }, 504); return }
       status.state = 'connecting'
       await connection.promise
-      status.state = 'connected'; runtime.ready = true; runtime.busy = true; runtime.sessionId = 'fixture-main-session'
+      status.state = 'connected'; runtime.ready = true; runtime.busy = true; runtime.sessionId = 'fixture-main-session'; runtime.nativeWeb = { ready: true }
       await json(route, status)
     })
     await page.route('**/api/plugins/dsh/disconnect', async route => {
-      disconnectCount++; status.state = 'disconnected'; runtime.ready = false; runtime.busy = false
+      disconnectCount++; status.state = 'disconnected'; runtime.ready = false; runtime.busy = false; runtime.nativeWeb = { ready: false }
       await json(route, status)
     })
     await page.setViewportSize({ width: 390, height: 844 })
     await open(page)
-    await page.getByRole('button', { name: '安装运行时', exact: true }).click()
-    await expect.poll(() => installCount).toBe(1)
-    await expect(page.getByRole('button', { name: '正在安装…', exact: true })).toBeDisabled()
-    await expect(page.getByRole('button', { name: '启动 Harness', exact: true })).toBeDisabled()
-    installation.release()
-    await expect(page.getByText('正在安装运行时，请稍候…', { exact: true })).toBeVisible()
-    runtime.installing = false; runtime.installed = true; runtime.progress = null
-    await page.getByRole('button', { name: '刷新状态', exact: true }).click()
+    const nativeButton = page.getByRole('button', { name: '打开 DSH Web', exact: true })
+    await expect(nativeButton).toBeDisabled()
     await expect(page.getByRole('button', { name: '启动 Harness', exact: true })).toBeEnabled()
     await page.getByRole('button', { name: '启动 Harness', exact: true }).click()
     await expect.poll(() => connectCount).toBe(1)
     await expect(page.getByRole('button', { name: '正在启动…', exact: true })).toBeDisabled()
+    await expect(nativeButton).toBeDisabled()
     connection.release()
     await expect(page.getByText('正在处理', { exact: true }).first()).toBeVisible()
     await expect(page.getByText('fixture-main-session', { exact: true })).toBeVisible()
+    await expect(nativeButton).toBeEnabled()
     await expect(page.getByText('账号：', { exact: false })).toHaveCount(0)
     runtime.busy = false; runtime.lastOutcome = 'completed'
     await page.getByRole('button', { name: '刷新状态', exact: true }).click()
@@ -169,13 +160,13 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await page.screenshot({ path: testInfo.outputPath('harness-mobile.png'), fullPage: true })
     await page.getByRole('button', { name: '停止 Harness', exact: true }).click()
     await expect.poll(() => disconnectCount).toBe(1)
+    await expect(nativeButton).toBeDisabled()
     unknown = true
     await page.getByRole('button', { name: '启动 Harness', exact: true }).click()
     await expect(page.getByText('操作未完成，请刷新状态后重试。', { exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: '启动 Harness', exact: true })).toBeDisabled()
     await expect(page.getByRole('button', { name: '我已核对当前状态', exact: true })).toBeEnabled()
     expect(connectCount).toBe(2)
-    expect(installCount).toBe(1)
   })
 
   test('页面隐藏清理密钥并停止读取，离页后的迟到保存不影响作者页面', async ({ page }) => {
@@ -218,7 +209,7 @@ test.describe('Harness 独立面板与泛型目录', () => {
       ...plugin,
       status: { ...plugin.status, state: 'connected', lastError },
       configuration: { ...plugin.configuration, endpoint: 'http://127.0.0.1:1/v1', model: 'fixture-model',
-        runtimeStatus: { ...(plugin.configuration.runtimeStatus as JsonObject), ready: true, busy: false, lastError } },
+        runtimeStatus: { ...(plugin.configuration.runtimeStatus as JsonObject), ready: true, busy: false, lastError, nativeWeb: { ready: true } } },
     } : plugin) }))
     await page.emulateMedia({ colorScheme: 'dark' })
     await open(page)

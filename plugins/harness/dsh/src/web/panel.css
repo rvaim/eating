@@ -1,23 +1,17 @@
-.dsh-native-entry { padding: 24px 0; border-bottom: 1px solid var(--color-line); }
-.dsh-native-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
-.dsh-native-heading h3 { margin: 0; font-size: 15px; font-weight: 600; }
-.dsh-native-heading p { max-width: 72ch; margin-top: 5px; color: var(--color-muted); font-size: 12px; }
-.dsh-native-heading .button { flex-shrink: 0; min-height: 44px; }
+/* Status-bar entry to the official DSH Web; the authenticated URL never reaches the DOM. */
+.dsh-status-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px 12px; flex-shrink: 0; }
+.dsh-native-control { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 0; }
+.dsh-native-open { min-height: 38px; padding-block: 6px; }
+.dsh-native-failure { display: flex; align-items: flex-start; gap: 4px; margin: 0; color: var(--color-danger-ink); font-size: 11px; line-height: 1.6; text-align: end; overflow-wrap: anywhere; }
+.dsh-native-failure svg { margin-top: 2px; }
 .dsh-capabilities { margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--color-line); }
 .dsh-capabilities .section-heading { margin-bottom: 20px; }
 .dsh-capabilities .check-field { max-width: 75ch; }
 .dsh-capability-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .dsh-capability-actions .button { min-height: 44px; }
-@media (max-width: 600px) { .dsh-native-heading { flex-wrap: wrap; gap: 14px; } }
 .dsh-panel { display: contents; }
 .dsh-panel > * { max-width: 1050px; min-width: 0; }
 .dsh-panel [hidden] { display: none !important; }
-.dsh-tablist { position: sticky; top: calc(0px - var(--content-inset-block-start)); z-index: 2; display: flex; gap: 24px; max-width: none; margin-inline: calc(0px - var(--content-inset-inline-start)) calc(0px - var(--content-inset-inline-end)); padding: var(--panel-tab-padding-block) var(--content-inset-inline-end) var(--panel-tab-padding-block) var(--content-inset-inline-start); border-bottom: 1px solid var(--color-line); background: var(--color-surface); }
-.dsh-panel [role="tabpanel"] :is(input, select, textarea, button, summary, [tabindex]) { scroll-margin-block-start: calc(var(--panel-tab-rail-block-size) + 20px); }
-.dsh-tablist button { min-height: var(--panel-tab-min-block-size); padding: 9px 0; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--color-muted); font-size: 13px; font-weight: 550; cursor: pointer; }
-.dsh-tablist button[aria-selected="true"] { color: var(--color-primary-hover); border-bottom-color: var(--color-primary); }
-.dsh-tablist button:hover { color: var(--color-primary-hover); }
-.dsh-tablist button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
 .dsh-model-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 10px; }
 .dsh-model-actions .button { min-height: 42px; }
 .dsh-model-help { color: var(--color-muted); font-size: 12px; max-width: 75ch; margin-top: 8px; }
@@ -34,7 +28,7 @@
 .dsh-panel button { max-width: 100%; white-space: normal; }
 .dsh-panel button, .dsh-panel input { touch-action: manipulation; }
 .dsh-status-strip { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 17px 0 20px; }
-.dsh-status-strip > div { display: flex; flex-wrap: wrap; gap: 5px 18px; align-items: baseline; min-width: 0; }
+.dsh-status-strip > div:first-child { display: flex; flex-wrap: wrap; gap: 5px 18px; align-items: baseline; min-width: 0; }
 .dsh-status-strip strong { font-size: 14px; font-weight: 600; }
 .dsh-status-strip span { color: var(--color-muted); font-size: 12px; }
 .dsh-status-strip .text-button { flex-shrink: 0; padding-top: 0; }
@@ -83,6 +77,9 @@
 }
 @media (max-width: 600px) {
   .dsh-status-strip { flex-wrap: wrap; gap: 8px 12px; }
+  .dsh-status-actions { width: 100%; justify-content: flex-start; }
+  .dsh-native-control { align-items: flex-start; }
+  .dsh-native-failure { text-align: start; }
   .dsh-runtime-heading { flex-wrap: wrap; align-items: flex-start; gap: 12px; }
   .dsh-runtime-heading > div { flex-basis: 100%; }
   .dsh-runtime-heading .button { min-height: 44px; }

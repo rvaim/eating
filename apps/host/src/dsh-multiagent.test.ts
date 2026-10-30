@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
-import { mkdtemp, realpath, rm, writeFile, mkdir, readdir, readFile } from 'node:fs/promises'
+import { mkdtemp, realpath, rm, writeFile, mkdir, readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -17,13 +17,17 @@ import { DshPlugin } from '../../../plugins/harness/dsh/src/backend/adapter'
 import { EatingHost } from './app'
 import qqEntry from '../../../plugins/communication/qq/src/server'
 import { testRuntimeBin, testSystemDsh } from '../../../tests/fixtures/system-dsh'
+import { connectNativeWeb, readTestAgentBindings } from '../../../tests/fixtures/native-web'
 import { readModelFixtureBatch } from '../../../tests/fixtures/openai'
 import type { ModelFixtureRequest } from '../../../tests/fixtures/openai'
 import { startOneBotFixture } from '../../../tests/fixtures/onebot'
 
 const runtimeDirectory = process.env.EATING_DSH_TEST_RUNTIME
+const systemDshBin = process.env.EATING_DSH_TEST_SYSTEM_BIN
 const cleanups: Array<() => Promise<unknown> | unknown> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
+
+function object(value: unknown): JsonObject { if (!isJsonObject(value)) throw new Error('Expected structured native test data'); return value }
 
 async function isolatedHome() {
   const parent = await realpath(tmpdir())
@@ -60,9 +64,9 @@ async function modelFixture(choose: (request: ModelFixtureRequest, index: number
   return { endpoint: `http://127.0.0.1:${address.port}/v1`, requests, errors }
 }
 
-// Only fixed independent npm packages and loopback protocol fixtures are executed.
-describe.runIf(Boolean(runtimeDirectory))('真实DSH原生多代理隔离', () => {
-  it('awaits child initialization, isolates system/tools and returns actual MCP→OneBot results to its parent', async () => {
+// Direct-import PoCs use the independent npm cache; product cases use only the explicit system launcher.
+describe('真实DSH原生多代理隔离', () => {
+  it.runIf(Boolean(runtimeDirectory))('awaits child initialization, isolates system/tools and returns actual MCP→OneBot results to its parent', async () => {
     const home = await isolatedHome()
     const rootId = randomUUID(), childId = randomUUID()
     const runtimeBin = testRuntimeBin(resolve(runtimeDirectory!))
@@ -159,9 +163,9 @@ export function apply(ctx){
     expect(model.errors).toEqual([])
   }, 60000)
 
-  it('uses the production bridge, scoped Host MCP, persistent child identity and offline native session reader', async () => {
+  it.runIf(Boolean(systemDshBin))('uses the production bridge, scoped Host MCP, persistent child identity and official native Web history', async () => {
     const home = await isolatedHome()
-    const systemDsh = () => testSystemDsh(resolve(runtimeDirectory!))
+    const systemDsh = () => testSystemDsh()
     const onebot = await startOneBotFixture(); cleanups.push(() => onebot.close())
     let currentBatch = ''
     let currentType = ''
@@ -211,8 +215,14 @@ export function apply(ctx){
     const emit = (id: number, group = false) => onebot.emitEvent({ post_type: 'message', message_type: group ? 'group' : 'private', self_id: 123456789, user_id: 987654321, ...(group ? { group_id: 123456 } : {}), message_id: id, message: '外部上下文只进入user数据 api_key=production-bridge-fixture-key cookie=fixture-cookie-value' })
     emit(99301)
     await until(() => host.harness.getStatus().accepted === 1 && plugin.isReady(), 'first production delegation timed out')
-    const firstList = await plugin.manage('list-sessions', {})
-    expect(isJsonObject(firstList) && Array.isArray(firstList.sessions) ? firstList.sessions : []).toHaveLength(2)
+    const rootId = String(object(plugin.getPublicConfiguration().runtimeStatus).sessionId)
+    let web = await connectNativeWeb(await plugin.manage('open-native-web', {}), rootId)
+    const firstList = await web.listSessions()
+    expect(firstList).toHaveLength(2)
+    const firstBindings = await readTestAgentBindings(home)
+    expect(firstBindings).toHaveLength(1)
+    const childId = String(object(firstBindings[0]!.scope).agentId)
+    expect(firstList).toEqual(expect.arrayContaining([expect.objectContaining({ sessionId: rootId }), expect.objectContaining({ sessionId: childId, parentSessionId: rootId, origin: 'subagent' })]))
     expect(onebot.requests.filter(request => request.action === 'send_private_msg')).toHaveLength(1)
     const common = host.authoring.getSnapshot().prompts.find(prompt => prompt.id === 'common')!
     host.authoring.updatePrompt('common', 'COMMON-UPDATED-ON-TASK-BOUNDARY', common.revision)
@@ -221,39 +231,38 @@ export function apply(ctx){
     await api('/plugins/qq/manage', { operation: 'save-agent-policy', input: { expectedRevision: qqConfiguration.policyRevision!, owners: [], administrators: [], agentTools: { ...qqConfiguration.agentTools, 'qq.private': ['qq_send_private_message'] } } })
     emit(99302)
     await until(() => host.harness.getStatus().accepted === 2 && plugin.isReady(), 'child cold continuation timed out')
-    const secondList = await plugin.manage('list-sessions', {})
-    expect(isJsonObject(secondList) && Array.isArray(secondList.sessions) ? secondList.sessions : []).toHaveLength(2)
+    const secondList = await web.listSessions()
+    expect(secondList).toHaveLength(2)
+    expect(secondList.map(row => row.sessionId).sort()).toEqual(firstList.map(row => row.sessionId).sort())
+    expect(object((await readTestAgentBindings(home))[0]!.scope).agentId).toBe(childId)
     expect(onebot.requests.filter(request => request.action === 'send_private_msg')).toHaveLength(2)
     const privateRequests = model.requests.filter(request => request.tools?.some(tool => tool.function?.name === 'mcp__qq__qq_send_private_message'))
     expect(privateRequests.at(-1)?.tools?.map(tool => tool.function?.name)).toEqual(['mcp__qq__qq_send_private_message'])
     const latestSystem = JSON.stringify(privateRequests.at(-1)?.messages?.filter(message => message.role === 'system'))
     expect(latestSystem).toContain('COMMON-UPDATED-ON-TASK-BOUNDARY')
     expect(latestSystem).toContain('PERSONA-UPDATED-ON-TASK-BOUNDARY')
-    expect(firstList).toMatchObject({ sessions: expect.arrayContaining([expect.objectContaining({ id: isJsonObject(secondList) && Array.isArray(secondList.sessions) ? secondList.sessions.find(row => isJsonObject(row) && row.agentTypeId === 'qq.private') && (secondList.sessions.find(row => isJsonObject(row) && row.agentTypeId === 'qq.private') as JsonObject).id : null })]) })
-    await plugin.disconnect()
-    const fingerprints = async () => {
-      const values: Record<string, string> = {}
-      const walk = async (directory: string): Promise<void> => { for (const entry of await readdir(directory, { withFileTypes: true })) { const path = join(directory, entry.name); if (entry.isDirectory()) await walk(path); else if (entry.isFile()) values[path] = createHash('sha256').update(await readFile(path)).digest('hex') } }
-      await walk(join(home, 'harness/dsh/dsh-home/sessions')); return values
-    }
-    const beforeRead = await fingerprints()
     const catalog = host.getWorkspace().plugins
     if (!Array.isArray(catalog)) throw new Error('No plugin catalog')
     const qqPlugin = catalog.find(value => isJsonObject(value) && value.id === 'qq')
     if (!isJsonObject(qqPlugin) || !isJsonObject(qqPlugin.status) || typeof qqPlugin.status.accountId !== 'string') throw new Error('No verified QQ account')
     const accountId = qqPlugin.status.accountId
-    const offline = await plugin.manage('list-sessions', {})
-    expect(offline).toMatchObject({ sessions: expect.arrayContaining([expect.objectContaining({ parentId: null }), expect.objectContaining({ agentTypeId: 'qq.private', title: `QQ-${accountId}-私聊-987654321`, accountId, pluginName: 'QQ', pluginId: 'qq', conversationKind: 'private', targetId: '987654321', updatedAt: null })]) })
-    if (!isJsonObject(offline) || !Array.isArray(offline.sessions)) throw new Error('No native session rows')
-    const child = offline.sessions.find(row => isJsonObject(row) && row.agentTypeId === 'qq.private')
-    if (!isJsonObject(child)) throw new Error('No native private child')
-    const content = await plugin.manage('read-session', { sessionId: child.id!, limit: 200 })
-    expect(content).toMatchObject({ records: expect.arrayContaining([expect.objectContaining({ role: 'user', classification: 'agent-message' }), expect.objectContaining({ role: 'assistant' }), expect.objectContaining({ role: 'tool' })]) })
+    const scope = object(firstBindings[0]!.scope)
+    expect(scope).toMatchObject({ agentId: childId, agentTypeId: 'qq.private', accountId, kind: 'private' })
+    const content = await web.events(childId, rootId)
+    expect(content).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'user/message' }), expect.objectContaining({ type: 'assistant/message' }), expect.objectContaining({ type: 'tool/result' })]))
     expect(JSON.stringify(content)).toContain('外部上下文只进入user数据')
-    expect(JSON.stringify(content)).not.toContain('production-bridge-fixture-key')
-    expect(JSON.stringify(content)).not.toContain('fixture-cookie-value')
-    expect(await fingerprints()).toEqual(beforeRead)
+    const descriptor = content.find(event => event.type === 'subagent/descriptor')
+    expect(descriptor?.data).toMatchObject({ mode: 'continuable', label: 'QQ-' + accountId + '-私聊-' + String(scope.targetId) })
+    // Official Web keeps original user content; reading does not invoke the model or QQ actions.
+    expect(model.requests).toHaveLength(8)
+    expect(onebot.requests.filter(request => request.action === 'send_private_msg')).toHaveLength(2)
+    await plugin.disconnect()
+    await expect(plugin.manage('open-native-web', {})).rejects.toMatchObject({ code: 'NATIVE_WEB_NOT_READY' })
+    await expect(fetch(web.origin, { signal: AbortSignal.timeout(1000) })).rejects.toThrow()
     await plugin.connect()
+    web = await connectNativeWeb(await plugin.manage('open-native-web', {}), rootId)
+    expect((await web.listSessions()).map(row => row.sessionId).sort()).toEqual(firstList.map(row => row.sessionId).sort())
+    expect(JSON.stringify(await web.events(childId, rootId))).toContain('外部上下文只进入user数据')
     emit(99303, true)
     await until(() => host.harness.getStatus().accepted === 3 && plugin.isReady(), 'group production delegation timed out')
     expect(onebot.requests.filter(request => request.action === 'send_group_msg')).toHaveLength(1)
@@ -271,9 +280,9 @@ export function apply(ctx){
     expect(JSON.stringify(rootRequests.flatMap(request => request.messages?.filter(message => message.role === 'tool') ?? []))).toContain('succeeded')
   }, 90000)
 
-  it('lets the main Agent query then send through two native calls in one verified batch using the same child', async () => {
+  it.runIf(Boolean(systemDshBin))('lets the main Agent query then send through two native calls in one verified batch using the same child', async () => {
     const home = await isolatedHome()
-    const systemDsh = () => testSystemDsh(resolve(runtimeDirectory!))
+    const systemDsh = () => testSystemDsh()
     const onebot = await startOneBotFixture(); cleanups.push(() => onebot.close())
     let contextRef = ''
     const model = await modelFixture((request, index) => {
@@ -336,10 +345,12 @@ export function apply(ctx){
     expect(secondResult.actions).toEqual([expect.objectContaining({ tool: 'qq_send_private_message', outcome: 'succeeded', result: expect.objectContaining({ message_id: expect.any(Number) }) })])
     expect(onebot.requests.filter(request => request.action === 'get_stranger_info')).toHaveLength(1)
     expect(onebot.requests.filter(request => request.action === 'send_private_msg')).toHaveLength(1)
-    const list = await plugin.manage('list-sessions', {})
-    expect(list).toMatchObject({ sessions: expect.arrayContaining([expect.objectContaining({ id: firstResult.childId, agentTypeId: 'qq.private' })]) })
-    if (!isJsonObject(list) || !Array.isArray(list.sessions)) throw new Error('Missing native session list')
-    expect(list.sessions).toHaveLength(2)
+    const rootId = String(object(plugin.getPublicConfiguration().runtimeStatus).sessionId)
+    const web = await connectNativeWeb(await plugin.manage('open-native-web', {}), rootId)
+    const list = await web.listSessions()
+    expect(list).toHaveLength(2)
+    expect(list).toEqual(expect.arrayContaining([expect.objectContaining({ sessionId: firstResult.childId, parentSessionId: rootId, origin: 'subagent' })]))
+    expect(JSON.stringify(await web.events(String(firstResult.childId), rootId))).toContain('SEND-SUMMARY')
     const bindings: unknown = JSON.parse(await readFile(join(home, 'harness/dsh/agent-bindings.json'), 'utf8'))
     if (!isJsonObject(bindings) || !Array.isArray(bindings.bindings) || !isJsonObject(bindings.bindings[0])) throw new Error('Missing staged binding')
     expect(bindings.schemaVersion).toBe(2)

@@ -1,8 +1,7 @@
 import { cp, mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
-import { constants } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { basename, dirname, join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BackendPluginEntry, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { isJsonObject } from '@eating/plugin-sdk'
 import { EatingHost } from './app'
@@ -12,13 +11,17 @@ import { fileURLToPath } from 'node:url'
 import qqEntry from '../../../plugins/communication/qq/src/server'
 import { DshPlugin } from '../../../plugins/harness/dsh/src/backend/adapter'
 import { testSystemDsh } from '../../../tests/fixtures/system-dsh'
+import { connectNativeWeb, readTestAgentBindings } from '../../../tests/fixtures/native-web'
 import { startOneBotFixture } from '../../../tests/fixtures/onebot'
 import { readModelFixtureBatch, startOpenAiFixture } from '../../../tests/fixtures/openai'
 import type { ModelFixtureRequest } from '../../../tests/fixtures/openai'
 
-const runtimeDirectory = process.env.EATING_DSH_TEST_RUNTIME
+const systemDshBin = process.env.EATING_DSH_TEST_SYSTEM_BIN
 const stops: Array<() => Promise<unknown> | unknown> = []
-afterEach(async () => { for (const stop of stops.splice(0).reverse()) await stop() })
+afterEach(async () => {
+  try { for (const stop of stops.splice(0).reverse()) await stop() }
+  finally { vi.unstubAllEnvs() }
+})
 
 async function until(test: () => boolean, label: string, diagnostics?: () => unknown, deadlineMs = 30000) {
   const deadline = Date.now() + deadlineMs
@@ -38,11 +41,6 @@ function messageId(request: ModelFixtureRequest): string {
   const events = batch(request).payload.events
   if (!Array.isArray(events) || events.length !== 1) throw new Error('Expected exactly one real protocol event in this test batch')
   return String(object(events[0]).messageId)
-}
-function sessions(value: unknown): JsonObject[] {
-  const rows = object(value).sessions
-  if (!Array.isArray(rows)) throw new Error('Expected native session hierarchy')
-  return rows.map(object)
 }
 function tools(request: ModelFixtureRequest) { return request.tools?.map(tool => tool.function?.name).sort() ?? [] }
 function system(request: ModelFixtureRequest) { return JSON.stringify(request.messages?.filter(message => message.role === 'system')) }
@@ -82,10 +80,10 @@ function assertDelegation(requests: readonly ModelFixtureRequest[], id: string, 
   return contextRef
 }
 
-// Opt-in: prepare the pinned independent runtime once, then set this directory.
-// The SDK, native delegation, scoped MCP and OneBot chain run for real; only model and QQ peers are loopback fixtures.
-describe.runIf(Boolean(runtimeDirectory))('真实DSH SDK → 原生主子会话 → 作用域QQ MCP', () => {
+// Product-chain opt-in: the installed system DSH runs with fresh Eating homes and loopback peers.
+describe.runIf(Boolean(systemDshBin))('真实DSH SDK → 原生主子会话 → 作用域QQ MCP', () => {
   it('runs entirely from installed artifact files and resumes its queued task and native child after closing the whole Host', async () => {
+    vi.stubEnv('EATING_DSH_BIN', testSystemDsh().bin)
     const home = await realpath(await mkdtemp(join(tmpdir(), 'Eating_dsh_artifact_')))
     stops.push(async () => {
       const target = await realpath(home)
@@ -101,8 +99,6 @@ describe.runIf(Boolean(runtimeDirectory))('真实DSH SDK → 原生主子会话 
     }
     if (dirname(await realpath(sources)) !== home) throw new Error('Unsafe isolated build source cleanup')
     await rm(sources, { recursive: true })
-    await cp(join(resolve(runtimeDirectory!), 'runtime'), join(home, 'harness/dsh/runtime'), { recursive: true, mode: constants.COPYFILE_FICLONE,
-      filter: source => !source.includes('/.installer-home') })
     const onebot = await startOneBotFixture(); stops.push(() => onebot.close())
     const selected: string[] = []
     const model = await startOpenAiFixture({ apiKey: 'artifact-model-key', chooseReply: request => {
@@ -144,15 +140,19 @@ describe.runIf(Boolean(runtimeDirectory))('真实DSH SDK → 原生主子会话 
     const firstContext = assertDelegation(model.requests, '92001', 'private', sessionId, privateTools)
     expect(sends()).toHaveLength(1)
     expect(sends()[0]).toMatchObject({ action: 'send_private_msg', params: { user_id: 987654321, message: '独立安装产物选择回复92001', auto_escape: true } })
-    const firstSessions = sessions(await api('/plugins/dsh/manage', { operation: 'list-sessions', input: {} }))
+    const web = await connectNativeWeb(await api('/plugins/dsh/manage', { operation: 'open-native-web', input: {} }), String(sessionId))
+    expect(status().nativeWeb).toEqual({ ready: true })
+    const firstSessions = await web.listSessions()
+    const firstBindings = await readTestAgentBindings(home)
+    expect(firstBindings).toHaveLength(1)
+    const childId = object(firstBindings[0]!.scope).agentId
     expect(firstSessions).toHaveLength(2)
-    expect(firstSessions).toEqual(expect.arrayContaining([expect.objectContaining({ id: sessionId, parentId: null }), expect.objectContaining({ agentTypeId: 'qq.private', parentId: sessionId })]))
-    const childId = firstSessions.find(row => row.agentTypeId === 'qq.private')!.id
+    expect(firstSessions).toEqual(expect.arrayContaining([expect.objectContaining({ sessionId }), expect.objectContaining({ sessionId: childId, parentSessionId: sessionId, origin: 'subagent' })]))
+    expect(firstSessions.find(row => row.sessionId === sessionId)?.parentSessionId).toBeUndefined()
     expect(childId).not.toBe(sessionId)
+    expect(JSON.stringify(await web.events(String(sessionId)))).toContain(`MAIN-SUMMARY:${firstContext}`)
     // A genuine pending Host envelope survives the whole Host shutdown. No fixture re-emits it.
     await api('/plugins/dsh/disconnect', {})
-    const rootContent = await api('/plugins/dsh/manage', { operation: 'read-session', input: { sessionId: sessionId!, limit: 200 } })
-    expect(JSON.stringify(rootContent)).toContain(`MAIN-SUMMARY:${firstContext}`)
     onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id: 92002, message: '完整重启后原队列由同一子代理回复' })
     await until(() => host.store.getDeliverySettingsSnapshot().queue.queuedMessages === 1, '停机前待投递队列', diagnostics)
     expect(model.requests).toHaveLength(4)
@@ -173,16 +173,20 @@ describe.runIf(Boolean(runtimeDirectory))('真实DSH SDK → 原生主子会话 
     expect(secondContext).not.toBe(firstContext)
     expect(sends()).toHaveLength(2)
     expect(sends()[1]).toMatchObject({ action: 'send_private_msg', params: { user_id: 987654321, message: '独立安装产物选择回复92002', auto_escape: true } })
-    const resumedSessions = sessions(await api('/plugins/dsh/manage', { operation: 'list-sessions', input: {} }))
+    const resumedWeb = await connectNativeWeb(await api('/plugins/dsh/manage', { operation: 'open-native-web', input: {} }), String(sessionId))
+    const resumedSessions = await resumedWeb.listSessions()
     expect(resumedSessions).toHaveLength(2)
-    expect(resumedSessions).toEqual(expect.arrayContaining([expect.objectContaining({ id: sessionId, parentId: null }), expect.objectContaining({ id: childId, parentId: sessionId, agentTypeId: 'qq.private' })]))
+    expect(resumedSessions).toEqual(expect.arrayContaining([expect.objectContaining({ sessionId }), expect.objectContaining({ sessionId: childId, parentSessionId: sessionId, origin: 'subagent' })]))
+    expect(object((await readTestAgentBindings(home))[0]!.scope).agentId).toBe(childId)
+    expect(JSON.stringify(await resumedWeb.events(String(sessionId)))).toContain(`MAIN-SUMMARY:${firstContext}`)
     expect(selected).toEqual(['92001', '92002'])
     expect(model.errors).toEqual([])
     expect(JSON.stringify(model.requests)).not.toContain('artifact-model-key')
     await api('/plugins/dsh/disconnect', {})
-    const resumedRoot = await api('/plugins/dsh/manage', { operation: 'read-session', input: { sessionId: sessionId!, limit: 200 } })
-    expect(JSON.stringify(resumedRoot)).toContain(`MAIN-SUMMARY:${secondContext}`)
     await api('/plugins/dsh/connect', {})
+    const reopenedWeb = await connectNativeWeb(await api('/plugins/dsh/manage', { operation: 'open-native-web', input: {} }), String(sessionId))
+    expect(JSON.stringify(await reopenedWeb.events(String(sessionId)))).toContain(`MAIN-SUMMARY:${secondContext}`)
+    expect((await reopenedWeb.listSessions()).map(row => row.sessionId).sort()).toEqual(firstSessions.map(row => row.sessionId).sort())
     expect(status().sessionId).toBe(sessionId)
     expect(model.requests).toHaveLength(8)
     expect(sends()).toHaveLength(2)
@@ -196,7 +200,7 @@ describe.runIf(Boolean(runtimeDirectory))('真实DSH SDK → 原生主子会话 
       if (target !== home || dirname(target) !== await realpath(tmpdir()) || !basename(target).startsWith('Eating_dsh_integration_')) throw new Error('Unsafe integration cleanup')
       await rm(target, { recursive: true })
     })
-    const systemDsh = () => testSystemDsh(resolve(runtimeDirectory!))
+    const systemDsh = () => testSystemDsh()
     const onebot = await startOneBotFixture()
     stops.push(() => onebot.close())
     const selected: string[] = []
@@ -257,10 +261,14 @@ describe.runIf(Boolean(runtimeDirectory))('真实DSH SDK → 原生主子会话 
       if (batch(request).kind === 'root') expect(system(request)).toContain('OWNER-MARKER-A')
       else expect(system(request)).not.toContain('OWNER-MARKER-A')
     }
-    const privateSessions = sessions(await plugin.manage('list-sessions', {}))
+    const web = await connectNativeWeb(await plugin.manage('open-native-web', {}), String(sessionId))
+    expect(runtime().nativeWeb).toEqual({ ready: true })
+    const privateSessions = await web.listSessions()
     expect(privateSessions).toHaveLength(2)
-    const privateChildId = privateSessions.find(row => row.agentTypeId === 'qq.private')!.id
-    expect(privateSessions).toEqual(expect.arrayContaining([expect.objectContaining({ id: sessionId, parentId: null }), expect.objectContaining({ id: privateChildId, parentId: sessionId, agentTypeId: 'qq.private' })]))
+    const privateBindings = await readTestAgentBindings(home)
+    expect(privateBindings).toHaveLength(1)
+    const privateChildId = object(privateBindings[0]!.scope).agentId
+    expect(privateSessions).toEqual(expect.arrayContaining([expect.objectContaining({ sessionId }), expect.objectContaining({ sessionId: privateChildId, parentSessionId: sessionId, origin: 'subagent' })]))
 
     emit(91002, '这一条由主模型决定保持沉默。')
     await until(() => accepted(2), '主模型沉默分支可靠交接', diagnostics)
@@ -271,7 +279,7 @@ describe.runIf(Boolean(runtimeDirectory))('真实DSH SDK → 原生主子会话 
     expect(toolResults(model.requests[4]!)).toBe('[]')
     expect(sends()).toHaveLength(1)
     expect(runtime().sessionId).toBe(sessionId)
-    expect(sessions(await plugin.manage('list-sessions', {})).map(row => row.id).sort()).toEqual(privateSessions.map(row => row.id).sort())
+    expect((await web.listSessions()).map(row => row.sessionId).sort()).toEqual(privateSessions.map(row => row.sessionId).sort())
 
     const personaB = host.authoring.createPersona('人格乙', 'PERSONA-B。人格乙温和自然，不强制回复。')
     host.authoring.setPersonaEnabled(personaB.persona.id, true, personaB.snapshot.revision)
@@ -298,13 +306,15 @@ describe.runIf(Boolean(runtimeDirectory))('真实DSH SDK → 原生主子会话 
     }
     expect(model.requests.every(request => !system(request).includes('UNTRUSTED-CONTENT-MUST-NOT-ENTER-SYSTEM'))).toBe(true)
     expect(runtime().sessionId).toBe(sessionId)
-    const allSessions = sessions(await plugin.manage('list-sessions', {}))
+    const allSessions = await web.listSessions()
     expect(allSessions).toHaveLength(3)
-    const groupChild = allSessions.find(row => row.agentTypeId === 'qq.group')!
-    expect(groupChild).toMatchObject({ parentId: sessionId, agentTypeId: 'qq.group' })
-    expect(groupChild.id).not.toBe(privateChildId)
-    expect(groupChild.id).not.toBe(sessionId)
-    expect(allSessions).toEqual(expect.arrayContaining([expect.objectContaining({ id: privateChildId, parentId: sessionId })]))
+    const groupBinding = (await readTestAgentBindings(home)).find(binding => object(binding.scope).agentTypeId === 'qq.group')
+    if (!groupBinding) throw new Error('Missing current temporary group binding')
+    const groupChildId = object(groupBinding.scope).agentId
+    expect(allSessions).toEqual(expect.arrayContaining([expect.objectContaining({ sessionId: groupChildId, parentSessionId: sessionId, origin: 'subagent' })]))
+    expect(groupChildId).not.toBe(privateChildId)
+    expect(groupChildId).not.toBe(sessionId)
+    expect(allSessions).toEqual(expect.arrayContaining([expect.objectContaining({ sessionId: privateChildId, parentSessionId: sessionId })]))
     expect(await readFile(join(home, 'harness/dsh/bridge/session-ready.json'), 'utf8')).toContain(String(sessionId))
     expect(selected).toEqual(['91001', '91002', '91003'])
     expect(model.errors).toEqual([])
@@ -312,9 +322,11 @@ describe.runIf(Boolean(runtimeDirectory))('真实DSH SDK → 原生主子会话 
 
     await api('/plugins/dsh/disconnect', {})
     expect(host.harness.getStatus().state).toBe('not-attached')
-    const rootContent = await plugin.manage('read-session', { sessionId: sessionId!, limit: 200 })
-    expect(JSON.stringify(rootContent)).toContain(`MAIN-SUMMARY:${groupContext}`)
+    await expect(plugin.manage('open-native-web', {})).rejects.toMatchObject({ code: 'NATIVE_WEB_NOT_READY' })
     await api('/plugins/dsh/connect', {})
+    const reopenedWeb = await connectNativeWeb(await plugin.manage('open-native-web', {}), String(sessionId))
+    expect(JSON.stringify(await reopenedWeb.events(String(sessionId)))).toContain(`MAIN-SUMMARY:${groupContext}`)
+    expect((await reopenedWeb.listSessions()).map(row => row.sessionId).sort()).toEqual(allSessions.map(row => row.sessionId).sort())
     expect(runtime().sessionId).toBe(sessionId)
     expect(runtime().ready).toBe(true)
     expect(model.requests).toHaveLength(9)

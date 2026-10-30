@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
+import { locateSystemDsh } from '../../plugins/harness/dsh/src/backend/system-dsh'
 import type { SystemDshLocation } from '../../plugins/harness/dsh/src/backend/system-dsh'
 
-/** Resolve the CLI entry of a prepared EATING_DSH_TEST_RUNTIME cache. */
+/** Resolve only the independent npm cache used by direct Node module PoCs. */
 export function testRuntimeBin(directory: string): string {
   const root = join(directory, 'runtime')
   const pointer = JSON.parse(readFileSync(join(root, 'current.json'), 'utf8')) as { directory?: unknown }
@@ -10,7 +11,11 @@ export function testRuntimeBin(directory: string): string {
   return join(root, 'versions', pointer.directory, 'node_modules/@deepseek-ai/dsh/lib/bin.js')
 }
 
-/** Location value describing the prepared test runtime. */
-export function testSystemDsh(directory: string): SystemDshLocation {
-  return { bin: testRuntimeBin(directory), version: '0.0.0-test', source: 'override' }
+/** Product-chain tests opt in to one explicit system launcher, with fresh test homes. */
+export function testSystemDsh(): SystemDshLocation {
+  const bin = process.env.EATING_DSH_TEST_SYSTEM_BIN
+  if (!bin || !isAbsolute(bin)) throw new Error('EATING_DSH_TEST_SYSTEM_BIN must name the approved absolute system launcher')
+  const location = locateSystemDsh({ EATING_DSH_BIN: bin, PATH: '' })
+  if (!location || location.bin !== bin || location.version === null) throw new Error('The explicit test system DSH launcher is unavailable')
+  return location
 }

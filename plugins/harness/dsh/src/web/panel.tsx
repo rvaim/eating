@@ -8,15 +8,14 @@ import { HostApiError, formatNumber, getErrorMessage, hostRequest, translate, us
 import type { ConfigurationValidation, PluginPanelProps } from '@eating/ui-sdk'
 import './i18n'
 import type { DshTranslationKey } from './i18n'
-import { SessionDashboard } from './SessionDashboard'
+import { NativeWebButton } from './NativeWebButton'
 import { ModelCapabilitiesSettings } from './ModelCapabilities'
-import { readModels, readModelTest, readSystemDsh } from './panel-data'
-import type { ModelOption, ModelTestResult, SystemDshStatus } from './panel-data'
+import { readModels, readModelTest, readNativeWebStatus, readSystemDsh } from './panel-data'
+import type { ModelOption, ModelTestResult, NativeWebStatus, SystemDshStatus } from './panel-data'
 import './panel.css'
 
 type Operation = 'save' | 'connect' | 'disconnect' | 'detect'
 type ModelOperation = 'list-models' | 'test-connection'
-type PanelTab = 'configuration' | 'sessions'
 interface RuntimeStatus {
   readonly system: SystemDshStatus
   readonly lastError: string | null
@@ -24,6 +23,7 @@ interface RuntimeStatus {
   readonly busy: boolean
   readonly sessionId: string | null
   readonly lastOutcome: string | null
+  readonly nativeWeb: NativeWebStatus
 }
 interface PublicConfiguration {
   readonly displayName: string
@@ -108,13 +108,15 @@ function readConfiguration(value: unknown): PublicConfiguration {
     || typeof value.apiKeyConfigured !== 'boolean' || !isJsonObject(value.runtimeStatus)) throw incompatible()
   const runtime = value.runtimeStatus
   if (!['ready', 'busy'].every(key => typeof runtime[key] === 'boolean')
-    || ['lastError', 'sessionId', 'lastOutcome'].some(key => runtime[key] !== null && typeof runtime[key] !== 'string')) throw incompatible()
+    || ['lastError', 'sessionId', 'lastOutcome'].some(key => runtime[key] !== null && typeof runtime[key] !== 'string')
+    || !isJsonObject(runtime.nativeWeb)) throw incompatible()
   return {
     displayName: value.displayName, endpoint: value.endpoint, model: value.model, autoConnect: value.autoConnect,
     timeoutMs: value.timeoutMs, maxTokens: value.maxTokens, apiKeyConfigured: value.apiKeyConfigured,
     runtimeStatus: { system: readSystemDsh(runtime.system),
       lastError: runtime.lastError as string | null, ready: runtime.ready === true,
-      busy: runtime.busy === true, sessionId: runtime.sessionId as string | null, lastOutcome: runtime.lastOutcome as string | null },
+      busy: runtime.busy === true, sessionId: runtime.sessionId as string | null, lastOutcome: runtime.lastOutcome as string | null,
+      nativeWeb: readNativeWebStatus(runtime.nativeWeb) },
     ...(typeof value.configurationPath === 'string' ? { configurationPath: value.configurationPath } : {}),
     ...(typeof value.dataDirectory === 'string' ? { dataDirectory: value.dataDirectory } : {}),
     ...(typeof value.warning === 'string' ? { warning: value.warning } : {}),
@@ -172,7 +174,6 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
   const [uncertain, setUncertain] = useState<UncertainAction | null>(null)
   const [readSerial, setReadSerial] = useState(0)
   const [visible, setVisible] = useState(() => !document.hidden)
-  const [tab, setTab] = useState<PanelTab>('configuration')
   const [modelOperation, setModelOperation] = useState<ModelOperation | null>(null)
   const [capabilitySaving, setCapabilitySaving] = useState(false)
   const [models, setModels] = useState<readonly ModelOption[] | null>(null)
@@ -216,10 +217,6 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
     if (modelController.current) { modelController.current.abort(); modelController.current = null; actionLock.current = false }
     setModelOperation(null); setModelTest(null); setModelFailure(null); setModels(null)
   }, [])
-
-  useEffect(() => {
-    if (tab !== 'configuration') cancelModelRequest()
-  }, [tab, cancelModelRequest])
 
   useEffect(() => {
     mounted.current = true
@@ -279,7 +276,7 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
   const blocked = operation !== null || modelOperation !== null || capabilitySaving || starting || !visible || refreshFailure !== null || uncertain !== null
 
   async function requestModel(next: ModelOperation) {
-    if (!plugin?.enabled || !saved?.endpoint.trim() || next === 'test-connection' && !configured || dirtyRef.current || blocked || actionLock.current || tab !== 'configuration') return
+    if (!plugin?.enabled || !saved?.endpoint.trim() || next === 'test-connection' && !configured || dirtyRef.current || blocked || actionLock.current) return
     actionLock.current = true; setModelOperation(next); setModelFailure(null); setModelTest(null)
     if (next === 'list-models') setModels(null)
     ++generation.current; readController.current?.abort(); setReading(false)
@@ -304,15 +301,6 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
         if (mounted.current && modelGeneration.current === ticket) setModelOperation(null)
       }
     }
-  }
-
-  function changeTab(next: PanelTab) {
-    if (next === tab) return
-    if (next === 'sessions') {
-      cancelModelRequest()
-      setDraft(current => current ? { ...current, apiKey: '', clearApiKey: false } : current)
-    }
-    setTab(next)
   }
 
   async function mutate(next: Operation) {
@@ -392,21 +380,11 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
   const outcomeKey = runtime?.lastOutcome ? outcomeKeys[runtime.lastOutcome] : undefined
 
   return <div className="dsh-panel">
-    <div className="dsh-status-strip"><div><strong>{plugin ? refreshFailure ? t('state.unconfirmed') : t(stateKeys[plugin.status.state]) : t('state.loading')}</strong>{runtime && <span>{processing}</span>}</div><button type="button" className="text-button" disabled={operation !== null || modelOperation !== null || reading || !visible} onClick={() => void refreshWorkspace()}><RefreshCw size={14} aria-hidden="true" />{t(reading ? 'action.refreshing' : 'action.refresh')}</button></div>
+    <div className="dsh-status-strip"><div><strong>{plugin ? refreshFailure ? t('state.unconfirmed') : t(stateKeys[plugin.status.state]) : t('state.loading')}</strong>{runtime && <span>{processing}</span>}</div><div className="dsh-status-actions"><button type="button" className="text-button" disabled={operation !== null || modelOperation !== null || reading || !visible} onClick={() => void refreshWorkspace()}><RefreshCw size={14} aria-hidden="true" />{t(reading ? 'action.refreshing' : 'action.refresh')}</button><NativeWebButton enabled={plugin?.enabled === true} ready={active && runtime?.ready === true && runtime?.nativeWeb.ready === true} blocked={operation !== null || modelOperation !== null || capabilitySaving || starting || refreshFailure !== null || uncertain !== null} visible={visible} /></div></div>
     <ErrorNotice failure={refreshFailure} />
     {plugin?.status.lastError && <ErrorNotice failure={runtimeFailure('HARNESS_STATUS_ERROR', plugin.status.lastError)} />}
     {loading && <p className="dsh-loading" role="status">{t('loading.configuration')}</p>}
     {!plugin && !loading && <button type="button" className="button button-secondary" disabled={reading} onClick={() => void refreshWorkspace()}>{t('action.reload')}</button>}
-    <div className="dsh-tablist" role="tablist" aria-label={t('panel.tabs')} onKeyDown={event => {
-      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
-      event.preventDefault()
-      const next: PanelTab = event.key === 'Home' ? 'configuration' : event.key === 'End' ? 'sessions' : tab === 'configuration' ? 'sessions' : 'configuration'
-      changeTab(next)
-      event.currentTarget.querySelector<HTMLButtonElement>(`[data-panel-tab="${next}"]`)?.focus()
-    }}>
-      {(['configuration', 'sessions'] as const).map(value => <button key={value} type="button" role="tab" data-panel-tab={value} id={id(`tab-${value}`)} aria-controls={id(`panel-${value}`)} aria-selected={tab === value} tabIndex={tab === value ? 0 : -1} onClick={() => changeTab(value)}>{t(value === 'configuration' ? 'panel.configuration' : 'panel.sessions')}</button>)}
-    </div>
-    <div role="tabpanel" id={id('panel-configuration')} aria-labelledby={id('tab-configuration')} hidden={tab !== 'configuration'}>
     {saved && runtime && <section className="dsh-runtime" aria-labelledby={id('runtime-title')}>
       <div className="dsh-runtime-heading"><div><h3 id={id('runtime-title')}>{t('system.title')}</h3><p>{runtime.system.version ? t('system.versionedStatus', { status: runtimeLabel, version: runtime.system.version }) : runtimeLabel}</p></div><button type="button" className="button button-secondary" disabled={blocked || !plugin?.enabled || operation !== null} onClick={() => void detectSystem()}><RefreshCw size={16} aria-hidden="true" />{t(operation === 'detect' ? 'action.detecting' : 'action.detect')}</button></div>
       <p className="dsh-help">{runtimeHelp}</p>
@@ -445,13 +423,9 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
       <ErrorNotice failure={actionFailure} />
       {uncertain && <div className="dsh-unknown"><strong>{t(uncertainKeys[uncertain.operation])}</strong><p>{t('uncertain.description')}</p><button type="button" className="button button-secondary" disabled={reading || refreshFailure !== null || readSerial <= uncertain.afterRead} onClick={() => { setUncertain(null); setActionFailure(null); setResult('result.confirmed') }}>{t('uncertain.confirm')}</button></div>}
     </section>}
-    <ModelCapabilitiesSettings routeKey={JSON.stringify([saved?.endpoint, saved?.model])} active={tab === 'configuration' && visible} enabled={plugin?.enabled === true} runtimeActive={active || starting || runtime?.ready === true || runtime?.busy === true} busy={operation !== null || modelOperation !== null || refreshFailure !== null || uncertain !== null} actionLock={actionLock} onBusy={setCapabilitySaving} />
+    <ModelCapabilitiesSettings routeKey={JSON.stringify([saved?.endpoint, saved?.model])} active={visible} enabled={plugin?.enabled === true} runtimeActive={active || starting || runtime?.ready === true || runtime?.busy === true} busy={operation !== null || modelOperation !== null || refreshFailure !== null || uncertain !== null} actionLock={actionLock} onBusy={setCapabilitySaving} />
     {runtime && <dl className="dsh-details"><div><dt>{t('details.processing')}</dt><dd>{refreshFailure ? t('state.unconfirmed') : processing}</dd></div>{runtime.sessionId && <div><dt>{t('details.sessionId')}</dt><dd>{runtime.sessionId}</dd></div>}{runtime.system.version && <div><dt>{t('details.version')}</dt><dd>{runtime.system.version}</dd></div>}{runtime.lastOutcome && <div><dt>{t('details.outcome')}</dt><dd>{outcomeKey ? t(outcomeKey) : runtime.lastOutcome}</dd></div>}</dl>}
     {(saved?.dataDirectory || saved?.configurationPath) && <details className="dsh-file-details"><summary>{t('details.files')}</summary><dl className="dsh-details">{saved.dataDirectory && <div><dt>{t('details.dataDirectory')}</dt><dd>{saved.dataDirectory}</dd></div>}{saved.configurationPath && <div><dt>{t('details.configurationPath')}</dt><dd>{saved.configurationPath}</dd></div>}</dl></details>}
     <div className="dsh-notice dsh-boundary"><Info size={16} aria-hidden="true" /><p>{t('notice.authentication')}</p></div>
-    </div>
-    <div role="tabpanel" id={id('panel-sessions')} aria-labelledby={id('tab-sessions')} hidden={tab !== 'sessions'}>
-      {tab === 'sessions' && visible && <SessionDashboard enabled={plugin?.enabled === true} />}
-    </div>
   </div>
 }

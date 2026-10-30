@@ -1,6 +1,6 @@
 {
   "name": "@eating/plugin-dsh",
-  "version": "0.6.4",
+  "version": "0.7.0",
   "type": "module",
   "description": "Eating 独立 DeepSeek Harness 适配插件，提供固定主会话与 QQ MCP 接入",
   "files": ["dist"],
@@ -10,7 +10,8 @@
     "@eating/plugin-sdk": "workspace:^",
     "@eating/ui-sdk": "workspace:^",
     "@eating/plugin-core": "workspace:^",
-    "@deepseek-ai/dsh-sdk-client": "0.2.1-rc.4"
+    "@deepseek-ai/dsh-sdk-client": "0.2.1-rc.4",
+    "yaml": "2.9.1"
   },
   "peerDependencies": { "react": "^19.3.1", "lucide-react": "^1.61.0" }
 }

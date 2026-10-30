@@ -33,7 +33,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`。
 
-当前应用／Host／Web0.10.0，三个共享包3.0.0，QQ0.10.1、DSH0.6.4；插件唯一 API3。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前应用／Host／Web0.10.0，三个共享包3.0.0，QQ0.10.1、DSH0.7.0；插件唯一 API3。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -63,13 +63,13 @@ MCP scope、Prompt、Preset不等于远端资源或OS沙箱。标准OneBot文件
 
 模型列表／最小真实连接测试使用已保存配置；选择只改草稿。图片能力独立schema1＋CAS，默认false，仅停止Harness可保存，换endpoint／model失效；声明不等于提供商已验证。API连通、运行时就绪与任务成功分别报告。
 
-DSH 不自行下载运行时：检测系统安装的 `dsh`（EATING_DSH_BIN → PATH → 常见路径 → macOS 应用包），用 `launch/dsh-system.mjs` 转交层启动，`DSH_HOME`／`DSH_AGENTS_HOME` 仍指向 `~/.eating`。找不到时明确提示用户安装，不猜路径、不静默回退到自装。CLI overlay 只列官方裸包名（从系统安装解析），我们自己的 bridge 用绝对路径。Eating 不挂载 Web 界面；系统 DSH 模式下离线会话读取不可用并给出明确说明，不能伪造读取结果。
+DSH 不自行下载运行时：检测系统安装的 `dsh`（EATING_DSH_BIN → PATH → 常见路径 → macOS 应用包），用 `launch/dsh-system.mjs` 转交层启动，`DSH_HOME`／`DSH_AGENTS_HOME` 仍指向 `~/.eating`。找不到时明确提示用户安装，不猜路径、不静默回退到自装。CLI overlay 只列官方裸包名（从系统安装解析），我们自己的 bridge 用绝对路径。用户已要求移除插件自有会话看板，改为“打开 DSH Web”按钮。复用系统已有官方 Web 组件与 SDK 同进程、同会话运行，配置保留在 Eating Profile 自身可写层；不额外下载 Web 或运行时。公开状态仅 nativeWeb.ready，主人点击时按需取得鉴权 URL；URL 不入普通状态、模型上下文或本地存储。不保留 list-sessions／read-session 或备用看板。原生 UI 和正常操作不增加自定义只读层。详见[ADR-0018](docs/decisions/ADR-0018-系统DSH原生Web与看板移除.md)。
 
 实例名含真实绑定账号，不改UUID，不从旧label猜账号。默认系统层去实时时间；原生time-context在主、子对应scope各挂一次，上海时区、600000ms，不另加调度或时钟工具。当前9变量仍可手写使用，含动态变量的自定义正文对缓存的影响应如实报告。
 
 ## UI 与文档
 
-保持白绿风格、固定视口、主区／二级栏独立滚动、页签完整吸顶范围、键盘焦点可达。平台提示词按pluginId合为一个可折叠条目，名称来自当前目录元数据，折叠不能改变编辑器／路由／草稿。看板正文滚动时会话导航保持可见，长目录自身滚动；页签使用宿主边距与统一上下留白，正文末端／页脚不能推出导航。保留[滚动回归](tests/browser/scrolling.spec.ts)与[看板布局回归](tests/browser/panel-layout.spec.ts)，不能只凭DOM坐标宣称绘制正确。
+保持白绿风格、固定视口、主区／二级栏独立滚动、页签完整吸顶范围、键盘焦点可达。平台提示词按pluginId合为一个可折叠条目，名称来自当前目录元数据，折叠不能改变编辑器／路由／草稿。看板正文滚动时会话导航保持可见，长目录自身滚动；页签使用宿主边距与统一上下留白，正文末端／页脚不能推出导航。保留[滚动回归](tests/browser/scrolling.spec.ts)与[面板布局回归](tests/browser/panel-layout.spec.ts)，不能只凭DOM坐标宣称绘制正确。
 
 固定 UI 文案、ARIA、诊断、补全、错误、数值和日期使用模块双语资源及公开 ui-sdk；默认简体中文，可切英文。locale 不进入网络 effect 或重挂 key，不能丢草稿／选区／撤销或触发保存／发送。用户内容、Key、URL、模型名、消息与 canonical 变量不翻译。严格 CSP 不增加 unsafe-eval。
 
@@ -96,6 +96,6 @@ README 用中文作为标准入口；其他文档标题／文件名中文，技�
 
 提交前核对暂存范围和敏感数据，禁止提交用户配置／凭据／聊天正文／构建产物／临时截图。保留未授权修改，不 force push 或重写旧历史。
 
-前端至少完整构建和严格类型、相关单元／集成与浏览器验证，并实际读图。原生 SDK 测试须显式设置独立 `EATING_DSH_TEST_RUNTIME`，默认跳过不能冒充实跑；没有旧版本迁移测试要求。真实数据未经授权不部署、不重置。
+前端至少完整构建和严格类型、相关单元／集成与浏览器验证，并实际读图。原生 SDK 测试须显式设置独立 `EATING_DSH_TEST_RUNTIME`，系统 DSH／Web 集成通过 `EATING_DSH_TEST_SYSTEM_BIN` 选择系统命令并使用临时数据，默认跳过不能冒充实跑；没有旧版本迁移测试要求。真实数据未经授权不部署、不重置。
 
 最终用简洁结果说明代码、文档、验证、提交／push及剩余限制；详细证据放本轮报告，未运行不得写已验证。

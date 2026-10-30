@@ -54,6 +54,8 @@ describe('capability MCP and cross-plugin sticker resources', () => {
     const added = await f.api('/plugins/stickers/manage', { operation: 'add', input: { data: image, mimeType: 'image/png', description: '开心挥手', tags: ['开心', '招呼'] } })
     const directory = await f.api('/mcp')
     expect(directory.services.map((service: JsonObject) => service.id)).toContain('plugin.stickers')
+    expect(directory.agentTypes).toHaveLength(3)
+    for (const type of directory.agentTypes) expect(Object.keys(type).sort()).toEqual(['id', 'title'])
     expect(f.services.getCapabilityMcpConnections({ agentId: 'main-fixture', agentTypeId: 'main' })).toEqual([])
     await f.grant(['main'], ['sticker_list', 'sticker_get'])
     expect(f.stoppedHarness).toBe(1)

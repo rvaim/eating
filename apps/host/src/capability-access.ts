@@ -97,7 +97,7 @@ export class CapabilityAccess {
     return [...plugins, ...this.options.direct.list()]
   }
   snapshot(agentTypes: readonly { id: string; title: string }[]): McpDirectorySnapshot {
-    return { protocolVersion: 1, revision: this.revision, services: this.sources(), agentTypes: [{ id: 'main', title: '主 Agent / Harness 会话' }, ...agentTypes] }
+    return { protocolVersion: 1, revision: this.revision, services: this.sources(), agentTypes: [{ id: 'main', title: '主 Agent / Harness 会话' }, ...agentTypes.map(type => ({ id: type.id, title: type.title }))] }
   }
   source(id: string): McpServiceSummary {
     const source = this.sources().find(source => source.id === id)

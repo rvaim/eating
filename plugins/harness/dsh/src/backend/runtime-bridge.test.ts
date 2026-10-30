@@ -29,6 +29,7 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
   vi.stubEnv('EATING_DSH_BRIDGE_DIRECTORY', directory)
   vi.stubEnv('EATING_DSH_BRIDGE_NONCE', nonce)
   vi.stubEnv('EATING_DSH_SESSION_ID', sessionId)
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ capabilities: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
   vi.stubEnv('EATING_DSH_CONTROL_URL', 'http://127.0.0.1:1')
   vi.stubEnv('EATING_DSH_CONTROL_TOKEN', 'fixture-only-control-token')
   vi.stubEnv('EATING_DSH_MCP_ENTRY', '/fixture/mcp.mjs')
@@ -97,6 +98,7 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
 afterEach(() => {
   for (const cleanup of cleanups.splice(0).reverse()) cleanup()
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
   vi.useRealTimers()
 })
 

@@ -2,6 +2,7 @@ import { mkdtempSync, realpathSync, rmSync, readFileSync, writeFileSync } from '
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { PlatformError } from '@eating/plugin-sdk'
 import type { HarnessDeliveryBatch, HarnessHostServices, HarnessOwnerConfiguration } from '@eating/plugin-sdk'
 import { DshAgentControl } from './agent-control'
 import { agentInstanceLabel } from './agent-label'
@@ -17,7 +18,7 @@ function fixture() {
     { id: 'main', scope: 'main', source: 'owner', title: 'main', body: 'MAIN', revision: 1, updatedAt: null }, { id: 'agent:qq.private', agentTypeId: 'qq.private', scope: 'agent', source: 'plugin', title: 'private', body: 'PRIVATE {{目标编号}}', revision: 1, updatedAt: null, pluginId: 'qq' },
   ], agentTypes: [{ id: 'qq.private', title: 'Private', description: 'Private target', conversationKind: 'private', defaultPrompt: 'PRIVATE', availableTools: ['send'], defaultTools: ['send'], enabledTools: ['send'], pluginId: 'qq', pluginName: 'QQ', enabled: true, identity: { owners: [], administrators: [] } }] }
   const host: HarnessHostServices = { registerSink: () => () => {}, wake: () => {}, readOwnerConfiguration: () => owner,
-    getMcpConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1/mcp', headers: { Authorization: 'Bearer fixture-scoped-only-token' } })),
+    getCapabilityMcpConnections: () => [], getMcpConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1/mcp', headers: { Authorization: 'Bearer fixture-scoped-only-token' } })),
     readAgentActions: vi.fn(() => [{ requestId: 'request-1', tool: 'send', outcome: 'succeeded' as const }]), revokeAgentAccess: vi.fn() }
   const control = new DshAgentControl(directory, host); stops.push(() => control.close())
   const batch: HarnessDeliveryBatch = { protocolVersion: 1, batchId: 'a'.repeat(64), conversationId: 'qq:100:private:200', createdAt: '2026-10-28T00:00:00Z', reason: 'quiet-window', events: [{ protocolVersion: 1, eventId: 'event', pluginId: 'qq', instanceId: 'instance', platform: 'qq', accountId: '100', conversationId: 'qq:100:private:200', senderId: '200', targetId: '200', messageId: '300', resourceIds: ['https://fixture.invalid/file'], receivedAt: '2026-10-28T00:00:00Z', source: { trust: 'external', kind: 'private', senderRole: 'user' }, content: 'EXTERNAL-MESSAGE-BODY', text: 'EXTERNAL-MESSAGE-BODY' }] }
@@ -111,6 +112,36 @@ describe('trusted native Agent control boundary', () => {
     const next = f.control.bind({ ...f.batch, batchId: 'b'.repeat(64) }, parentId)
     expect(next.scope.agentId).toBe(input.agentId)
     expect((await f.post('/prepare-task', { ...input, contextRef: 'b'.repeat(64) })).status).toBe(200)
+  })
+
+  it.each(['MCP_SERVICE_NOT_READY', 'MCP_GRANTED_TOOL_MISSING'])('keeps a %s capability preparation failure retryable without persisting pending tasks or retaining issued QQ access', async code => {
+    const f = fixture(); await f.control.start('fixture-runtime-nonce')
+    const binding = f.control.bind(f.batch, parentId)
+    const input = { agentId: binding.scope.agentId, agentTypeId: binding.scope.agentTypeId, contextRef: f.batch.batchId, taskId: '1'.repeat(64) }
+    const capabilities = vi.spyOn(f.host, 'getCapabilityMcpConnections')
+      .mockImplementationOnce(() => { throw new PlatformError(code, 'Fixture capability preparation was rejected before task acceptance.', 409, 'not-sent') })
+      .mockReturnValue([{ id: 'plugin.fixture', serverName: 'plugin_fixture', url: 'http://127.0.0.1:1/mcp-services/plugin.fixture', headers: { Authorization: 'Bearer fixture-capability-only-token' }, tools: ['fixture_read'] }])
+    const file = join(f.directory, 'agent-bindings.json'), before = readFileSync(file, 'utf8')
+    const rejected = await f.post('/prepare-task', input)
+    expect(rejected.status).toBe(409)
+    expect(await rejected.json()).toMatchObject({ code })
+    expect(f.host.getMcpConnection).toHaveBeenCalledWith('qq', binding.scope)
+    expect(capabilities).toHaveBeenCalledWith({ agentId: binding.scope.agentId, agentTypeId: binding.scope.agentTypeId, source: binding.scope })
+    expect(f.host.revokeAgentAccess).toHaveBeenCalledExactlyOnceWith(binding.scope.agentId)
+    expect(f.host.readAgentActions).not.toHaveBeenCalled()
+    expect(readFileSync(file, 'utf8')).toBe(before)
+    expect(f.control.list()[0]?.task).toBeUndefined()
+    expect(f.control.list()[0]?.taskRefs).toEqual([])
+    const reopened = new DshAgentControl(f.directory, f.host); stops.push(() => reopened.close())
+    expect(reopened.list()[0]?.task).toBeUndefined()
+    expect(reopened.list()[0]?.taskRefs).toEqual([])
+    const accepted = await f.post('/prepare-task', input)
+    expect(accepted.status).toBe(200)
+    expect(await accepted.json()).toMatchObject({ agentId: binding.scope.agentId, capabilities: [{ id: 'plugin.fixture', tools: ['fixture_read'] }] })
+    expect(f.control.list()[0]?.task).toMatchObject({ state: 'pending', taskId: input.taskId })
+    expect(f.control.list()[0]?.taskRefs).toHaveLength(1)
+    expect(f.host.getMcpConnection).toHaveBeenCalledTimes(2)
+    expect(f.host.readAgentActions).toHaveBeenCalledTimes(1)
   })
 
   it('allows distinct completed or failed native calls in one context and refuses replayed or stale call identities', async () => {

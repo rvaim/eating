@@ -1,0 +1,11 @@
+{
+  "name": "@eating/plugin-stickers",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Eating 表情资源库，提供受控收藏、检索、预览与管理。",
+  "files": ["dist"],
+  "exports": { ".": "./dist/server.mjs" },
+  "scripts": { "build": "node ../../../scripts/build.mjs plugin plugins/capabilities/stickers" },
+  "dependencies": { "@eating/plugin-sdk": "workspace:^", "@eating/ui-sdk": "workspace:^" },
+  "peerDependencies": { "lucide-react": "^1.61.0", "react": "^19.3.1" }
+}

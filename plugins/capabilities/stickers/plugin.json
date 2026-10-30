@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "stickers",
+  "name": "表情包",
+  "description": "独立表情资源库：上传或收藏会话图片，管理描述、标签和可发送图片引用。",
+  "version": "0.1.0",
+  "kind": "capability",
+  "apiVersion": 4,
+  "assets": [],
+  "storageDirectory": "stickers",
+  "backend": "server.mjs",
+  "frontend": { "entry": "ui/index.js", "style": "ui/style.css", "order": 30, "brandColor": "#3c745c", "icon": "images" }
+}

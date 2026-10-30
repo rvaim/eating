@@ -20,14 +20,14 @@ function FailedPluginPanel() {
 }
 
 function failedContribution(entry: InstalledFrontendContribution): ManagedPlugin {
-  return { id: entry.id, name: entry.name ?? entry.id, get description() { return translate('app', 'catalog.loadError') }, version: entry.version ?? '0.0.0', apiVersion: 3,
+  return { id: entry.id, name: entry.name ?? entry.id, get description() { return translate('app', 'catalog.loadError') }, version: entry.version ?? '0.0.0', apiVersion: 4,
     kind: entry.kind, order: 100000, icon: Plug, brandColor: '#65736b', defaultRegistered: true,
     initialValues: {}, validate: () => ({ valid: false, errors: {} }), summary: () => translate('app', 'catalog.loadError'),
     Panel: FailedPluginPanel }
 }
 
 export async function loadPluginCatalog(entries: readonly InstalledFrontendContribution[]): Promise<readonly ManagedPlugin[]> {
-  if (entries.some(entry => !entry || !['communication', 'harness'].includes(entry.kind))) throw new Error(translate('app', 'catalog.error.kindMismatch'))
+  if (entries.some(entry => !entry || !['communication', 'harness', 'capability'].includes(entry.kind))) throw new Error(translate('app', 'catalog.error.kindMismatch'))
   const plugins = await Promise.all(entries.map(async entry => {
     try {
       const frontend = entry.frontend

@@ -3,6 +3,7 @@ packages:
   - packages/*
   - plugins/communication/*
   - plugins/harness/*
+  - plugins/capabilities/*
 
 allowBuilds:
   esbuild: true

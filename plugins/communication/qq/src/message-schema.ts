@@ -56,7 +56,7 @@ const booleanParameter: JsonObject = {
   ],
 }
 const mediaProperties: JsonObject = {
-  file: { type: 'string', minLength: 1, maxLength: 1048576, description: '交给 OneBot 处理的文件名、file://、http(s):// 或 base64://；Eating 不读取本机文件。' },
+  file: { type: 'string', minLength: 1, maxLength: 1048576, description: 'OneBot 文件名、file://、http(s)://、base64://，或获准插件返回的 eating-asset:// 资源引用。资源引用由 Eating 转换为标准图片数据；不读取任意本机文件。' },
   cache: { ...booleanParameter, default: '1' },
   proxy: { ...booleanParameter, default: '1' },
   timeout: numberParameter,

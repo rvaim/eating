@@ -1,6 +1,6 @@
 {
   "name": "@eating/plugin-core",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "type": "module",
   "description": "Eating 平台注册及纯数据类型",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },

@@ -144,7 +144,15 @@ test.describe('提示词与人格的真实持久编辑', () => {
     await expect(editor).toHaveText('{{当前时间}}尾部')
     await editor.fill('{{不存在的变量}}')
     await expect(page.locator('.template-variable-invalid')).toHaveText('{{不存在的变量}}')
-    await expect(page.locator('.template-variable-invalid')).toHaveCSS('color', 'rgb(170, 56, 56)')
+    const dangerInk = await page.evaluate(() => {
+      const probe = document.createElement('span')
+      probe.style.color = getComputedStyle(document.documentElement).getPropertyValue('--color-danger-ink').trim()
+      document.body.append(probe)
+      const color = getComputedStyle(probe).color
+      probe.remove()
+      return color
+    })
+    await expect(page.locator('.template-variable-invalid')).toHaveCSS('color', dangerInk)
     await expect(page.locator('.template-variable-invalid')).toHaveCSS('text-decoration-style', 'wavy')
     await expect(page.getByRole('button', { name: '保存提示词', exact: true })).toBeDisabled()
     await expect(page.getByRole('button', { name: /定位变量错误 1/ })).toBeVisible()

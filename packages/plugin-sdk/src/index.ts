@@ -1,5 +1,8 @@
 export * from './authoring.js'
 export * from './agents.js'
+export * from './capabilities.js'
+export * from './media.js'
+import type { CapabilityInvocationScope, HarnessCapabilityConnection, ImageResource, PluginKind, PluginMediaProvider, PluginResourceServices, ReceivedImageReference } from './capabilities.js'
 
 export type JsonPrimitive = string | number | boolean | null
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue }
@@ -163,6 +166,7 @@ export interface HarnessHostServices {
   wake(): void
   readOwnerConfiguration(): HarnessOwnerConfiguration
   getMcpConnection(pluginId: string, scope: import('./agents.js').AgentInvocationScope): import('./agents.js').AgentMcpConnection
+  getCapabilityMcpConnections(scope: CapabilityInvocationScope): readonly HarnessCapabilityConnection[]
   readAgentActions(agentId: string): readonly import('./agents.js').AgentActionReceipt[]
   revokeAgentAccess(agentId: string): void
 }
@@ -170,6 +174,7 @@ export interface HarnessHostServices {
 export interface HostPluginContext {
   /** Present only for installed, approved Harness plugins. */
   readonly harness?: HarnessHostServices
+  readonly resources?: PluginResourceServices
   readonly dataDirectory: string
   getSetting(key: string): string | null
   setSetting(key: string, value: string): void
@@ -206,12 +211,15 @@ export interface PluginLogSource {
 }
 
 export interface BackendPlugin {
-  readonly kind: 'communication' | 'harness'
+  readonly kind: PluginKind
   manage?(operation: string, input: unknown): Promise<JsonValue>
   readonly logs?: PluginLogSource
   readonly id: string
   readonly name: string
   readonly version: string
+  readonly media?: PluginMediaProvider
+  readReceivedImage?(reference: ReceivedImageReference, scope: import('./agents.js').AgentInvocationScope): Promise<ImageResource>
+  invokeCapability?(name: string, input: unknown, requestId: string, scope: CapabilityInvocationScope): Promise<JsonValue>
   readonly capabilities: readonly PluginCapability[]
   readonly tools: readonly PluginToolDefinition[]
   readonly agentTypes?: readonly import('./agents.js').AgentTypeDefinition[]
@@ -233,8 +241,8 @@ export interface PluginPackageManifest {
   readonly name: string
   readonly description: string
   readonly version: string
-  readonly kind: 'communication' | 'harness'
-  readonly apiVersion: 3
+  readonly kind: PluginKind
+  readonly apiVersion: 4
   readonly storageDirectory: string
   readonly backend: string
   readonly frontend: {
@@ -249,7 +257,7 @@ export interface PluginPackageManifest {
 }
 
 export interface BackendPluginEntry {
-  readonly kind: 'communication' | 'harness'
+  readonly kind: PluginKind
   readonly id: string
   readonly storageDirectory: string
   readonly installed?: { readonly manifest: PluginPackageManifest; readonly directory: string }

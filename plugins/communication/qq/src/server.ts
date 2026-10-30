@@ -1,7 +1,7 @@
 import type { OneBotConfig } from './config'
 import { createHash } from 'node:crypto'
-import { PlatformError, isJsonObject } from '@eating/plugin-sdk'
-import type { AgentInvocationScope, BackendPlugin, BackendPluginEntry, ConnectionStatus, HarnessEvent, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
+import { PlatformError, isJsonObject, parseImageAssetUri, checkedImageResource } from '@eating/plugin-sdk'
+import type { AgentInvocationScope, BackendPlugin, BackendPluginEntry, ConnectionStatus, ImageResource, ReceivedImageReference, HarnessEvent, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { assertQQAgentInvocation, createDefaultAgentPolicy, parseQQAgentPolicy, parseQQAgentPolicySave, qqAgentInstructions, qqAgentTypes, qqMessageResourceIds, qqSenderRole } from './backend/agent-policy'
 import { OneBotClient } from './backend/onebot'
 import { qqTools, validateToolInput, prepareOneBotCall } from './backend/operations'
@@ -62,7 +62,7 @@ class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly kind = 'communication' as const
   readonly name = 'QQ'
-  readonly version = '0.10.1'
+  readonly version = '0.11.0'
   readonly logs = new LiveLogChannel()
   readonly tools = [...qqTools, qqViewReceivedImageTool]
   readonly capabilities = [
@@ -123,7 +123,7 @@ class QQPlugin implements BackendPlugin {
     const params = validateToolInput(tool, input)
     assertQQAgentInvocation(name, params, scope, this.configuration, { instanceId: this.instanceId, accountId: this.client.getStatus().accountId })
     if (name === qqViewReceivedImageTool.name) return this.viewReceivedImage(params, scope)
-    return this.invoke(name, params, requestId)
+    return this.invokeFor(name, params, requestId, scope)
   }
 
   async connect(): Promise<void> {
@@ -137,6 +137,10 @@ class QQPlugin implements BackendPlugin {
   }
 
   async invoke(name: string, input: unknown, requestId: string): Promise<JsonValue> {
+    return this.invokeFor(name, input, requestId)
+  }
+
+  private async invokeFor(name: string, input: unknown, requestId: string, scope?: AgentInvocationScope): Promise<JsonValue> {
     const tool = this.tools.find(entry => entry.name === name)
     if (!tool) throw new PlatformError('TOOL_NOT_FOUND', '此 QQ 功能未提供。', 404, 'not-sent')
     const params = validateToolInput(tool, input)
@@ -147,11 +151,51 @@ class QQPlugin implements BackendPlugin {
       && forwarded.context.self_id !== undefined && String(forwarded.context.self_id) !== this.client.getStatus().accountId) {
       throw new PlatformError('INVALID_INPUT', '快速操作上下文不属于当前登录账号，未执行动作。', 400, 'not-sent')
     }
-    const execute = () => this.client.call(action, forwarded, { timeoutMs: this.configuration.timeoutMs, readOnly: tool.readOnly })
+    const execute = async () => {
+      if (scope?.signal?.aborted) throw new PlatformError('AGENT_SCOPE_VIOLATION', '当前调用授权已撤销，未发送。', 403, 'not-sent')
+      const account = this.client.getStatus().accountId
+      const wire = await this.resolveAssets(forwarded, scope)
+      if (scope?.signal?.aborted) throw new PlatformError('AGENT_SCOPE_VIOLATION', '资源读取期间任务已撤销，未发送。', 403, 'not-sent')
+      if (scope) assertQQAgentInvocation(name, params, scope, this.configuration, { instanceId: this.instanceId, accountId: this.client.getStatus().accountId })
+      if (this.client.getStatus().accountId !== account) throw new PlatformError('ACCOUNT_CHANGED', '资源读取期间账号已变化，未发送。', 409, 'not-sent')
+      return this.client.call(action, wire, { timeoutMs: this.configuration.timeoutMs, readOnly: tool.readOnly })
+    }
     if (tool.readOnly) return execute()
     const accountId = this.client.getStatus().accountId
     if (!accountId || this.client.getStatus().state !== 'connected') throw new PlatformError('NOT_CONNECTED', '账号尚未连接，未发送动作。', 409, 'not-sent')
     return this.context.executeIdempotent(this.id, action, forwarded, typeof params.request_id === 'string' ? params.request_id : requestId, execute, { instanceId: this.instanceId, accountId })
+  }
+
+  async readReceivedImage(reference: ReceivedImageReference, scope: AgentInvocationScope): Promise<ImageResource> {
+    const result = await this.viewReceivedImage({ message_id: reference.messageId, image_id: reference.imageId }, scope)
+    const content = result.content
+    const image = Array.isArray(content) ? content.find(block => isJsonObject(block) && block.type === 'image') : undefined
+    if (!isJsonObject(image)) throw new PlatformError('IMAGE_UNAVAILABLE', '当前消息没有可读取的图片。', 409, 'not-sent')
+    return checkedImageResource({ mimeType: image.mimeType ?? null, data: image.data ?? null })
+  }
+
+  private async resolveAssets(params: JsonObject, scope?: AgentInvocationScope): Promise<JsonObject> {
+    let count = 0, totalBytes = 0
+    const resolveMessage = async (value: JsonValue): Promise<JsonValue> => {
+      if (Array.isArray(value)) return Promise.all(value.map(resolveMessage))
+      if (!isJsonObject(value) || !isJsonObject(value.data)) return value
+      if (value.type === 'image' && typeof value.data.file === 'string') {
+        const reference = parseImageAssetUri(value.data.file)
+        if (!reference) return value
+        if (++count > 4) throw new PlatformError('MEDIA_ASSET_LIMIT', '单次发送最多解析4张插件图片。', 400, 'not-sent')
+        if (!this.context.resources) throw new PlatformError('MEDIA_RESOURCE_SERVICE_UNAVAILABLE', '宿主未提供图片资源服务。', 503, 'not-sent')
+        const image = checkedImageResource(await this.context.resources.readAsset(reference, scope ? { agentId: scope.agentId, agentTypeId: scope.agentTypeId, source: scope } : undefined))
+        totalBytes += Buffer.byteLength(image.data, 'base64')
+        if (totalBytes > 10 * 1024 * 1024) throw new PlatformError('MEDIA_ASSET_LIMIT', '单次发送的插件图片总大小不能超过10MiB。', 400, 'not-sent')
+        return { ...value, data: { ...value.data, file: 'base64://' + image.data } }
+      }
+      if (value.type === 'node' && value.data.content !== undefined) return { ...value, data: { ...value.data, content: await resolveMessage(value.data.content) } }
+      return value
+    }
+    const result = { ...params }
+    if (result.message !== undefined) result.message = await resolveMessage(result.message)
+    if (isJsonObject(result.operation) && result.operation.reply !== undefined) result.operation = { ...result.operation, reply: await resolveMessage(result.operation.reply) }
+    return result
   }
 
   private async viewReceivedImage(params: JsonObject, scope?: AgentInvocationScope): Promise<JsonObject> {

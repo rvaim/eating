@@ -126,7 +126,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.7.0'
+  readonly version = '0.8.0'
   readonly tools = []
   readonly capabilities = [
     { id: 'dsh.fixed-session', name: '固定 DSH 主会话', support: 'supported' as const, description: '使用独立官方 DSH 运行时与固定原生会话；可靠交接须经持久屏障。' },

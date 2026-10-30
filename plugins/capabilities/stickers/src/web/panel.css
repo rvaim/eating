@@ -1,0 +1,67 @@
+.stickers-panel { margin-top: 28px; color: var(--color-ink); min-width: 0; }
+.stickers-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
+.stickers-toolbar h3 { font-size: 17px; font-weight: 650; }
+.stickers-toolbar h3 span { margin-left: 10px; color: var(--color-muted); font-size: 12px; font-weight: 400; }
+.stickers-toolbar p { margin-top: 7px; color: var(--color-muted); font-size: 13px; line-height: 1.65; }
+.stickers-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.stickers-panel button { min-height: 44px; }
+.stickers-layout { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(300px, .9fr); gap: 28px; align-items: start; }
+.stickers-browser { min-width: 0; }
+.stickers-filter { display: grid; gap: 8px; margin-bottom: 18px; }
+.stickers-filter label, .stickers-field label { font-size: 13px; font-weight: 600; }
+.stickers-search { display: flex; align-items: center; gap: 10px; }
+.stickers-search > svg { color: var(--color-muted); flex: 0 0 auto; }
+.stickers-search input { min-width: 0; flex: 1; }
+.stickers-panel input:not([type="file"]), .stickers-panel select, .stickers-panel textarea { min-width: 0; width: 100%; border: 1px solid var(--color-line-input); border-radius: var(--radius); padding: 10px 12px; background: var(--color-surface); color: var(--color-ink); font: inherit; font-size: 13px; caret-color: var(--color-primary); }
+.stickers-panel input::placeholder, .stickers-panel textarea::placeholder { color: var(--color-placeholder); }
+.stickers-panel textarea { resize: vertical; min-height: 80px; max-height: 360px; line-height: 1.7; }
+.stickers-panel select { margin-top: 1px; }
+.stickers-panel input:focus-visible, .stickers-panel textarea:focus-visible, .stickers-panel select:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.stickers-panel fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.stickers-panel fieldset:disabled input, .stickers-panel fieldset:disabled textarea { color: var(--color-disabled-ink); background: var(--color-surface-sunken); }
+.stickers-panel button:disabled { cursor: not-allowed; color: var(--color-disabled-ink); background: var(--color-surface-sunken); border-color: var(--color-line); }
+.stickers-filter-help { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--color-muted); }
+.stickers-filter-help small { font-size: 11px; }
+.stickers-list { border-top: 1px solid var(--color-line); }
+.stickers-row { width: 100%; display: flex; align-items: center; gap: 13px; padding: 17px 10px; border: 0; border-bottom: 1px solid var(--color-line); background: var(--color-surface); color: var(--color-ink); text-align: left; }
+.stickers-row:hover { background: var(--color-hover); }
+.stickers-row.is-selected { background: var(--color-selected); }
+.stickers-row-image { flex: 0 0 auto; color: var(--color-icon-soft); }
+.stickers-row > svg:last-child { color: var(--color-muted); flex: 0 0 auto; }
+.stickers-row-body { min-width: 0; flex: 1; display: grid; gap: 7px; }
+.stickers-row-body strong { font-size: 13px; font-weight: 550; line-height: 1.65; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.stickers-row-body small { font-size: 11px; color: var(--color-muted); }
+.stickers-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.stickers-tags > span { max-width: 100%; padding: 2px 7px; border-radius: 4px; font-size: 11px; line-height: 1.5; color: var(--color-ink-notice); background: var(--color-surface-sunken); overflow-wrap: anywhere; }
+.stickers-pagination { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 18px; color: var(--color-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.stickers-pagination > div { display: flex; gap: 8px; }
+.stickers-pagination button { min-width: 44px; padding: 8px; }
+.stickers-editor { min-width: 0; position: sticky; top: 16px; padding: 20px; border: 1px solid var(--color-line); border-radius: var(--radius); background: var(--color-surface-raised); }
+.stickers-editor-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.stickers-editor-heading h3 { font-size: 15px; }
+.stickers-preview { min-height: 180px; max-height: 320px; aspect-ratio: 4 / 3; display: grid; place-items: center; overflow: hidden; background: var(--color-surface-sunken); border: 1px solid var(--color-line); border-radius: var(--radius); }
+.stickers-preview img { display: block; max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; }
+.stickers-preview p { color: var(--color-muted); font-size: 12px; text-align: center; padding: 16px; }
+.stickers-preview-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 8px; }
+.stickers-preview-actions small { flex-basis: 100%; font-size: 11px; color: var(--color-muted); line-height: 1.65; }
+.stickers-edit-form { margin-top: 22px; }
+.stickers-field { display: grid; gap: 7px; margin-bottom: 20px; }
+.stickers-field small { font-size: 11px; color: var(--color-muted); line-height: 1.65; overflow-wrap: anywhere; }
+.stickers-field input[type="file"] { max-width: 100%; font-size: 12px; color: var(--color-ink); }
+.stickers-field input[type="file"]::file-selector-button { min-height: 40px; margin-right: 10px; padding: 8px 12px; color: var(--color-ink); background: var(--color-surface); border: 1px solid var(--color-line-strong); border-radius: var(--radius); cursor: pointer; }
+.stickers-field input[type="file"]::file-selector-button:hover { background: var(--color-hover); }
+.stickers-metadata { color: var(--color-muted); font-size: 11px; margin-bottom: 17px; font-variant-numeric: tabular-nums; }
+.stickers-dirty { color: var(--color-muted); font-size: 11px; }
+.stickers-delete { border-top: 1px solid var(--color-line); padding-top: 14px; margin-top: 22px; }
+.stickers-delete > button { color: var(--color-danger-ink); }
+.stickers-notice { display: flex; align-items: flex-start; gap: 9px; padding: 14px; margin: 16px 0; background: var(--color-danger-surface); color: var(--color-danger-ink); border: 1px solid var(--color-line-warm); border-radius: var(--radius); font-size: 13px; line-height: 1.65; }
+.stickers-notice svg { flex: 0 0 auto; margin-top: 2px; }
+.stickers-confirm { padding: 14px; margin: 14px 0; border: 1px solid var(--color-line-strong); background: var(--color-surface-muted); border-radius: var(--radius); }
+.stickers-confirm p { font-size: 13px; line-height: 1.65; margin-bottom: 12px; }
+.stickers-empty { display: grid; justify-items: center; text-align: center; padding: 38px 16px; gap: 10px; color: var(--color-muted); }
+.stickers-empty > svg { color: var(--color-icon-soft); }
+.stickers-empty h4 { color: var(--color-ink); font-size: 15px; }
+.stickers-empty p { font-size: 12px; max-width: 36ch; line-height: 1.8; }
+.stickers-loading { padding: 20px 10px; font-size: 12px; color: var(--color-muted); }
+@media (max-width: 1100px) { .stickers-layout { grid-template-columns: minmax(0, 1fr); gap: 24px; } .stickers-editor { position: static; } .stickers-preview { max-height: 300px; } }
+@media (max-width: 600px) { .stickers-toolbar { flex-direction: column; gap: 16px; } .stickers-toolbar > .stickers-actions { width: 100%; } .stickers-toolbar > .stickers-actions > button { flex: 1; } .stickers-editor { padding: 15px; } .stickers-search { flex-wrap: wrap; } .stickers-search input { flex-basis: calc(100% - 35px); } .stickers-search button { width: 100%; } .stickers-pagination { align-items: flex-start; } }

@@ -58,6 +58,30 @@ export function getRuntimeAgentSource(): string {
       promise.then(value => { signal.removeEventListener('abort', abort); resolve(value); }, error => { signal.removeEventListener('abort', abort); reject(error); });
     });
   }
+  async function mountCapabilities(agent, connections) {
+    if (!Array.isArray(connections) || connections.length > 64) throw new Error('Trusted MCP capability list is invalid');
+    if (!connections.length) return [];
+    const Mcp = await loadModule(mcpEntry);
+    const names = [];
+    for (const connection of connections) {
+      if (!record(connection) || typeof connection.serverName !== 'string' || !/^[A-Za-z0-9_]+$/.test(connection.serverName) || !record(connection.headers)
+        || !Array.isArray(connection.tools) || connection.tools.some(name => typeof name !== 'string') || typeof connection.url !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+\/mcp-services\//.test(connection.url)) throw new Error('Trusted MCP capability connection is invalid');
+      await agent.ctx.plugin(Mcp, { transport: 'streamable-http', serverName: connection.serverName, url: connection.url, headers: connection.headers,
+        toolCallTimeoutMs: taskDeadlineMs, failOnStartupError: true, reconnect: { enabled: false } });
+      // Current official MCP naming contract: preserve clean names, otherwise
+      // append the identity hash after normalization to the provider's 64-char limit.
+      const publicName = rawName => {
+        const joined = 'mcp__' + connection.serverName + '__' + rawName;
+        const normalized = joined.replace(/[^A-Za-z0-9_-]/g, '_');
+        return normalized === joined && normalized.length <= 64 ? normalized : normalized.slice(0, 51) + '_' + createHash('sha256').update(connection.serverName + '\0' + rawName).digest('hex').slice(0, 12);
+      };
+      const expected = connection.tools.map(publicName).sort();
+      const actual = agent.ctx.tools.schemas(agent).map(schema => schema.name).filter(name => name.startsWith('mcp__' + connection.serverName + '__')).sort();
+      if (JSON.stringify(expected) !== JSON.stringify(actual)) throw new Error('Capability tools differ from the approved Host grant');
+      names.push(...expected);
+    }
+    return names;
+  }
   async function mountChild(agent) {
     const configuration = taskConfigurations.get(agent.id);
     if (!configuration || !record(configuration.mcp) || !record(configuration.mcp.headers) || typeof configuration.systemPrompt !== 'string') throw new Error('Trusted child task configuration is unavailable');
@@ -68,7 +92,8 @@ export function getRuntimeAgentSource(): string {
     const Mcp = await loadModule(mcpEntry);
     await agent.ctx.plugin(Mcp, { transport: 'streamable-http', serverName: 'qq', url: configuration.mcp.url, headers: configuration.mcp.headers,
       toolCallTimeoutMs: taskDeadlineMs, failOnStartupError: true, reconnect: { enabled: false } });
-    const expectedNames = configuration.tools.map(name => 'mcp__qq__' + name).sort();
+    const capabilityNames = await mountCapabilities(agent, configuration.capabilities);
+    const expectedNames = [...configuration.tools.map(name => 'mcp__qq__' + name), ...capabilityNames].sort();
     const actualNames = agent.ctx.tools.schemas(agent).map(schema => schema.name).sort();
     if (JSON.stringify(expectedNames) !== JSON.stringify(actualNames)) throw new Error('Scoped MCP tools differ from the approved Agent type');
     agent.ctx.tools.guard(exec => exec.agent !== agent || !expectedNames.includes(exec.name) ? 'This child cannot call that tool.' : undefined);
@@ -146,7 +171,14 @@ export function getRuntimeAgentSource(): string {
   }
   async function onAgentCreated({ agent }) {
     await mountClock(agent);
-    if (agent.id !== sessionId) { if (taskConfigurations.has(agent.id)) await mountChild(agent); return; }
+    if (agent.id !== sessionId) {
+      if (taskConfigurations.has(agent.id)) await mountChild(agent);
+      else {
+        const connections = await control('capabilities', { agentId: agent.id, agentTypeId: 'main' }, initialization.signal);
+        await mountCapabilities(agent, connections.capabilities);
+      }
+      return;
+    }
     agent.ctx.systemPrompt.section({ name: 'eating:owner-system', order: 0, complete: true, interpolate: false, text: () => readValidatedOwnerPolicy().systemPrompt });
     agent.ctx.tools.restrict({ allow: [] });
     const output = { render: (_, value) => [{ type: 'text', text: JSON.stringify(value) }] };
@@ -156,7 +188,10 @@ export function getRuntimeAgentSource(): string {
     agent.ctx.tools.register({ name: 'eating_delegate_task', description: 'Delegate a task to the execution Agent bound to a verified batch context_ref. Only type_id, context_ref and task are accepted. The returned actions are Host receipts.',
       parameters: { type: 'object', properties: { type_id: { type: 'string' }, context_ref: { type: 'string' }, task: { type: 'string' } }, required: ['type_id', 'context_ref', 'task'], additionalProperties: false },
       output: { ...output, schema: resultOutputSchema() }, execute: delegate });
-    agent.ctx.tools.guard(exec => exec.agent !== agent || !['eating_list_agent_types', 'eating_delegate_task'].includes(exec.name) ? 'The main Agent may only list and delegate.' : undefined);
+    const connections = await control('capabilities', { agentId: agent.id, agentTypeId: 'main' }, initialization.signal);
+    const capabilityNames = await mountCapabilities(agent, connections.capabilities);
+    const allowedNames = ['eating_list_agent_types', 'eating_delegate_task', ...capabilityNames];
+    agent.ctx.tools.guard(exec => exec.agent !== agent || !allowedNames.includes(exec.name) ? 'The main Agent may only use its approved tools.' : undefined);
   }
   async function registerAgentTypes() {
     const policy = readValidatedOwnerPolicy();

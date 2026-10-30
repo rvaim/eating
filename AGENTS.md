@@ -31,9 +31,9 @@
 
 ## 工程与当前契约
 
-一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`。
+一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`。
 
-当前应用／Host／Web0.10.0，三个共享包3.0.0，QQ0.10.1、DSH0.7.0；插件唯一 API3。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前应用／Host／Web0.11.0，三个共享包4.0.0，QQ0.11.0、DSH0.8.0、表情包0.1.0；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -53,7 +53,7 @@ Eating 不建立聊天历史库；只保存有界未交接规范化信封。send
 
 主系统层：common→main→启用插件使用说明→统一当前人格；子：common→subagent→类型独有→同一人格。只有6种模板作用域和9个可信变量，无旧群私消息模板和外部正文变量。人格最多启用一个，也可全部停用，明确显示空共享层，不编造其他 AI 身份。
 
-DSH 主只有列类型／受控委派两个原生工具；子按真实账号实例、登录账号、会话、目标与类型绑定稳定 UUID，独立挂受限 MCP。`deliverBatch` 是唯一交接接口；Harness 取得 MCP 必须带完整 scope，真实回执和撤权服务必需，不能回退主人全权令牌。
+DSH 主保留列类型／受控委派两个原生工具，并可挂主人批准给main的通用MCP；子按真实账号实例、登录账号、会话、目标与类型绑定稳定 UUID，独立挂受限通讯MCP及当前类型获准的额外能力。`deliverBatch` 是唯一交接接口；Harness 取得 MCP 必须带完整 scope，真实回执和撤权服务必需，不能回退主人全权令牌。
 
 同批允许查询→主判断→继续委派同子。内部以公开 `ToolExecutionInput.callId` 防重；不把任意 system／scope／tools 参数交模型，不用任务文本 hash 代替调用 ID。最多32调用，重复／pending／unknown拒绝，迟到回调不能覆盖新任务或撤新权限。当前正文在主 turn/end 清理，不能在第一次委派后清掉。
 
@@ -99,3 +99,15 @@ README 用中文作为标准入口；其他文档标题／文件名中文，技�
 前端至少完整构建和严格类型、相关单元／集成与浏览器验证，并实际读图。原生 SDK 测试须显式设置独立 `EATING_DSH_TEST_RUNTIME`，系统 DSH／Web 集成通过 `EATING_DSH_TEST_SYSTEM_BIN` 选择系统命令并使用临时数据，默认跳过不能冒充实跑；没有旧版本迁移测试要求。真实数据未经授权不部署、不重置。
 
 最终用简洁结果说明代码、文档、验证、提交／push及剩余限制；详细证据放本轮报告，未运行不得写已验证。
+
+## MCP 与能力插件（2026-10-30）
+
+侧栏的“插件”统一管理communication／harness／capability，机器人和Harness是业务视图；每个插件自带独立面板，通用页面不能硬编码表情库实现。MCP支持直接stdio／StreamableHTTP和插件来源两种，复用官方SDK，不建第二套Agent Loop。连接／授权／Harness挂载分开；默认无授权，按代理类型及精确工具名开放，通讯插件的QQ scope权限不可通过MCP页绕过。
+
+直接MCP保存不执行命令，stdio不经shell，私有env/headers/URLquery不回显；秘密编辑省略保持，明确clear才删除。工具拓扑变更撤销lease并停止受影响Harness，再启动按新目录挂载；断开/停用/卸载即时拒绝旧调用。在途图片和写操作使用内存AbortSignal，资源返回及真实send/落库前复查；仅关闭HTTP响应不能算撤权完成。
+
+插件安装先验证封存snapshot，确认同份bytes再运行；Host内事务校验本PID工作区锁且持索引锁。启用、连接、卸载、删数据独立，不清除插件资料或共享依赖。旧API3仅在停机部署时替换代码包，新运行路径不保留读取分支。当前Host SQLite与QQ/DSH数据schema保持。
+
+表情包是插件自有库，不是QQ原生收藏。列表仅元数据，default20/max50，query描述+标签AND筛选，revision防分页漂移；get才返回image与sendable，模型文本也要能读到资源引用。AIadd只接受获准消息/图片引用，主人本机上传是另一管理入口；不接受模型任意路径/URL。资源eating-asset://引用经公开服务和授权转标准OneBot图片，原图不进Host动作账本。表情描述/标签/图片是数据不能提升系统权限，写入/发送均有真实回执，未知不盲重放。
+
+参见[ADR-0019](docs/decisions/ADR-0019-统一插件与MCP能力管理.md)、[使用说明](docs/operations/MCP插件与表情包.md)。

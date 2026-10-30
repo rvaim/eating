@@ -3,9 +3,15 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { createHash, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve, extname, sep } from 'node:path'
-import type { BackendPlugin, BackendPluginEntry, HarnessHostServices, HarnessMessageSink, HostPluginContext, JsonObject } from '@eating/plugin-sdk'
-import { PlatformError, composeAgentPrompt, isJsonObject, validateDeliverySettings } from '@eating/plugin-sdk'
+import type { BackendPlugin, BackendPluginEntry, HarnessHostServices, HarnessMessageSink, HostPluginContext, JsonObject, PluginResourceServices, CapabilityInvocationScope } from '@eating/plugin-sdk'
+import { PlatformError, checkedImageResource, composeAgentPrompt, isJsonObject, validateDeliverySettings } from '@eating/plugin-sdk'
 import { AgentAccessRegistry, collectAgentContributions } from './agent-access'
+import { CapabilityAccess } from './capability-access'
+import { DirectMcpConnections } from './mcp-connections'
+import { PluginPackageManager } from './plugin-manager'
+import type { InstalledPluginPackage } from './plugin-installation'
+import { loadInstalledPluginPackages } from './plugin-installation'
+import { discoverBackendPlugin } from './discovery'
 import { AuthoringService } from './authoring'
 import { HostStore } from './store'
 import { HarnessGateway } from './harness'
@@ -53,6 +59,12 @@ export class EatingHost {
   private readonly mutations = new Map<string, string>()
   private readonly sinkRegistrations = new Map<string, Set<() => void>>()
   private readonly agentAccess: AgentAccessRegistry
+  private readonly directMcp: DirectMcpConnections
+  private readonly capabilityAccess: CapabilityAccess
+  private readonly packageManager: PluginPackageManager
+  private mcpMutation = false
+  private packageMutation = false
+  private readonly activationPreferences = new Map<string, boolean>()
   private url = ''
   private closed = false
 
@@ -65,52 +77,146 @@ export class EatingHost {
       this.agentAccess = new AgentAccessRegistry(id => this.requirePlugin(id, true), id => !this.closed && this.enabled.has(id))
       this.authoring = new AuthoringService(this.store, () => collectAgentContributions(this.plugins.values(), this.enabled))
       const enabledIds = persistedEnabledIds(this.store.getSetting('platforms.enabled'), options.entries.map(entry => entry.id))
-      const storageDirectories = new Set<string>()
-      for (const entry of options.entries) {
-        const kind = entry.kind
-        if (entry.installed && entry.installed.manifest.apiVersion !== 3) throw new PlatformError('INCOMPATIBLE_PLUGIN_API', '仅支持 SDK apiVersion 3 的插件包。', 500)
-        if (entry.installed && entry.installed.manifest.kind !== kind) throw new Error('插件后台入口与安装清单的类型不匹配。')
-        const validId = (value: string) => value.length <= 64 && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value) && !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(value)
-        if (!validId(entry.id) || this.entries.has(entry.id) || !validId(entry.storageDirectory)
-          || !['communication', 'harness'].includes(kind) || (kind === 'communication' && !entry.storageDirectory.endsWith('-bot'))) throw new Error('插件标识、类型或数据目录声明非法。')
-        const storageKey = `${kind}/${entry.storageDirectory}`
-        if (storageDirectories.has(storageKey)) throw new Error('插件数据目录重复，拒绝共同写入。')
-        storageDirectories.add(storageKey)
-        this.entries.set(entry.id, entry)
-        if (enabledIds.includes(entry.id)) this.enabled.add(entry.id)
-        const context: HostPluginContext = {
-          ...(kind === 'harness' ? { harness: this.harnessServices(entry.id) } : {}),
-          dataDirectory: resolve(options.dataDirectory, kind === 'harness' ? 'harness' : 'bot', entry.storageDirectory),
-          getSetting: key => this.store.getSetting(`${entry.id}:${key}`),
-          setSetting: (key, value) => this.store.setSetting(`${entry.id}:${key}`, value),
-          recordEvent: (pluginId, key, event, harnessEvent, metadata) => {
-            if (pluginId !== entry.id) throw new PlatformError('PLUGIN_SCOPE_VIOLATION', '插件不能写入其他平台事件。', 403)
-            const result = this.store.recordEvent(pluginId, key, event, harnessEvent, metadata)
-            if (result.inserted && harnessEvent && result.queued !== false) this.harness.notify()
-            return result
-          },
-          listMessages: (pluginId, filters) => {
-            if (pluginId !== entry.id) throw new PlatformError('PLUGIN_SCOPE_VIOLATION', '插件不能读取其他平台消息。', 403)
-            return this.store.listMessages(pluginId, filters)
-          },
-          executeIdempotent: (pluginId, action, params, requestId, execute, scope) => {
-            if (pluginId !== entry.id) throw new PlatformError('PLUGIN_SCOPE_VIOLATION', '插件不能使用其他平台动作权限。', 403)
-            return this.store.executeIdempotent(pluginId, action, params, requestId, execute, scope)
-          },
-        }
-        let plugin: BackendPlugin
-        try { plugin = entry.create(context) }
-        catch (error) { this.revokeHarnessSinks(entry.id); plugin = failedPlugin(entry, error) }
-        if (plugin.id !== entry.id || plugin.kind !== kind) {
-          this.revokeHarnessSinks(entry.id)
-          throw new Error('插件后台身份或类型不匹配。')
-        }
-        this.plugins.set(plugin.id, plugin)
-      }
+      this.directMcp = new DirectMcpConnections(resolve(options.dataDirectory, 'host', 'mcp'))
+      this.capabilityAccess = new CapabilityAccess({ direct: this.directMcp, plugins: () => this.plugins.values(), enabled: id => !this.closed && this.enabled.has(id),
+        getSetting: key => this.store.getSetting(key), setSetting: (key, value) => this.store.setSetting(key, value),
+        executeIdempotent: (pluginId, action, params, requestId, execute) => this.store.executeIdempotent(pluginId, action, params, requestId, execute) })
+      this.packageManager = new PluginPackageManager(options.dataDirectory, { deactivate: id => this.deactivateInstalled(id), activate: installed => this.activateInstalled(installed) })
+      for (const entry of options.entries) this.registerEntry(entry, enabledIds.includes(entry.id))
       this.allowedOrigins = new Set(options.allowedUiOrigins ?? ['http://127.0.0.1:5180', 'http://localhost:5180', 'http://127.0.0.1:4180'])
       for (const origin of this.allowedOrigins) this.allowedHosts.add(new URL(origin).host)
       this.server = createServer((request, response) => { void this.route(request, response) })
     } catch (error) { openedStore?.close(); this.releaseLock(); throw error }
+  }
+
+  private registerEntry(entry: BackendPluginEntry, enabled: boolean): void {
+    const kind = entry.kind
+    if (entry.installed && entry.installed.manifest.apiVersion !== 4) throw new PlatformError('INCOMPATIBLE_PLUGIN_API', '仅支持 SDK apiVersion 4 的插件包。', 500)
+    if (entry.installed && entry.installed.manifest.kind !== kind) throw new Error('插件后台入口与安装清单的类型不匹配。')
+    const validId = (value: string) => value.length <= 64 && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(value) && !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(value)
+    if (!validId(entry.id) || this.entries.has(entry.id) || !validId(entry.storageDirectory) || !['communication', 'harness', 'capability'].includes(kind)
+      || kind === 'communication' && !entry.storageDirectory.endsWith('-bot')) throw new Error('插件标识、类型或数据目录声明非法。')
+    if ([...this.entries.values()].some(existing => existing.kind === kind && existing.storageDirectory === entry.storageDirectory)) throw new Error('插件数据目录重复，拒绝共同写入。')
+    this.entries.set(entry.id, entry)
+    if (enabled) this.enabled.add(entry.id)
+    const context: HostPluginContext = {
+      ...(kind === 'harness' ? { harness: this.harnessServices(entry.id) } : {}),
+      resources: this.resourceServices(entry.id),
+      dataDirectory: resolve(this.options.dataDirectory, kind === 'harness' ? 'harness' : kind === 'communication' ? 'bot' : 'capabilities', entry.storageDirectory),
+      getSetting: key => this.store.getSetting(`${entry.id}:${key}`), setSetting: (key, value) => this.store.setSetting(`${entry.id}:${key}`, value),
+      recordEvent: (pluginId, key, event, harnessEvent, metadata) => {
+        if (pluginId !== entry.id || kind !== 'communication') throw new PlatformError('PLUGIN_SCOPE_VIOLATION', '此插件不能提交平台消息。', 403)
+        const result = this.store.recordEvent(pluginId, key, event, harnessEvent, metadata)
+        if (result.inserted && harnessEvent && result.queued !== false) this.harness.notify()
+        return result
+      },
+      listMessages: (pluginId, filters) => { if (pluginId !== entry.id || kind !== 'communication') throw new PlatformError('PLUGIN_SCOPE_VIOLATION', '插件不能读取其他平台消息。', 403); return this.store.listMessages(pluginId, filters) },
+      executeIdempotent: (pluginId, action, params, requestId, execute, scope) => { if (pluginId !== entry.id) throw new PlatformError('PLUGIN_SCOPE_VIOLATION', '插件不能使用其他插件的动作权限。', 403); return this.store.executeIdempotent(pluginId, action, params, requestId, execute, scope) },
+    }
+    let plugin: BackendPlugin
+    try { plugin = entry.create(context) } catch (error) { this.revokeHarnessSinks(entry.id); plugin = failedPlugin(entry, error) }
+    if (plugin.id !== entry.id || plugin.kind !== kind) { this.revokeHarnessSinks(entry.id); throw new Error('插件后台身份或类型不匹配。') }
+    this.plugins.set(plugin.id, plugin)
+  }
+
+  private resourceServices(callerId: string): PluginResourceServices {
+    const requireCaller = () => this.requirePlugin(callerId, true)
+    return {
+      readReceivedImage: async (scope, reference) => {
+        requireCaller()
+        const active = () => !scope.signal?.aborted && this.capabilityAccess.activeService({ agentId: scope.agentId, agentTypeId: scope.agentTypeId }, 'plugin.' + callerId)
+        if (!active()) throw new PlatformError('ASSET_ACCESS_DENIED', '当前图片收藏调用已失效。', 403, 'not-sent')
+        const source = this.requirePlugin(scope.pluginId, true)
+        if (source.kind !== 'communication' || !source.readReceivedImage) throw new PlatformError('RECEIVED_IMAGE_UNAVAILABLE', '来源插件没有提供当前会话图片资源。', 409, 'not-sent')
+        const image = checkedImageResource(await source.readReceivedImage(reference, scope))
+        requireCaller(); this.requirePlugin(scope.pluginId, true)
+        if (!active()) throw new PlatformError('ASSET_ACCESS_DENIED', '图片读取期间任务授权已撤销。', 403, 'not-sent')
+        return image
+      },
+      readAsset: async (reference, scope) => {
+        requireCaller()
+        const source = this.requirePlugin(reference.pluginId, true)
+        if (!source.media || !source.tools.some(tool => tool.name === source.media!.readTool)) throw new PlatformError('ASSET_UNAVAILABLE', '来源插件没有提供该图片资源。', 409, 'not-sent')
+        const allowed = () => !scope || !scope.signal?.aborted && !scope.source?.signal?.aborted && this.capabilityAccess.activePermission(scope, 'plugin.' + source.id, source.media!.readTool)
+        if (!allowed()) throw new PlatformError('ASSET_ACCESS_DENIED', '当前代理未获准读取此插件的图片。', 403, 'not-sent')
+        const image = checkedImageResource(await source.media.readAsset(reference.assetId))
+        requireCaller(); this.requirePlugin(source.id, true)
+        if (!allowed()) throw new PlatformError('ASSET_ACCESS_DENIED', '图片读取期间授权已撤销。', 403, 'not-sent')
+        return image
+      },
+    }
+  }
+
+  private saveEnabled(): void { this.store.setSetting('platforms.enabled', JSON.stringify({ version: 1, ids: [...this.enabled] })) }
+  private async deactivateInstalled(id: string): Promise<void> {
+    const plugin = this.plugins.get(id)
+    if (!plugin) return
+    if (!this.activationPreferences.has(id)) this.activationPreferences.set(id, this.enabled.has(id))
+    await this.stopAffectedHarnesses('plugin.' + id)
+    this.agentAccess.revokePlugin(id); this.capabilityAccess.revokeSource('plugin.' + id); this.revokeHarnessSinks(id)
+    for (const stop of this.logStreams.get(id) ?? []) stop()
+    this.logStreams.delete(id)
+    await plugin.dispose(); await this.mcp.get(id)?.close()
+    this.mcp.delete(id); this.plugins.delete(id); this.entries.delete(id); this.enabled.delete(id); this.saveEnabled()
+  }
+  private async activateInstalled(installed: InstalledPluginPackage): Promise<void> {
+    const entry = await discoverBackendPlugin(installed)
+    const enabled = this.activationPreferences.get(entry.id) ?? true
+    this.registerEntry(entry, enabled); this.saveEnabled()
+    const plugin = this.plugins.get(entry.id)!
+    if (plugin.getStatus().state === 'error') throw new PlatformError('PLUGIN_ACTIVATION_FAILED', plugin.getStatus().lastError ?? '插件启动失败。', 500)
+    if (enabled && plugin.getPublicConfiguration().autoConnect === true) await plugin.connect()
+    this.activationPreferences.delete(entry.id)
+  }
+  private async stopAffectedHarnesses(sourceId: string, force = false): Promise<boolean> {
+    let assigned = force
+    try { assigned ||= this.capabilityAccess.source(sourceId).grant.agentTypeIds.length > 0 } catch { /* A removed source is already revoked. */ }
+    if (!assigned) return false
+    let stopped = false
+    for (const plugin of this.plugins.values()) if (plugin.kind === 'harness' && ['connected', 'connecting', 'reconnecting', 'error'].includes(plugin.getStatus().state)) {
+      this.revokeHarnessSinks(plugin.id); await plugin.disconnect(); stopped = true
+    }
+    return stopped
+  }
+  private async mcpManagement(operation: string, input: unknown): Promise<JsonObject> {
+    if (this.mcpMutation || this.packageMutation) throw new PlatformError('MCP_BUSY', 'MCP 或插件管理正在执行，请稍后重试。', 409, 'not-sent')
+    if (!isJsonObject(input)) throw new PlatformError('INVALID_MCP_CONFIGURATION', '请提供 MCP 操作参数。')
+    this.mcpMutation = true
+    try {
+      const types = this.authoring.readOwnerConfiguration().agentTypes.map(type => ({ id: type.id, title: type.title }))
+      const validTypes = ['main', ...types.map(type => type.id)]
+      const id = typeof input.id === 'string' ? input.id : ''
+      let wasAssigned = false
+      if (id) { try { wasAssigned = this.capabilityAccess.source(id).grant.agentTypeIds.length > 0 } catch { /* New IDs are validated by save. */ } }
+      if (operation === 'save') {
+        this.capabilityAccess.requireRevision(input.expectedRevision)
+        if (!isJsonObject(input.grant) || !Array.isArray(input.grant.agentTypeIds) || input.grant.agentTypeIds.some(type => typeof type !== 'string' || !validTypes.includes(type))) throw new PlatformError('INVALID_MCP_GRANT', '请指定已有代理类型。')
+        this.directMcp.save({ ...input, expectedRevision: this.directMcp.revision })
+      } else if (operation === 'save-grants') {
+        this.capabilityAccess.requireRevision(input.expectedRevision)
+        if (id.startsWith('plugin.')) this.capabilityAccess.savePluginGrant(input, types.map(type => type.id))
+        else {
+          const source = this.directMcp.get(id)
+          if (!Array.isArray(input.agentTypeIds) || input.agentTypeIds.some(type => typeof type !== 'string' || !validTypes.includes(type)) || !Array.isArray(input.toolNames) || input.toolNames.some(name => !source.tools.some(tool => tool.name === name))) throw new PlatformError('INVALID_MCP_GRANT', '代理类型或工具授权无效。')
+          this.directMcp.setGrant(id, { agentTypeIds: input.agentTypeIds as string[], toolNames: input.toolNames as string[] }, this.directMcp.revision)
+        }
+      } else if (operation === 'connect' || operation === 'disconnect') {
+        const source = this.capabilityAccess.source(id)
+        if (Object.keys(input).some(key => key !== 'id')) throw new PlatformError('INVALID_MCP_CONFIGURATION', '连接操作只接受服务 ID。')
+        if (source.source.kind === 'direct') await this.directMcp[operation](id)
+        else {
+          if (source.source.kind !== 'plugin' || source.configuration.permissionsManagedByPlugin === true) throw new PlatformError('MCP_MANAGED_BY_PLUGIN', '此 MCP 的连接由来源插件管理。', 409, 'not-sent')
+          await this.mutatePlugin(source.source.pluginId, operation, () => this.requirePlugin(source.source.kind === 'plugin' ? source.source.pluginId : '', true)[operation]())
+        }
+      } else if (operation === 'delete') {
+        this.capabilityAccess.requireRevision(input.expectedRevision)
+        if (!id.startsWith('direct.')) throw new PlatformError('MCP_MANAGED_BY_PLUGIN', '插件提供的 MCP 不能单独删除。', 409, 'not-sent')
+        await this.directMcp.remove(id, this.directMcp.revision)
+      } else throw new PlatformError('MCP_OPERATION_NOT_FOUND', '此 MCP 管理操作不存在。', 404, 'not-sent')
+      if (id) this.capabilityAccess.revokeSource(id)
+      const harnessStopped = await this.stopAffectedHarnesses(id, wasAssigned || operation === 'save-grants')
+      return { ...this.capabilityAccess.snapshot(types), harnessStopped } as unknown as JsonObject
+    } finally { this.mcpMutation = false }
   }
 
   async listen(): Promise<string> {
@@ -124,15 +230,17 @@ export class EatingHost {
     this.allowedHosts.add(`127.0.0.1:${address.port}`)
     this.allowedHosts.add(`localhost:${address.port}`)
     this.allowedOrigins.add(this.url)
-    for (const plugin of this.plugins.values()) {
-      if (this.options.autoConnectOnStartup !== false && this.enabled.has(plugin.id) && plugin.getPublicConfiguration().autoConnect === true) void this.mutatePlugin(plugin.id, 'connect', () => plugin.connect()).catch(() => { /* The connector exposes the actual error in getStatus(). */ })
+    if (this.options.autoConnectOnStartup !== false) {
+      await Promise.allSettled(this.directMcp.list().filter(service => service.autoConnect).map(service => this.directMcp.connect(service.id)))
+      await Promise.allSettled([...this.plugins.values()].filter(plugin => plugin.kind !== 'harness' && this.enabled.has(plugin.id) && plugin.getPublicConfiguration().autoConnect === true).map(plugin => this.mutatePlugin(plugin.id, 'connect', () => plugin.connect())))
+      for (const plugin of this.plugins.values()) if (plugin.kind === 'harness' && this.enabled.has(plugin.id) && plugin.getPublicConfiguration().autoConnect === true) void this.mutatePlugin(plugin.id, 'connect', () => plugin.connect()).catch(() => {})
     }
     return this.url
   }
 
   getWorkspace(): JsonObject {
     return { protocolVersion: 1, registeredIds: [...this.enabled],
-      plugins: [...this.plugins.values()].map(plugin => ({ id: plugin.id, name: plugin.name, version: plugin.version, kind: plugin.kind,
+      plugins: [...this.plugins.values()].map(plugin => ({ id: plugin.id, name: plugin.name, description: this.entries.get(plugin.id)?.installed?.manifest.description ?? '', version: plugin.version, kind: plugin.kind,
         enabled: this.enabled.has(plugin.id), logsSupported: Boolean(plugin.logs), logViewerCount: this.logStreams.get(plugin.id)?.size ?? 0, configuration: plugin.getPublicConfiguration(), frontend: this.frontendContribution(plugin.id),
         status: plugin.getStatus(), capabilities: plugin.capabilities, tools: plugin.tools, agentTypes: plugin.agentTypes ?? [] })),
       harness: this.harness.getStatus(),
@@ -147,6 +255,11 @@ export class EatingHost {
       }
       validateLocalRequest(request, this.allowedHosts, this.allowedOrigins)
       const pathname = new URL(request.url ?? '/', this.url || 'http://127.0.0.1').pathname
+      if (pathname.startsWith('/mcp-services/')) {
+        const id = decodeURIComponent(pathname.slice('/mcp-services/'.length))
+        await this.capabilityAccess.handle(id, getBearer(request) ?? '', request, response, request.method === 'POST' ? await readJson(request, 8 * 1024 * 1024) : undefined)
+        return
+      }
       if (pathname.startsWith('/mcp/')) {
         const id = pathname.slice('/mcp/'.length)
         const plugin = this.requirePlugin(id, true)
@@ -172,6 +285,34 @@ export class EatingHost {
         requireSession(request, this.ownerSession)
         if (request.method !== 'GET' && !sameSecret(typeof request.headers['x-eating-csrf'] === 'string' ? request.headers['x-eating-csrf'] : undefined, this.csrf)) throw new PlatformError('INVALID_CSRF_TOKEN', '管理请求校验失败，请刷新页面。', 403)
         if (pathname === '/api/workspace' && request.method === 'GET') { json(response, 200, this.getWorkspace()); return }
+        if (pathname === '/api/mcp') {
+          if (request.method === 'GET') { json(response, 200, this.capabilityAccess.snapshot(this.authoring.readOwnerConfiguration().agentTypes)); return }
+          if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', 'MCP 管理仅支持 GET 或 POST。', 405)
+          const body = await readJson(request)
+          if (!isJsonObject(body) || typeof body.operation !== 'string' || Object.keys(body).some(key => !['operation', 'input'].includes(key))) throw new PlatformError('INVALID_MCP_CONFIGURATION', 'MCP 管理参数无效。')
+          json(response, 200, await this.mcpManagement(body.operation, body.input)); return
+        }
+        if (pathname === '/api/plugin-packages') {
+          if (request.method === 'GET') {
+            const installed = await loadInstalledPluginPackages(this.options.dataDirectory)
+            const workspace = this.getWorkspace().plugins
+            const active = Array.isArray(workspace) ? workspace.filter(isJsonObject) : []
+            json(response, 200, { protocolVersion: 1, plugins: installed.map(pkg => active.find(plugin => plugin.id === pkg.manifest.id) ?? { ...pkg.manifest, enabled: false, status: { state: 'error', lastError: '插件代码已安装但未激活，请重新安装或重启。' }, frontend: null }) }); return
+          }
+          if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '插件管理仅支持 GET 或 POST。', 405)
+          const body = await readJson(request)
+          if (!isJsonObject(body) || typeof body.operation !== 'string' || !isJsonObject(body.input) || Object.keys(body).some(key => !['operation', 'input'].includes(key))) throw new PlatformError('INVALID_PLUGIN_OPERATION', '插件管理参数无效。')
+          if (this.packageMutation || this.mcpMutation || this.mutations.size > 0) throw new PlatformError('PLUGIN_BUSY', '插件或 MCP 配置正在变更，请稍后重试。', 409, 'not-sent')
+          this.packageMutation = true
+          try {
+            if (body.operation === 'preview' && typeof body.input.sourceDirectory === 'string') { json(response, 200, await this.packageManager.preview(body.input.sourceDirectory)); return }
+            if (body.input.confirmed !== true) throw new PlatformError('PLUGIN_CONFIRMATION_REQUIRED', '请确认受信任插件及此操作。', 409, 'not-sent')
+            if (body.operation === 'install' && typeof body.input.planId === 'string') { const installed = await this.packageManager.install(body.input.planId); json(response, 200, { id: installed.manifest.id, version: installed.manifest.version, installed: true }); return }
+            if (body.operation === 'uninstall' && typeof body.input.id === 'string') { await this.packageManager.uninstall(body.input.id); json(response, 200, { removed: true }); return }
+            throw new PlatformError('INVALID_PLUGIN_OPERATION', '插件管理操作无效。')
+          } finally { this.packageMutation = false }
+        }
+
         if (pathname === '/api/authoring') {
           if (request.method !== 'GET') throw new PlatformError('METHOD_NOT_ALLOWED', '配置目录仅支持 GET。', 405)
           json(response, 200, this.authoring.getSnapshot()); return
@@ -252,7 +393,8 @@ export class EatingHost {
         const plugin = this.requirePlugin(id, !['enable', 'disable', 'configuration'].includes(operation))
         if (request.method === 'GET' && operation === 'configuration') { json(response, 200, plugin.getPublicConfiguration()); return }
         if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '此接口需使用 POST。', 405)
-        const body = await readJson(request, operation === 'invoke' ? 1024 * 1024 : undefined)
+        if (this.packageMutation) throw new PlatformError('PLUGIN_BUSY', '插件安装或卸载正在执行，请稍后重试。', 409, 'not-sent')
+        const body = await readJson(request, operation === 'invoke' ? 1024 * 1024 : operation === 'manage' ? 8 * 1024 * 1024 : undefined)
         if (operation === 'invoke') {
           if (!isJsonObject(body) || typeof body.name !== 'string' || !isJsonObject(body.arguments) || typeof body.requestId !== 'string') throw new PlatformError('INVALID_INPUT', '工具调用参数不完整。')
           const tool = plugin.tools.find(entry => entry.name === body.name)
@@ -336,13 +478,15 @@ export class EatingHost {
         if (!isJsonObject(scope)) throw new PlatformError('AGENT_SCOPE_VIOLATION', '请提供当前代理的完整调用范围。', 403, 'not-sent')
         return this.agentAccess.issue(id, pluginId, scope, this.url)
       },
-      readAgentActions: (agentId: string) => { this.requireHarnessAccess(id); return this.agentAccess.actions(id, agentId) },
-      revokeAgentAccess: (agentId: string) => { this.agentAccess.revokeAgent(id, agentId) },
+      getCapabilityMcpConnections: (scope: CapabilityInvocationScope) => { this.requireHarnessAccess(id); if (!this.url) throw new PlatformError('HOST_NOT_LISTENING', 'Host 尚未监听。', 503); return this.capabilityAccess.connections(id, scope, this.url) },
+      readAgentActions: (agentId: string) => { this.requireHarnessAccess(id); return [...this.agentAccess.actions(id, agentId), ...this.capabilityAccess.actions(id, agentId)] },
+      revokeAgentAccess: (agentId: string) => { this.agentAccess.revokeAgent(id, agentId); this.capabilityAccess.revokeAgent(id, agentId) },
     })
   }
 
   private revokeHarnessSinks(id: string): void {
     this.agentAccess.revokeHarness(id)
+    this.capabilityAccess?.revokeHarness(id)
     for (const unregister of this.sinkRegistrations.get(id) ?? []) unregister()
     this.sinkRegistrations.delete(id)
   }
@@ -374,8 +518,15 @@ export class EatingHost {
     else next.delete(id)
     this.store.setSetting('platforms.enabled', JSON.stringify({ version: 1, ids: [...next] }))
     this.enabled.clear(); for (const entry of next) this.enabled.add(entry)
+    if (enabled) {
+      const plugin = this.plugins.get(id)!
+      if (plugin.kind === 'capability') await plugin.connect()
+      await this.stopAffectedHarnesses('plugin.' + id)
+    }
     if (!enabled) {
       this.agentAccess.revokePlugin(id)
+      this.capabilityAccess.revokeSource('plugin.' + id)
+      await this.stopAffectedHarnesses('plugin.' + id)
       for (const stop of this.logStreams.get(id) ?? []) stop()
       this.logStreams.delete(id)
       this.revokeHarnessSinks(id)
@@ -425,6 +576,9 @@ export class EatingHost {
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
+    this.packageManager.close()
+    await this.capabilityAccess.close()
+    await this.directMcp.close()
     for (const streams of this.logStreams.values()) for (const stop of streams) stop()
     this.logStreams.clear()
     for (const id of this.sinkRegistrations.keys()) this.revokeHarnessSinks(id)

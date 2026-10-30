@@ -8,7 +8,7 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
     name: 'QQ 示例插件',
     description: '提供本地 QQ 配置示例，不连接真实平台。',
     version: '0.1.0',
-    apiVersion: 3,
+    apiVersion: 4,
     ...overrides,
   }
 }

@@ -1,17 +1,19 @@
 import { lazy, Suspense, useCallback, useEffect, useState, useSyncExternalStore } from 'react'
-import { Bot, BrainCircuit, Check, FileText, LayoutDashboard, Plus, Settings as SettingsIcon, Sprout, TriangleAlert, UserRound, X } from 'lucide-react'
+import { Bot, BrainCircuit, Cable, Check, FileText, LayoutDashboard, Plus, Puzzle, Settings as SettingsIcon, Sprout, TriangleAlert, UserRound, X } from 'lucide-react'
 import { useI18n } from '@eating/ui-sdk'
 import './i18n/app'
 import { Overview } from './pages/Overview'
 import { Robots } from './pages/Robots'
 import { Settings } from './pages/Settings'
+import { McpPage } from './pages/Mcp'
+import { PluginsPage } from './pages/Plugins'
 import { PluginCatalog } from './components/PluginCatalog'
 import { LanguageSelector } from './components/LanguageSelector'
 import type { PlatformWorkspace } from './state/workspace'
 
 const Authoring = lazy(() => import('./pages/Authoring').then(module => ({ default: module.Authoring })))
 
-type Page = 'overview' | 'robots' | 'harness' | 'settings' | 'prompts' | 'personas'
+type Page = 'overview' | 'robots' | 'harness' | 'mcp' | 'plugins' | 'settings' | 'prompts' | 'personas'
 type Route = { readonly page: Page; readonly pluginId: string | null; readonly section: 'delivery' | 'queue'; readonly documentId?: string | null }
 
 function readRoute(): Route {
@@ -21,7 +23,8 @@ function readRoute(): Route {
     try { return { page, pluginId: null, section: 'delivery', documentId: id ? decodeURIComponent(id) : null } }
     catch { return { page, pluginId: null, section: 'delivery', documentId: null } }
   }
-  if (page !== 'robots' && page !== 'harness') return { page: 'overview', pluginId: null, section: 'delivery' }
+  if (page === 'mcp') return { page, pluginId: null, section: 'delivery' }
+  if (page !== 'robots' && page !== 'harness' && page !== 'plugins') return { page: 'overview', pluginId: null, section: 'delivery' }
   try { return { page, pluginId: id ? decodeURIComponent(id) : null, section: 'delivery' } }
   catch { return { page, pluginId: null, section: 'delivery' } }
 }
@@ -30,6 +33,8 @@ const navigation = [
   { page: 'overview', href: '#overview', Icon: LayoutDashboard },
   { page: 'robots', href: '#robots', Icon: Bot },
   { page: 'harness', href: '#harness', Icon: BrainCircuit },
+  { page: 'mcp', href: '#mcp', Icon: Cable },
+  { page: 'plugins', href: '#plugins', Icon: Puzzle },
   { page: 'prompts', href: '#prompts/common', Icon: FileText },
   { page: 'personas', href: '#personas', Icon: UserRound },
   { page: 'settings', href: '#settings/delivery', Icon: SettingsIcon },
@@ -66,7 +71,7 @@ export function App({ workspace }: { readonly workspace: PlatformWorkspace }) {
   }, [feedback])
 
   const navigate = useCallback((page: Page, id: string | null = null) => {
-    window.location.hash = page === 'robots' || page === 'harness' ? `${page}${id ? `/${encodeURIComponent(id)}` : ''}` : page === 'settings' ? 'settings/delivery' : page === 'prompts' ? 'prompts/common' : page
+    window.location.hash = page === 'robots' || page === 'harness' || page === 'plugins' ? `${page}${id ? `/${encodeURIComponent(id)}` : ''}` : page === 'settings' ? 'settings/delivery' : page === 'prompts' ? 'prompts/common' : page
     setCatalogOpen(false)
   }, [])
   const selectPlugin = useCallback((id: string | null) => navigate(route.page === 'harness' ? 'harness' : 'robots', id), [navigate, route.page])
@@ -91,8 +96,8 @@ export function App({ workspace }: { readonly workspace: PlatformWorkspace }) {
       </header>
       {snapshot.storageError && <div className="storage-alert" role="alert"><TriangleAlert size={19} /><p>{snapshot.storageError} <strong>{t('app.statusStale')}</strong></p></div>}
       {snapshot.unavailableIds.length > 0 && <div className="storage-alert"><TriangleAlert size={18} /><p>{t('app.unavailablePlugins', { count: snapshot.unavailableIds.length, total: formatNumber(snapshot.unavailableIds.length) })}</p></div>}
-      {catalogOpen && pluginPage && <div className="catalog-container"><PluginCatalog workspace={workspace} snapshot={snapshot} onClose={() => setCatalogOpen(false)} onFeedback={setFeedback} onRegistered={plugin => { navigate(plugin.kind === 'harness' ? 'harness' : 'robots', plugin.id); setFeedback(t('app.pluginEnabled', { name: plugin.name })) }} /></div>}
-      {route.page === 'prompts' || route.page === 'personas' ? <Suspense fallback={<main id="main-content" className="robot-content" role="status">{t('app.loadingEditor')}</main>}><Authoring key={route.page} mode={route.page} selectedId={route.documentId ?? null} pluginDisplayNames={Object.fromEntries(workspace.catalog.map(plugin => [plugin.id, plugin.name]))} onSelect={id => { window.location.hash = `${route.page}/${encodeURIComponent(id)}` }} onFeedback={setFeedback} /></Suspense> : route.page === 'settings' ? <Settings section={route.section} onSectionChange={section => { window.location.hash = `settings/${section}` }} onFeedback={setFeedback} /> : route.page === 'overview' ? <Overview snapshot={snapshot} onRobots={id => navigate('robots', id ?? null)} onRegister={() => { setCatalogOpen(true); window.scrollTo({ top: 0, behavior: 'instant' }) }} /> : <Robots key={route.page} kind={route.page === 'harness' ? 'harness' : 'communication'} workspace={workspace} snapshot={snapshot} selectedId={route.pluginId} onSelect={selectPlugin} onRegister={() => { setCatalogOpen(true); window.scrollTo({ top: 0, behavior: 'instant' }) }} onFeedback={setFeedback} />}
+      {catalogOpen && pluginPage && <div className="catalog-container"><PluginCatalog workspace={workspace} snapshot={snapshot} onClose={() => setCatalogOpen(false)} onFeedback={setFeedback} onRegistered={plugin => { navigate(plugin.kind === 'harness' ? 'harness' : plugin.kind === 'capability' ? 'plugins' : 'robots', plugin.id); setFeedback(t('app.pluginEnabled', { name: plugin.name })) }} /></div>}
+      {route.page === 'prompts' || route.page === 'personas' ? <Suspense fallback={<main id="main-content" className="robot-content" role="status">{t('app.loadingEditor')}</main>}><Authoring key={route.page} mode={route.page} selectedId={route.documentId ?? null} pluginDisplayNames={Object.fromEntries(workspace.catalog.map(plugin => [plugin.id, plugin.name]))} onSelect={id => { window.location.hash = `${route.page}/${encodeURIComponent(id)}` }} onFeedback={setFeedback} /></Suspense> : route.page === 'settings' ? <Settings section={route.section} onSectionChange={section => { window.location.hash = `settings/${section}` }} onFeedback={setFeedback} /> : route.page === 'overview' ? <Overview snapshot={snapshot} onRobots={id => navigate('robots', id ?? null)} onRegister={() => { setCatalogOpen(true); window.scrollTo({ top: 0, behavior: 'instant' }) }} /> : route.page === 'mcp' ? <McpPage onFeedback={setFeedback} /> : route.page === 'plugins' ? <PluginsPage workspace={workspace} snapshot={snapshot} selectedId={route.pluginId} onFeedback={setFeedback} /> : <Robots key={route.page} kind={route.page === 'harness' ? 'harness' : 'communication'} workspace={workspace} snapshot={snapshot} selectedId={route.pluginId} onSelect={selectPlugin} onRegister={() => { setCatalogOpen(true); window.scrollTo({ top: 0, behavior: 'instant' }) }} onFeedback={setFeedback} />}
     </div>
     {feedback && <div className="toast" role="status"><Check size={18} /><span>{feedback}</span><button className="icon-button" onClick={() => setFeedback(null)} aria-label={t('app.closeFeedback')}><X size={15} /></button></div>}
   </div>

@@ -1,5 +1,6 @@
 import type { ComponentType } from 'react'
 import type { LucideIcon } from 'lucide-react'
+import type { PluginKind } from '@eating/plugin-sdk'
 import type { PluginConfiguration, PluginManifest, SavedConfiguration } from '@eating/plugin-core'
 
 export interface ConfigurationValidation {
@@ -21,7 +22,7 @@ export interface PluginPanelProps {
 
 /** Shared frontend contribution for independently managed plugin kinds. */
 export interface ManagedPlugin extends PluginManifest {
-  readonly kind: 'communication' | 'harness'
+  readonly kind: PluginKind
   readonly order: number
   readonly icon: LucideIcon
   readonly brandColor: string
@@ -38,4 +39,8 @@ export interface CommunicationPlugin extends ManagedPlugin {
 
 export interface HarnessPlugin extends ManagedPlugin {
   readonly kind: 'harness'
+}
+
+export interface CapabilityPlugin extends ManagedPlugin {
+  readonly kind: 'capability'
 }

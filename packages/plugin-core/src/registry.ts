@@ -3,7 +3,7 @@ export interface PluginManifest {
   readonly name: string
   readonly description: string
   readonly version: string
-  readonly apiVersion: 3
+  readonly apiVersion: 4
 }
 
 export class PluginRegistrationError extends Error {
@@ -17,7 +17,7 @@ export class PluginRegistrationError extends Error {
 }
 
 export function validateManifest(manifest: PluginManifest): void {
-  if (manifest.apiVersion !== 3) {
+  if (manifest.apiVersion !== 4) {
     throw new PluginRegistrationError('incompatible-version', '插件与当前验证版的接口版本不兼容。')
   }
   if (

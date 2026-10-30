@@ -12,6 +12,18 @@ export interface InstalledPluginPackage {
   directory: string
 }
 
+/** 预览只公开数据；同份已校验文件字节只保存在本模块的 WeakMap 中。 */
+export interface PreparedPluginPackage {
+  readonly manifest: PluginPackageManifest
+  readonly packageBytes: number
+  readonly digest: string
+}
+
+/** 仅由已持有工作区锁的 Host 闭包传入，不接受 HTTP 请求透传。 */
+export interface PluginInstallationOptions {
+  readonly hostOwnsWorkspace?: boolean
+}
+
 const MANIFEST = 'eating-plugin.json'
 const ENTRIES = ['server.mjs', 'ui/index.js', 'ui/style.css'] as const
 const MAX_PACKAGE_BYTES = 16 * 1024 * 1024
@@ -23,6 +35,8 @@ const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*
 type ActivePlugin = { id: string; version: string }
 type OwnedPath = { path: string; parent: string; stat: Stats }
 type Snapshot = { manifest: PluginPackageManifest; files: ReadonlyMap<string, Buffer> }
+type PreparedSnapshot = Snapshot & { readonly manifestData: Buffer }
+const preparedSnapshots = new WeakMap<PreparedPluginPackage, PreparedSnapshot>()
 
 function failure(code: string, message: string, statusCode = 400): PlatformError {
   return new PlatformError(code, message, statusCode)
@@ -34,6 +48,10 @@ function hasCode(error: unknown, code: string): boolean {
 
 function validId(value: unknown): value is string {
   return typeof value === 'string' && value.length <= 64 && ID.test(value) && !RESERVED.test(value)
+}
+
+export function assertPluginId(id: unknown): asserts id is string {
+  if (!validId(id)) throw failure('INVALID_PLUGIN_ID', '插件 ID 无效。')
 }
 
 function validVersion(value: unknown): value is string {
@@ -53,9 +71,9 @@ export function parsePluginPackageManifest(value: unknown): PluginPackageManifes
   if (!isJsonObject(value) || !exactKeys(value, ['schemaVersion', 'id', 'name', 'description', 'version', 'kind', 'apiVersion', 'storageDirectory', 'backend', 'frontend', 'assets', 'integrity'])) {
     throw failure('INVALID_PLUGIN_MANIFEST', '插件清单字段不完整或含有未知字段。')
   }
-  if (value.schemaVersion !== 1 || value.apiVersion !== 3) throw failure('INCOMPATIBLE_PLUGIN_API', '仅支持 schemaVersion 1 / SDK apiVersion 3 的插件包。')
+  if (value.schemaVersion !== 1 || value.apiVersion !== 4) throw failure('INCOMPATIBLE_PLUGIN_API', '仅支持 schemaVersion 1 / SDK apiVersion 4 的插件包。')
   if (!validId(value.id) || !validVersion(value.version) || !validId(value.storageDirectory)
-    || (value.kind !== 'communication' && value.kind !== 'harness') || (value.kind === 'communication' && !value.storageDirectory.endsWith('-bot'))
+    || (value.kind !== 'communication' && value.kind !== 'harness' && value.kind !== 'capability') || (value.kind === 'communication' && !value.storageDirectory.endsWith('-bot'))
     || typeof value.name !== 'string' || !value.name.trim() || value.name.length > 100
     || typeof value.description !== 'string' || value.description.length > 2000) {
     throw failure('INVALID_PLUGIN_MANIFEST', '插件身份、版本、类型、数据目录或说明无效。')
@@ -84,7 +102,7 @@ export function parsePluginPackageManifest(value: unknown): PluginPackageManifes
   // Canonical field order also makes immutable-version comparisons independent of JSON formatting.
   return {
     schemaVersion: 1, id: value.id, name: value.name, description: value.description,
-    version: value.version, kind: value.kind, apiVersion: 3, storageDirectory: value.storageDirectory,
+    version: value.version, kind: value.kind, apiVersion: 4, storageDirectory: value.storageDirectory,
     backend: value.backend,
     frontend: { entry: frontend.entry, style: frontend.style, order: frontend.order, brandColor: frontend.brandColor, icon: frontend.icon },
     assets: [...assets],
@@ -208,6 +226,27 @@ async function verifyPackage(directory: string, expected?: ActivePlugin): Promis
   return { manifest, files }
 }
 
+/** 校验受信本地产物并封存快照；不导入后台代码，也不写入安装索引。 */
+export async function preparePluginPackage(sourceDirectory: string): Promise<PreparedPluginPackage> {
+  if (typeof sourceDirectory !== 'string' || !sourceDirectory.trim() || sourceDirectory.includes('\0')) throw failure('UNSAFE_PLUGIN_PATH', '插件来源必须是受信任的普通本地目录。')
+  const source = resolve(sourceDirectory)
+  const stat = await lstat(source)
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw failure('UNSAFE_PLUGIN_PATH', '插件来源必须是受信任的普通本地目录。')
+  const snapshot = await verifyPackage(await realpath(source))
+  const manifest = Object.freeze({ ...snapshot.manifest,
+    frontend: Object.freeze({ ...snapshot.manifest.frontend }), assets: Object.freeze([...snapshot.manifest.assets]), integrity: Object.freeze({ ...snapshot.manifest.integrity }) })
+  // 规范化清单在预览时只生成一次；摘要与后续 staging 使用完全同份字节。
+  const manifestData = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`)
+  const files = new Map<string, Buffer>([[MANIFEST, manifestData], ...snapshot.files])
+  const packageBytes = [...files.values()].reduce((total, data) => total + data.length, 0)
+  if (packageBytes > MAX_PACKAGE_BYTES) throw failure('PLUGIN_PACKAGE_TOO_LARGE', '插件包不得超过 16 MiB，清单及索引也有独立大小限制。')
+  const hash = createHash('sha256')
+  for (const [entry, data] of [...files].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) hash.update(JSON.stringify([entry, data.length])).update('\0').update(data)
+  const prepared = Object.freeze({ manifest, packageBytes, digest: hash.digest('hex') })
+  preparedSnapshots.set(prepared, { manifest, files: snapshot.files, manifestData })
+  return prepared
+}
+
 async function readIndex(plugins: string): Promise<ActivePlugin[]> {
   const path = join(plugins, 'installed.json')
   if (!await statOrMissing(path)) return []
@@ -329,15 +368,27 @@ async function acquireIndexLock(plugins: string): Promise<() => Promise<void>> {
   }
 }
 
-async function withIndexTransaction<T>(home: string, plugins: string, run: () => Promise<T>): Promise<T> {
+async function assertHostOwnsWorkspace(home: string): Promise<void> {
+  const host = await childDirectory(home, 'host', false)
+  if (!host || !await statOrMissing(join(host, 'host.lock'))) throw failure('WORKSPACE_LOCK_NOT_OWNED', '当前 Host 未持有工作区锁，拒绝运行中修改插件。', 409)
+  const value = parseJson(await readBounded(join(host, 'host.lock'), 4096), 'WORKSPACE_LOCK_NOT_OWNED')
+  if (!isJsonObject(value) || value.machine !== hostname() || value.pid !== process.pid || typeof value.lockId !== 'string' || !value.lockId) {
+    throw failure('WORKSPACE_LOCK_NOT_OWNED', '工作区锁不属于当前 Host，拒绝运行中修改插件。', 409)
+  }
+}
+
+async function withIndexTransaction<T>(home: string, plugins: string, run: () => Promise<T>, options: PluginInstallationOptions = {}): Promise<T> {
   const releaseIndex = await acquireIndexLock(plugins)
   let releaseHost: (() => void) | undefined
   let succeeded = false
   try {
-    await assertHostStopped(home)
-    const host = (await childDirectory(home, 'host', true))!
-    // Holding the same lock as Host closes the check/start race during activation.
-    releaseHost = acquireWorkspaceLock(host)
+    if (options.hostOwnsWorkspace === true) await assertHostOwnsWorkspace(home)
+    else {
+      await assertHostStopped(home)
+      const host = (await childDirectory(home, 'host', true))!
+      // Holding the same lock as Host closes the check/start race during activation.
+      releaseHost = acquireWorkspaceLock(host)
+    }
     const result = await run()
     succeeded = true
     return result
@@ -375,11 +426,13 @@ async function writeIndex(plugins: string, entries: readonly ActivePlugin[], onC
 
 /** The caller must obtain explicit owner approval of this trusted local package source before calling. */
 export async function installPluginPackage(home: string, sourceDirectory: string): Promise<InstalledPluginPackage> {
-  const source = resolve(sourceDirectory)
-  // Reject a symlink root; canonicalize only ancestors supplied by the caller (e.g. /var).
-  const sourceStat = await lstat(source)
-  if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) throw failure('UNSAFE_PLUGIN_PATH', '插件来源必须是受信任的普通本地目录。')
-  const snapshot = await verifyPackage(await realpath(source))
+  return installPreparedPluginPackage(home, await preparePluginPackage(sourceDirectory))
+}
+
+/** 安装只接收本模块封存的快照；源目录之后被替换、修改或移除均不影响确认的内容。 */
+export async function installPreparedPluginPackage(home: string, prepared: PreparedPluginPackage, options: PluginInstallationOptions = {}): Promise<InstalledPluginPackage> {
+  const snapshot = preparedSnapshots.get(prepared)
+  if (!snapshot) throw failure('INVALID_PREPARED_PLUGIN_PACKAGE', '插件预览快照无效，请重新预览本地构建目录。')
   const root = (await homeDirectory(home, true))!
   const plugins = (await childDirectory(root, 'plugins', true))!
   const stagePath = await mkdtemp(join(plugins, '.staging-'))
@@ -388,8 +441,7 @@ export async function installPluginPackage(home: string, sourceDirectory: string
   let committed = false
   try {
     await mkdir(join(stagePath, 'ui'), { mode: 0o700 })
-    const manifestData = Buffer.from(`${JSON.stringify(snapshot.manifest, null, 2)}\n`)
-    for (const [entry, data] of [[MANIFEST, manifestData], ...snapshot.files] as [string, Buffer][]) {
+    for (const [entry, data] of [[MANIFEST, snapshot.manifestData], ...snapshot.files] as [string, Buffer][]) {
       await mkdir(dirname(join(stagePath, entry)), { recursive: true, mode: 0o700 })
       const handle = await open(join(stagePath, entry), 'wx', 0o600)
       try { await handle.writeFile(data); await handle.sync() } finally { await handle.close() }
@@ -445,7 +497,7 @@ export async function installPluginPackage(home: string, sourceDirectory: string
         }
         throw error
       }
-    })
+    }, options)
   } catch (error) {
     const cleanupErrors: unknown[] = []
     for (const owned of [stage, committed ? undefined : published]) {
@@ -457,8 +509,8 @@ export async function installPluginPackage(home: string, sourceDirectory: string
 }
 
 /** Removes activation only; package versions, bot configuration and Host history are retained. */
-export async function uninstallPluginPackage(home: string, id: string): Promise<void> {
-  if (!validId(id)) throw failure('INVALID_PLUGIN_ID', '插件 ID 无效。')
+export async function uninstallPluginPackage(home: string, id: string, options: PluginInstallationOptions = {}): Promise<void> {
+  assertPluginId(id)
   const root = await homeDirectory(home, false)
   if (!root) return
   const plugins = await childDirectory(root, 'plugins', false)
@@ -467,5 +519,5 @@ export async function uninstallPluginPackage(home: string, id: string): Promise<
     const index = await readIndex(plugins)
     const next = index.filter(entry => entry.id !== id)
     if (next.length !== index.length) await writeIndex(plugins, next, () => {})
-  })
+  }, options)
 }

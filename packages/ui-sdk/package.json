@@ -1,6 +1,6 @@
 {
   "name": "@eating/ui-sdk",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "type": "module",
   "description": "Eating 插件管理面板公开接口与受控API客户端",
   "exports": {

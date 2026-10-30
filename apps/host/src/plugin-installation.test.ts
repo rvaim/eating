@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PluginPackageManifest } from '@eating/plugin-sdk'
 import { acquireWorkspaceLock } from './lock'
 import { discoverBackendPlugins } from './discovery'
-import { installPluginPackage, loadInstalledPluginPackages, parsePluginPackageManifest, uninstallPluginPackage } from './plugin-installation'
+import { installPluginPackage, installPreparedPluginPackage, loadInstalledPluginPackages, parsePluginPackageManifest, preparePluginPackage, uninstallPluginPackage } from './plugin-installation'
 
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -56,7 +56,7 @@ async function makePackage(version = '0.2.0', id = 'qq', backend?: string): Prom
     'ui/style.css': `.plugin { color: #3876b6; } /* ${version} */\n`,
   }
   const manifest: PluginPackageManifest = {
-    schemaVersion: 1, id, name: 'QQ', description: '独立构建插件测试', version, kind: 'communication', apiVersion: 3, assets: [],
+    schemaVersion: 1, id, name: 'QQ', description: '独立构建插件测试', version, kind: 'communication', apiVersion: 4, assets: [],
     storageDirectory: id === 'qq' ? 'qq-bot' : `${id}-bot`, backend: 'server.mjs',
     frontend: { entry: 'ui/index.js', style: 'ui/style.css', order: 10, brandColor: '#3876b6', icon: 'message-circle' },
     integrity: Object.fromEntries(Object.entries(files).map(([entry, data]) => [entry, createHash('sha256').update(data).digest('hex')])),
@@ -410,6 +410,103 @@ describe('independent plugin directory packages', () => {
   })
 })
 
+describe('封存预览与 Host 内插件安装事务', () => {
+  it('预览不执行代码，源目录修改或删除后仍安装确认的同份快照', async () => {
+    const source = await makePackage()
+    const original = await readFile(join(source.directory, 'server.mjs'))
+    const prepared = await preparePluginPackage(source.directory)
+    expect(Object.keys(prepared).sort()).toEqual(['digest', 'manifest', 'packageBytes'])
+    expect(prepared.digest).toMatch(/^[a-f0-9]{64}$/)
+    expect(prepared.packageBytes).toBeGreaterThan(original.length)
+    expect(await loadInstalledPluginPackages(home)).toEqual([])
+    await writeFile(join(source.directory, 'server.mjs'), 'changed after owner preview')
+    await removeTestPath(source.directory)
+    const installed = await installPreparedPluginPackage(home, prepared)
+    expect(await readFile(join(installed.directory, 'server.mjs'))).toEqual(original)
+    expect(await preparePluginPackage(installed.directory)).toEqual(prepared)
+    const bytes = await Promise.all(['eating-plugin.json', 'server.mjs', 'ui/index.js', 'ui/style.css'].map(entry => lstat(join(installed.directory, entry))))
+    expect(bytes.reduce((total, stat) => total + stat.size, 0)).toBe(prepared.packageBytes)
+    await expect(lstat(join(temporary, 'executed.txt'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expectCleanTransaction()
+  })
+
+  it('公开预览元数据被冻结，复制或伪造的 JSON 不能替代内部快照', async () => {
+    const source = await makePackage()
+    const prepared = await preparePluginPackage(source.directory)
+    for (const item of [prepared, prepared.manifest, prepared.manifest.frontend, prepared.manifest.assets, prepared.manifest.integrity]) expect(Object.isFrozen(item)).toBe(true)
+    expect(Reflect.set(prepared.manifest, 'version', '99.0.0')).toBe(false)
+    expect(Reflect.set(prepared.manifest.integrity, 'server.mjs', '0'.repeat(64))).toBe(false)
+    await expect(installPreparedPluginPackage(home, { ...prepared })).rejects.toMatchObject({ code: 'INVALID_PREPARED_PLUGIN_PACKAGE' })
+    await expect(installPreparedPluginPackage(home, JSON.parse(JSON.stringify(prepared)))).rejects.toMatchObject({ code: 'INVALID_PREPARED_PLUGIN_PACKAGE' })
+    expect(await loadInstalledPluginPackages(home)).toEqual([])
+    expect((await installPreparedPluginPackage(home, prepared)).manifest.version).toBe('0.2.0')
+  })
+
+  it('API4 capability 仍要求完整前端与哈希，并拒绝同类存储冲突和跨 kind 更新', async () => {
+    const source = await makePackage('1.0.0', 'images')
+    const manifest = { ...source.manifest, kind: 'capability' as const, storageDirectory: 'image-reader' }
+    expect(() => parsePluginPackageManifest({ ...manifest, frontend: undefined })).toThrow()
+    await writeFile(join(source.directory, 'eating-plugin.json'), JSON.stringify(manifest))
+    const installed = await installPluginPackage(home, source.directory)
+    expect(installed.manifest).toEqual(manifest)
+    const other = await makePackage('1.0.0', 'other-images')
+    await writeFile(join(other.directory, 'eating-plugin.json'), JSON.stringify({ ...other.manifest, kind: 'capability', storageDirectory: 'image-reader' }))
+    await expect(installPluginPackage(home, other.directory)).rejects.toMatchObject({ code: 'PLUGIN_STORAGE_CONFLICT' })
+    const changed = await makePackage('2.0.0', 'images')
+    await writeFile(join(changed.directory, 'eating-plugin.json'), JSON.stringify({ ...changed.manifest, kind: 'harness', storageDirectory: 'image-reader' }))
+    await expect(installPluginPackage(home, changed.directory)).rejects.toMatchObject({ code: 'PLUGIN_STORAGE_MIGRATION_REQUIRED' })
+    expect(await loadInstalledPluginPackages(home)).toEqual([installed])
+    await expectCleanTransaction()
+  })
+
+  it('Host 显式持锁时安装和卸载仍保留同一工作区锁及用户数据', async () => {
+    const source = await makePackage()
+    const prepared = await preparePluginPackage(source.directory)
+    const release = acquireWorkspaceLock(join(home, 'host'))
+    try {
+      const lock = await readFile(join(home, 'host', 'host.lock'))
+      await writeFile(join(home, 'host', 'owner-state.json'), 'owner state')
+      await expect(installPluginPackage(home, source.directory)).rejects.toMatchObject({ code: 'WORKSPACE_LOCKED' })
+      const installed = await installPreparedPluginPackage(home, prepared, { hostOwnsWorkspace: true })
+      expect(await loadInstalledPluginPackages(home)).toEqual([installed])
+      expect(await readFile(join(home, 'host', 'host.lock'))).toEqual(lock)
+      await expect(uninstallPluginPackage(home, 'qq')).rejects.toMatchObject({ code: 'WORKSPACE_LOCKED' })
+      await uninstallPluginPackage(home, 'qq', { hostOwnsWorkspace: true })
+      expect(await loadInstalledPluginPackages(home)).toEqual([])
+      expect(await readFile(join(home, 'host', 'host.lock'))).toEqual(lock)
+      expect(await readFile(join(home, 'host', 'owner-state.json'), 'utf8')).toBe('owner state')
+      expect((await lstat(installed.directory)).isDirectory()).toBe(true)
+    } finally { release() }
+    await expectCleanTransaction()
+  })
+
+  it('Host 内并发安装仍由独立索引锁串行，不丢另一插件', async () => {
+    const first = await preparePluginPackage((await makePackage()).directory)
+    const second = await preparePluginPackage((await makePackage('1.0.0', 'other')).directory)
+    const release = acquireWorkspaceLock(join(home, 'host'))
+    try {
+      const lock = await readFile(join(home, 'host', 'host.lock'))
+      await Promise.all([first, second].map(prepared => installPreparedPluginPackage(home, prepared, { hostOwnsWorkspace: true })))
+      expect((await loadInstalledPluginPackages(home)).map(entry => entry.manifest.id).sort()).toEqual(['other', 'qq'])
+      expect(await readFile(join(home, 'host', 'host.lock'))).toEqual(lock)
+    } finally { release() }
+    await expectCleanTransaction()
+  })
+
+  it.each(['missing', 'foreign', 'malformed'] as const)('hostOwnsWorkspace 不能伪造未持有的 %s Host 锁', async state => {
+    const prepared = await preparePluginPackage((await makePackage()).directory)
+    if (state !== 'missing') {
+      await mkdir(join(home, 'host'))
+      await writeFile(join(home, 'host', 'host.lock'), JSON.stringify(state === 'foreign'
+        ? { pid: process.pid + 1, machine: hostname(), lockId: randomUUID() }
+        : { pid: process.pid, machine: hostname() }))
+    }
+    await expect(installPreparedPluginPackage(home, prepared, { hostOwnsWorkspace: true })).rejects.toMatchObject({ code: 'WORKSPACE_LOCK_NOT_OWNED' })
+    expect(await loadInstalledPluginPackages(home)).toEqual([])
+    await expectCleanTransaction()
+  })
+})
+
 describe('plugin package trust boundaries', () => {
   it.each(['../server.mjs', '/server.mjs', 'C:/server.mjs', 'ui\\index.js', 'ui/../server.mjs', './server.mjs', 'server.mjs?query', 'server.mjs#hash', 'ui//index.js', 'ui/%2e%2e/server.mjs'])('rejects malformed relative entries: %s', async path => {
     const source = await makePackage()
@@ -419,7 +516,7 @@ describe('plugin package trust boundaries', () => {
   })
 
   it.each([
-    { schemaVersion: 2 }, { apiVersion: 1 }, { apiVersion: 2 }, { apiVersion: 4 }, { kind: 'unknown' }, { id: '../escape' }, { id: 'con' },
+    { schemaVersion: 2 }, { apiVersion: 1 }, { apiVersion: 2 }, { apiVersion: 3 }, { apiVersion: 5 }, { kind: 'unknown' }, { id: '../escape' }, { id: 'con' },
     { version: '../escape' }, { version: '01.2.0' }, { version: '1.0.0-01' }, { storageDirectory: '../bot' }, { storageDirectory: 'foo' },
     { name: '' }, { description: 42 }, { backend: 'other.mjs' }, { unknown: true }, { integrity: {} },
     { frontend: { entry: 'ui/index.js', style: 'ui/style.css', order: 0, brandColor: 'javascript:evil', icon: 'message-circle' } },

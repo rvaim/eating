@@ -40,6 +40,8 @@ export interface RegisteredAgentInstructions extends AgentInstructions {
 
 /** Trusted runtime binding, never accepted from an LLM tool's argument object. */
 export interface AgentInvocationScope {
+  /** In-memory invocation lifetime; never persisted or supplied by model arguments. */
+  readonly signal?: AbortSignal
   readonly agentId: string
   readonly agentTypeId: string
   readonly pluginId: string

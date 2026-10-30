@@ -79,6 +79,7 @@ if (target === 'plugin') await buildPlugin(process.argv[3] ?? 'plugins/communica
 if (target === 'all') {
   await buildPlugin('plugins/communication/qq')
   await buildPlugin('plugins/harness/dsh')
+  await buildPlugin('plugins/capabilities/stickers')
 }
 if (target === 'host' || target === 'all') await buildHost()
 if (target === 'all') {

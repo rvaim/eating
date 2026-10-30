@@ -39,11 +39,12 @@ export class DshAgentControl {
   private activeContext: { contextRef: string; agentId: string } | null = null
   private stopping = false
   private readonly active = new Set<AbortController>()
+  private readonly capabilityAgents = new Set<string>()
   private readonly actionBaselines = new Map<string, ReadonlyMap<string, string>>()
   url = ''
 
   constructor(directory: string, private readonly host: HarnessHostServices) {
-    if (typeof host.getMcpConnection !== 'function' || typeof host.readAgentActions !== 'function' || typeof host.revokeAgentAccess !== 'function') fail('HARNESS_SERVICES_INVALID', 'Host 未提供当前必需的子代理权限与动作回执接口。')
+    if (typeof host.getCapabilityMcpConnections !== 'function' || typeof host.getMcpConnection !== 'function' || typeof host.readAgentActions !== 'function' || typeof host.revokeAgentAccess !== 'function') fail('HARNESS_SERVICES_INVALID', 'Host 未提供当前必需的子代理权限与动作回执接口。')
     this.file = join(directory, 'agent-bindings.json')
     try { if (statSync(this.file).size > 1024 * 1024) fail('AGENT_BINDINGS_INVALID', '子代理绑定文件过大。') }
     catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error }
@@ -111,6 +112,14 @@ export class DshAgentControl {
         for await (const chunk of request) { controller.signal.throwIfAborted(); length += chunk.length; if (length > 8192) fail('CONTROL_REQUEST_INVALID', '运行时请求过大。'); chunks.push(Buffer.from(chunk)) }
         const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
         if (!isJsonObject(body) || !opaque(body.agentId)) fail('CONTROL_REQUEST_INVALID', '运行时请求无效。')
+        if (request.url === '/capabilities') {
+          if (body.agentTypeId !== 'main' || Object.keys(body).some(key => !['agentId', 'agentTypeId'].includes(key))) fail('CONTROL_REQUEST_INVALID', '通用能力请求无效。')
+          const connections = this.host.getCapabilityMcpConnections({ agentId: body.agentId, agentTypeId: 'main' })
+          this.capabilityAgents.add(body.agentId)
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+          response.end(JSON.stringify({ capabilities: connections.map(connection => ({ ...connection, headers: { ...connection.headers }, tools: [...connection.tools] })) }))
+          return
+        }
         const binding = this.bindings.find(entry => entry.scope.agentId === body.agentId)
         if (!binding || !this.activeContext || this.activeContext.agentId !== binding.scope.agentId || body.contextRef !== this.activeContext.contextRef) fail('AGENT_CONTEXT_UNAVAILABLE', '本次消息上下文已失效。')
         let result: JsonObject
@@ -126,13 +135,16 @@ export class DshAgentControl {
           if (!type) fail('AGENT_TYPE_UNAVAILABLE', '子代理类型当前不可用。')
           const preview = composeAgentPrompt(owner, type.id, { 当前时间: new Date().toISOString(), 人格名称: owner.activePersona?.name ?? '', 平台: binding.scope.pluginId, 机器人账号: binding.scope.accountId, 会话编号: binding.scope.conversationId, 会话类型: binding.scope.kind, 目标编号: binding.scope.targetId })
           const task: AgentTaskReference = { contextRef: String(body.contextRef), nonce: this.nonce, state: 'pending', taskId: body.taskId }
-          this.replace({ ...binding, configurationRevision: preview.revision, task, taskRefs: [...references, task].slice(-MAX_TASK_REFERENCES) })
           let mcp
-          try { mcp = this.host.getMcpConnection(binding.scope.pluginId, binding.scope) }
-          catch (error) { this.host.revokeAgentAccess(binding.scope.agentId); throw error }
+          let capabilities
+          try {
+            mcp = this.host.getMcpConnection(binding.scope.pluginId, binding.scope)
+            capabilities = this.host.getCapabilityMcpConnections({ agentId: binding.scope.agentId, agentTypeId: type.id, source: binding.scope })
+            this.replace({ ...binding, configurationRevision: preview.revision, task, taskRefs: [...references, task].slice(-MAX_TASK_REFERENCES) })
+          } catch (error) { this.host.revokeAgentAccess(binding.scope.agentId); throw error }
           const beforeActions = this.host.readAgentActions(binding.scope.agentId)
           this.actionBaselines.set(binding.scope.agentId, new Map(beforeActions.map(action => [action.requestId, JSON.stringify(action)])))
-          result = { agentId: binding.scope.agentId, agentTypeId: type.id, systemPrompt: preview.systemPrompt, revision: preview.revision, mcp: { url: mcp.url, headers: { ...mcp.headers } }, tools: [...type.enabledTools] }
+          result = { agentId: binding.scope.agentId, agentTypeId: type.id, systemPrompt: preview.systemPrompt, revision: preview.revision, mcp: { url: mcp.url, headers: { ...mcp.headers } }, tools: [...type.enabledTools], capabilities: capabilities.map(connection => ({ ...connection, headers: { ...connection.headers }, tools: [...connection.tools] })) }
         } else if (request.url === '/actions') {
           if (Object.keys(body).some(key => !['agentId', 'contextRef', 'taskId'].includes(key)) || typeof body.taskId !== 'string' || !DIGEST.test(body.taskId) || binding.task?.nonce !== this.nonce || binding.task.contextRef !== body.contextRef || binding.task.taskId !== body.taskId) fail('CONTROL_REQUEST_INVALID', '运行时请求无效。')
           const actions = this.host.readAgentActions(binding.scope.agentId)
@@ -165,6 +177,8 @@ export class DshAgentControl {
   async close(): Promise<void> {
     this.stopping = true
     this.actionBaselines.clear()
+    for (const agentId of this.capabilityAgents) this.host.revokeAgentAccess(agentId)
+    this.capabilityAgents.clear()
     for (const controller of this.active) controller.abort()
     for (const binding of this.bindings) this.host.revokeAgentAccess(binding.scope.agentId)
     const server = this.server; this.server = null; this.activeContext = null; this.url = ''; this.secret = ''

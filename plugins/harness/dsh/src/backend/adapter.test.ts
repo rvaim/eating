@@ -55,7 +55,7 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
   const context: HostPluginContext = {
     dataDirectory: directory,
     harness: { registerSink: vi.fn(sink => { registered = sink; return detach }), wake: vi.fn(), readOwnerConfiguration: () => owner,
-      readAgentActions: vi.fn(() => []), revokeAgentAccess: vi.fn(), getMcpConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1/mcp/qq', headers: { Authorization: 'Bearer fixture-only-mcp-token' } })) },
+      readAgentActions: vi.fn(() => []), revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1/mcp/qq', headers: { Authorization: 'Bearer fixture-only-mcp-token' } })) },
     getSetting: vi.fn(() => null), setSetting: vi.fn(), recordEvent: vi.fn(() => { throw new Error('Adapter must not record a chat copy') }),
     listMessages: vi.fn(() => []), executeIdempotent: vi.fn(async () => { throw new Error('Adapter must never forward finalResponse') }),
   }

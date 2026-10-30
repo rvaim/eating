@@ -51,6 +51,7 @@ interface Actor {
   tokenHash?: string
 }
 interface Lease {
+  readonly abort: AbortController
   readonly actor: Actor
   readonly plugin: BackendPlugin
   readonly handler: ReturnType<typeof createPluginMcpHandler>
@@ -98,7 +99,7 @@ export class AgentAccessRegistry {
       args.request_id = scopedRequestId
     }
     try {
-      const result = await lease.plugin.invokeScoped!(name, args, scopedRequestId, actor.scope)
+      const result = await lease.plugin.invokeScoped!(name, args, scopedRequestId, { ...actor.scope, signal: lease.abort.signal })
       if (!tool.readOnly) {
         const metadata = this.responseMetadata(result)
         this.remember(receipts, { requestId, tool: name, outcome: 'succeeded', ...(metadata !== undefined ? { result: metadata } : {}) })
@@ -143,7 +144,7 @@ export class AgentAccessRegistry {
       updateConfiguration: async () => forbidden(), connect: async () => forbidden(), disconnect: async () => {}, dispose: async () => {},
       invoke: (name, input, requestId) => registry.invoke(lease, name, input, requestId),
     }
-    lease = { actor, plugin, tokenHash, handler: createPluginMcpHandler(view) }
+    lease = { actor, plugin, tokenHash, abort: new AbortController(), handler: createPluginMcpHandler(view) }
     actor.tokenHash = tokenHash
     this.leases.set(tokenHash, lease)
     return Object.freeze({ url: `${baseUrl}/mcp/${pluginId}`, headers: Object.freeze({ Authorization: `Bearer ${token}` }) })
@@ -153,6 +154,7 @@ export class AgentAccessRegistry {
     const lease = this.leases.get(hash)
     if (!lease) return
     this.leases.delete(hash)
+    lease.abort.abort()
     if (lease.actor.tokenHash === hash) lease.actor.tokenHash = undefined
     const task = lease.handler.close().finally(() => this.closing.delete(task))
     this.closing.add(task)

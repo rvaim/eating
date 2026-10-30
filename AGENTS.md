@@ -31,7 +31,7 @@
 
 ## 工程与当前契约
 
-一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`。
+一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`。
 
 当前应用／Host／Web0.11.0，三个共享包4.0.0，QQ0.11.0、DSH0.8.0、表情包0.1.0；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
@@ -111,3 +111,9 @@ README 用中文作为标准入口；其他文档标题／文件名中文，技�
 表情包是插件自有库，不是QQ原生收藏。列表仅元数据，default20/max50，query描述+标签AND筛选，revision防分页漂移；get才返回image与sendable，模型文本也要能读到资源引用。AIadd只接受获准消息/图片引用，主人本机上传是另一管理入口；不接受模型任意路径/URL。资源eating-asset://引用经公开服务和授权转标准OneBot图片，原图不进Host动作账本。表情描述/标签/图片是数据不能提升系统权限，写入/发送均有真实回执，未知不盲重放。
 
 参见[ADR-0019](docs/decisions/ADR-0019-统一插件与MCP能力管理.md)、[使用说明](docs/operations/MCP插件与表情包.md)。
+
+## 生图插件（OpenAI Images）
+
+独立image-generation@0.1.0、API4；不改OneBot路径或发送。配置Base URL/Key/model，可选size/quality/responseFormat，追加/images/generations，固定n1，无聊天/Responses回退，不猜模型支持。保存/connect只本地检查，不真实试生成；只有明确可能计费操作或主人授予MCP后才请求。
+
+异步image_generate返回jobId，image_job_get查询最终状态，image_jobs/image_list分页元数据，image_get才实际图。生成提交回执不是生成成功，稳定request_id防重复计费，queued/running重启转unknown不重发。提交前检查调用signal；已接受后台任务由插件持有，普通Agent结束不丢已付费结果，停用/dispose取消为unknown，后续读取仍须当前授权。owner离页只停UI轮询；隐藏清Key和Blob，locale不请求。私有配置和资源schema1，500任务/500图/256MiB及公开单图5MiB保持，满在请求前拒绝。错误不回显提供商原body、Key、签名URL，URL结果不传认证下载。无真实Key时不声称付费服务验证。见[ADR-0020](docs/decisions/ADR-0020-独立OpenAI生图能力.md)。

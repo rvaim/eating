@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "image-generation",
+  "name": "生图",
+  "description": "通过主人配置的 OpenAI Images API 创建异步生图任务，查询任务及读取图片资源。",
+  "version": "0.1.0",
+  "kind": "capability",
+  "apiVersion": 4,
+  "assets": [],
+  "storageDirectory": "image-generation",
+  "backend": "server.mjs",
+  "frontend": { "entry": "ui/index.js", "style": "ui/style.css", "order": 40, "brandColor": "#3c745c", "icon": "image-plus" }
+}

@@ -276,8 +276,8 @@ function PluginPanelPage({ workspace, snapshot, pluginId, onFeedback }: {
   if (!plugin) return <main id="main-content" className="robot-content plugins-page"><p className="plugins-loading" role="status"><LoaderCircle size={16} aria-hidden="true" />{t('plugins.loading')}</p></main>
 
   const Icon = plugin.icon
-  const state = installed?.status.state ?? status?.state ?? 'unconfigured'
-  const enabled = installed?.enabled ?? snapshot.plugins.some(entry => entry.id === plugin.id)
+  const state = status?.state ?? installed?.status.state ?? 'unconfigured'
+  const enabled = snapshot.ready ? snapshot.plugins.some(entry => entry.id === plugin.id) : installed?.enabled ?? false
   const business = plugin.kind === 'communication' ? `#robots/${encodeURIComponent(plugin.id)}` : plugin.kind === 'harness' ? `#harness/${encodeURIComponent(plugin.id)}` : null
   return <main id="main-content" className="robot-content plugins-page plugin-panel-page">
     <div className="plugins-panel-head">

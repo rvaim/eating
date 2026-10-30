@@ -80,6 +80,7 @@ if (target === 'all') {
   await buildPlugin('plugins/communication/qq')
   await buildPlugin('plugins/harness/dsh')
   await buildPlugin('plugins/capabilities/stickers')
+  await buildPlugin('plugins/capabilities/image-generation')
 }
 if (target === 'host' || target === 'all') await buildHost()
 if (target === 'all') {

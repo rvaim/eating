@@ -1,0 +1,11 @@
+{
+  "name": "@eating/plugin-image-generation",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Eating 独立 OpenAI Images API 生图插件，提供异步任务和受控图片资源。",
+  "files": ["dist"],
+  "exports": { ".": "./dist/server.mjs" },
+  "scripts": { "build": "node ../../../scripts/build.mjs plugin plugins/capabilities/image-generation" },
+  "dependencies": { "@eating/plugin-sdk": "workspace:^", "@eating/ui-sdk": "workspace:^" },
+  "peerDependencies": { "lucide-react": "^1.61.0", "react": "^19.3.1" }
+}

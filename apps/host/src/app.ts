@@ -7,6 +7,7 @@ import type { BackendPlugin, BackendPluginEntry, HarnessHostServices, HarnessMes
 import { PlatformError, checkedImageResource, composeAgentPrompt, isJsonObject, validateDeliverySettings } from '@eating/plugin-sdk'
 import { AgentAccessRegistry, collectAgentContributions } from './agent-access'
 import { CapabilityAccess } from './capability-access'
+import { MemoryAccess } from './memory-access'
 import { DirectMcpConnections } from './mcp-connections'
 import { PluginPackageManager } from './plugin-manager'
 import type { InstalledPluginPackage } from './plugin-installation'
@@ -61,6 +62,7 @@ export class EatingHost {
   private readonly agentAccess: AgentAccessRegistry
   private readonly directMcp: DirectMcpConnections
   private readonly capabilityAccess: CapabilityAccess
+  private readonly memoryAccess: MemoryAccess
   private readonly packageManager: PluginPackageManager
   private mcpMutation = false
   private packageMutation = false
@@ -78,8 +80,10 @@ export class EatingHost {
       this.authoring = new AuthoringService(this.store, () => collectAgentContributions(this.plugins.values(), this.enabled))
       const enabledIds = persistedEnabledIds(this.store.getSetting('platforms.enabled'), options.entries.map(entry => entry.id))
       this.directMcp = new DirectMcpConnections(resolve(options.dataDirectory, 'host', 'mcp'))
+      this.memoryAccess = new MemoryAccess({ plugins: () => this.plugins.values(), enabled: id => !this.closed && this.enabled.has(id) })
       this.capabilityAccess = new CapabilityAccess({ direct: this.directMcp, plugins: () => this.plugins.values(), enabled: id => !this.closed && this.enabled.has(id),
         getSetting: key => this.store.getSetting(key), setSetting: (key, value) => this.store.setSetting(key, value),
+        memoryContext: (harnessId, agentId) => this.memoryAccess.context(harnessId, agentId),
         executeIdempotent: (pluginId, action, params, requestId, execute) => this.store.executeIdempotent(pluginId, action, params, requestId, execute) })
       this.packageManager = new PluginPackageManager(options.dataDirectory, { deactivate: id => this.deactivateInstalled(id), activate: installed => this.activateInstalled(installed) })
       for (const entry of options.entries) this.registerEntry(entry, enabledIds.includes(entry.id))
@@ -462,7 +466,14 @@ export class EatingHost {
   }
 
   private harnessServices(id: string): HarnessHostServices {
+    const memory = this.memoryAccess.services(id)
     return Object.freeze({
+      memory: Object.freeze({
+        begin: (input: import('@eating/plugin-sdk').MemoryBeginInput, signal?: AbortSignal) => { this.requireHarnessAccess(id); return memory.begin(input, signal) },
+        append: (input: import('@eating/plugin-sdk').MemoryAppendInput, signal?: AbortSignal) => { this.requireHarnessAccess(id); return memory.append(input, signal) },
+        finish: (input: import('@eating/plugin-sdk').MemoryFinishInput) => { this.requireHarnessAccess(id); return memory.finish(input) },
+        end: (agentId: string, turnId: string) => memory.end(agentId, turnId),
+      }),
       registerSink: (sink: HarnessMessageSink) => {
         this.requireHarnessAccess(id)
         if (this.mutations.has(id) && this.mutations.get(id) !== 'connect') throw new PlatformError('PLUGIN_BUSY', '插件正在变更，暂不能登记 Harness 接收者。', 409)
@@ -520,11 +531,12 @@ export class EatingHost {
       hasPendingMessages: () => { this.requireHarnessAccess(id); return this.store.hasPendingHarnessMessages() },
       getCapabilityMcpConnections: (scope: CapabilityInvocationScope) => { this.requireHarnessAccess(id); if (!this.url) throw new PlatformError('HOST_NOT_LISTENING', 'Host 尚未监听。', 503); return this.capabilityAccess.connections(id, scope, this.url) },
       readAgentActions: (agentId: string) => { this.requireHarnessAccess(id); return [...this.agentAccess.actions(id, agentId), ...this.capabilityAccess.actions(id, agentId)] },
-      revokeAgentAccess: (agentId: string) => { this.agentAccess.revokeAgent(id, agentId); this.capabilityAccess.revokeAgent(id, agentId) },
+      revokeAgentAccess: (agentId: string) => { this.agentAccess.revokeAgent(id, agentId); this.capabilityAccess.revokeAgent(id, agentId); this.memoryAccess.revokeAgent(id, agentId) },
     })
   }
 
   private revokeHarnessSinks(id: string): void {
+    this.memoryAccess?.revokeHarness(id)
     this.agentAccess.revokeHarness(id)
     this.capabilityAccess?.revokeHarness(id)
     for (const unregister of this.sinkRegistrations.get(id) ?? []) unregister()
@@ -616,6 +628,7 @@ export class EatingHost {
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
+    this.memoryAccess.close()
     this.packageManager.close()
     await this.capabilityAccess.close()
     await this.directMcp.close()

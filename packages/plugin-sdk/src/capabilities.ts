@@ -19,6 +19,7 @@ export interface CapabilityInvocationScope {
   readonly agentId: string
   readonly agentTypeId: string
   readonly source?: AgentInvocationScope
+  readonly memory?: import('./memory.js').MemoryContext
 }
 export interface PluginResourceServices {
   readReceivedImage(scope: AgentInvocationScope, reference: ReceivedImageReference): Promise<ImageResource>

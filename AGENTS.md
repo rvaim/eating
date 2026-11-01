@@ -31,9 +31,9 @@
 
 ## 工程与当前契约
 
-一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`。
+一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`。
 
-当前应用／Host／Web0.14.0，plugin-sdk4.4.0、ui-sdk4.1.0、plugin-core4.0.0，QQ0.13.2、DSH0.11.3、表情包0.1.1、生图0.2.0；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前应用／Host／Web0.14.0，plugin-sdk4.5.0、ui-sdk4.1.0、plugin-core4.0.0，QQ0.13.2、DSH0.12.0、表情包0.1.1、生图0.2.0、记忆0.1.0；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -115,6 +115,10 @@ README 用中文作为标准入口；其他文档标题／文件名中文，技�
 表情包是插件自有库，不是QQ原生收藏。列表仅元数据，default20/max50，query描述+标签AND筛选，revision防分页漂移；get才返回image与sendable，模型文本也要能读到资源引用。AIadd只接受获准消息/图片引用，主人本机上传是另一管理入口；不接受模型任意路径/URL。资源eating-asset://引用经公开服务和授权转标准OneBot图片，原图不进Host动作账本。表情描述/标签/图片是数据不能提升系统权限，写入/发送均有真实回执，未知不盲重放。
 
 参见[ADR-0019](docs/decisions/ADR-0019-统一插件与MCP能力管理.md)、[使用说明](docs/operations/MCP插件与表情包.md)。
+
+## 外部记忆插件（OpenViking）
+
+openviking-memory@0.1.0按[ADR-0027](docs/decisions/ADR-0028-OpenViking记忆能力与自动采集.md)连接用户自建服务用户，用官方Node SDK和必要的当前公开HTTP字段补充。Eating只管理范围、当前回合和MCP，不建设记忆提取模型或第二认知循环。全局开启、可读platform-account-private/group-target Peer、自主self、群成员名单、主人私聊显式跨会话，来源由Host核验。自动采集独立于模型保存工具，无每日/小时提取额度；有界RAM/并发/元数据只是机械容量。正文不进Host账本或插件状态文件，提取Accepted不等于成功，终态task＋实际memory_diff确认后只清理本插件临时Session，未知不重放、不删除运行中归档。规则保存/断开/停用立即撤销；已有任务只查询恢复。统一人格不复制进记忆。配置/状态严格独立schema1，无真实数据迁移或默认部署。原生DSH Web保持官方，Eating面板按现有白绿/双语/草稿/焦点/可见读取规则实现。
 
 ## 生图插件（OpenAI Images）
 

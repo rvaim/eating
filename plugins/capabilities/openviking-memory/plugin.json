@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "openviking-memory",
+  "name": "OpenViking 记忆",
+  "description": "自动整理对话与行动，按平台、账号和会话保存与召回长期记忆。",
+  "version": "0.1.0",
+  "kind": "capability",
+  "apiVersion": 4,
+  "assets": [],
+  "storageDirectory": "openviking-memory",
+  "backend": "server.mjs",
+  "frontend": { "entry": "ui/index.js", "style": "ui/style.css", "order": 40, "brandColor": "#3c745c", "icon": "brain" }
+}

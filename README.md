@@ -11,6 +11,7 @@ Eating 是一个独立管理应用，用于连接通讯平台和用户选择的 
 - **插件管理**：通讯、Harness、能力三类插件统一安装、更新、启停和卸载，左侧固定插件目录、右侧当前单项面板，顶部右侧返回管理列表。当前支持本机可信构建目录，先预览同份代码快照再确认，卸载保留数据。
 - **MCP 管理**：左侧固定服务目录，右侧一次查看/编辑一个服务；授权草稿跨服务切换保留，工具目录搜索并独立滚动。直接配置 stdio／Streamable HTTP，或使用插件提供的服务；连接、工具发现和代理授权分别显示。按主Agent、QQ私聊／群聊与精确工具选择权限，配置秘密不回显。
 - **生图插件**：配置独立的OpenAI Images Base URL、Key、模型、尺寸／质量及超时。支持文生图、单图编辑、MCP提交任务／查询／取图和独立资源库；编辑可本地上传参考图，或由AI引用当前会话已授权图片／已有生成图。稳定请求ID和来源哈希防重复计费，未知结果不自动重发。详见[生图插件](docs/operations/生图插件.md)。
+- **OpenViking 记忆**：独立服务配置和可读平台/账号/私聊/群聊Peer；全局记忆默认开启，主Agent自动召回与回合采集，不依赖保存工具、不设每日提取上限。群聊按群开启并可设置成员黑白名单，主人私聊可跨会话查阅；临时提取会话在确认完成后删除，只保留长期记忆。详见[记忆插件](docs/operations/OpenViking记忆插件.md)。
 - **表情包库**：手动添加或由 AI 从当前获准消息收藏，带描述／标签／去重和版本保护；描述关键词、标签AND筛选及有界分页。AI先读元数据，选中后取图或把资源引用交给QQ发送，不依赖QQ原生收藏接口。完整操作见[使用说明](docs/operations/MCP插件与表情包.md)。
 
 - **QQ 连接与工具**：使用已登录的 OneBot v11 服务，保留39项标准 JSON 工具，另提供受控“查看本会话图片”扩展，共40项。多个主人／管理员与私聊、群聊工具授权均由后台核验。
@@ -26,7 +27,7 @@ Eating 是一个独立管理应用，用于连接通讯平台和用户选择的 
 - **原生执行请求展示**：QQ 私聊、群聊入站在 DSH 主会话中与自主机会一样显示为可折叠的“收到执行请求”，展开查看原始信封。来源经后台验证后标记，模型正文和可靠回执保持；原生 Web 直接输入仍为普通对话，已有历史记录不改写。见[来源决策](docs/decisions/ADR-0024-外部入站的原生执行请求展示.md)。
 - **中英文界面与暗黑模式**：语言切换保留草稿、选区和撤销历史；界面颜色统一走语义令牌，跟随系统深浅色偏好自动切换，白绿主题在深色下保持可读对比度。
 
-当前工具授权属于逻辑执行边界，不是 OS 沙箱。其他 Harness、跨 Harness 无损迁移、长期记忆、Tauri 桌面壳和三平台完整运行仍未完成验证。
+当前工具授权属于逻辑执行边界，不是 OS 沙箱。其他 Harness、跨 Harness 无损迁移、长期记忆内容质量、Tauri 桌面壳和三平台完整运行仍未完成验证。
 
 ## 环境
 
@@ -54,6 +55,7 @@ pnpm plugin install plugins/communication/qq/dist
 pnpm plugin install plugins/harness/dsh/dist
 pnpm plugin install plugins/capabilities/stickers/dist
 pnpm plugin install plugins/capabilities/image-generation/dist
+pnpm plugin install plugins/capabilities/openviking-memory/dist
 pnpm dev
 ```
 
@@ -120,7 +122,7 @@ plugins/capabilities/stickers 表情包能力插件
 docs                      当前规范、决策与历史验证
 ```
 
-主应用／Host／Web当前0.14.0，plugin-sdk4.4.0、ui-sdk4.1.0、plugin-core4.0.0，QQ0.13.2、DSH0.11.3、表情包0.1.1、生图0.2.0，插件唯一 API4。工具必须声明 `resultFormat`；清单必须声明 `assets`——DSH 通过该字段交付一个启动转交层 `launch/dsh-system.mjs`，用于把 SDK 的 node 启动方式转交给系统 `dsh`。原有当前存储 schema 独立版本化，不通过统一改编号或自动转换让旧格式继续运行。
+主应用／Host／Web当前0.14.0，plugin-sdk4.5.0、ui-sdk4.1.0、plugin-core4.0.0，QQ0.13.2、DSH0.12.0、表情包0.1.1、生图0.2.0、记忆0.1.0，插件唯一 API4。工具必须声明 `resultFormat`；清单必须声明 `assets`——DSH 通过该字段交付一个启动转交层 `launch/dsh-system.mjs`，用于把 SDK 的 node 启动方式转交给系统 `dsh`。原有当前存储 schema 独立版本化，不通过统一改编号或自动转换让旧格式继续运行。
 
 ## 文档
 
@@ -135,7 +137,7 @@ docs                      当前规范、决策与历史验证
 
 ## MCP 与插件能力
 
-Eating0.13.2／plugin-sdk4.4.0只加载API4插件，本轮升级同步更换QQ、DSH代码包，不转换现有配置或会话。新添加能力初始无Agent授权，在“MCP”选择代理类型与工具后保存；变更工具拓扑会停止受影响Harness，请重新启动。原QQ发送与读消息仍在机器人权限页面按会话范围配置。
+Eating0.14.0／plugin-sdk4.5.0只加载API4插件，本轮升级同步更换QQ、DSH代码包，不转换现有配置或会话。新添加能力初始无Agent授权，在“MCP”选择代理类型与工具后保存；变更工具拓扑会停止受影响Harness，请重新启动。原QQ发送与读消息仍在机器人权限页面按会话范围配置。
 
 表情包列表默认20条、最多50条，只返回描述、标签等元数据；不为浏览目录逐张调用识图。库上限1000张／256MiB，单图5MiB，支持PNG/JPEG/GIF/WebP，描述必填。AI收藏须有当前会话图片引用与相应工具权限，图片预览还需模型图像输入支持；收藏、检索和发送是分别可核对的动作。
 

@@ -48,6 +48,9 @@ export class DshAgentControl {
   private secret = ''
   private nonce = ''
   private activeContext: { contextRef: string; agentId: string } | null = null
+  private memoryBatch: HarnessDeliveryBatch | null = null
+  private readonly memoryTurns = new Map<string, string>()
+  private readonly memoryTurnBatches = new Map<string, string>()
   private stopping = false
   private readonly active = new Set<AbortController>()
   private readonly capabilityAgents = new Set<string>()
@@ -173,7 +176,47 @@ export class DshAgentControl {
     if (previous) this.replace(binding)
     else this.save([...this.bindings, binding])
     this.activeContext = { contextRef: batch.batchId, agentId: scope.agentId }
+    this.memoryBatch = structuredClone(batch)
     return binding
+  }
+
+  private async memoryRequest(operation: string, body: JsonObject, signal: AbortSignal): Promise<JsonObject> {
+    const agentId = String(body.agentId), turnId = body.turnId
+    if ((agentId !== this.rootId() && !this.capabilityAgents.has(agentId)) || !opaque(turnId) || !turnId.startsWith(this.nonce + ':' + agentId + ':')) fail('MEMORY_CONTEXT_INVALID', '记忆请求不属于当前主会话。')
+    const empty = { text: '', items: [] }
+    if (!this.host.memory) return operation === 'start' ? empty : { accepted: false }
+    if (operation === 'start') {
+      if (Object.keys(body).some(key => !['agentId', 'turnId', 'contextRef', 'messages', 'autonomous', 'query'].includes(key))) fail('MEMORY_CONTEXT_INVALID', '记忆请求字段无效。')
+      const batch = body.contextRef === undefined ? undefined : this.memoryBatch
+      if (body.contextRef !== undefined && (agentId !== this.rootId() || !batch || body.contextRef !== batch.batchId || body.messages !== undefined || body.query !== undefined || body.autonomous !== undefined)) fail('MEMORY_CONTEXT_INVALID', '记忆上下文与真实入站批次不匹配。')
+      if (!batch && (!Array.isArray(body.messages) || body.messages.length > 100 || body.messages.some(message => !isJsonObject(message) || message.role !== 'user' || typeof message.text !== 'string' || message.text.length > 32768 || typeof message.timestamp !== 'string' || !Number.isFinite(Date.parse(message.timestamp))) || body.autonomous !== undefined && typeof body.autonomous !== 'boolean' || body.query !== undefined && (typeof body.query !== 'string' || body.query.length > 4000))) fail('MEMORY_CONTEXT_INVALID', '原生记忆消息无效。')
+      this.memoryTurns.set(agentId, turnId)
+      if (batch) this.memoryTurnBatches.set(agentId, batch.batchId)
+      else this.memoryTurnBatches.delete(agentId)
+      const recalled = await this.host.memory.begin({ agentId, agentTypeId: 'main', turnId, ...(batch ? { batch } : { messages: body.messages as unknown as import('@eating/plugin-sdk').MemoryMessage[], autonomous: body.autonomous === true, ...(typeof body.query === 'string' ? { query: body.query } : {}) }) }, signal)
+      return { text: recalled.text, items: recalled.items as unknown as JsonValue[], ...(recalled.errors?.length ? { errors: [...recalled.errors] } : {}) }
+    }
+    if (this.memoryTurns.get(agentId) !== turnId) return { accepted: false }
+    if (operation === 'append') {
+      if (Object.keys(body).length !== 3 || !Array.isArray(body.messages) || body.messages.length > 100 || body.messages.some(message => !isJsonObject(message) || message.role !== 'user' || typeof message.text !== 'string' || message.text.length > 32768 || typeof message.timestamp !== 'string' || !Number.isFinite(Date.parse(message.timestamp)))) fail('MEMORY_CONTEXT_INVALID', '追加的原生记忆消息无效。')
+      const recalled = await this.host.memory.append({ agentId, turnId, messages: body.messages as unknown as import('@eating/plugin-sdk').MemoryMessage[] }, signal)
+      return { text: recalled.text, items: recalled.items as unknown as JsonValue[], ...(recalled.errors?.length ? { errors: [...recalled.errors] } : {}) }
+    }
+    if (operation === 'finish') {
+      if (Object.keys(body).length !== 5 || typeof body.assistantText !== 'string' || body.assistantText.length > 32768 || !Array.isArray(body.actions) || body.actions.length > 128 || body.actions.some(action => !isJsonObject(action) || !opaque(action.tool) || !['returned', 'succeeded', 'failed', 'unknown'].includes(String(action.outcome))) || !['completed', 'failed', 'cancelled'].includes(String(body.outcome))) fail('MEMORY_CONTEXT_INVALID', '记忆结果形状无效。')
+      this.memoryTurns.delete(agentId)
+      if (agentId === this.rootId() && this.memoryBatch?.batchId === this.memoryTurnBatches.get(agentId)) this.memoryBatch = null
+      this.memoryTurnBatches.delete(agentId)
+      await this.host.memory.finish({ agentId, turnId, assistantText: body.assistantText, actions: body.actions as unknown as import('@eating/plugin-sdk').MemoryAction[], outcome: body.outcome as 'completed' })
+      return { accepted: true }
+    }
+    if (operation === 'end' && Object.keys(body).length === 2) {
+      this.memoryTurns.delete(agentId); this.host.memory.end(agentId, turnId)
+      if (agentId === this.rootId() && this.memoryBatch?.batchId === this.memoryTurnBatches.get(agentId)) this.memoryBatch = null
+      this.memoryTurnBatches.delete(agentId)
+      return { accepted: true }
+    }
+    fail('MEMORY_OPERATION_INVALID', '记忆生命周期操作不存在。')
   }
 
   async start(nonce: string): Promise<void> {
@@ -189,9 +232,13 @@ export class DshAgentControl {
         const expected = `Bearer ${this.secret}`
         if (this.stopping || request.method !== 'POST' || typeof authorization !== 'string' || authorization.length !== expected.length || !timingSafeEqual(Buffer.from(authorization), Buffer.from(expected)) || request.headers['x-eating-runtime'] !== this.nonce) { response.writeHead(403); response.end(); return }
         const chunks: Buffer[] = []; let length = 0
-        for await (const chunk of request) { controller.signal.throwIfAborted(); length += chunk.length; if (length > 8192) fail('CONTROL_REQUEST_INVALID', '运行时请求过大。'); chunks.push(Buffer.from(chunk)) }
+        for await (const chunk of request) { controller.signal.throwIfAborted(); length += chunk.length; if (length > (request.url?.startsWith('/memory-') ? 256 * 1024 : 8192)) fail('CONTROL_REQUEST_INVALID', '运行时请求过大。'); chunks.push(Buffer.from(chunk)) }
         const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
         if (!isJsonObject(body) || !opaque(body.agentId)) fail('CONTROL_REQUEST_INVALID', '运行时请求无效。')
+        if (request.url?.startsWith('/memory-')) {
+          const result = await this.memoryRequest(request.url.slice('/memory-'.length), body, controller.signal)
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result)); return
+        }
         if (request.url?.startsWith('/autonomy-')) {
           if (!this.activity || body.agentId !== this.rootId()) fail('AUTONOMY_SCOPE_INVALID', '只有当前主Agent可操作自主安排。')
           const operation = request.url.slice('/autonomy-'.length)
@@ -293,6 +340,8 @@ export class DshAgentControl {
     let persistenceError: unknown
     try { this.revokeProactive() } catch (error) { persistenceError = error }
     this.actionBaselines.clear()
+    for (const [agentId, turnId] of this.memoryTurns) this.host.memory?.end(agentId, turnId)
+    this.memoryTurns.clear(); this.memoryTurnBatches.clear(); this.memoryBatch = null
     for (const agentId of this.capabilityAgents) this.host.revokeAgentAccess(agentId)
     this.capabilityAgents.clear()
     for (const controller of this.active) controller.abort()

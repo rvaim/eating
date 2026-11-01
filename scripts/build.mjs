@@ -81,6 +81,7 @@ if (target === 'all') {
   await buildPlugin('plugins/harness/dsh')
   await buildPlugin('plugins/capabilities/stickers')
   await buildPlugin('plugins/capabilities/image-generation')
+  await buildPlugin('plugins/capabilities/openviking-memory')
 }
 if (target === 'host' || target === 'all') await buildHost()
 if (target === 'all') {

@@ -62,13 +62,37 @@ class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly kind = 'communication' as const
   readonly name = 'QQ'
-  readonly version = '0.11.0'
+  readonly version = '0.13.1'
   readonly logs = new LiveLogChannel()
   readonly tools = [...qqTools, qqViewReceivedImageTool]
   readonly capabilities = [
     { id: 'onebot.v11.forward-websocket', name: 'OneBot v11 正向 WebSocket', support: 'supported' as const, description: '统一端点接收事件并调用标准 API，支持 Bearer 认证与有限重连。' },
     ...this.tools.map(tool => ({ id: tool.name, name: tool.title, support: 'supported' as const, description: tool.description, toolName: tool.name })),
   ]
+  readonly proactive = {
+    channels: () => {
+      const accountId = this.client.getStatus().accountId
+      if (!accountId || this.client.getStatus().state !== 'connected') return []
+      return this.agentTypes.map(type => ({ pluginId: this.id, pluginName: this.name, instanceId: this.instanceId, accountId, agentTypeId: type.id, kind: type.conversationKind, title: type.title, tools: this.tools.filter(tool => type.enabledTools.includes(tool.name)).map(tool => ({ name: tool.name, title: tool.title })) }))
+    },
+    contacts: async (request: import('@eating/plugin-sdk').ProactiveContactChannel): Promise<readonly import('@eating/plugin-sdk').ProactiveContact[]> => {
+      const accountId = this.client.getStatus().accountId, type = this.agentTypes.find(type => type.id === request.agentTypeId)
+      const valid = () => this.client.getStatus().state === 'connected' && this.client.getStatus().accountId === accountId && request.instanceId === this.instanceId && request.accountId === accountId && this.agentTypes.some(candidate => candidate.id === request.agentTypeId && candidate.conversationKind === type?.conversationKind)
+      if (!accountId || !type || !valid()) throw new PlatformError('PROACTIVE_CONTACTS_UNAVAILABLE', '请先连接匹配的QQ账号。', 409, 'not-sent')
+      const group = type.conversationKind === 'group', idKey = group ? 'group_id' : 'user_id', nameKey = group ? 'group_name' : 'nickname'
+      const result = await this.client.call(group ? 'get_group_list' : 'get_friend_list', {}, { timeoutMs: Math.min(this.configuration.timeoutMs, 3000), readOnly: true })
+      if (!valid()) throw new PlatformError('PROACTIVE_CONTACTS_CHANGED', '读取时QQ账号或权限已变化，结果已丢弃。', 409, 'not-sent')
+      if (!Array.isArray(result) || result.length > 1000 || result.some(row => !isJsonObject(row) || !asQQId(row[idKey]) || typeof row[nameKey] !== 'string' || String(row[nameKey]).length > 200 || /[\u0000-\u001f\u007f]/.test(String(row[nameKey])) || !group && row.remark !== undefined && (typeof row.remark !== 'string' || row.remark.length > 200 || /[\u0000-\u001f\u007f]/.test(row.remark)))) throw new PlatformError('PROACTIVE_CONTACTS_INVALID', '联系人目录响应无效或超过1000项，未采用。', 502, 'not-sent')
+      const contacts = result.map(row => ({ id: asQQId((row as JsonObject)[idKey])!, name: String(!group && (row as JsonObject).remark || (row as JsonObject)[nameKey]) }))
+      if (new Set(contacts.map(contact => contact.id)).size !== contacts.length) throw new PlatformError('PROACTIVE_CONTACTS_INVALID', '联系人目录包含重复号码，未采用。', 502, 'not-sent')
+      return contacts
+    },
+    scope: (request: import('@eating/plugin-sdk').ProactiveScopeRequest): AgentInvocationScope => {
+      const type = this.agentTypes.find(type => type.id === request.agentTypeId), accountId = this.client.getStatus().accountId
+      if (!type || !accountId || this.client.getStatus().state !== 'connected' || request.accountId !== accountId || request.instanceId !== this.instanceId || !/^[1-9]\d{0,15}$/.test(request.targetId) || !Number.isSafeInteger(Number(request.targetId)) || typeof request.agentId !== 'string' || !/^[a-f0-9-]{36}$/i.test(request.agentId)) throw new PlatformError('PROACTIVE_TARGET_INVALID', '主动联系的账号、类型或目标无效。', 409, 'not-sent')
+      return { agentId: request.agentId, agentTypeId: type.id, pluginId: this.id, instanceId: this.instanceId, accountId, kind: type.conversationKind, targetId: request.targetId, conversationId: `qq:${accountId}:${type.conversationKind}:${request.targetId}`, messageIds: [], resourceIds: [] }
+    },
+  }
   readonly agentInstructions = qqAgentInstructions
   get agentTypes() { return qqAgentTypes(this.configuration) }
   getAgentIdentity() { return { owners: [...this.configuration.owners], administrators: [...this.configuration.administrators] } }

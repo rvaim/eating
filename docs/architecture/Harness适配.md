@@ -1,6 +1,6 @@
 # Eating Harness 适配设计
 
-更新：2026-10-30。用户选择的 Harness 承担认知与行动，Eating 提供连接、运行、授权和可靠交接。DSH0.7.0是当前具体适配；其他Harness不自动继承其能力。当前应用／Host／Web0.10.0、QQ0.10.1，共享SDK3.0.0、插件唯一API3，默认不兼容旧版，见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)。时间与图片沿用[ADR-0016](../decisions/ADR-0016-原生只读Web与多模态会话.md)的相应决定；原样接入官方Web及对旧Web自定义／只读部分的替代见[ADR-0017](../decisions/ADR-0017-原样接入DSH原生Web.md)。
+更新：2026-11-01。用户选择的 Harness 承担认知与行动，Eating 提供连接、运行、授权和可靠交接。DSH0.9.0是当前具体适配；其他Harness不自动继承其能力。当前应用／Host／Web0.11.0、QQ0.11.0，共享SDK4.0.0、插件唯一API4，默认不兼容旧版，见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)。系统DSH与官方原样Web见[ADR-0018](../decisions/ADR-0018-系统DSH原生Web与看板移除.md)，原生能力与插件管理见[ADR-0021](../decisions/ADR-0021-DSH原生能力与插件管理.md)。
 
 ## 依赖与唯一控制者
 
@@ -30,6 +30,8 @@ DSH复用系统安装的命令与 Web 组件，使用 Eating 专属的DSH_HOME�
 
 ## 分层规则与原生委派
 
+2026-11-01：DSH0.9.0通过[原生能力与插件管理](../decisions/ADR-0021-DSH原生能力与插件管理.md)扩展主/子代理的工具集合。功能在Agent自身scope加载；实例插件的全局工具按精确名称、schema指纹与代理类型继承，并在调用时复核。未授予的工具不可见，结构改变后失去旧授权；QQ通讯仍使用Host的会话MCP，不能由全局工具目录绕过。保存、原生插件安装/启停/配置/卸载要求完全停机，与短生命周期管理进程互斥。下表列基础集合，另加主人显式批准的原生能力、插件工具和通用MCP。
+
 | 对象 | 受信system顺序 | 工具 |
 | --- | --- | --- |
 | 主Agent | common→main→启用插件说明→统一当前人格 | eating_list_agent_types、eating_delegate_task |
@@ -45,7 +47,7 @@ DSH复用系统安装的命令与 Web 组件，使用 Eating 专属的DSH_HOME�
 
 同批可先查询、主看到结果后再派同一子发送。内部taskId来自公开exec.callId；同context最多32个调用，不淘汰旧ID后放行重放。重复、pending、unknown拒绝；actions／finish必须匹配当前taskId，迟到回调不能撤新权限。当前批正文RAM在主turn/end清理。
 
-每任务独立临时MCP令牌，后台逐调用核对当前类型、账号／目标和引用，结束／断开／停用撤销。主不挂全权QQ，子不能再委派或调用原生文件／Shell／安装／人格写工具。Host回传实际动作回执，集合按任务隔离；子摘要不冒充动作，主普通final文本不自动发QQ。
+每任务独立临时MCP令牌，后台逐调用核对当前类型、账号／目标和引用，结束／断开／停用撤销。主不挂全权QQ，子保持受控委派边界；原生文件／Shell等仅在主人给对应类型显式授权后可用，DSH插件安装管理仅向主人管理界面提供。Host回传实际动作回执，集合按任务隔离；子摘要不冒充动作，主普通final文本不自动发QQ。
 
 ## 原生持久与服务边界
 
@@ -57,7 +59,7 @@ DSH复用系统安装的命令与 Web 组件，使用 Eating 专属的DSH_HOME�
 
 模型列表／测试仅用已保存endpoint/key，选择只写草稿。测试为最小Ping/max_tokens1，15秒、禁止重定向、解压后响应最多1MiB，错误不回显提供商正文或Key。不支持列表可手填；API连通、runtimeReady和业务成功分别表示。
 
-图片输入能力由主人单独声明，保存在专属[数据目录](../technical/数据目录与账号实例.md)的model-capabilities.json，初始imageInput=false。读取／保存走主人管理操作与revision CAS，仅runtime停止时可保存；endpoint或model变化重置false，Key／超时变化不重置。不根据模型名猜视觉能力，也不通过改声明把文本模型变成视觉模型。本轮真实实例imageInput=true，当前失败不能归为能力关闭。
+模型能力按[ADR-0022](../decisions/ADR-0022-服务声明模型能力与就地展示.md)在模型名称附近自动读取服务声明。白名单模型目录独立schema1保存，按endpoint／Key摘要及精确model绑定，图片输入、上下文和输出容量自动进入原生模型元数据；未知/矛盾不根据名称推断。仅服务未声明图片能力时，使用专属[数据目录](../technical/数据目录与账号实例.md)的model-capabilities.json人工补充（schema1、初始false、CAS、停止后保存），换endpoint／model失效。每次输出上限保留主人配置，不自动扩大；服务声明不等于真实付费识图验证。
 
 本轮图片CDN主机multimedia.nt.qq.com.cn的dns.lookup仅返回198.18.7.115，符合Fake-IP特征；SSRF对198.18/15保留段的拒绝发生在HTTP GET前。未确认具体代理来源，不记录QQ标识、签名URL、rkey或消息正文。本轮保留图片／SSRF策略，修复方向只说明用户网络DNS层恢复真实公网解析，或未来显式授权受信图片代理，不实施、不全局放行198.18／私网或开放目录。
 
@@ -77,7 +79,7 @@ Eating 自有会话看板、记录组件及 list-sessions／read-session 已移�
 
 Eating仅提供“打开 DSH Web”按钮：主人管理操作`open-native-web`按需返回`{url, rootSessionId}`，URL限定127.0.0.1合法端口及官方鉴权交换，普通`runtimeStatus.nativeWeb`只有`{ready}`，入口不进入普通status或模型上下文。移除readOnly字段，以及Eating readerPeer、connection隔离、HTTP写白名单、readonlyController与冷follow拦截；官方Web不施加Eating根树限制，也不通过隐藏按钮限制原生操作。
 
-删除Eating的src/native-client源码、打包与模块注入，插件 assets 仅包含 launch/dsh-system.mjs 启动资产；不替换官方sidebar／composer／message renderer，不硬编码配色，不挂LocaleBridge或agentLabels前端映射。平台信封JSON与工具结果回到官方默认渲染，原生会话会按官方原样呈现JSON，不承诺旧标题一律外观修正。Eating SDK主的两个工具、按任务受限的QQ子MCP与time-context保持；官方Web创建的普通Agent不作为QQ scope child校验或报错。
+删除Eating的src/native-client源码、打包与模块注入，插件 assets 仅包含 launch/dsh-system.mjs 启动资产；不替换官方sidebar／composer／message renderer，不硬编码配色，不挂LocaleBridge或agentLabels前端映射。按[ADR-0024](../decisions/ADR-0024-外部入站的原生执行请求展示.md)，DSH0.10.3在公开agent/pre-step中仅将当前完整校验的SDK入站消息标记为eating-external，保留ID、时间、role=user和正文；SDK入箱与flush/ACK仍记录真实运输事实。官方Web据消费来源显示原生可折叠“收到执行请求”，展开呈现完整JSON；自主机会和原生主人输入保留各自来源，已有记录不改写，不承诺旧标题外观修正。Eating SDK主的两个工具、按任务受限的QQ子MCP与time-context保持；官方Web创建的普通Agent不作为QQ scope child校验或报错。
 
 系统命令与当前看板移除决策见[ADR-0018](../decisions/ADR-0018-系统DSH原生Web与看板移除.md)。
 

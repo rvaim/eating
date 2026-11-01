@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 
 export const name = 'eating-runtime-bridge';
-export const inject = ['sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'agents', 'subagents', 'agentPresets', 'eatingNativeWeb'];
+export const inject = ['sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'agents', 'subagents', 'agentPresets', 'eatingNativeWeb', 'eatingNativeCapabilities'];
 
 const HEX = /^[a-f0-9]{64}$/;
 const ERROR_MESSAGES = {
@@ -151,6 +151,17 @@ export function apply(ctx) {
     const digest = createHash('sha256').update(JSON.stringify({ context: payload.context, events: payload.events })).digest('hex');
     return digest === expected.digest ? { messageId: message.id } : undefined;
   }
+  async function classifyDelivery({ agent }, next) {
+    const decision = await next();
+    if (disposed || failed || agent.id !== sessionId || decision.kind !== 'enter') return decision;
+    const expected = readExpected();
+    if (!expected) return decision;
+    // The SDK transport always enqueues kind=user. Attribute only the verified
+    // external batch at the public admission boundary, preserving its receipt ID.
+    return { ...decision, messages: decision.messages.map(message => identifyMessage(message, expected, false)
+      ? { ...message, source: { kind: 'eating-external', batchId: expected.batchId } }
+      : message) };
+  }
   function matchEvent(event, expected, restoring) {
     if (!record(event) || event.type !== 'agent/inbox/spliced' || !Number.isSafeInteger(event.seq) || event.seq < 0 || !record(event.data) || !Array.isArray(event.data.inserted)) return undefined;
     for (const message of event.data.inserted) {
@@ -199,7 +210,7 @@ export function apply(ctx) {
   }
   function assertNoGlobalTools() {
     const schemas = ctx.tools.schemas();
-    if (!Array.isArray(schemas) || schemas.length !== 0) throw bridgeError('UNEXPECTED_TOOLS');
+    if (!Array.isArray(schemas) || schemas.some(schema => !record(schema) || typeof schema.name !== 'string' || /^(?:eating_|mcp__qq__)/.test(schema.name))) throw bridgeError('UNEXPECTED_TOOLS');
   }
   async function inspectStoredSession() {
     const expected = readExpected();
@@ -238,6 +249,7 @@ export function apply(ctx) {
     if (typeof ctx.sessions.flush !== 'function' || typeof ctx.sessions.get !== 'function' || typeof ctx.sessionPersistence.open !== 'function' || typeof ctx.tools.schemas !== 'function') throw bridgeError('DURABILITY_UNAVAILABLE');
     if (typeof ctx.sessionPersistence.stat !== 'function' || typeof ctx.agents.get !== 'function' || typeof ctx.agentPresets.register !== 'function' || ['drainChildren', 'sendMessage', 'interrupt', 'startActivation'].some(name => typeof ctx.subagents[name] !== 'function')) throw bridgeError('NATIVE_AGENT_API_UNAVAILABLE');
     readValidatedOwnerPolicy();
+    await ctx.eatingNativeCapabilities.ready();
     await registerAgentTypes();
     const liveSession = ctx.sessions.get(sessionId);
     if (liveSession) { onCreated(liveSession); await sessionBarrier; }
@@ -265,6 +277,7 @@ export function apply(ctx) {
 
   try {
     releases.push(ctx.on('agent/created', onAgentCreated));
+    releases.push(ctx.on('agent/pre-step', classifyDelivery));
     releases.push(ctx.on('session/event', onEvent));
     releases.push(ctx.on('session/created', onCreated));
     ctx.on('dispose', dispose);

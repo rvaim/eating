@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { isJsonObject } from '@eating/plugin-sdk'
-import type { HostPluginContext, JsonObject } from '@eating/plugin-sdk'
+import type { CapabilityInvocationScope, HostPluginContext, JsonObject } from '@eating/plugin-sdk'
 import { createImageFixturePng } from '../../../../../tests/fixtures/image'
 import { startImagesProviderFixture } from '../../../../../tests/fixtures/images-provider'
 import { ImageGenerationPlugin } from '../server'
@@ -35,10 +35,11 @@ async function home() {
   stops.push(async () => { if (await realpath(root) !== root || dirname(root) !== parent || !basename(root).startsWith('eating-images-backend-')) throw new Error('Unsafe backend cleanup'); await rm(root, { recursive: true }) })
   return root
 }
-async function fixture(directory?: string, execute?: HostPluginContext['executeIdempotent']) {
+async function fixture(directory?: string, execute?: HostPluginContext['executeIdempotent'], resources?: HostPluginContext['resources']) {
   directory ??= await home()
   const submissions: { params: JsonObject; requestId: string }[] = []
   const context: HostPluginContext = { dataDirectory: directory, getSetting: () => null, setSetting: () => {}, recordEvent: () => ({ inserted: true, eventId: 'unit-event' }), listMessages: () => [],
+    ...(resources ? { resources } : {}),
     executeIdempotent: execute ?? (async (_id, _action, params, requestId, run) => { submissions.push({ params, requestId }); return run() }) }
   const plugin = new ImageGenerationPlugin(context)
   stops.push(() => plugin.dispose())
@@ -52,16 +53,39 @@ async function configuredFixture(baseUrl: string, apiKey = 'PRIVATE-IMAGES-TEST-
 const generation = (requestId = 'generation-request-0001', extra: JsonObject = {}) => ({ prompt: '画一张绿色的回环测试图', request_id: requestId, confirmed: true, ...extra })
 async function finalJob(plugin: ImageGenerationPlugin, job: JsonObject) { return object(await plugin.manage('job', { jobId: job.jobId!, waitMs: 20000 })) }
 
+interface MultipartCapture { readonly fields: JsonObject; readonly image: Buffer; readonly mimeType: string }
+function readMultipart(body: Buffer, contentType: string): MultipartCapture {
+  const boundary = /boundary=(?:"([^"]+)"|([^;]+))/.exec(contentType)?.slice(1).find(Boolean)
+  if (!boundary) throw new Error('Multipart fixture has no boundary')
+  const fields: JsonObject = {}
+  let image = Buffer.alloc(0), mimeType = ''
+  for (const raw of body.toString('latin1').split('--' + boundary)) {
+    const section = raw.replace(/^\r\n/, '').replace(/\r\n$/, '')
+    if (!section || section === '--') continue
+    const split = section.indexOf('\r\n\r\n')
+    if (split < 0) continue
+    const headers = section.slice(0, split), content = Buffer.from(section.slice(split + 4), 'latin1')
+    const name = /name="([^"]+)"/.exec(headers)?.[1]
+    if (!name) continue
+    if (/filename="/.test(headers)) {
+      image = content
+      mimeType = /Content-Type:\s*([^\r\n]+)/i.exec(headers)?.[1]?.trim() ?? ''
+    } else fields[name] = content.toString('utf8')
+  }
+  return { fields, image, mimeType }
+}
 async function provider(handle: (request: IncomingMessage, response: ServerResponse, body: JsonObject) => void | Promise<void>) {
-  const requests: { url: string | undefined; headers: IncomingHttpHeaders; body: JsonObject }[] = [], downloaded: IncomingHttpHeaders[] = [], entered = gate()
+  const requests: { url: string | undefined; headers: IncomingHttpHeaders; body: JsonObject; multipart?: MultipartCapture }[] = [], downloaded: IncomingHttpHeaders[] = [], entered = gate()
   let origin = ''
   const image = createImageFixturePng()
   const server = createServer((request, response) => {
     void (async () => {
       if (request.method === 'GET') { downloaded.push(request.headers); await handle(request, response, {}); return }
       const parts: Buffer[] = []; for await (const part of request) parts.push(Buffer.from(part))
-      const body = object(JSON.parse(Buffer.concat(parts).toString('utf8')))
-      requests.push({ url: request.url, headers: request.headers, body }); entered.resolve()
+      const raw = Buffer.concat(parts), contentType = String(request.headers['content-type'] ?? '')
+      const multipart = contentType.startsWith('multipart/form-data') ? readMultipart(raw, contentType) : undefined
+      const body = multipart ? multipart.fields : object(JSON.parse(raw.toString('utf8')))
+      requests.push({ url: request.url, headers: request.headers, body, ...(multipart ? { multipart } : {}) }); entered.resolve()
       await handle(request, response, body)
     })().catch(() => { if (!response.headersSent) response.writeHead(500); response.end() })
   })
@@ -139,6 +163,52 @@ describe('OpenAI Images 后端与任务边界', () => {
     expect(await reopened.plugin.manage('generate', generation())).toEqual(completed)
     expect(p.requests).toHaveLength(1)
     expect(await reopened.plugin.manage('jobs', {})).toMatchObject({ total: 1, items: [completed] })
+  })
+
+  it('编辑当前会话图片只提交一次 multipart /images/edits，源图不进入任务或提交账本', async () => {
+    const p = await provider((_request, response) => imageResponse(response)), source = createImageFixturePng()
+    const readReceivedImage = vi.fn(async () => ({ mimeType: 'image/png' as const, data: source.toString('base64') }))
+    const f = await fixture(undefined, undefined, { readReceivedImage, readAsset: async () => ({ mimeType: 'image/png' as const, data: source.toString('base64') }) })
+    await f.plugin.updateConfiguration({ expectedRevision: 0, baseUrl: p.baseUrl, apiKey: 'PRIVATE-IMAGES-TEST-KEY', model: 'fixture-images-model' })
+    const sourceScope = { agentId: 'edit-child', agentTypeId: 'qq.private', pluginId: 'qq', instanceId: 'fixture-instance', accountId: '100', conversationId: 'qq:100:private:200', kind: 'private' as const, targetId: '200', messageIds: ['900'], resourceIds: ['image-a'] }
+    const scope: CapabilityInvocationScope = { agentId: sourceScope.agentId, agentTypeId: sourceScope.agentTypeId, source: sourceScope }
+    const input = { prompt: '把这张图改成蓝色', request_id: 'edit-received-0001', source: { kind: 'received', messageId: '900', imageId: 'image-a' } }
+    const submitted = object(await f.plugin.invokeCapability('image_generate', input, input.request_id, scope))
+    const done = await finalJob(f.plugin, submitted)
+    expect(done).toMatchObject({ status: 'succeeded', source: { kind: 'received', mimeType: 'image/png', bytes: source.length } })
+    expect(readReceivedImage).toHaveBeenCalledTimes(1)
+    expect(readReceivedImage).toHaveBeenCalledWith(expect.objectContaining({ messageIds: ['900'], resourceIds: ['image-a'] }), { messageId: '900', imageId: 'image-a' })
+    expect(p.requests).toHaveLength(1)
+    const request = p.requests[0]!
+    expect(request.url).toBe('/nested/v1/images/edits')
+    expect(request.headers['content-type']).toMatch(/^multipart\/form-data; boundary=/)
+    expect(request.multipart?.fields).toEqual({ model: 'fixture-images-model', prompt: input.prompt, n: '1' })
+    expect(request.multipart?.image).toEqual(source)
+    expect(request.multipart?.mimeType).toBe('image/png')
+    const serialized = JSON.stringify([submitted, done, await f.plugin.manage('jobs', {}), f.submissions, await readFile(join(f.directory, 'state.json'), 'utf8')])
+    for (const value of ['image-a', '900', source.toString('base64')]) expect(serialized).not.toContain(value)
+    await expect(f.plugin.invokeCapability('image_generate', { prompt: input.prompt, request_id: input.request_id }, input.request_id, scope)).rejects.toMatchObject({ code: 'IMAGE_GENERATION_IDEMPOTENCY_CONFLICT' })
+    const denied = { ...input, request_id: 'edit-denied-0001', source: { kind: 'received', messageId: '901', imageId: 'image-a' } }
+    await expect(f.plugin.invokeCapability('image_generate', denied, denied.request_id, scope)).rejects.toMatchObject({ code: 'IMAGE_GENERATION_SOURCE_DENIED' })
+    expect(p.requests).toHaveLength(1)
+  })
+
+  it('owner上传参考图和已有生成图都走 /images/edits，源图只用于请求', async () => {
+    const p = await provider((_request, response) => imageResponse(response)), source = createImageFixturePng()
+    const f = await fixture(undefined, undefined, { readReceivedImage: async () => ({ mimeType: 'image/png' as const, data: source.toString('base64') }), readAsset: async () => ({ mimeType: 'image/png' as const, data: source.toString('base64') }) })
+    await f.plugin.updateConfiguration({ expectedRevision: 0, baseUrl: p.baseUrl, apiKey: 'PRIVATE-IMAGES-TEST-KEY', model: 'fixture-images-model' })
+    const uploaded = object(await f.plugin.manage('generate', { prompt: '把上传的图改成蓝色', request_id: 'edit-upload-0001', confirmed: true, source: { kind: 'upload', data: source.toString('base64'), mimeType: 'image/png' } }))
+    const uploadJob = await finalJob(f.plugin, uploaded)
+    expect(uploadJob).toMatchObject({ status: 'succeeded', source: { kind: 'upload', mimeType: 'image/png', bytes: source.length } })
+    expect(p.requests[0]?.url).toBe('/nested/v1/images/edits')
+    expect(p.requests[0]?.multipart?.image).toEqual(source)
+    const assetId = (uploadJob.assetIds as string[])[0]!
+    const assetEdit = object(await f.plugin.manage('generate', { prompt: '继续把这张图改成红色', request_id: 'edit-asset-0001', confirmed: true, source: { kind: 'asset', assetId } }))
+    const assetJob = await finalJob(f.plugin, assetEdit)
+    expect(assetJob).toMatchObject({ status: 'succeeded', source: { kind: 'asset', assetId, bytes: source.length } })
+    expect(p.requests[1]?.url).toBe('/nested/v1/images/edits')
+    expect(p.requests[1]?.multipart?.image).toEqual(source)
+    expect(JSON.stringify([uploadJob, assetJob, await f.plugin.manage('jobs', {})])).not.toContain(source.toString('base64'))
   })
 
   it('同时最多一个活跃任务，配置变更和未确认owner生成不产生请求', async () => {

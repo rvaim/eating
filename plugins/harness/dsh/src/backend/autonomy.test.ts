@@ -1,0 +1,119 @@
+import { mkdtempSync, realpathSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { JsonObject, ProactiveTarget } from '@eating/plugin-sdk'
+import { AUTONOMY_DEFAULTS, DshAutonomy } from './autonomy'
+const directories: string[] = []
+afterEach(() => { for (const directory of directories.splice(0)) { if (realpathSync(directory) !== directory || dirname(directory) !== realpathSync(tmpdir()) || !basename(directory).startsWith('eating-autonomy-')) throw new Error('Unsafe autonomy fixture cleanup'); rmSync(directory, { recursive: true }) } })
+function fixture() {
+  const directory = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), 'eating-autonomy-'))); directories.push(directory)
+  let now = 1700000000000, ready = true
+  const revoke = vi.fn(), targets = vi.fn()
+  const activity = new DshAutonomy(directory, () => ready, targets, revoke, () => now)
+  const control = (operation: string) => { const snapshot = activity.snapshot(); return activity.control(operation, { expectedRevision: snapshot.revision!, expectedActivityRevision: (snapshot.state as JsonObject).revision! }) }
+  const configure = (values = {}) => activity.configure({ expectedRevision: activity.snapshot().revision, configuration: { ...AUTONOMY_DEFAULTS, enabled: true, minIntervalSeconds: 1, ...values } })
+  const advance = (ms: number) => { now += ms }
+  return { directory, activity, control, configure, advance, revoke, targets, setReady: (value: boolean) => { ready = value }, now: () => now }
+}
+const state = (activity: DshAutonomy) => activity.snapshot().state as JsonObject
+const target: ProactiveTarget = { id: 'owner-approved-target', label: 'Fixture owner', pluginId: 'qq', instanceId: 'fixture', accountId: '100', agentTypeId: 'qq.private', targetId: '200', toolNames: ['qq_send_private_message'] }
+
+describe('owner controlled autonomous activity state', () => {
+  it('exposes a stale driver heartbeat and records control failure instead of pretending the AI chose to rest', async () => {
+    const f = fixture(); await f.configure(); f.activity.startRuntime('runtime'); await f.control('resume')
+    f.advance(16000); expect(state(f.activity).reason).toBe('status-unavailable')
+    f.activity.observe('idle'); expect(state(f.activity).reason).toBe('ready')
+    expect(() => f.activity.runtimeFault('stale-runtime')).toThrow()
+    expect(f.activity.runtimeFault('runtime')).toEqual({ paused: true })
+    expect(state(f.activity)).toMatchObject({ reason: 'error', ownerPaused: true, errorCode: 'AUTONOMY_CONTROL_FAILED', mode: 'active' })
+    expect(f.activity.claim('runtime').admitted).toBe(false)
+  })
+
+  it('defaults off and requires a separate explicit resume after configuration', async () => {
+    const f = fixture(); f.activity.startRuntime('runtime')
+    expect(f.activity.claim('runtime')).toEqual({ admitted: false })
+    await f.configure(); expect(state(f.activity).ownerPaused).toBe(true)
+    expect(f.activity.claim('runtime').admitted).toBe(false)
+    await f.control('resume'); expect(f.activity.claim('runtime').admitted).toBe(true)
+  })
+  it('admits only one durable round and never replays a duplicate completion', async () => {
+    const f = fixture(); await f.configure(); f.activity.startRuntime('runtime'); await f.control('resume')
+    const first = f.activity.claim('runtime'), cycle = first.cycle as JsonObject
+    expect(f.activity.claim('runtime')).toEqual({ admitted: false })
+    expect(f.activity.finish('runtime', String(cycle.id), 'completed', null)).toEqual({ accepted: true })
+    expect(f.activity.finish('runtime', String(cycle.id), 'completed', null)).toEqual({ accepted: false })
+    expect(f.activity.claim('runtime').admitted).toBe(false)
+    f.advance(1000); expect(f.activity.claim('runtime').admitted).toBe(true)
+    expect(state(f.activity).cycles).toBe(2)
+  })
+  it('supersedes old sleep times with a structured revision and honors indefinite waiting', async () => {
+    const f = fixture(); await f.configure(); f.activity.startRuntime('runtime'); await f.control('resume')
+    const revision = state(f.activity).revision
+    f.activity.decide('runtime', { expectedActivityRevision: revision, mode: 'sleeping', wakeAt: f.now() + 10000, note: 'Resume the chosen activity' })
+    expect(() => f.activity.decide('runtime', { expectedActivityRevision: revision, mode: 'active', wakeAt: null, note: '' })).toThrow()
+    f.activity.decide('runtime', { expectedActivityRevision: state(f.activity).revision, mode: 'sleeping', wakeAt: f.now() + 20000, note: 'Updated wake' })
+    f.advance(11000); expect(f.activity.claim('runtime').admitted).toBe(false)
+    f.activity.decide('runtime', { expectedActivityRevision: state(f.activity).revision, mode: 'waiting', wakeAt: null, note: 'Wait for a real event' })
+    f.advance(30000); expect(f.activity.claim('runtime').admitted).toBe(false)
+    await f.control('wake'); expect(f.activity.claim('runtime').admitted).toBe(true)
+  })
+  it('retains an AI sleep decision made inside a round after the round completes', async () => {
+    const f = fixture(); await f.configure(); f.activity.startRuntime('runtime'); await f.control('resume')
+    const cycle = f.activity.claim('runtime').cycle as JsonObject
+    f.activity.decide('runtime', { expectedActivityRevision: state(f.activity).revision, mode: 'sleeping', wakeAt: f.now() + 10000, note: 'Take a rest' })
+    f.activity.finish('runtime', String(cycle.id), 'completed', null)
+    f.advance(9000); expect(f.activity.claim('runtime').admitted).toBe(false)
+    f.advance(1000); expect(f.activity.claim('runtime').admitted).toBe(true)
+  })
+  it('revokes in-flight authority on pause and refuses the AI to resume owner-paused activity', async () => {
+    const f = fixture(); await f.configure({ targets: [target] }); f.activity.startRuntime('runtime'); await f.control('resume')
+    const cycle = f.activity.claim('runtime').cycle as JsonObject
+    expect(f.activity.target('runtime', String(cycle.id), target.id)).toEqual(target)
+    await f.control('pause')
+    expect(f.activity.validCycle('runtime', String(cycle.id))).toBe(false)
+    expect(f.activity.targetStillAllowed('runtime', String(cycle.id), target)).toBe(false)
+    expect(() => f.activity.decide('runtime', { expectedActivityRevision: state(f.activity).revision, mode: 'active', wakeAt: null, note: 'Resume' })).toThrow()
+    expect(f.revoke).toHaveBeenCalled()
+  })
+  it('enforces hourly round and contact limits without invoking a model to poll', async () => {
+    const f = fixture(); await f.configure({ maxCyclesPerHour: 1, maxContactsPerHour: 1, targets: [target] }); f.activity.startRuntime('runtime'); await f.control('resume')
+    const cycle = f.activity.claim('runtime').cycle as JsonObject
+    f.activity.target('runtime', String(cycle.id), target.id); f.activity.countContact()
+    expect(() => f.activity.target('runtime', String(cycle.id), target.id)).toThrow()
+    f.activity.finish('runtime', String(cycle.id), 'completed', null); f.advance(1000)
+    expect(f.activity.claim('runtime').admitted).toBe(false); expect(state(f.activity).reason).toBe('hourly-limit')
+    f.advance(3600000); expect(f.activity.claim('runtime').admitted).toBe(true)
+  })
+  it('distinguishes failure thresholds and unknown outcomes from chosen rest', async () => {
+    const f = fixture(); await f.configure({ maxConsecutiveFailures: 2 }); f.activity.startRuntime('runtime'); await f.control('resume')
+    for (let i = 0; i < 2; i++) { const cycle = f.activity.claim('runtime').cycle as JsonObject; f.activity.finish('runtime', String(cycle.id), 'failed', 'AUTONOMY_MODEL_FAILED'); f.advance(5000) }
+    expect(state(f.activity)).toMatchObject({ ownerPaused: true, errorCode: 'AUTONOMY_MODEL_FAILED', failures: 2, mode: 'active' })
+    await f.control('resume'); const cycle = f.activity.claim('runtime').cycle as JsonObject
+    f.activity.finish('runtime', String(cycle.id), 'unknown', 'AUTONOMY_CYCLE_TIMEOUT')
+    expect(state(f.activity)).toMatchObject({ ownerPaused: true, lastOutcome: 'unknown', errorCode: 'AUTONOMY_CYCLE_TIMEOUT' })
+  })
+  it('recovers an interrupted round as unknown and never silently auto-replays it', async () => {
+    const f = fixture(); await f.configure({ autoResume: true }); f.activity.startRuntime('old'); await f.control('resume'); f.activity.claim('old')
+    const reopened = new DshAutonomy(f.directory, () => true, () => {}, () => {}, f.now)
+    reopened.startRuntime('new')
+    expect(state(reopened)).toMatchObject({ active: null, ownerPaused: true, lastOutcome: 'unknown', errorCode: 'AUTONOMY_PREVIOUS_CYCLE_UNKNOWN' })
+    expect(reopened.claim('new').admitted).toBe(false)
+    expect(() => reopened.claim('old')).toThrow()
+  })
+  it('keeps future sleep across restart when automatic restore is selected', async () => {
+    const f = fixture(); await f.configure({ autoResume: true }); f.activity.startRuntime('old'); await f.control('resume')
+    f.activity.decide('old', { expectedActivityRevision: state(f.activity).revision, mode: 'sleeping', wakeAt: f.now() + 20000, note: 'Persisted rest' })
+    f.activity.stopRuntime()
+    const next = new DshAutonomy(f.directory, () => true, () => {}, () => {}, f.now); next.startRuntime('new')
+    expect(next.claim('new').admitted).toBe(false); expect(state(next).note).toBe('Persisted rest')
+    f.advance(20000); expect(next.claim('new').admitted).toBe(true)
+  })
+  it('rejects stale saves and unsupported files without changing their bytes', async () => {
+    const f = fixture(); await f.configure()
+    await expect(f.activity.configure({ expectedRevision: 0, configuration: AUTONOMY_DEFAULTS })).rejects.toMatchObject({ code: 'AUTONOMY_CONFIGURATION_CONFLICT' })
+    const bytes = '{"schemaVersion":0}'; writeFileSync(f.activity.filePath, bytes)
+    expect(() => new DshAutonomy(f.directory, () => true, () => {}, () => {})).toThrow()
+    expect(readFileSync(f.activity.filePath, 'utf8')).toBe(bytes)
+  })
+})

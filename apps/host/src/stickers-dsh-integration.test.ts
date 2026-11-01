@@ -36,7 +36,7 @@ afterEach(async () => {
 const selfId = 123456789, userId = 987654321
 const stickerPrefix = 'mcp__plugin_stickers__'
 const granted = ['sticker_add', 'sticker_get', 'sticker_list', 'sticker_list_tags']
-const rootTools = ['eating_delegate_task', 'eating_list_agent_types']
+const rootTools = ['eating_activity_state', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity']
 const childTools = [...granted.map(name => stickerPrefix + name), 'mcp__qq__qq_send_private_message', 'mcp__qq__qq_view_received_image'].sort()
 function object(value: unknown): JsonObject { if (!isJsonObject(value)) throw new Error('Expected actual structured integration result'); return value }
 function names(request: ModelFixtureRequest) { return (request.tools ?? []).map(tool => tool.function?.name ?? '').sort() }

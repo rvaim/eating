@@ -355,6 +355,24 @@ export class EatingHost {
           if (typeof input.name !== 'string' || typeof input.body !== 'string') throw new PlatformError('INVALID_AUTHORING_REQUEST', '请提供人格名称和设定。')
           json(response, 200, this.authoring.updatePersona(id, input.name, input.body, input.expectedRevision)); return
         }
+        if (pathname === '/api/autonomy') {
+          if (request.method === 'GET') {
+            json(response, 200, { protocolVersion: 1, harnesses: [...this.plugins.values()].filter(plugin => plugin.kind === 'harness').map(plugin => ({ id: plugin.id, name: plugin.name, enabled: this.enabled.has(plugin.id), status: plugin.getStatus().state, supported: Boolean(plugin.autonomy), snapshot: plugin.autonomy?.snapshot() ?? null })), channels: [...this.plugins.values()].filter(plugin => plugin.kind === 'communication' && this.enabled.has(plugin.id)).flatMap(plugin => [...(plugin.proactive?.channels() ?? [])]) }); return
+          }
+          if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '自主运行管理仅支持GET或POST。', 405)
+          const input = await readJson(request)
+          if (!isJsonObject(input) || Object.keys(input).length !== 3 || typeof input.harnessId !== 'string' || typeof input.operation !== 'string' || !isJsonObject(input.input)) throw new PlatformError('INVALID_AUTONOMY_CONFIGURATION', '自主运行管理参数无效。')
+          const plugin = this.requirePlugin(input.harnessId, true)
+          if (plugin.kind !== 'harness' || !plugin.autonomy) throw new PlatformError('AUTONOMY_UNSUPPORTED', '此Harness未提供自主运行服务。', 409)
+          const operation = input.operation, values = input.input
+          if (operation === 'list-contacts') {
+            if (!plugin.autonomy.contacts) throw new PlatformError('PROACTIVE_CONTACTS_UNAVAILABLE', '此 Harness 未提供联系人目录读取。', 409)
+            const directory = await plugin.autonomy.contacts(values)
+            if (this.requirePlugin(plugin.id, true) !== plugin) throw new PlatformError('PROACTIVE_CONTACTS_CHANGED', 'Harness已变化，请重新读取联系人。', 409)
+            json(response, 200, directory); return
+          }
+          await this.mutatePlugin(plugin.id, 'autonomy', async () => { json(response, 200, operation === 'configure' ? await plugin.autonomy!.configure(values) : await plugin.autonomy!.control(operation, values)) }); return
+        }
         if (pathname === '/api/settings' || pathname === '/api/settings/queue/clear') {
           if (pathname === '/api/settings' && request.method === 'GET') { json(response, 200, this.store.getDeliverySettingsSnapshot()); return }
           if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '设置操作仅支持 GET 或 POST。', 405)
@@ -471,13 +489,31 @@ export class EatingHost {
         this.requireHarnessAccess(id)
         return immutableConfiguration(this.authoring.readOwnerConfiguration())
       },
-      getMcpConnection: (pluginId: string, scope: import('@eating/plugin-sdk').AgentInvocationScope) => {
+      getMcpConnection: (pluginId: string, scope: import('@eating/plugin-sdk').AgentInvocationScope, policy?: import('@eating/plugin-sdk').ScopedAccessPolicy) => {
         this.requireHarnessAccess(id)
         if (!this.url) throw new PlatformError('HOST_NOT_LISTENING', 'Host 尚未监听，无法登记 MCP 连接。', 503)
         if (this.requirePlugin(pluginId, true).kind !== 'communication') throw new PlatformError('PLUGIN_SCOPE_VIOLATION', 'Harness 仅可取得已启用通讯插件的 MCP 连接。', 403)
         if (!isJsonObject(scope)) throw new PlatformError('AGENT_SCOPE_VIOLATION', '请提供当前代理的完整调用范围。', 403, 'not-sent')
-        return this.agentAccess.issue(id, pluginId, scope, this.url)
+        return this.agentAccess.issue(id, pluginId, scope, this.url, policy)
       },
+      readProactiveChannels: () => { this.requireHarnessAccess(id); return [...this.plugins.values()].filter(plugin => plugin.kind === 'communication' && this.enabled.has(plugin.id)).flatMap(plugin => [...(plugin.proactive?.channels() ?? [])]) },
+      prepareProactiveScope: (pluginId: string, request: import('@eating/plugin-sdk').ProactiveScopeRequest) => {
+        this.requireHarnessAccess(id)
+        const plugin = this.requirePlugin(pluginId, true)
+        if (plugin.kind !== 'communication' || !plugin.proactive) throw new PlatformError('PROACTIVE_CHANNEL_UNAVAILABLE', '通讯插件未提供主动通讯范围。', 409, 'not-sent')
+        return plugin.proactive.scope(request)
+      },
+      readProactiveContacts: async (pluginId: string, request: import('@eating/plugin-sdk').ProactiveContactChannel) => {
+        this.requireHarnessAccess(id)
+        const plugin = this.requirePlugin(pluginId, true)
+        const matches = () => plugin.proactive?.channels().some(channel => channel.instanceId === request.instanceId && channel.accountId === request.accountId && channel.agentTypeId === request.agentTypeId)
+        if (plugin.kind !== 'communication' || !plugin.proactive?.contacts || !matches()) throw new PlatformError('PROACTIVE_CONTACTS_UNAVAILABLE', '当前通讯账号未提供可用的联系人目录。', 409, 'not-sent')
+        const contacts = await plugin.proactive.contacts(request)
+        this.requireHarnessAccess(id)
+        if (this.requirePlugin(pluginId, true) !== plugin || !matches()) throw new PlatformError('PROACTIVE_CONTACTS_CHANGED', '通讯账号或权限已变化，请重新读取联系人目录。', 409, 'not-sent')
+        return contacts.map(contact => ({ ...contact }))
+      },
+      hasPendingMessages: () => { this.requireHarnessAccess(id); return this.store.hasPendingHarnessMessages() },
       getCapabilityMcpConnections: (scope: CapabilityInvocationScope) => { this.requireHarnessAccess(id); if (!this.url) throw new PlatformError('HOST_NOT_LISTENING', 'Host 尚未监听。', 503); return this.capabilityAccess.connections(id, scope, this.url) },
       readAgentActions: (agentId: string) => { this.requireHarnessAccess(id); return [...this.agentAccess.actions(id, agentId), ...this.capabilityAccess.actions(id, agentId)] },
       revokeAgentAccess: (agentId: string) => { this.agentAccess.revokeAgent(id, agentId); this.capabilityAccess.revokeAgent(id, agentId) },

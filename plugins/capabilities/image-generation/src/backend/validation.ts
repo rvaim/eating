@@ -1,8 +1,22 @@
 import { createHash } from 'node:crypto'
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { JsonObject } from '@eating/plugin-sdk'
-import type { ImageGenerationParameters } from '../types'
+import type { ImageGenerationParameters, ImageGenerationSourceKind } from '../types'
 import { IMAGE_GENERATION_LIMITS } from '../types'
+
+export interface ImageSourceReference {
+  readonly kind: 'received' | 'asset'
+  readonly messageId?: string
+  readonly imageId?: string
+  readonly assetId?: string
+}
+export interface ResolvedSourceImage {
+  readonly kind: ImageGenerationSourceKind
+  readonly mimeType: import('@eating/plugin-sdk').ImageMimeType
+  readonly bytes: Buffer
+  readonly hash: string
+  readonly assetId?: string
+}
 
 export function invalid(message = '生图参数不完整或包含不支持的字段。'): never { throw new PlatformError('IMAGE_GENERATION_INVALID_INPUT', message, 400, 'not-sent') }
 export function object(input: unknown, allowed: readonly string[], required: readonly string[] = []): JsonObject {
@@ -27,8 +41,25 @@ export function parseGeneration(input: unknown): ImageGenerationParameters {
     ...(args.size !== undefined ? { size: text(args.size, 64) } : {}), ...(args.quality !== undefined ? { quality: text(args.quality, 64) } : {}),
     ...(args.response_format !== undefined ? { response_format: args.response_format as ImageGenerationParameters['response_format'] } : {}) }
 }
-export function generationIntent(input: ImageGenerationParameters): JsonObject { return { prompt: input.prompt, size: input.size ?? null, quality: input.quality ?? null, responseFormat: input.response_format ?? null } }
-export function generationHash(input: ImageGenerationParameters): string { return createHash('sha256').update(JSON.stringify(generationIntent(input))).digest('hex') }
+function reference(value: unknown, maximum: number, label: string): string {
+  if (typeof value !== 'string' || value.length < 1 || value.length > maximum || /[\u0000-\u001f\u007f]/.test(value)) invalid(`${label}格式或长度无效。`)
+  return value
+}
+/** Model-facing reference: only a current communication message image or this plugin's own asset. */
+export function parseSourceReference(input: unknown): ImageSourceReference {
+  const args = object(input, ['kind', 'messageId', 'imageId', 'assetId'], ['kind'])
+  if (args.kind === 'received') {
+    if (args.assetId !== undefined) invalid('收到图片只能提供 messageId 与 imageId。')
+    return { kind: 'received', messageId: reference(args.messageId, 160, '消息 ID '), imageId: reference(args.imageId, 2048, '图片引用 ') }
+  }
+  if (args.kind === 'asset') {
+    if (args.messageId !== undefined || args.imageId !== undefined) invalid('已有图片只能提供 assetId。')
+    return { kind: 'asset', assetId: assetIdentifier(args.assetId) }
+  }
+  invalid('图片来源只能是 received 或 asset。')
+}
+export function generationIntent(input: ImageGenerationParameters, sourceHash: string | null = null): JsonObject { return { prompt: input.prompt, size: input.size ?? null, quality: input.quality ?? null, responseFormat: input.response_format ?? null, ...(sourceHash ? { sourceHash } : {}) } }
+export function generationHash(input: ImageGenerationParameters, sourceHash: string | null = null): string { return createHash('sha256').update(JSON.stringify(generationIntent(input, sourceHash))).digest('hex') }
 export function pageInput(input: unknown) {
   const args = object(input, ['offset', 'limit'])
   return { offset: args.offset === undefined ? 0 : safeInteger(args.offset, 0, Number.MAX_SAFE_INTEGER), limit: args.limit === undefined ? 20 : safeInteger(args.limit, 1, IMAGE_GENERATION_LIMITS.page) }

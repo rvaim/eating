@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Check, ChevronRight, Database, Info, Send, Trash2 } from 'lucide-react'
+import { Activity, Check, ChevronRight, Database, Info, Send, Trash2 } from 'lucide-react'
 import { validateDeliverySettings } from '@eating/plugin-sdk'
 import type { DeliveryQueueStats, DeliverySettings, DeliverySettingsSnapshot } from '@eating/plugin-sdk'
-import { HostApiError, formatNumber, getErrorMessage, hostRequest, translate, useI18n } from '@eating/ui-sdk'
+import { ActionButton, HostApiError, formatNumber, getErrorMessage, hostRequest, translate, useI18n } from '@eating/ui-sdk'
 import '../i18n/settings'
 import './Settings.css'
+import { AutonomySettings } from './AutonomySettings'
 
-export type SettingsSection = 'delivery' | 'queue'
+export type SettingsSection = 'delivery' | 'queue' | 'autonomy'
 type NumericKey = Exclude<keyof DeliverySettings, 'storageMode' | 'overflowPolicy'>
 type SettingsDraft = Record<NumericKey, string> & Pick<DeliverySettings, 'storageMode' | 'overflowPolicy'>
 type FieldErrors = Partial<Record<keyof DeliverySettings, string>>
@@ -288,17 +289,20 @@ export function Settings({ section, onSectionChange, onFeedback }: {
     <aside className="platform-sidebar settings-sidebar">
       <p className="platform-nav-heading">{t('nav.heading')}</p>
       <nav aria-label={t('nav.heading')}>
-        <button type="button" className={`platform-nav-item${section === 'delivery' ? ' is-selected' : ''}`} aria-current={section === 'delivery' ? 'page' : undefined} onClick={() => onSectionChange('delivery')}><Send size={18} aria-hidden="true" /><span>{t('nav.delivery')}</span>{section === 'delivery' && <ChevronRight size={15} className="nav-chevron" aria-hidden="true" />}</button>
-        <button type="button" className={`platform-nav-item${section === 'queue' ? ' is-selected' : ''}`} aria-current={section === 'queue' ? 'page' : undefined} onClick={() => onSectionChange('queue')}><Database size={18} aria-hidden="true" /><span>{t('nav.queue')}</span>{section === 'queue' && <ChevronRight size={15} className="nav-chevron" aria-hidden="true" />}</button>
+        <ActionButton reasonCode="busy" type="button" className={`platform-nav-item${section === 'delivery' ? ' is-selected' : ''}`} aria-current={section === 'delivery' ? 'page' : undefined} onClick={() => onSectionChange('delivery')}><Send size={18} aria-hidden="true" /><span>{t('nav.delivery')}</span>{section === 'delivery' && <ChevronRight size={15} className="nav-chevron" aria-hidden="true" />}</ActionButton>
+        <ActionButton reasonCode="busy" type="button" className={`platform-nav-item${section === 'queue' ? ' is-selected' : ''}`} aria-current={section === 'queue' ? 'page' : undefined} onClick={() => onSectionChange('queue')}><Database size={18} aria-hidden="true" /><span>{t('nav.queue')}</span>{section === 'queue' && <ChevronRight size={15} className="nav-chevron" aria-hidden="true" />}</ActionButton>
+        <ActionButton reasonCode="busy" type="button" className={`platform-nav-item${section === 'autonomy' ? ' is-selected' : ''}`} aria-current={section === 'autonomy' ? 'page' : undefined} onClick={() => onSectionChange('autonomy')}><Activity size={18} aria-hidden="true" /><span>{t('nav.autonomy')}</span>{section === 'autonomy' && <ChevronRight size={15} className="nav-chevron" aria-hidden="true" />}</ActionButton>
       </nav>
     </aside>
     <main id="main-content" className="robot-content settings-content" aria-busy={busy}>
+      <div hidden={section !== 'autonomy'}><AutonomySettings active={section === 'autonomy'} /></div>
+      <div hidden={section === 'autonomy'}>
       <div className="settings-title-row">
         <div><h2>{t(`nav.${section}`)}</h2><p className="panel-description">{t(`description.${section}`)}</p></div>
-        <button ref={readTrigger} type="button" className="button button-secondary settings-read-button" disabled={busy} aria-expanded={confirmRead} aria-controls="settings-read-confirmation" onClick={() => { void readSettings() }}>{t(operation === 'read' ? 'action.reading' : 'action.read')}</button>
+        <ActionButton reasonCode="busy" ref={readTrigger} type="button" className="button button-secondary settings-read-button" disabled={busy} aria-expanded={confirmRead} aria-controls="settings-read-confirmation" onClick={() => { void readSettings() }}>{t(operation === 'read' ? 'action.reading' : 'action.read')}</ActionButton>
       </div>
       <p className="settings-retention-note"><Info size={16} aria-hidden="true" /><span>{t('retention')}</span></p>
-      {confirmRead && <div id="settings-read-confirmation" className="settings-inline-confirmation" role="group" aria-label={t('read.confirmLabel')}><p>{t('read.confirmText')}</p><div className="settings-confirm-actions"><button ref={readCancel} type="button" className="button button-secondary" disabled={busy} onClick={() => { setConfirmRead(false); readTrigger.current?.focus() }}>{t('action.continue')}</button><button type="button" className="button button-secondary" disabled={busy} onClick={() => { void readSettings(true) }}>{t('read.confirmAction')}</button></div></div>}
+      {confirmRead && <div id="settings-read-confirmation" className="settings-inline-confirmation" role="group" aria-label={t('read.confirmLabel')}><p>{t('read.confirmText')}</p><div className="settings-confirm-actions"><ActionButton reasonCode="busy" ref={readCancel} type="button" className="button button-secondary" disabled={busy} onClick={() => { setConfirmRead(false); readTrigger.current?.focus() }}>{t('action.continue')}</ActionButton><ActionButton reasonCode="busy" type="button" className="button button-secondary" disabled={busy} onClick={() => { void readSettings(true) }}>{t('read.confirmAction')}</ActionButton></div></div>}
       {notice && <div className={`settings-notice settings-notice-${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>{noticeMessage(notice)}</div>}
       {!snapshot || !draft ? <div className="settings-read-state" role="status"><p>{t(operation === 'read' ? 'read.loading' : 'read.empty')}</p></div> : <>
         <form className="settings-form" onSubmit={submit} noValidate>
@@ -337,24 +341,25 @@ export function Settings({ section, onSectionChange, onFeedback }: {
             </div>
           </section>}
           <div className="settings-actions">
-            <button type="submit" className="button button-primary" disabled={busy || !dirty || requiresRead}>{operation === 'save' ? t('action.saving') : <><Check size={15} aria-hidden="true" />{t('action.save')}</>}</button>
-            <button type="button" className="button button-secondary" disabled={busy || !dirty} onClick={() => setConfirmReset(true)}>{t('action.discard')}</button>
+            <ActionButton reasonCode={busy ? 'busy' : requiresRead ? 'read' : 'unchanged'} type="submit" className="button button-primary" disabled={busy || !dirty || requiresRead}>{operation === 'save' ? t('action.saving') : <><Check size={15} aria-hidden="true" />{t('action.save')}</>}</ActionButton>
+            <ActionButton reasonCode={busy ? 'busy' : 'unchanged'} type="button" className="button button-secondary" disabled={busy || !dirty} onClick={() => setConfirmReset(true)}>{t('action.discard')}</ActionButton>
             <span className="settings-save-state">{t(dirty ? 'state.dirty' : 'state.read')}</span>
           </div>
-          {confirmReset && <div className="settings-inline-confirmation" role="group" aria-label={t('reset.confirmLabel')}><p>{t('reset.confirmText')}</p><div className="settings-confirm-actions"><button type="button" className="button button-secondary" onClick={() => setConfirmReset(false)}>{t('action.continue')}</button><button type="button" className="button button-secondary" onClick={() => { replaceDraft(createDraft(snapshot.values)); dirtyRef.current = false; setConfirmReset(false); setShowErrors(false); if (!requiresRead) setNotice(null) }}>{t('reset.confirmAction')}</button></div></div>}
+          {confirmReset && <div className="settings-inline-confirmation" role="group" aria-label={t('reset.confirmLabel')}><p>{t('reset.confirmText')}</p><div className="settings-confirm-actions"><ActionButton reasonCode="busy" type="button" className="button button-secondary" onClick={() => setConfirmReset(false)}>{t('action.continue')}</ActionButton><ActionButton reasonCode="busy" type="button" className="button button-secondary" onClick={() => { replaceDraft(createDraft(snapshot.values)); dirtyRef.current = false; setConfirmReset(false); setShowErrors(false); if (!requiresRead) setNotice(null) }}>{t('reset.confirmAction')}</ActionButton></div></div>}
         </form>
         {section === 'queue' && <>
           <QueueStatus queue={snapshot.queue} stale={requiresRead || notice?.kind === 'error'} />
           <section className="settings-clear-section" aria-labelledby="settings-clear-heading">
-            <div className="settings-clear-heading"><div><h3 id="settings-clear-heading">{t('clear.heading')}</h3><p>{t('clear.description')}</p></div><button ref={clearTrigger} type="button" className="text-button settings-clear-trigger" disabled={busy || requiresRead} aria-expanded={confirmClear} aria-controls="settings-clear-confirmation" onClick={() => { setConfirmClear(true); setClearAcknowledged(false) }}><Trash2 size={15} aria-hidden="true" />{t('clear.action')}</button></div>
+            <div className="settings-clear-heading"><div><h3 id="settings-clear-heading">{t('clear.heading')}</h3><p>{t('clear.description')}</p></div><ActionButton reasonCode={busy ? 'busy' : 'read'} ref={clearTrigger} type="button" className="text-button settings-clear-trigger" disabled={busy || requiresRead} aria-expanded={confirmClear} aria-controls="settings-clear-confirmation" onClick={() => { setConfirmClear(true); setClearAcknowledged(false) }}><Trash2 size={15} aria-hidden="true" />{t('clear.action')}</ActionButton></div>
             {confirmClear && <div id="settings-clear-confirmation" className="settings-inline-confirmation" role="group" aria-label={t('clear.confirmLabel')}>
               <p id="settings-clear-warning">{t('clear.warning')}</p>
               <label className="settings-confirm-checkbox"><input ref={clearCheckbox} type="checkbox" checked={clearAcknowledged} disabled={busy} aria-describedby="settings-clear-warning" onChange={event => setClearAcknowledged(event.target.checked)} /><span>{t('clear.acknowledge')}</span></label>
-              <div className="settings-confirm-actions"><button type="button" className="button button-secondary" disabled={busy} onClick={() => { setConfirmClear(false); setClearAcknowledged(false); clearTrigger.current?.focus() }}>{t('action.cancel')}</button><button type="button" className="button button-danger" disabled={busy || !clearAcknowledged || requiresRead} onClick={() => { void mutate('clear') }}>{t(operation === 'clear' ? 'clear.clearing' : 'clear.confirmAction')}</button></div>
+              <div className="settings-confirm-actions"><ActionButton reasonCode="busy" type="button" className="button button-secondary" disabled={busy} onClick={() => { setConfirmClear(false); setClearAcknowledged(false); clearTrigger.current?.focus() }}>{t('action.cancel')}</ActionButton><ActionButton reasonCode={busy ? 'busy' : requiresRead ? 'read' : 'confirm'} type="button" className="button button-danger" disabled={busy || !clearAcknowledged || requiresRead} onClick={() => { void mutate('clear') }}>{t(operation === 'clear' ? 'clear.clearing' : 'clear.confirmAction')}</ActionButton></div>
             </div>}
           </section>
         </>}
       </>}
+      </div>
     </main>
   </div>
 }

@@ -56,6 +56,16 @@ afterEach(async () => {
 })
 
 describe('DSH model list', () => {
+  it('retains declared capabilities while excluding unrelated provider and credential fields', async () => {
+    const upstream = await fixture((_request, response) => json(response, { data: [{ id: 'arbitrary-model', modalities: { input: ['text', 'image'], output: ['text'] }, tool_call: true, reasoning: true, context_window: 1000000, max_output_tokens: 128000, apiKey: fixtureKey, extra: { url: 'https://private.invalid/?token=secret' } }] }))
+    const result = await listModels(upstream.configuration)
+    expect(result.models[0]?.capabilities).toMatchObject({ imageInput: true, toolCalling: true, reasoning: true, contextWindow: 1000000, maxOutputTokens: 128000 })
+    expect(JSON.stringify(result)).not.toContain(fixtureKey)
+    expect(JSON.stringify(result)).not.toContain('private.invalid')
+    expect(upstream.requests).toHaveLength(1)
+    expect(upstream.requests[0]!.method).toBe('GET')
+  })
+
   it.each(['/v1', '/v1/', '/custom/api/', '/custom/api///', ''])('appends to the full base prefix %s with only the saved Bearer key', async prefix => {
     const upstream = await fixture((_request, response) => json(response, { data: [{ id: 'provider/model-原名', name: 'Provider name' }] }))
     const configuration = Object.freeze({ ...upstream.configuration, endpoint: `${upstream.base}${prefix}` })

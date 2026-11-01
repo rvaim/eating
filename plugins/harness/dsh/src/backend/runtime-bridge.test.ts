@@ -8,6 +8,7 @@ import { getRuntimeBridgeSource } from './runtime-bridge'
 
 type Json = Record<string, unknown>
 type Listener = (...args: unknown[]) => unknown
+type Admission = { kind: 'reject' } | { kind: 'enter'; messages: Json[]; startsRequestSeries?: true }
 const cleanups: Array<() => void> = []
 
 function temporaryDirectory() {
@@ -70,6 +71,7 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
   const ctx = {
     on, get: () => undefined, provide: vi.fn(), plugin: vi.fn(async () => {}),
     eatingNativeWeb: { entry: vi.fn(async () => ({ url: 'http://127.0.0.1:45678/?token=fixture-only-web-token', rootSessionId: sessionId })) },
+    eatingNativeCapabilities: { ready: vi.fn(async () => {}), allowedGlobal: vi.fn(() => []), mount: vi.fn(async () => []), reportTools: vi.fn(), authorize: vi.fn() },
     sessions: { flush, get: () => options.live ? session : undefined },
     sessionPersistence: { open, stat: vi.fn(async () => undefined) },
     systemPrompt: { section: (value: NonNullable<typeof section.current>) => { section.current = value; return () => { section.current = undefined } } },
@@ -92,7 +94,12 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
     content: [{ type: 'text', text: JSON.stringify({ eating: { protocolVersion: 1, magic: 'eating-harness-delivery', nonce, sessionId, batchId, digest, ...metadata }, ...body, ...overrideBody }) }],
   })
   const event = (message = delivery(), seq = 0) => ({ type: 'agent/inbox/spliced', seq, data: { inserted: [message], target: 'next-turn', start: 0 } })
-  return { ctx, registrations, directory, nonce, sessionId, path, read, write, listeners, section, session, flush, close, open, readLog, emit, bridge, expected, delivery, event, setTools: (value: Json[]) => { tools = value; emit('tools/change') }, setStored: (events: unknown[]) => { stored = events } }
+  const admit = async (messages: Json[], agentId: string = sessionId, terminal: Admission = { kind: 'enter', messages }): Promise<Admission> => {
+    const hooks = [...(listeners.get('agent/pre-step') ?? [])]
+    const dispatch = async (index: number): Promise<Admission> => index === hooks.length ? terminal : await hooks[index]!({ agent: { id: agentId }, messages }, () => dispatch(index + 1)) as Admission
+    return dispatch(0)
+  }
+  return { ctx, registrations, directory, nonce, sessionId, path, read, write, listeners, section, session, flush, close, open, readLog, emit, bridge, expected, delivery, event, admit, setTools: (value: Json[]) => { tools = value; emit('tools/change') }, setStored: (events: unknown[]) => { stored = events } }
 }
 
 afterEach(() => {
@@ -107,7 +114,7 @@ describe('self-contained published-API DSH runtime bridge', () => {
     const f = await fixture()
     await turn()
     expect(f.bridge.name).toBe('eating-runtime-bridge')
-    expect(f.bridge.inject).toEqual(['sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'agents', 'subagents', 'agentPresets', 'eatingNativeWeb'])
+    expect(f.bridge.inject).toEqual(['sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'agents', 'subagents', 'agentPresets', 'eatingNativeWeb', 'eatingNativeCapabilities'])
     expect(getRuntimeBridgeSource()).not.toMatch(/from ['"](?:@|\.\.)/)
     expect(f.section.current).toMatchObject({ name: 'eating:owner-system', order: 0, complete: true, interpolate: false })
     expect(f.section.current?.text()).toBe('主人策略 {{不解释外部变量}}')
@@ -123,6 +130,60 @@ describe('self-contained published-API DSH runtime bridge', () => {
     await turn()
     expect(existsSync(f.path('ready.json'))).toBe(false)
     expect(f.read('error.json')).toMatchObject({ code: ['sessions.flush', 'sessions.get', 'sessionPersistence.open'].includes(missingApi) ? 'DURABILITY_UNAVAILABLE' : 'NATIVE_AGENT_API_UNAVAILABLE' })
+  })
+
+  it('attributes a verified external delivery at native step admission while preserving content, identity and its durable ACK', async () => {
+    const f = await fixture()
+    await turn()
+    f.write('expected.json', f.expected)
+    const message = f.delivery()
+    const human = { role: 'user', id: 'native-human-message', source: { kind: 'user' }, content: [{ type: 'text', text: 'An ordinary native Web message' }] }
+    const autonomous = { role: 'user', id: 'native-autonomy-message', source: { kind: 'eating-autonomy' }, content: [{ type: 'text', text: 'An autonomous opportunity' }] }
+    f.emit('session/event', f.session, f.event(message))
+    await turn()
+    const ack = f.read(`ack-${f.expected.batchId}.json`)
+    const decision = await f.admit([message, human, autonomous])
+    expect(decision).toEqual({ kind: 'enter', messages: [{ ...message, source: { kind: 'eating-external', batchId: f.expected.batchId } }, human, autonomous] })
+    if (decision.kind !== 'enter') throw new Error('Expected admitted delivery')
+    expect(decision.messages[0]!.content).toBe(message.content)
+    expect(decision.messages[1]).toBe(human)
+    expect(decision.messages[2]).toBe(autonomous)
+    expect(message.source).toEqual({ kind: 'user' })
+    expect(f.read(`ack-${f.expected.batchId}.json`)).toEqual(ack)
+    expect(ack.messageId).toBe(message.id)
+  })
+
+  it.each(['nonce', 'session', 'batch', 'digest', 'body', 'source', 'nested'] as const)('keeps an unverified %s message out of external-source attribution', async mismatch => {
+    const f = await fixture()
+    await turn()
+    f.write('expected.json', f.expected)
+    const message = mismatch === 'nonce' ? f.delivery({ nonce: 'forged-nonce' })
+      : mismatch === 'session' ? f.delivery({ sessionId: 'another-session' })
+      : mismatch === 'batch' ? f.delivery({ batchId: 'b'.repeat(64) })
+      : mismatch === 'digest' ? f.delivery({ digest: 'b'.repeat(64) })
+      : mismatch === 'body' ? f.delivery({}, { events: [{ text: 'altered' }] })
+      : mismatch === 'source' ? { ...f.delivery(), source: { kind: 'eating-autonomy' } }
+      : { ...f.delivery(), content: [{ type: 'text', text: JSON.stringify({ text: f.delivery().content[0]!.text }) }] }
+    const decision = await f.admit([message])
+    expect(decision).toEqual({ kind: 'enter', messages: [message] })
+    if (decision.kind !== 'enter') throw new Error('Expected unchanged admission')
+    expect(decision.messages[0]).toBe(message)
+  })
+
+  it('preserves native rejection, downstream admission choices, other Agents and unowned input', async () => {
+    const f = await fixture()
+    await turn()
+    const message = f.delivery()
+    const untouched: Admission = { kind: 'enter', messages: [message], startsRequestSeries: true }
+    expect(await f.admit([message], f.sessionId, { ...untouched })).toEqual(untouched)
+    f.write('expected.json', f.expected)
+    expect(await f.admit([message], 'another-agent', { ...untouched })).toEqual(untouched)
+    const rejected = { kind: 'reject' } as const
+    expect(await f.admit([message], f.sessionId, rejected)).toBe(rejected)
+    const decision = await f.admit([message], f.sessionId, { kind: 'enter', messages: [], startsRequestSeries: true })
+    expect(decision).toEqual({ kind: 'enter', messages: [], startsRequestSeries: true })
+    const admitted = await f.admit([message], f.sessionId, { ...untouched })
+    expect(admitted).toMatchObject({ kind: 'enter', startsRequestSeries: true, messages: [{ source: { kind: 'eating-external' } }] })
   })
 
   it('requires native exec.callId and rejects the old nested call identity shape', async () => {
@@ -222,6 +283,7 @@ describe('self-contained published-API DSH runtime bridge', () => {
     expect(existsSync(f.path('ready.json'))).toBe(false)
     expect(existsSync(f.path('session-ready.json'))).toBe(false)
     expect(f.listeners.get('agent/created')?.size).toBe(0)
+    expect(f.listeners.get('agent/pre-step')?.size).toBe(0)
     expect(f.listeners.get('session/event')?.size).toBe(0)
     expect(f.listeners.get('session/created')?.size).toBe(0)
   })
@@ -234,8 +296,8 @@ describe('self-contained published-API DSH runtime bridge', () => {
     expect(readFileSync(f.path('error.json'), 'utf8')).not.toContain('fixture-secret-corruption')
   })
 
-  it('refuses globally inherited tools before any Agent scope is mounted', async () => {
-    const f = await fixture({ tools: [{ name: 'bash', description: 'external', parameters: { type: 'object' } }] })
+  it('refuses a global plugin tool impersonating the controlled Eating or QQ transport', async () => {
+    const f = await fixture({ tools: [{ name: 'eating_delegate_task', description: 'external', parameters: { type: 'object' } }] })
     await turn()
     expect(existsSync(f.path('ready.json'))).toBe(false)
     expect(f.read('error.json')).toMatchObject({ code: 'UNEXPECTED_TOOLS' })

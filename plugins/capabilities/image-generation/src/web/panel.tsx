@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { AlertCircle, Check, ChevronLeft, ChevronRight, ImageOff, ImagePlus, LoaderCircle, RefreshCw } from 'lucide-react'
 import type { JsonObject } from '@eating/plugin-sdk'
-import { formatNumber, useI18n } from '@eating/ui-sdk'
+import { ActionButton, formatNumber, useI18n } from '@eating/ui-sdk'
 import type { PluginPanelProps } from '@eating/ui-sdk'
 import type {
   GeneratedImageItem, ImageGenerationConfiguration, ImageGenerationJob, ImageGenerationPage,
@@ -10,8 +10,9 @@ import type {
 } from '../types'
 import { IMAGE_GENERATION_LIMITS } from '../types'
 import {
-  errorTextFrom, fetchConfiguration, imageBlob, jobErrorText, manage, readAssetPage, readJob, readJobPage, readPreview, updateConfiguration,
+  errorTextFrom, fetchConfiguration, imageBlob, jobErrorText, localImage, manage, readAssetPage, readJob, readJobPage, readPreview, updateConfiguration,
 } from './data'
+import type { ImageGenerationUpload } from './data'
 import { it } from './i18n'
 import './panel.css'
 
@@ -26,6 +27,7 @@ interface ConfigDraft {
   readonly responseFormat: ImageGenerationResponseFormat
 }
 interface RequestIdentity { readonly key: string; readonly id: string }
+interface SourceDraft { readonly image: ImageGenerationUpload; readonly name: string; readonly bytes: number; readonly key: string }
 
 const pageLimit = 20
 const formats: readonly ImageGenerationResponseFormat[] = ['', 'b64_json', 'url']
@@ -64,6 +66,8 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
   const [listLoading, setListLoading] = useState(false)
   const [listFailure, setListFailure] = useState<string | null>(null)
   const [prompt, setPrompt] = useState('')
+  const [source, setSource] = useState<SourceDraft | null>(null)
+  const [sourceFailure, setSourceFailure] = useState<string | null>(null)
   const [overrideSize, setOverrideSize] = useState('')
   const [overrideQuality, setOverrideQuality] = useState('')
   const [overrideFormat, setOverrideFormat] = useState<ImageGenerationResponseFormat>('')
@@ -84,6 +88,8 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
   const jobsGeneration = useRef(0)
   const assetsGeneration = useRef(0)
   const previewUrl = useRef<string | null>(null)
+  const sourcePreviewUrl = useRef<string | null>(null)
+  const sourceInput = useRef<HTMLInputElement | null>(null)
   const assetsOffsetRef = useRef(0)
   const activeJobs = useRef<ReadonlySet<string>>(new Set())
   const requestIdentity = useRef<RequestIdentity | null>(null)
@@ -102,6 +108,12 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
     if (previewUrl.current) URL.revokeObjectURL(previewUrl.current)
     previewUrl.current = null
     if (mounted.current) { setSelected(null); setPreviewLoading(false) }
+  }, [])
+  const clearSource = useCallback(() => {
+    if (sourcePreviewUrl.current) URL.revokeObjectURL(sourcePreviewUrl.current)
+    sourcePreviewUrl.current = null
+    setSource(null); setSourceFailure(null)
+    if (sourceInput.current) sourceInput.current.value = ''
   }, [])
   const replacePreview = useCallback((preview: ImageGenerationPreview) => {
     if (previewUrl.current) URL.revokeObjectURL(previewUrl.current)
@@ -180,9 +192,15 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
       cancelAll()
       setDraft(current => current ? { ...current, apiKey: '' } : current)
       setConfigSaving(false); setGenerating(false); setPreviewLoading(false)
-      clearPreview()
+      clearPreview(); clearSource()
     }
-    const pagehide = () => { cancelAll(); if (previewUrl.current) URL.revokeObjectURL(previewUrl.current); previewUrl.current = null }
+    const pagehide = () => {
+      cancelAll()
+      if (previewUrl.current) URL.revokeObjectURL(previewUrl.current)
+      previewUrl.current = null
+      if (sourcePreviewUrl.current) URL.revokeObjectURL(sourcePreviewUrl.current)
+      sourcePreviewUrl.current = null
+    }
     document.addEventListener('visibilitychange', visibility)
     window.addEventListener('pagehide', pagehide)
     return () => {
@@ -193,6 +211,8 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
       window.removeEventListener('pagehide', pagehide)
       if (previewUrl.current) URL.revokeObjectURL(previewUrl.current)
       previewUrl.current = null
+      if (sourcePreviewUrl.current) URL.revokeObjectURL(sourcePreviewUrl.current)
+      sourcePreviewUrl.current = null
     }
     // Network effects intentionally do not depend on locale or draft changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -267,22 +287,38 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
     }
   }
 
+  async function chooseSource(file: File | undefined) {
+    if (!file) return
+    try {
+      const image = await localImage(file)
+      if (!mounted.current) return
+      if (sourcePreviewUrl.current) URL.revokeObjectURL(sourcePreviewUrl.current)
+      sourcePreviewUrl.current = URL.createObjectURL(file)
+      setSource({ image, name: file.name, bytes: file.size, key: `${file.name}:${file.size}:${file.lastModified}` })
+      setSourceFailure(null)
+      resetRequestIdentity()
+    } catch (error) {
+      if (mounted.current) setSourceFailure(errorTextFrom(error, it('generate.sourceInvalid')))
+    }
+  }
+
   function resetRequestIdentity() { requestIdentity.current = null; setConfirming(false); setGenerateFailure(null) }
 
   async function submitGeneration() {
     if (!config?.ready || configDirty || hasActive || generating || !prompt.trim()) return
     if ([...prompt.trim()].length > IMAGE_GENERATION_LIMITS.prompt) { setGenerateFailure(it('generate.promptTooLong', { max: formatNumber(IMAGE_GENERATION_LIMITS.prompt) })); return }
-    const key = JSON.stringify([prompt.trim(), overrideSize.trim(), overrideQuality.trim(), overrideFormat])
+    const key = JSON.stringify([prompt.trim(), overrideSize.trim(), overrideQuality.trim(), overrideFormat, source?.key ?? null])
     if (requestIdentity.current?.key !== key) requestIdentity.current = { key, id: crypto.randomUUID() }
     const identity = requestIdentity.current
     setGenerating(true); setGenerateFailure(null)
     const controller = new AbortController(); generateController.current = controller
     try {
       const job = readJob(await manage('generate', { prompt: prompt.trim(), request_id: identity.id, confirmed: true,
+        ...(source ? { source: { kind: 'upload', data: source.image.data, mimeType: source.image.mimeType } } : {}),
         ...(overrideSize.trim() ? { size: overrideSize.trim() } : {}), ...(overrideQuality.trim() ? { quality: overrideQuality.trim() } : {}),
         ...(overrideFormat ? { response_format: overrideFormat } : {}) }, controller.signal))
       if (!mounted.current || controller.signal.aborted) return
-      requestIdentity.current = null; setConfirming(false); setPrompt(''); setGenerateFailure(null)
+      requestIdentity.current = null; setConfirming(false); setPrompt(''); clearSource(); setGenerateFailure(null)
       setJobsPage(current => current ? { ...current, items: [job, ...current.items].slice(0, pageLimit), total: current.total + 1 } : { items: [job], offset: 0, limit: pageLimit, total: 1, hasMore: false, nextOffset: null })
       feedback.current(it('generate.submitted'))
       void loadJobs(0, true)
@@ -303,7 +339,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
     <section className="image-block" aria-labelledby={`${prefix}-config-title`}>
       <div className="image-block-heading"><div><h3 id={`${prefix}-config-title`}>{t('config.title')}</h3><p>{t('config.description')}</p></div>{config && <span className={`status-badge image-ready-${config.ready ? 'yes' : 'no'}`}>{t(config.ready ? 'config.ready' : 'config.notReady')}</span>}</div>
       {configLoading && !config && <p className="image-loading" role="status"><LoaderCircle size={15} aria-hidden="true" />{t('config.loading')}</p>}
-      {configFailure && <div className="image-notice" role="alert"><AlertCircle size={16} aria-hidden="true" /><span>{configFailure}</span><button type="button" className="text-button" onClick={requestReload}>{t('config.retry')}</button></div>}
+      {configFailure && <div className="image-notice" role="alert"><AlertCircle size={16} aria-hidden="true" /><span>{configFailure}</span><ActionButton reasonCode="busy" type="button" className="text-button" onClick={requestReload}>{t('config.retry')}</ActionButton></div>}
       {config && draft && <form className="image-form" noValidate onSubmit={event => void saveConfig(event)}>
         <div className={`image-field${fieldErrors.baseUrl ? ' is-invalid' : ''}`}><label htmlFor={`${prefix}-base-url`}>{t('config.baseUrl')}</label><div><input id={`${prefix}-base-url`} value={draft.baseUrl} maxLength={4096} autoComplete="off" spellCheck={false} onChange={event => updateDraft('baseUrl', event.target.value)} /><p className="image-hint">{t('config.baseUrlHint')}</p>{fieldErrors.baseUrl && <p className="image-error">{fieldErrors.baseUrl}</p>}</div></div>
         <div className="image-field"><label htmlFor={`${prefix}-api-key`}>{t('config.apiKey')}</label><div><input id={`${prefix}-api-key`} type="password" value={draft.apiKey} maxLength={4096} autoComplete="new-password" placeholder={config.apiKeyConfigured ? t('config.apiKeySaved') : t('config.apiKeyEmpty')} onChange={event => updateDraft('apiKey', event.target.value)} /><label className="image-check"><input type="checkbox" checked={draft.clearApiKey} onChange={event => updateDraft('clearApiKey', event.target.checked)} /><span>{t('config.clearApiKey')}</span></label></div></div>
@@ -314,9 +350,9 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
         <div className="image-field"><label htmlFor={`${prefix}-format`}>{t('config.responseFormat')}</label><div><select id={`${prefix}-format`} value={draft.responseFormat} onChange={event => updateDraft('responseFormat', event.target.value as ImageGenerationResponseFormat)}>{formats.map(value => <option key={value || 'empty'} value={value}>{value ? (value === 'b64_json' ? t('config.format.b64') : value) : t('config.format.empty')}</option>)}</select><p className="image-hint">{t('config.responseFormatHint')}</p></div></div>
         <p className="image-config-note">{t('config.readyHint')}</p>
         {hasActive && <p className="image-hint">{t('config.activeLocked')}</p>}
-        {confirmReload && <div className="image-confirm" role="alertdialog" aria-label={t('config.discardTitle')}><strong>{t('config.discardTitle')}</strong><p>{t('config.discardText')}</p><div className="image-form-actions"><button type="button" className="button button-secondary" onClick={() => setConfirmReload(false)}>{t('config.discardCancel')}</button><button type="button" className="button button-danger" onClick={discardAndReload}>{t('config.discardConfirm')}</button></div></div>}
+        {confirmReload && <div className="image-confirm" role="alertdialog" aria-label={t('config.discardTitle')}><strong>{t('config.discardTitle')}</strong><p>{t('config.discardText')}</p><div className="image-form-actions"><ActionButton reasonCode="busy" type="button" className="button button-secondary" onClick={() => setConfirmReload(false)}>{t('config.discardCancel')}</ActionButton><ActionButton reasonCode="busy" type="button" className="button button-danger" onClick={discardAndReload}>{t('config.discardConfirm')}</ActionButton></div></div>}
         {configMessage && <p className="image-success" role="status"><Check size={14} aria-hidden="true" />{configMessage}</p>}
-        <div className="image-form-actions"><button type="submit" className="button button-primary" disabled={configSaving || !configDirty || hasActive}>{configSaving ? t('config.saving') : t('config.save')}</button><button type="button" className="button button-secondary" disabled={configSaving} onClick={requestReload}><RefreshCw size={14} aria-hidden="true" />{t('config.retry')}</button></div>
+        <div className="image-form-actions"><ActionButton reasonCode={configSaving ? 'busy' : hasActive ? 'active' : 'unchanged'} type="submit" className="button button-primary" disabled={configSaving || !configDirty || hasActive}>{configSaving ? t('config.saving') : t('config.save')}</ActionButton><ActionButton reasonCode="busy" type="button" className="button button-secondary" disabled={configSaving} onClick={requestReload}><RefreshCw size={14} aria-hidden="true" />{t('config.retry')}</ActionButton></div>
       </form>}
     </section>
 
@@ -324,31 +360,37 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
       <div className="image-block-heading"><div><h3 id={`${prefix}-generate-title`}>{t('generate.title')}</h3><p>{t('generate.description')}</p></div></div>
       {!config?.ready && <p className="image-hint">{t('generate.needConfig')}</p>}
       {configDirty && <p className="image-hint">{t('generate.dirtyConfig')}</p>}
+      <div className="image-field"><label htmlFor={`${prefix}-source`}>{t('generate.source')}</label><div>
+        <input ref={sourceInput} id={`${prefix}-source`} type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={event => void chooseSource(event.target.files?.[0])} />
+        <p className="image-hint">{t('generate.sourceHint', { max: formatNumber(IMAGE_GENERATION_LIMITS.imageBytes / 1024 / 1024) })}</p>
+        {sourceFailure && <p className="image-error" role="alert">{sourceFailure}</p>}
+        {source && sourcePreviewUrl.current && <div className="image-source-preview"><img src={sourcePreviewUrl.current} alt={t('generate.sourcePreviewAlt')} /><div className="image-source-copy"><strong dir="auto">{source.name}</strong><small>{bytesLabel(source.bytes)}</small><ActionButton reasonCode="busy" type="button" className="text-button" onClick={() => { clearSource(); resetRequestIdentity() }}>{t('generate.clearSource')}</ActionButton></div></div>}
+      </div></div>
       <div className="image-field"><label htmlFor={`${prefix}-prompt`}>{t('generate.prompt')}</label><div><textarea id={`${prefix}-prompt`} rows={5} maxLength={IMAGE_GENERATION_LIMITS.prompt} value={prompt} placeholder={t('generate.promptPlaceholder')} onChange={event => { setPrompt(event.target.value); resetRequestIdentity() }} /><p className="image-hint">{t('generate.promptHint', { max: formatNumber(IMAGE_GENERATION_LIMITS.prompt) })}</p></div></div>
       <details className="image-overrides"><summary>{t('generate.overrides')}</summary><p className="image-hint">{t('generate.overridesHint')}</p><div className="image-field"><label htmlFor={`${prefix}-generate-size`}>{t('generate.size')}</label><div><input id={`${prefix}-generate-size`} value={overrideSize} maxLength={200} placeholder={config?.size || ''} onChange={event => { setOverrideSize(event.target.value); resetRequestIdentity() }} /></div></div><div className="image-field"><label htmlFor={`${prefix}-generate-quality`}>{t('generate.quality')}</label><div><input id={`${prefix}-generate-quality`} value={overrideQuality} maxLength={200} placeholder={config?.quality || ''} onChange={event => { setOverrideQuality(event.target.value); resetRequestIdentity() }} /></div></div><div className="image-field"><label htmlFor={`${prefix}-generate-format`}>{t('generate.responseFormat')}</label><div><select id={`${prefix}-generate-format`} value={overrideFormat} onChange={event => { setOverrideFormat(event.target.value as ImageGenerationResponseFormat); resetRequestIdentity() }}>{formats.map(value => <option key={value || 'empty'} value={value}>{value ? (value === 'b64_json' ? t('config.format.b64') : value) : t('config.format.empty')}</option>)}</select></div></div></details>
       {generateFailure && <div className="image-notice" role="alert"><AlertCircle size={16} aria-hidden="true" /><span>{generateFailure}</span></div>}
-      {!confirming ? <button type="button" className="button button-primary" disabled={!canGenerate} onClick={() => { setConfirming(true); setGenerateFailure(null) }}><ImagePlus size={16} aria-hidden="true" />{t('generate.button')}</button> : <div className="image-confirm" role="group" aria-label={t('generate.confirmTitle')}><strong>{t('generate.confirmTitle')}</strong><p>{t('generate.confirmText')}</p><div className="image-form-actions"><button type="button" className="button button-secondary" disabled={generating} onClick={() => setConfirming(false)}>{t('generate.cancel')}</button><button type="button" className="button button-primary" disabled={generating || hasActive || !config?.ready || configDirty} onClick={() => void submitGeneration()}>{generating ? t('generate.submitting') : t('generate.confirm')}</button></div></div>}
+      {!confirming ? <ActionButton reasonCode={!config?.ready ? 'configure' : configDirty ? 'draft' : hasActive ? 'active' : 'prompt'} type="button" className="button button-primary" disabled={!canGenerate} onClick={() => { setConfirming(true); setGenerateFailure(null) }}><ImagePlus size={16} aria-hidden="true" />{t(source ? 'generate.editButton' : 'generate.button')}</ActionButton> : <div className="image-confirm" role="group" aria-label={t(source ? 'generate.editConfirmTitle' : 'generate.confirmTitle')}><strong>{t(source ? 'generate.editConfirmTitle' : 'generate.confirmTitle')}</strong><p>{t(source ? 'generate.editConfirmText' : 'generate.confirmText')}</p><div className="image-form-actions"><ActionButton reasonCode="busy" type="button" className="button button-secondary" disabled={generating} onClick={() => setConfirming(false)}>{t('generate.cancel')}</ActionButton><ActionButton reasonCode={generating || hasActive ? 'active' : !config?.ready ? 'configure' : 'draft'} type="button" className="button button-primary" disabled={generating || hasActive || !config?.ready || configDirty} onClick={() => void submitGeneration()}>{generating ? t('generate.submitting') : t('generate.confirm')}</ActionButton></div></div>}
     </section>
 
     <div className="image-lower">
       <section className="image-block" aria-labelledby={`${prefix}-jobs-title`}>
-        <div className="image-block-heading"><div><h3 id={`${prefix}-jobs-title`}>{t('jobs.title')}</h3><p>{t('jobs.description')}</p></div><button type="button" className="text-button" disabled={listLoading || hasActive} onClick={() => void loadJobs(jobsPage?.offset ?? 0)}><RefreshCw size={14} aria-hidden="true" />{t('jobs.refresh')}</button></div>
+        <div className="image-block-heading"><div><h3 id={`${prefix}-jobs-title`}>{t('jobs.title')}</h3><p>{t('jobs.description')}</p></div><ActionButton reasonCode={listLoading ? 'loading' : 'active'} type="button" className="text-button" disabled={listLoading || hasActive} onClick={() => void loadJobs(jobsPage?.offset ?? 0)}><RefreshCw size={14} aria-hidden="true" />{t('jobs.refresh')}</ActionButton></div>
         {listFailure && <div className="image-notice" role="alert"><AlertCircle size={16} aria-hidden="true" /><span>{listFailure}</span></div>}
         {listLoading && !jobsPage && <p className="image-loading" role="status"><LoaderCircle size={15} aria-hidden="true" />{t('jobs.loading')}</p>}
         {jobsPage && jobs.length === 0 && <div className="image-empty"><ImageOff size={26} aria-hidden="true" /><h4>{t('jobs.empty')}</h4><p>{t('jobs.emptyHelp')}</p></div>}
-        {jobs.length > 0 && <ol className="image-jobs">{jobs.map(job => <li key={job.jobId} className="image-job"><div className="image-job-head"><span className={`status-badge image-job-status image-job-status-${job.status}`}>{t(`jobs.status.${job.status}`)}</span><time dateTime={job.createdAt}>{formatDateTime(job.createdAt)}</time></div><p className="image-job-prompt" dir="auto">{job.prompt}</p><div className="image-job-meta"><span>{t('jobs.model', { model: job.model })}</span>{job.assetIds.length > 0 && <span>{t('jobs.assets', { count: job.assetIds.length, value: formatNumber(job.assetIds.length) })}</span>}</div>{job.error && <p className="image-error">{t('jobs.error', { message: jobErrorText(job.error) })}</p>}{job.status === 'unknown' && <p className="image-warning">{t('jobs.unknownNotice')}</p>}{job.assetIds.length > 0 && <div className="image-asset-links">{job.assetIds.map(assetId => <button key={assetId} type="button" className="text-button" disabled={previewLoading} onClick={() => void openAsset(assetId)}>{t('jobs.viewAssets')}</button>)}</div>}</li>)}</ol>}
-        {jobsPage && jobsPage.total > 0 && <nav className="image-pagination" aria-label={t('jobs.title')}><span>{t('jobs.page', { start: formatNumber(jobsPage.total ? jobsPage.offset + 1 : 0), end: formatNumber(Math.min(jobsPage.offset + jobsPage.items.length, jobsPage.total)), total: formatNumber(jobsPage.total) })}</span><div><button type="button" className="button button-secondary" aria-label={t('jobs.previous')} disabled={listLoading || jobsPage.offset === 0} onClick={() => void loadJobs(Math.max(0, jobsPage.offset - jobsPage.limit))}><ChevronLeft size={16} aria-hidden="true" /></button><button type="button" className="button button-secondary" aria-label={t('jobs.next')} disabled={listLoading || !jobsPage.hasMore} onClick={() => void loadJobs(jobsPage.nextOffset ?? 0)}><ChevronRight size={16} aria-hidden="true" /></button></div></nav>}
+        {jobs.length > 0 && <ol className="image-jobs">{jobs.map(job => <li key={job.jobId} className="image-job"><div className="image-job-head"><span className={`status-badge image-job-status image-job-status-${job.status}`}>{t(`jobs.status.${job.status}`)}</span><time dateTime={job.createdAt}>{formatDateTime(job.createdAt)}</time></div><p className="image-job-prompt" dir="auto">{job.prompt}</p><div className="image-job-meta"><span>{t('jobs.model', { model: job.model })}</span>{job.source && <span>{t(job.source.kind === 'received' ? 'jobs.source.received' : job.source.kind === 'asset' ? 'jobs.source.asset' : 'jobs.source.upload')}</span>}{job.assetIds.length > 0 && <span>{t('jobs.assets', { count: job.assetIds.length, value: formatNumber(job.assetIds.length) })}</span>}</div>{job.error && <p className="image-error">{t('jobs.error', { message: jobErrorText(job.error) })}</p>}{job.status === 'unknown' && <p className="image-warning">{t('jobs.unknownNotice')}</p>}{job.assetIds.length > 0 && <div className="image-asset-links">{job.assetIds.map(assetId => <ActionButton reasonCode="preview" key={assetId} type="button" className="text-button" disabled={previewLoading} onClick={() => void openAsset(assetId)}>{t('jobs.viewAssets')}</ActionButton>)}</div>}</li>)}</ol>}
+        {jobsPage && jobsPage.total > 0 && <nav className="image-pagination" aria-label={t('jobs.title')}><span>{t('jobs.page', { start: formatNumber(jobsPage.total ? jobsPage.offset + 1 : 0), end: formatNumber(Math.min(jobsPage.offset + jobsPage.items.length, jobsPage.total)), total: formatNumber(jobsPage.total) })}</span><div><ActionButton reasonCode={listLoading ? 'loading' : 'firstPage'} type="button" className="button button-secondary" aria-label={t('jobs.previous')} disabled={listLoading || jobsPage.offset === 0} onClick={() => void loadJobs(Math.max(0, jobsPage.offset - jobsPage.limit))}><ChevronLeft size={16} aria-hidden="true" /></ActionButton><ActionButton reasonCode={listLoading ? 'loading' : 'lastPage'} type="button" className="button button-secondary" aria-label={t('jobs.next')} disabled={listLoading || !jobsPage.hasMore} onClick={() => void loadJobs(jobsPage.nextOffset ?? 0)}><ChevronRight size={16} aria-hidden="true" /></ActionButton></div></nav>}
       </section>
 
       <section className="image-block" aria-labelledby={`${prefix}-assets-title`}>
-        <div className="image-block-heading"><div><h3 id={`${prefix}-assets-title`}>{t('resources.title')}</h3><p>{t('resources.description')}</p></div><button type="button" className="text-button" disabled={listLoading} onClick={() => void loadAssets(assetsPage?.offset ?? 0)}><RefreshCw size={14} aria-hidden="true" />{t('resources.refresh')}</button></div>
+        <div className="image-block-heading"><div><h3 id={`${prefix}-assets-title`}>{t('resources.title')}</h3><p>{t('resources.description')}</p></div><ActionButton reasonCode="busy" type="button" className="text-button" disabled={listLoading} onClick={() => void loadAssets(assetsPage?.offset ?? 0)}><RefreshCw size={14} aria-hidden="true" />{t('resources.refresh')}</ActionButton></div>
         {assetsPage && assets.length === 0 && <div className="image-empty"><ImageOff size={26} aria-hidden="true" /><h4>{t('resources.empty')}</h4><p>{t('resources.emptyHelp')}</p></div>}
-        {assets.length > 0 && <ul className="image-assets">{assets.map(asset => <li key={asset.assetId}><button type="button" className="image-asset-row" disabled={previewLoading} onClick={() => void openAsset(asset.assetId)}><span className="image-asset-copy"><strong dir="auto">{asset.prompt}</strong><small>{t('resources.bytes', { size: bytesLabel(asset.bytes), type: asset.mimeType })} · {t('resources.created', { time: formatDateTime(asset.createdAt) })}</small></span><ChevronRight size={15} aria-hidden="true" /></button></li>)}</ul>}
-        {assetsPage && assetsPage.total > 0 && <nav className="image-pagination" aria-label={t('resources.title')}><span>{t('resources.page', { start: formatNumber(assetsPage.total ? assetsPage.offset + 1 : 0), end: formatNumber(Math.min(assetsPage.offset + assetsPage.items.length, assetsPage.total)), total: formatNumber(assetsPage.total) })}</span><div><button type="button" className="button button-secondary" aria-label={t('resources.previous')} disabled={listLoading || assetsPage.offset === 0} onClick={() => void loadAssets(Math.max(0, assetsPage.offset - assetsPage.limit))}><ChevronLeft size={16} aria-hidden="true" /></button><button type="button" className="button button-secondary" aria-label={t('resources.next')} disabled={listLoading || !assetsPage.hasMore} onClick={() => void loadAssets(assetsPage.nextOffset ?? 0)}><ChevronRight size={16} aria-hidden="true" /></button></div></nav>}
+        {assets.length > 0 && <ul className="image-assets">{assets.map(asset => <li key={asset.assetId}><ActionButton reasonCode="preview" type="button" className="image-asset-row" disabled={previewLoading} onClick={() => void openAsset(asset.assetId)}><span className="image-asset-copy"><strong dir="auto">{asset.prompt}</strong><small>{t('resources.bytes', { size: bytesLabel(asset.bytes), type: asset.mimeType })} · {t('resources.created', { time: formatDateTime(asset.createdAt) })}</small></span><ChevronRight size={15} aria-hidden="true" /></ActionButton></li>)}</ul>}
+        {assetsPage && assetsPage.total > 0 && <nav className="image-pagination" aria-label={t('resources.title')}><span>{t('resources.page', { start: formatNumber(assetsPage.total ? assetsPage.offset + 1 : 0), end: formatNumber(Math.min(assetsPage.offset + assetsPage.items.length, assetsPage.total)), total: formatNumber(assetsPage.total) })}</span><div><ActionButton reasonCode={listLoading ? 'loading' : 'firstPage'} type="button" className="button button-secondary" aria-label={t('resources.previous')} disabled={listLoading || assetsPage.offset === 0} onClick={() => void loadAssets(Math.max(0, assetsPage.offset - assetsPage.limit))}><ChevronLeft size={16} aria-hidden="true" /></ActionButton><ActionButton reasonCode={listLoading ? 'loading' : 'lastPage'} type="button" className="button button-secondary" aria-label={t('resources.next')} disabled={listLoading || !assetsPage.hasMore} onClick={() => void loadAssets(assetsPage.nextOffset ?? 0)}><ChevronRight size={16} aria-hidden="true" /></ActionButton></div></nav>}
         <div className="image-preview" aria-label={t('resources.preview')}>
           {previewLoading && <p className="image-loading" role="status"><LoaderCircle size={15} aria-hidden="true" />{t('resources.previewLoading')}</p>}
           {!previewLoading && !selected && <p className="image-empty-copy"><ImageOff size={22} aria-hidden="true" />{t('resources.previewEmpty')}</p>}
-          {!previewLoading && selected && previewUrl.current && <><img src={previewUrl.current} alt={t('resources.previewAlt')} /><div className="image-preview-actions"><small>{t('resources.sendable')} · {bytesLabel(selected.item.bytes)}</small><button type="button" className="text-button" onClick={clearPreview}>{t('resources.clearPreview')}</button></div></>}
+          {!previewLoading && selected && previewUrl.current && <><img src={previewUrl.current} alt={t('resources.previewAlt')} /><div className="image-preview-actions"><small>{t('resources.sendable')} · {bytesLabel(selected.item.bytes)}</small><ActionButton reasonCode="busy" type="button" className="text-button" onClick={clearPreview}>{t('resources.clearPreview')}</ActionButton></div></>}
           {previewFailure && <p className="image-error" role="alert">{previewFailure}</p>}
         </div>
       </section>

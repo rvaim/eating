@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { AlertCircle, ArrowLeft, ArrowRight, LoaderCircle, Package, Plus, Puzzle, RefreshCw, Trash2, X } from 'lucide-react'
+import { AlertCircle, ArrowRight, LoaderCircle, Package, Plus, Puzzle, RefreshCw, Trash2, X } from 'lucide-react'
 import type { ConnectionStatus, PluginKind } from '@eating/plugin-sdk'
-import { getErrorMessage, hostRequest, useI18n } from '@eating/ui-sdk'
+import { ActionButton, getErrorMessage, hostRequest, useI18n } from '@eating/ui-sdk'
 import type { ManagedPlugin } from '@eating/ui-sdk'
 import { PanelBoundary } from '../components/PanelBoundary'
 import { readPluginInstallPreview, readPluginPackages } from '../state/plugin-packages'
@@ -29,9 +29,10 @@ export function PluginsPage({ workspace, snapshot, selectedId, onFeedback }: {
   readonly selectedId: string | null
   readonly onFeedback: (message: string) => void
 }) {
-  return selectedId
+  const { t, formatNumber } = useI18n('app')
+  return <div className="robot-workspace plugins-workspace"><aside className="platform-sidebar plugins-sidebar" aria-label={t('plugins.navigation')}><p className="platform-nav-heading">{t('plugins.navigation')}<span>{formatNumber(workspace.catalog.length)}</span></p><nav aria-label={t('plugins.navigation')}><a href="#plugins" className={`platform-nav-item${!selectedId ? ' is-selected' : ''}`} aria-current={!selectedId ? 'page' : undefined}><Package size={17} aria-hidden="true" /><span>{t('plugins.manageAll')}</span></a><div className="platform-nav-divider" />{workspace.catalog.map(plugin => { const Icon = plugin.icon; return <a key={plugin.id} href={`#plugins/${encodeURIComponent(plugin.id)}`} className={`platform-nav-item${selectedId === plugin.id ? ' is-selected' : ''}`} aria-current={selectedId === plugin.id ? 'page' : undefined}><Icon size={17} aria-hidden="true" /><span>{plugin.name}</span></a> })}</nav></aside>{selectedId
     ? <PluginPanelPage workspace={workspace} snapshot={snapshot} pluginId={selectedId} onFeedback={onFeedback} />
-    : <PluginDirectoryPage workspace={workspace} onFeedback={onFeedback} />
+    : <PluginDirectoryPage workspace={workspace} onFeedback={onFeedback} />}</div>
 }
 
 function PluginDirectoryPage({ workspace, onFeedback }: {
@@ -156,26 +157,26 @@ function PluginDirectoryPage({ workspace, onFeedback }: {
   const showInstall = installOpen
 
   return <main id="main-content" className="robot-content plugins-page">
-    <div className="plugins-toolbar">
+    <div className="plugins-toolbar workspace-rail">
       <div className="plugins-filter" role="group" aria-label={t('plugins.filterLabel')}>
-        {filterValues.map(value => <button key={value} type="button" className={`plugins-filter-item${filter === value ? ' is-selected' : ''}`} aria-pressed={filter === value} onClick={() => setFilter(value)}>{t(`plugins.filter.${value}`)}</button>)}
+        {filterValues.map(value => <ActionButton reason={t('ui.reason.busy')} key={value} type="button" className={`plugins-filter-item${filter === value ? ' is-selected' : ''}`} aria-pressed={filter === value} onClick={() => setFilter(value)}>{t(`plugins.filter.${value}`)}</ActionButton>)}
       </div>
       <div className="plugins-toolbar-actions">
-        <button type="button" className="button button-secondary" disabled={loading || busy !== null} onClick={() => void refresh()}><RefreshCw size={16} aria-hidden="true" />{t(loading ? 'plugins.loading' : 'plugins.retry')}</button>
-        <button type="button" className="button button-primary" disabled={busy !== null} onClick={openInstall}><Plus size={16} aria-hidden="true" />{t('plugins.install')}</button>
+        <ActionButton reason={loading ? t('ui.reason.loading') : t('ui.reason.busy')} type="button" className="button button-secondary" disabled={loading || busy !== null} onClick={() => void refresh()}><RefreshCw size={16} aria-hidden="true" />{t(loading ? 'plugins.loading' : 'plugins.retry')}</ActionButton>
+        <ActionButton reason={t('ui.reason.busy')} type="button" className="button button-primary" disabled={busy !== null} onClick={openInstall}><Plus size={16} aria-hidden="true" />{t('plugins.install')}</ActionButton>
       </div>
     </div>
     {failure && <div className="plugins-alert" role="alert"><AlertCircle size={17} aria-hidden="true" /><p>{failure}</p></div>}
     {showInstall && <section className="plugins-install" aria-labelledby="plugins-install-title">
-      <div className="plugins-install-heading"><div><h2 id="plugins-install-title">{t('plugins.installTitle')}</h2><p>{t('plugins.installDescription')}</p></div><button type="button" className="icon-button" aria-label={t('plugins.cancel')} onClick={() => setInstallOpen(false)}><X size={18} aria-hidden="true" /></button></div>
-      <div className="field"><label htmlFor="plugins-source">{t('plugins.sourceDirectory')}</label><div className="plugins-source-row"><input id="plugins-source" value={source} maxLength={4096} autoComplete="off" spellCheck={false} placeholder={t('plugins.sourcePlaceholder')} onChange={event => { setSource(event.target.value); setPreview(null); setPreviewError(null) }} /><button type="button" className="button button-secondary" disabled={!source.trim() || previewing} onClick={() => void doPreview()}>{previewing ? t('plugins.previewing') : t('plugins.preview')}</button></div></div>
+      <div className="plugins-install-heading"><div><h2 id="plugins-install-title">{t('plugins.installTitle')}</h2><p>{t('plugins.installDescription')}</p></div><ActionButton reason={t('ui.reason.busy')} type="button" className="icon-button" aria-label={t('plugins.cancel')} onClick={() => setInstallOpen(false)}><X size={18} aria-hidden="true" /></ActionButton></div>
+      <div className="field"><label htmlFor="plugins-source">{t('plugins.sourceDirectory')}</label><div className="plugins-source-row"><input id="plugins-source" value={source} maxLength={4096} autoComplete="off" spellCheck={false} placeholder={t('plugins.sourcePlaceholder')} onChange={event => { setSource(event.target.value); setPreview(null); setPreviewError(null) }} /><ActionButton reason={!source.trim() ? t('ui.reason.source') : t('ui.reason.busy')} type="button" className="button button-secondary" disabled={!source.trim() || previewing} onClick={() => void doPreview()}>{previewing ? t('plugins.previewing') : t('plugins.preview')}</ActionButton></div></div>
       {previewError && <p className="field-error" role="alert">{previewError}</p>}
       {preview && <div className="plugins-preview">
         <div className="plugins-preview-head"><Package size={18} aria-hidden="true" /><div><strong>{t('plugins.manifest', { name: preview.manifest.name, version: preview.manifest.version })}</strong><p><code>{preview.manifest.id}</code> · {t(`plugins.kind.${preview.manifest.kind}`)} · {t('plugins.apiVersion', { version: String(preview.manifest.apiVersion) })}</p></div></div>
         <p className="plugins-preview-description">{preview.manifest.description}</p>
         <dl className="plugins-preview-facts"><div><dt>{t('plugins.packageBytes')}</dt><dd>{formatBytes(preview.packageBytes)}</dd></div><div><dt>{t('plugins.digest')}</dt><dd><code>{preview.digest.slice(0, 24)}</code></dd></div></dl>
         <p className="plugins-warning">{t('plugins.installWarning')}</p>
-        <div className="plugins-inline-actions"><button type="button" className="button button-primary" disabled={installing || busy !== null} onClick={() => void install()}>{installing ? t('plugins.installing') : t('plugins.confirmInstall')}</button><button type="button" className="button button-secondary" disabled={installing} onClick={() => setInstallOpen(false)}>{t('plugins.cancel')}</button></div>
+        <div className="plugins-inline-actions"><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-primary" disabled={installing || busy !== null} onClick={() => void install()}>{installing ? t('plugins.installing') : t('plugins.confirmInstall')}</ActionButton><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-secondary" disabled={installing} onClick={() => setInstallOpen(false)}>{t('plugins.cancel')}</ActionButton></div>
       </div>}
     </section>}
     {loading && packages === null && <p className="plugins-loading" role="status"><LoaderCircle size={16} aria-hidden="true" />{t('plugins.loading')}</p>}
@@ -212,13 +213,13 @@ function PluginRow({ plugin, catalog, busy, confirming, onToggle, onUninstall, o
       <span className={`status-badge plugins-status plugins-status-${plugin.status.state}`}>{t(statusText(plugin.kind, plugin.status.state))}</span>
     </div>
     <div className="plugins-actions">
-      <button type="button" className="button button-secondary" disabled={busy !== null} onClick={onToggle}>{toggling ? (plugin.enabled ? t('plugins.disabling') : t('plugins.enabling')) : (plugin.enabled ? t('plugins.disable') : t('plugins.enable'))}</button>
+      <ActionButton reason={t('ui.reason.busy')} type="button" className="button button-secondary" disabled={busy !== null} onClick={onToggle}>{toggling ? (plugin.enabled ? t('plugins.disabling') : t('plugins.enabling')) : (plugin.enabled ? t('plugins.disable') : t('plugins.enable'))}</ActionButton>
       {plugin.frontend && <a className="button button-secondary" href={`#plugins/${encodeURIComponent(plugin.id)}`}>{t('plugins.openPanel')}</a>}
       {business && <a className="text-button" href={business}>{t('plugins.businessConfiguration')}<ArrowRight size={14} aria-hidden="true" /></a>}
-      <button type="button" className="text-button" disabled={busy !== null} onClick={onUpdate}>{t('plugins.update')}</button>
-      <button type="button" className="text-button plugins-uninstall-trigger" disabled={busy !== null} onClick={onConfirm}><Trash2 size={14} aria-hidden="true" />{t('plugins.uninstall')}</button>
+      <ActionButton reason={t('ui.reason.busy')} type="button" className="text-button" disabled={busy !== null} onClick={onUpdate}>{t('plugins.update')}</ActionButton>
+      <ActionButton reason={t('ui.reason.busy')} type="button" className="text-button plugins-uninstall-trigger" disabled={busy !== null} onClick={onConfirm}><Trash2 size={14} aria-hidden="true" />{t('plugins.uninstall')}</ActionButton>
     </div>
-    {confirming && <div className="plugins-confirm" role="alertdialog" aria-label={t('plugins.uninstallTitle', { name: plugin.name })}><div><strong>{t('plugins.uninstallTitle', { name: plugin.name })}</strong><p>{t('plugins.uninstallDescription')}</p></div><div className="plugins-inline-actions"><button type="button" className="button button-secondary" disabled={uninstalling} onClick={onCancel}>{t('plugins.cancel')}</button><button type="button" className="button button-danger" disabled={uninstalling || busy !== null} onClick={onUninstall}>{uninstalling ? t('plugins.uninstalling') : t('plugins.confirmUninstall')}</button></div></div>}
+    {confirming && <div className="plugins-confirm" role="alertdialog" aria-label={t('plugins.uninstallTitle', { name: plugin.name })}><div><strong>{t('plugins.uninstallTitle', { name: plugin.name })}</strong><p>{t('plugins.uninstallDescription')}</p></div><div className="plugins-inline-actions"><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-secondary" disabled={uninstalling} onClick={onCancel}>{t('plugins.cancel')}</ActionButton><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-danger" disabled={uninstalling || busy !== null} onClick={onUninstall}>{uninstalling ? t('plugins.uninstalling') : t('plugins.confirmUninstall')}</ActionButton></div></div>}
   </section>
 }
 
@@ -282,17 +283,17 @@ function PluginPanelPage({ workspace, snapshot, pluginId, onFeedback }: {
   return <main id="main-content" className="robot-content plugins-page plugin-panel-page">
     <div className="plugins-panel-head">
       <div className="plugins-panel-title"><div className="plugins-symbol" style={{ color: plugin.brandColor }}><Icon size={24} aria-hidden="true" /></div><div><h2>{plugin.name}<span className="version-label">v{plugin.version}</span></h2><p>{t(`plugins.kind.${plugin.kind}`)} · {t('plugins.detailDescription')}</p></div></div>
-      <div className="plugins-panel-actions"><span className={`status-badge plugins-status plugins-status-${state}`}>{t(statusText(plugin.kind, state))}</span><a className="text-button" href="#plugins"><ArrowLeft size={14} aria-hidden="true" />{t('plugins.backToList')}</a></div>
+      <div className="plugins-panel-actions"><span className={`status-badge plugins-status plugins-status-${state}`}>{t(statusText(plugin.kind, state))}</span></div>
     </div>
     {failure && <div className="plugins-alert" role="alert"><AlertCircle size={17} aria-hidden="true" /><p>{failure}</p></div>}
     <PanelBoundary key={plugin.id}><plugin.Panel saved={snapshot.configurations[plugin.id]} initialValues={plugin.initialValues} onSave={values => workspace.save(plugin.id, values)} onFeedback={onFeedback} onRefresh={() => workspace.refresh()} /></PanelBoundary>
     <section className="plugins-panel-footer" aria-label={t('plugins.panelActions')}>
       <div className="plugins-panel-actions">
-        <button type="button" className="button button-secondary" disabled={busy} onClick={() => void toggle(enabled)}>{busy ? t('plugins.busy') : t(enabled ? 'plugins.disable' : 'plugins.enable')}</button>
+        <ActionButton reason={t('ui.reason.busy')} type="button" className="button button-secondary" disabled={busy} onClick={() => void toggle(enabled)}>{busy ? t('plugins.busy') : t(enabled ? 'plugins.disable' : 'plugins.enable')}</ActionButton>
         {business && <a className="text-button" href={business}>{t('plugins.businessConfiguration')}<ArrowRight size={14} aria-hidden="true" /></a>}
-        {!confirming && <button type="button" className="text-button plugins-uninstall-trigger" disabled={busy} onClick={() => setConfirming(true)}><Trash2 size={14} aria-hidden="true" />{t('plugins.uninstall')}</button>}
+        {!confirming && <ActionButton reason={t('ui.reason.busy')} type="button" className="text-button plugins-uninstall-trigger" disabled={busy} onClick={() => setConfirming(true)}><Trash2 size={14} aria-hidden="true" />{t('plugins.uninstall')}</ActionButton>}
       </div>
-      {confirming && <div className="plugins-confirm" role="alertdialog" aria-label={t('plugins.uninstallTitle', { name: plugin.name })}><div><strong>{t('plugins.uninstallTitle', { name: plugin.name })}</strong><p>{t('plugins.uninstallDescription')}</p></div><div className="plugins-inline-actions"><button type="button" className="button button-secondary" disabled={busy} onClick={() => setConfirming(false)}>{t('plugins.cancel')}</button><button type="button" className="button button-danger" disabled={busy} onClick={() => void uninstall()}>{busy ? t('plugins.uninstalling') : t('plugins.confirmUninstall')}</button></div></div>}
+      {confirming && <div className="plugins-confirm" role="alertdialog" aria-label={t('plugins.uninstallTitle', { name: plugin.name })}><div><strong>{t('plugins.uninstallTitle', { name: plugin.name })}</strong><p>{t('plugins.uninstallDescription')}</p></div><div className="plugins-inline-actions"><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-secondary" disabled={busy} onClick={() => setConfirming(false)}>{t('plugins.cancel')}</ActionButton><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-danger" disabled={busy} onClick={() => void uninstall()}>{busy ? t('plugins.uninstalling') : t('plugins.confirmUninstall')}</ActionButton></div></div>}
     </section>
   </main>
 }

@@ -6,6 +6,11 @@ import { join } from 'node:path'
 import { composeAgentPrompt, isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { AgentInvocationScope, HarnessDeliveryBatch, HarnessHostServices, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { readRestrictedJson, writeRestrictedJson } from './config'
+import type { DshAutonomy } from './autonomy'
+import type { ProactiveTarget } from '@eating/plugin-sdk'
+
+interface ProactiveTask { taskId: string; cycleId: string; contextRef: string; nonce: string; state: 'pending' | 'completed' | 'failed' | 'unknown' | 'reviewed' }
+interface ProactiveBinding { key: string; parentId: string; agentId: string; target: ProactiveTarget; task: ProactiveTask; taskRefs: ProactiveTask[] }
 
 interface AgentTaskReference {
   readonly contextRef: string
@@ -32,6 +37,12 @@ function fail(code: string, message: string): never { throw new PlatformError(co
 /** Body-free trusted bindings and a runtime-only, loopback management capability. */
 export class DshAgentControl {
   private readonly file: string
+  private readonly proactiveFile: string
+  private proactiveBindings: ProactiveBinding[] = []
+  private proactivePersistenceFailed = false
+  private activity: DshAutonomy | null = null
+  private rootId: () => string | null = () => null
+  private runtimeReady: () => boolean = () => false
   private bindings: AgentBinding[] = []
   private server: Server | null = null
   private secret = ''
@@ -46,6 +57,21 @@ export class DshAgentControl {
   constructor(directory: string, private readonly host: HarnessHostServices) {
     if (typeof host.getCapabilityMcpConnections !== 'function' || typeof host.getMcpConnection !== 'function' || typeof host.readAgentActions !== 'function' || typeof host.revokeAgentAccess !== 'function') fail('HARNESS_SERVICES_INVALID', 'Host 未提供当前必需的子代理权限与动作回执接口。')
     this.file = join(directory, 'agent-bindings.json')
+    this.proactiveFile = join(directory, 'proactive-bindings.json')
+    try { if (statSync(this.proactiveFile).size > 256 * 1024) fail('PROACTIVE_BINDINGS_INVALID', '主动联系绑定文件过大。') } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    const proactive = readRestrictedJson(this.proactiveFile)
+    if (proactive) {
+      if (proactive.schemaVersion !== 1 || Object.keys(proactive).length !== 2 || !Array.isArray(proactive.bindings) || proactive.bindings.length > 100 || Buffer.byteLength(JSON.stringify(proactive)) > 256 * 1024) fail('PROACTIVE_BINDINGS_INVALID', '主动联系绑定文件无效，未覆盖。')
+      const seen = new Set<string>()
+      for (const row of proactive.bindings) {
+        if (!isJsonObject(row) || Object.keys(row).length !== 6 || typeof row.key !== 'string' || !DIGEST.test(row.key) || !opaque(row.agentId) || !UUID.test(row.agentId) || !opaque(row.parentId) || !UUID.test(row.parentId) || !isJsonObject(row.target) || !isJsonObject(row.task) || seen.has(row.agentId)) fail('PROACTIVE_BINDINGS_INVALID', '主动联系绑定无效。')
+        const task = row.task
+        if (!['id', 'label', 'pluginId', 'instanceId', 'accountId', 'agentTypeId', 'targetId'].every(key => opaque((row.target as JsonObject)[key])) || !Array.isArray(row.target.toolNames) || row.target.toolNames.some(name => !opaque(name)) || typeof task.taskId !== 'string' || !DIGEST.test(task.taskId) || typeof task.contextRef !== 'string' || !DIGEST.test(task.contextRef) || !opaque(task.cycleId) || !opaque(task.nonce) || !['pending', 'completed', 'failed', 'unknown', 'reviewed'].includes(String(task.state))) fail('PROACTIVE_BINDINGS_INVALID', '主动联系任务无效。')
+        if (!Array.isArray(row.taskRefs) || row.taskRefs.length > MAX_TASK_REFERENCES || row.taskRefs.some(ref => !isJsonObject(ref) || Object.keys(ref).length !== 5 || typeof ref.taskId !== 'string' || !DIGEST.test(ref.taskId) || typeof ref.contextRef !== 'string' || !DIGEST.test(ref.contextRef) || !opaque(ref.cycleId) || !opaque(ref.nonce) || !['pending', 'completed', 'failed', 'unknown', 'reviewed'].includes(String(ref.state))) || !row.taskRefs.some(ref => isJsonObject(ref) && ref.taskId === task.taskId && ref.state === task.state)) fail('PROACTIVE_BINDINGS_INVALID', '主动联系调用索引无效。')
+        seen.add(row.agentId)
+      }
+      this.proactiveBindings = structuredClone(proactive.bindings) as unknown as ProactiveBinding[]
+    }
     try { if (statSync(this.file).size > 1024 * 1024) fail('AGENT_BINDINGS_INVALID', '子代理绑定文件过大。') }
     catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error }
     const stored = readRestrictedJson(this.file)
@@ -63,6 +89,60 @@ export class DshAgentControl {
         return structuredClone(entry) as unknown as AgentBinding
       })
     }
+  }
+
+  setAutonomy(activity: DshAutonomy, rootId: () => string | null, runtimeReady: () => boolean): void { this.activity = activity; this.rootId = rootId; this.runtimeReady = runtimeReady }
+  proactiveStatus(): JsonObject[] { return this.proactiveBindings.map(binding => ({ agentId: binding.agentId, targetId: binding.target.id, label: binding.target.label, taskId: binding.task.taskId, state: binding.task.state })) }
+  private saveProactive(): void {
+    const value = { schemaVersion: 1, bindings: this.proactiveBindings as unknown as JsonValue[] }
+    if (Buffer.byteLength(JSON.stringify(value)) > 256 * 1024) fail('PROACTIVE_BINDINGS_CAPACITY', '主动联系索引达到容量上限。')
+    try { writeRestrictedJson(this.proactiveFile, value) }
+    catch (error) { this.proactivePersistenceFailed = true; for (const binding of this.proactiveBindings) this.host.revokeAgentAccess(binding.agentId); throw error }
+  }
+  private setProactiveState(binding: ProactiveBinding, state: ProactiveTask['state']): void { binding.task.state = state; binding.taskRefs = binding.taskRefs.map(ref => ref.taskId === binding.task.taskId ? { ...ref, state } : ref) }
+  revokeProactive(): void {
+    let changed = false
+    for (const binding of this.proactiveBindings) {
+      this.host.revokeAgentAccess(binding.agentId)
+      if (binding.task.state === 'pending') { this.setProactiveState(binding, 'unknown'); changed = true }
+    }
+    if (changed) this.saveProactive()
+  }
+  acknowledgeProactive(agentId: string, taskId: string): void {
+    const binding = this.proactiveBindings.find(binding => binding.agentId === agentId && binding.task.taskId === taskId)
+    if (!binding || !['pending', 'unknown'].includes(binding.task.state) || this.activity?.activeCycle()) fail('PROACTIVE_TASK_CONFLICT', '请在自主轮次结束后核对对应未知任务。')
+    this.host.revokeAgentAccess(agentId); this.setProactiveState(binding, 'reviewed'); this.saveProactive()
+  }
+  private async prepareProactive(body: JsonObject, signal: AbortSignal): Promise<JsonObject> {
+    const activity = this.activity, rootId = this.rootId()
+    if (this.proactivePersistenceFailed) fail('PROACTIVE_PERSISTENCE_FAILED', '主动联系状态保存失败，已停止新任务。')
+    if (!activity || body.agentId !== rootId || typeof body.targetId !== 'string' || typeof body.cycleId !== 'string' || typeof body.taskId !== 'string' || !DIGEST.test(body.taskId) || Object.keys(body).length !== 4 || !this.host.prepareProactiveScope) fail('AUTONOMY_SCOPE_INVALID', '主动任务缺少真实自主轮次和目标绑定。')
+    const target = await activity.prepareTarget(this.nonce, body.cycleId, body.targetId)
+    signal.throwIfAborted()
+    const key = createHash('sha256').update(JSON.stringify([rootId, target.pluginId, target.instanceId, target.accountId, target.agentTypeId, target.targetId])).digest('hex')
+    const previous = this.proactiveBindings.find(binding => binding.key === key)
+    if (previous && (previous.taskRefs.some(ref => ref.taskId === body.taskId) || ['pending', 'unknown'].includes(previous.task.state))) fail('PROACTIVE_TASK_UNKNOWN', '已有联系任务待核对或此调用已提交，未重复执行。')
+    if (previous && previous.taskRefs.filter(ref => ref.cycleId === body.cycleId).length >= MAX_TASK_REFERENCES) fail('PROACTIVE_TASK_CAPACITY', '本自主轮次对此目标的委派次数达到上限。')
+    if (!previous && this.proactiveBindings.length >= 100) fail('PROACTIVE_BINDINGS_CAPACITY', '主动会话绑定数量达到上限。')
+    const agentId = previous?.agentId ?? randomUUID()
+    const scope = this.host.prepareProactiveScope(target.pluginId, { ...target, agentId })
+    const owner = this.host.readOwnerConfiguration(), type = owner.agentTypes.find(type => type.id === target.agentTypeId && type.pluginId === target.pluginId && type.enabled)
+    if (!type || target.toolNames.some(name => !type.enabledTools.includes(name))) fail('AUTONOMY_TARGET_DENIED', '当前类型或工具已撤权。')
+    const contextRef = createHash('sha256').update('eating-autonomy\0' + body.cycleId).digest('hex')
+    let mcp, capabilities
+    try {
+      mcp = this.host.getMcpConnection(target.pluginId, scope, { toolNames: target.toolNames, active: () => activity.targetStillAllowed(this.nonce, String(body.cycleId), target) && this.runtimeReady() })
+      capabilities = this.host.getCapabilityMcpConnections({ agentId, agentTypeId: type.id, source: scope })
+      signal.throwIfAborted()
+      const task: ProactiveTask = { taskId: body.taskId, cycleId: body.cycleId, contextRef, nonce: this.nonce, state: 'pending' }
+      const binding: ProactiveBinding = { key, parentId: rootId!, agentId, target, task, taskRefs: [...(previous?.taskRefs ?? []), task].slice(-MAX_TASK_REFERENCES) }
+      activity.countContact()
+      this.proactiveBindings = previous ? this.proactiveBindings.map(row => row === previous ? binding : row) : [...this.proactiveBindings, binding]
+      this.saveProactive()
+    } catch (error) { this.host.revokeAgentAccess(agentId); throw error }
+    const preview = composeAgentPrompt(owner, type.id, { 当前时间: new Date().toISOString(), 人格名称: owner.activePersona?.name ?? '', 平台: scope.pluginId, 机器人账号: scope.accountId, 会话编号: scope.conversationId, 会话类型: scope.kind, 目标编号: scope.targetId })
+    this.actionBaselines.set(agentId, new Map(this.host.readAgentActions(agentId).map(action => [action.requestId, JSON.stringify(action)])))
+    return { agentId, agentTypeId: type.id, systemPrompt: preview.systemPrompt, revision: preview.revision, contextRef, label: target.label, scope: { pluginId: scope.pluginId, accountId: scope.accountId, targetId: scope.targetId, conversationId: scope.conversationId, kind: scope.kind }, tools: [...target.toolNames], mcp: { url: mcp.url, headers: { ...mcp.headers } }, capabilities: capabilities.map(connection => ({ ...connection, tools: [...connection.tools], headers: { ...connection.headers } })) }
   }
 
   list(): readonly AgentBinding[] { return this.bindings }
@@ -112,6 +192,40 @@ export class DshAgentControl {
         for await (const chunk of request) { controller.signal.throwIfAborted(); length += chunk.length; if (length > 8192) fail('CONTROL_REQUEST_INVALID', '运行时请求过大。'); chunks.push(Buffer.from(chunk)) }
         const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
         if (!isJsonObject(body) || !opaque(body.agentId)) fail('CONTROL_REQUEST_INVALID', '运行时请求无效。')
+        if (request.url?.startsWith('/autonomy-')) {
+          if (!this.activity || body.agentId !== this.rootId()) fail('AUTONOMY_SCOPE_INVALID', '只有当前主Agent可操作自主安排。')
+          const operation = request.url.slice('/autonomy-'.length)
+          let result: JsonObject
+          if (operation === 'snapshot' && Object.keys(body).length === 1) result = { ...this.activity.snapshot(), externalPending: this.host.hasPendingMessages?.() ?? false, ready: this.runtimeReady() }
+          else if (operation === 'observe' && Object.keys(body).length === 2 && typeof body.phase === 'string') { this.activity.observe(body.phase); result = { observed: true } }
+          else if (operation === 'fault' && Object.keys(body).length === 1) result = this.activity.runtimeFault(this.nonce)
+          else if (operation === 'claim' && Object.keys(body).length === 1) { result = this.host.hasPendingMessages?.() ? { admitted: false } : this.activity.claim(this.nonce) }
+          else if (operation === 'valid' && Object.keys(body).length === 2 && typeof body.cycleId === 'string') result = { valid: this.activity.validCycle(this.nonce, body.cycleId) }
+          else if (operation === 'decide' && Object.keys(body).length === 2) result = this.activity.decide(this.nonce, body.decision)
+          else if (operation === 'finish' && Object.keys(body).length === 4 && typeof body.cycleId === 'string' && ['completed', 'failed', 'unknown', 'cancelled'].includes(String(body.outcome))) { result = this.activity.finish(this.nonce, body.cycleId, body.outcome as 'completed', typeof body.code === 'string' ? body.code : null); this.host.wake() }
+          else if (operation === 'targets' && Object.keys(body).length === 1) result = { targets: (await this.activity.listTargets()).map(target => ({ id: target.id, label: target.label, agentTypeId: target.agentTypeId, pluginId: target.pluginId, targetId: target.targetId, tools: [...target.toolNames] })) }
+          else fail('CONTROL_REQUEST_INVALID', '自主运行请求形状无效。')
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result)); return
+        }
+        if (request.url === '/prepare-proactive') {
+          const result = await this.prepareProactive(body, controller.signal)
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result)); return
+        }
+        const proactive = this.proactiveBindings.find(binding => binding.agentId === body.agentId)
+        if (proactive && (request.url === '/actions' || request.url === '/finish-task')) {
+          const task = proactive.task
+          if (body.contextRef !== task.contextRef || body.taskId !== task.taskId || task.nonce !== this.nonce || (request.url === '/actions' ? Object.keys(body).length !== 3 : Object.keys(body).length !== 4 || !['completed', 'failed', 'unknown'].includes(String(body.status)))) fail('PROACTIVE_TASK_CONFLICT', '主动任务回执与当前任务不匹配。')
+          let result: JsonObject
+          if (request.url === '/actions') {
+            const baseline = this.actionBaselines.get(proactive.agentId)
+            result = { actions: this.host.readAgentActions(proactive.agentId).filter(action => baseline?.get(action.requestId) !== JSON.stringify(action)) as unknown as JsonValue[] }
+          } else {
+            if (task.state !== 'pending') fail('PROACTIVE_TASK_UNKNOWN', '主动任务已撤销或待核对，迟到回执不能覆盖。')
+            this.host.revokeAgentAccess(proactive.agentId); this.actionBaselines.delete(proactive.agentId)
+            this.setProactiveState(proactive, body.status as 'completed'); this.saveProactive(); result = { ok: true }
+          }
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result)); return
+        }
         if (request.url === '/capabilities') {
           if (body.agentTypeId !== 'main' || Object.keys(body).some(key => !['agentId', 'agentTypeId'].includes(key))) fail('CONTROL_REQUEST_INVALID', '通用能力请求无效。')
           const connections = this.host.getCapabilityMcpConnections({ agentId: body.agentId, agentTypeId: 'main' })
@@ -176,6 +290,8 @@ export class DshAgentControl {
 
   async close(): Promise<void> {
     this.stopping = true
+    let persistenceError: unknown
+    try { this.revokeProactive() } catch (error) { persistenceError = error }
     this.actionBaselines.clear()
     for (const agentId of this.capabilityAgents) this.host.revokeAgentAccess(agentId)
     this.capabilityAgents.clear()
@@ -183,5 +299,6 @@ export class DshAgentControl {
     for (const binding of this.bindings) this.host.revokeAgentAccess(binding.scope.agentId)
     const server = this.server; this.server = null; this.activeContext = null; this.url = ''; this.secret = ''
     if (server) { const closed = new Promise<void>((accept, reject) => server.close(error => error ? reject(error) : accept())); server.closeAllConnections(); await closed }
+    if (persistenceError) throw persistenceError
   }
 }

@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { MutableRefObject } from 'react'
 import { isJsonObject } from '@eating/plugin-sdk'
 import type { AgentTypeDefinition, JsonObject, PluginToolDefinition } from '@eating/plugin-sdk'
-import { getErrorMessage, HostApiError, hostRequest, translate, useI18n } from '@eating/ui-sdk'
+import { ActionButton, getErrorMessage, HostApiError, hostRequest, translate, useI18n } from '@eating/ui-sdk'
 import type { QQAgentTools, QQAgentTypeId } from '../config'
 import { toolDescription, toolTitle } from './i18n'
 import type { QQTranslationKey } from './i18n'
@@ -133,7 +133,7 @@ export function AgentPolicyFields({ configuration, agentTypes, tools, enabled, c
   if (unreadable || !draft) return <>
     <div className="section-heading"><h3>{t('tabs.agentPolicy')}</h3><p>{t('policy.description')}</p></div>
     <div className="qq-error" role="alert"><div><p>{getErrorMessage(unreadable)}</p><details><summary>{t('error.details')}</summary><small>{t('error.code', { code: unreadable?.code ?? 'INVALID_HOST_RESPONSE' })}</small>{unreadable?.message && <p>{unreadable.message}</p>}</details></div></div>
-    <button type="button" className="button button-secondary" disabled={blocked} onClick={() => void discard()}>{t(reloading ? 'policy.reloading' : 'policy.discard')}</button>
+    <ActionButton reasonCode="busy" type="button" className="button button-secondary" disabled={blocked} onClick={() => void discard()}>{t(reloading ? 'policy.reloading' : 'policy.discard')}</ActionButton>
   </>
   const visibleTypes = agentTypes.filter(type => type.id === 'qq.private' || type.id === 'qq.group')
   return <>
@@ -154,8 +154,9 @@ export function AgentPolicyFields({ configuration, agentTypes, tools, enabled, c
             <legend>{type.localizedTitles?.[locale] ?? type.title}</legend>
             <p>{t(id === 'qq.private' ? 'policy.private.help' : 'policy.group.help')}</p>
             <div className="qq-policy-tools-heading"><span>{t('policy.selected', { selected: formatNumber(draft.agentTools[id].length), total: formatNumber(available.length) })}</span><div>
-              <button className="text-button" type="button" onClick={() => update({ ...draft, agentTools: { ...draft.agentTools, [id]: [...type.defaultTools] } })}>{t('policy.defaults')}</button>
-              <button className="text-button" type="button" onClick={() => update({ ...draft, agentTools: { ...draft.agentTools, [id]: [] } })}>{t('policy.clear')}</button>
+              <ActionButton reasonCode="busy" disabled={blocked} className="text-button" type="button" onClick={() => update({ ...draft, agentTools: { ...draft.agentTools, [id]: available.map(tool => tool.name) } })}>{t('policy.allowAll')}</ActionButton>
+              <ActionButton reasonCode="busy" disabled={blocked} className="text-button" type="button" onClick={() => update({ ...draft, agentTools: { ...draft.agentTools, [id]: [...type.defaultTools] } })}>{t('policy.defaults')}</ActionButton>
+              <ActionButton reasonCode={blocked ? 'busy' : 'empty'} disabled={blocked || draft.agentTools[id].length === 0} className="text-button" type="button" onClick={() => update({ ...draft, agentTools: { ...draft.agentTools, [id]: [] } })}>{t('policy.clear')}</ActionButton>
             </div></div>
             <div className="qq-policy-tools">{available.map(tool => <label className="qq-policy-tool" key={tool.name}>
               <input type="checkbox" checked={draft.agentTools[id].includes(tool.name)} onChange={event => update({ ...draft, agentTools: { ...draft.agentTools, [id]: event.target.checked ? [...draft.agentTools[id], tool.name] : draft.agentTools[id].filter(name => name !== tool.name) } })} />
@@ -168,8 +169,8 @@ export function AgentPolicyFields({ configuration, agentTypes, tools, enabled, c
       {!enabled && <p className="qq-help">{t('policy.disabled')}</p>}
       <p className="qq-help">{t('policy.applyHelp')}</p>
       {failure && <div className="qq-error" role="alert"><div><p>{failure.code === 'AGENT_POLICY_CONFLICT' ? t('policy.conflict') : getErrorMessage(failure, t('policy.saveFailed'))}</p><details><summary>{t('error.details')}</summary><small>{t('error.code', { code: failure.code })}</small><p>{failure.message}</p></details></div></div>}
-      <div className="qq-actions"><button type="submit" className="button button-primary" disabled={blocked || !enabled || !visibleTypes.length || !dirty || failure?.code === 'AGENT_POLICY_CONFLICT'}>{t(saving ? 'action.saving' : 'policy.save')}</button>
-        <button type="button" className="button button-secondary" disabled={blocked || !dirty && !failure} onClick={() => void discard()}>{t(reloading ? 'policy.reloading' : 'policy.discard')}</button>
+      <div className="qq-actions"><ActionButton reasonCode={blocked ? 'busy' : !enabled ? 'enable' : !visibleTypes.length ? 'empty' : failure?.code === 'AGENT_POLICY_CONFLICT' ? 'read' : 'unchanged'} type="submit" className="button button-primary" disabled={blocked || !enabled || !visibleTypes.length || !dirty || failure?.code === 'AGENT_POLICY_CONFLICT'}>{t(saving ? 'action.saving' : 'policy.save')}</ActionButton>
+        <ActionButton reasonCode={blocked ? 'busy' : 'unchanged'} type="button" className="button button-secondary" disabled={blocked || !dirty && !failure} onClick={() => void discard()}>{t(reloading ? 'policy.reloading' : 'policy.discard')}</ActionButton>
         <span className="save-indicator">{t(dirty ? 'policy.dirty' : 'policy.current')}</span>
       </div>
       {saved && <p className="qq-operation-result" role="status">{t('policy.saved')}</p>}

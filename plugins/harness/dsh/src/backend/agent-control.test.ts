@@ -6,6 +6,8 @@ import { PlatformError } from '@eating/plugin-sdk'
 import type { HarnessDeliveryBatch, HarnessHostServices, HarnessOwnerConfiguration } from '@eating/plugin-sdk'
 import { DshAgentControl } from './agent-control'
 import { agentInstanceLabel } from './agent-label'
+import { AUTONOMY_DEFAULTS, DshAutonomy } from './autonomy'
+import type { JsonObject, ProactiveTarget } from '@eating/plugin-sdk'
 
 const stops: Array<() => Promise<unknown> | void> = []
 afterEach(async () => { for (const stop of stops.splice(0).reverse()) await stop() })
@@ -27,6 +29,58 @@ function fixture() {
 }
 
 describe('trusted native Agent control boundary', () => {
+  async function autonomousFixture() {
+    const f = fixture()
+    const target: ProactiveTarget = { id: 'contact', label: 'Approved fixture', pluginId: 'qq', instanceId: 'instance', accountId: '100', agentTypeId: 'qq.private', targetId: '200', toolNames: ['send'] }
+    f.host.prepareProactiveScope = (pluginId, request) => ({ agentId: request.agentId, agentTypeId: request.agentTypeId, pluginId, instanceId: request.instanceId, accountId: request.accountId, conversationId: `qq:${request.accountId}:private:${request.targetId}`, targetId: request.targetId, kind: 'private', messageIds: [], resourceIds: [] })
+    const activity = new DshAutonomy(f.directory, () => true, () => {}, () => f.control.revokeProactive())
+    f.control.setAutonomy(activity, () => parentId, () => true)
+    await activity.configure({ expectedRevision: 0, configuration: { ...AUTONOMY_DEFAULTS, enabled: true, targets: [target], maxContactsPerHour: 100 } })
+    activity.startRuntime('fixture-runtime-nonce')
+    await activity.control('resume', { expectedRevision: activity.snapshot().revision, expectedActivityRevision: (activity.snapshot().state as JsonObject).revision })
+    const cycle = activity.claim('fixture-runtime-nonce').cycle as JsonObject
+    await f.control.start('fixture-runtime-nonce')
+    return { ...f, activity, cycle }
+  }
+
+  it('requires an admitted main round and exact saved contact while persisting native call replay protection', async () => {
+    const f = await autonomousFixture()
+    const input = { agentId: parentId, targetId: 'contact', cycleId: f.cycle.id, taskId: '1'.repeat(64) }
+    for (const invalid of [{ ...input, agentId: 'different-root' }, { ...input, targetId: 'not-approved' }, { ...input, cycleId: 'different-cycle' }, { ...input, scope: { targetId: 'attacker' } }]) expect((await f.post('/prepare-proactive', invalid)).status).toBe(409)
+    expect(f.host.getMcpConnection).not.toHaveBeenCalled()
+    const prepared = await f.post('/prepare-proactive', input); expect(prepared.status).toBe(200)
+    const first = await prepared.json() as JsonObject
+    expect(first).toMatchObject({ tools: ['send'], scope: { targetId: '200', accountId: '100' } })
+    const call = vi.mocked(f.host.getMcpConnection).mock.calls[0]!
+    expect(call[1]).toMatchObject({ targetId: '200', messageIds: [], resourceIds: [] })
+    expect(call[2]!.toolNames).toEqual(['send']); expect(call[2]!.active()).toBe(true)
+    const finish = (taskId: string) => f.post('/finish-task', { agentId: first.agentId, taskId, contextRef: first.contextRef, status: 'completed' })
+    expect((await finish(input.taskId)).status).toBe(200)
+    const nextId = '2'.repeat(64)
+    const second = await f.post('/prepare-proactive', { ...input, taskId: nextId }); expect(second.status).toBe(200)
+    expect((await second.json() as JsonObject).agentId).toBe(first.agentId)
+    expect((await finish(nextId)).status).toBe(200)
+    expect((await f.post('/prepare-proactive', input)).status).toBe(409)
+    const stored = readFileSync(join(f.directory, 'proactive-bindings.json'), 'utf8')
+    expect(stored).not.toContain('fixture-scoped-only-token'); expect(stored).not.toContain('EXTERNAL-MESSAGE-BODY')
+    const reopened = new DshAgentControl(f.directory, f.host); stops.push(() => reopened.close())
+    expect(reopened.proactiveStatus()).toMatchObject([{ agentId: first.agentId, state: 'completed' }])
+  })
+
+  it('keeps a revoked contact unknown and rejects its late completion before explicit owner review', async () => {
+    const f = await autonomousFixture()
+    const prepared = await f.post('/prepare-proactive', { agentId: parentId, targetId: 'contact', cycleId: f.cycle.id, taskId: '3'.repeat(64) })
+    const task = await prepared.json() as JsonObject
+    await f.activity.control('pause', { expectedRevision: f.activity.snapshot().revision, expectedActivityRevision: (f.activity.snapshot().state as JsonObject).revision })
+    expect(vi.mocked(f.host.getMcpConnection).mock.calls[0]![2]!.active()).toBe(false)
+    expect((await f.post('/finish-task', { agentId: task.agentId, contextRef: task.contextRef, taskId: '3'.repeat(64), status: 'completed' })).status).toBe(409)
+    expect(f.control.proactiveStatus()).toMatchObject([{ state: 'unknown' }])
+    expect(() => f.control.acknowledgeProactive(String(task.agentId), '3'.repeat(64))).toThrow()
+    f.activity.finish('fixture-runtime-nonce', String(f.cycle.id), 'cancelled', null)
+    f.control.acknowledgeProactive(String(task.agentId), '3'.repeat(64))
+    expect(f.control.proactiveStatus()).toMatchObject([{ state: 'reviewed' }])
+  })
+
   it('labels verified account identities without changing binding keys or native UUIDs', () => {
     const f = fixture()
     const first = f.control.bind(f.batch, parentId)

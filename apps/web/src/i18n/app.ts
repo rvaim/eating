@@ -1,6 +1,10 @@
 import { registerTranslations } from '@eating/ui-sdk'
 
 const zhCN = {
+  'mcp.grant.changed': '目录版本已变化，授权草稿已保留。先刷新并核对已保存授权，再继续保存。', 'mcp.grant.latest': '查看当前已保存授权', 'mcp.grant.rebase': '已核对，保留授权草稿继续编辑',
+  'mcp.navigation': 'MCP 服务', 'mcp.tools.search': '搜索当前服务工具', 'mcp.grant.selectedTools': '已授权工具（{{value}}）', 'plugins.navigation': '已安装插件', 'plugins.manageAll': '安装与管理',
+  'ui.reason.busy': '正在处理另一项操作，请完成后再试。', 'ui.reason.loading': '正在读取当前状态，请稍候。', 'ui.reason.read': '当前结果待核对，请先刷新状态。', 'ui.reason.source': '先填写插件来源目录。', 'ui.reason.empty': '当前没有已选项。', 'ui.reason.noTools': '当前目录中没有可选择的工具。',
+  'ui.allowAll': '允许全部当前工具', 'ui.selectAll': '选择全部', 'ui.clearAll': '清空选择', 'ui.allowList': '勾选项组成允许列表，未勾选项不可使用；新增工具需要重新选择。', 'ui.selectionCount': '已选 {{selected}} / {{total}}',
   'nav.overview': '概览',
   'nav.robots': '机器人',
   'nav.harness': 'Harness',
@@ -12,7 +16,7 @@ const zhCN = {
   'page.harness.description': '配置 AI 的运行程序（Harness）和模型。',
   'page.prompts.description': '设置 AI 的工作规则和聊天提示词。',
   'page.personas.description': '管理 AI 的性格和表达方式。',
-  'page.settings.description': '设置消息等待、重试与暂存方式。',
+  'page.settings.description': '配置消息投递、自主运行与主动联系授权，查看运行状态。',
   'app.title': 'Eating · {{page}}',
   'app.brandOverview': 'Eating 概览',
   'app.skipContent': '跳到主要内容',
@@ -348,6 +352,10 @@ const zhCN = {
 } as const
 
 const enUS: Record<keyof typeof zhCN, string> = {
+  'mcp.grant.changed': 'The catalog revision changed. Your grant draft is retained. Refresh and review saved grants before continuing.', 'mcp.grant.latest': 'View the currently saved grants', 'mcp.grant.rebase': 'Reviewed: keep grant draft and continue',
+  'mcp.navigation': 'MCP services', 'mcp.tools.search': 'Search this service’s tools', 'mcp.grant.selectedTools': 'Granted tools ({{value}})', 'plugins.navigation': 'Installed plugins', 'plugins.manageAll': 'Install & manage',
+  'ui.reason.busy': 'Another operation is in progress. Wait for it to finish.', 'ui.reason.loading': 'Reading the current state. Please wait.', 'ui.reason.read': 'The current outcome needs review. Refresh the state first.', 'ui.reason.source': 'Enter the plugin source directory first.', 'ui.reason.empty': 'Nothing is selected.', 'ui.reason.noTools': 'The current catalog has no tools to select.',
+  'ui.allowAll': 'Allow all current tools', 'ui.selectAll': 'Select all', 'ui.clearAll': 'Clear selection', 'ui.allowList': 'Checked items form an allow list. Unchecked and newly added tools are not granted.', 'ui.selectionCount': '{{selected}} / {{total}} selected',
   'nav.overview': 'Overview',
   'nav.robots': 'Connections',
   'nav.harness': 'Harness',
@@ -359,7 +367,7 @@ const enUS: Record<keyof typeof zhCN, string> = {
   'page.harness.description': 'Configure the AI runtime (Harness) and model.',
   'page.prompts.description': 'Set the AI’s working rules and chat prompts.',
   'page.personas.description': 'Manage the AI’s personality and style.',
-  'page.settings.description': 'Set how messages wait, retry, and are stored temporarily.',
+  'page.settings.description': 'Configure delivery, autonomous activity and proactive contact grants, and view runtime status.',
   'app.title': 'Eating · {{page}}',
   'app.brandOverview': 'Eating overview',
   'app.skipContent': 'Skip to main content',

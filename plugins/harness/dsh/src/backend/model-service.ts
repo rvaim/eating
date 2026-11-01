@@ -4,7 +4,8 @@ import type { DshConfiguration } from './config'
 
 type ModelConfiguration = Pick<DshConfiguration, 'endpoint' | 'apiKey' | 'timeoutMs'>
 type ModelOperation = 'list' | 'test'
-interface Model { readonly id: string; readonly name?: string }
+import { reportedModelCapabilities } from '../model-information'
+import type { ModelInformation } from '../model-information'
 
 const MAX_REQUEST_MS = 15_000
 const MAX_RESPONSE_BYTES = 1024 * 1024
@@ -103,17 +104,18 @@ async function request(configuration: ModelConfiguration, operation: ModelOperat
 }
 
 /** Queries only the saved provider configuration; it never changes config or runtime state. */
-export async function listModels(configuration: Pick<DshConfiguration, 'endpoint' | 'apiKey' | 'timeoutMs'>, signal?: AbortSignal): Promise<{ models: readonly { id: string; name?: string }[] }> {
+export async function listModels(configuration: Pick<DshConfiguration, 'endpoint' | 'apiKey' | 'timeoutMs'>, signal?: AbortSignal): Promise<{ models: readonly ModelInformation[] }> {
   const value = await request(configuration, 'list', signal)
   if (!object(value) || !Array.isArray(value.data)) throw invalidResponse()
-  const models: Model[] = []
+  const models: ModelInformation[] = []
   const seen = new Set<string>()
   const secret = configuration.apiKey.trim()
   for (const entry of value.data) {
     if (!object(entry) || typeof entry.id !== 'string' || !entry.id || entry.id !== entry.id.trim() || entry.id.length > 160 || controlCharacters.test(entry.id) || seen.has(entry.id) || secret && entry.id.includes(secret)) continue
     seen.add(entry.id)
     const name = typeof entry.name === 'string' && entry.name.trim() && entry.name.length <= 256 && !controlCharacters.test(entry.name) && !(secret && entry.name.includes(secret)) ? entry.name : undefined
-    models.push({ id: entry.id, ...(name ? { name } : {}) })
+    const capabilities = reportedModelCapabilities(entry)
+    models.push({ id: entry.id, ...(name ? { name } : {}), ...(capabilities ? { capabilities } : {}) })
     if (models.length === MAX_MODELS) break
   }
   if (!models.length) throw invalidResponse()

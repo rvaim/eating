@@ -1,5 +1,6 @@
 export * from './api.js'
 export * from './i18n.js'
+export * from './action-button.js'
 export type { ManagedPlugin, CommunicationPlugin, HarnessPlugin, CapabilityPlugin, ConfigurationValidation, PluginPanelProps, WorkspaceActionResult } from './contract.js'
 
 /** One shared React instance for independently built frontend contributions. */

@@ -20,7 +20,7 @@ test.describe('生图插件真实临时 Host', () => {
 
   test.beforeEach(async ({ page }) => {
     directory = await realpath(await mkdtemp(join(tmpdir(), 'Eating_image_generation_')))
-    provider = await startImagesProviderFixture('base64')
+    provider = await startImagesProviderFixture('base64', { edit: true })
     await installPluginPackage(directory, pluginDirectory)
     host = await createInstalledHost({ dataDirectory: directory, staticDirectory, port: 0, allowedUiOrigins: [], autoConnectOnStartup: false })
     url = await host.listen(); errors = []
@@ -63,6 +63,32 @@ test.describe('生图插件真实临时 Host', () => {
     await page.locator('#display-language').selectOption('en-US')
     await expect(page.getByText('The provider rejected authentication (HTTP 401). Check the API Key.', { exact: false })).toBeVisible()
     expect(await page.locator('body').innerText()).not.toContain('生成服务认证失败')
+  })
+
+  test('参考图上传后走 /images/edits，任务标记编辑来源并保留图片预览', async ({ page }, info) => {
+    await open(page)
+    await page.getByLabel('Base URL', { exact: true }).fill(provider.baseUrl)
+    await page.getByLabel('API Key', { exact: true }).fill(provider.apiKey)
+    await page.getByLabel('模型', { exact: true }).fill('gpt-image-fixture')
+    await page.getByRole('button', { name: '保存配置', exact: true }).click()
+    await expect(page.getByText('配置已保存。保存只更新本地配置。', { exact: true }).first()).toBeVisible()
+    await page.getByLabel('参考图（可选）', { exact: true }).setInputFiles({ name: 'source.png', mimeType: 'image/png', buffer: provider.image })
+    await expect(page.locator('.image-source-preview img')).toBeVisible()
+    await page.locator('.image-source-preview').scrollIntoViewIfNeeded()
+    await page.screenshot({ path: info.outputPath('image-generation-edit-source.png') })
+    const prompt = '把这张图改成蓝色'
+    await page.getByLabel('提示词', { exact: true }).fill(prompt)
+    await page.getByRole('button', { name: '编辑图片', exact: true }).click()
+    await expect(page.getByText('确认编辑图片？', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '确认提交', exact: true }).click()
+    const job = page.locator('.image-job').filter({ hasText: prompt })
+    await expect(job.getByText('已完成', { exact: true })).toBeVisible({ timeout: 30_000 })
+    await expect(job.getByText('编辑自上传图片', { exact: true })).toBeVisible()
+    expect(provider.edits).toHaveLength(1)
+    expect(provider.requests).toHaveLength(0)
+    expect(provider.edits[0]!.fields).toEqual({ model: 'gpt-image-fixture', prompt, n: '1' })
+    expect(provider.edits[0]!.image).toEqual(provider.image)
+    expect(provider.edits[0]!.mimeType).toBe('image/png')
   })
 
   test('配置 CAS 冲突不静默推进版本，必须放弃草稿后重读', async ({ page }) => {

@@ -6,6 +6,7 @@ import { ImageConfigurationStore, configured } from './config'
 import { generateImage } from './provider'
 import { ImageGenerationStore } from './store'
 import { generationHash, generationIntent, identifier, object, parseGeneration, safeInteger } from './validation'
+import type { ResolvedSourceImage } from './validation'
 
 interface ActiveJob {
   jobId: string | null
@@ -34,9 +35,9 @@ export class ImageGenerationJobs {
   private assertActive(active: ActiveJob): void {
     if (this.active !== active || !this.ready || active.controller.signal.aborted) throw new PlatformError(cancellation.code, cancellation.message, 409, 'unknown')
   }
-  async submit(input: unknown, scope?: CapabilityInvocationScope): Promise<ImageGenerationJob> {
+  async submit(input: unknown, scope?: CapabilityInvocationScope, source?: ResolvedSourceImage): Promise<ImageGenerationJob> {
     this.assertReady()
-    const parameters = parseGeneration(input), requestHash = generationHash(parameters)
+    const parameters = parseGeneration(input), sourceHash = source?.hash ?? null, requestHash = generationHash(parameters, sourceHash)
     const previous = this.store.existing(parameters.request_id, requestHash)
     if (previous) return previous
     if (scope?.signal?.aborted || scope?.source?.signal?.aborted) throw new PlatformError(cancellation.code, cancellation.message, 409, 'not-sent')
@@ -53,11 +54,11 @@ export class ImageGenerationJobs {
     this.active = active
     let created = false
     try {
-      const receipt = await this.context.executeIdempotent('image-generation', 'image_generate', generationIntent(parameters), parameters.request_id, async () => {
+      const receipt = await this.context.executeIdempotent('image-generation', 'image_generate', generationIntent(parameters, sourceHash), parameters.request_id, async () => {
         this.assertActive(active)
         const existing = this.store.existing(parameters.request_id, requestHash)
         if (existing) return { jobId: existing.jobId, submitted: true }
-        const job = this.store.enqueue(parameters.request_id, requestHash, parameters.prompt, configuration.model)
+        const job = this.store.enqueue(parameters.request_id, requestHash, parameters.prompt, configuration.model, source)
         active.jobId = job.jobId; created = true
         return { jobId: job.jobId, submitted: true }
       })
@@ -70,7 +71,7 @@ export class ImageGenerationJobs {
       }
       // Schedule only after the durable plugin index and Host submission receipt exist.
       queueMicrotask(() => {
-        void this.run(active, configuration, parameters).catch(() => {
+        void this.run(active, configuration, parameters, source).catch(() => {
           this.lastFailure = '生图工作任务异常结束，结果待核对；未自动重放。'
           this.release(active)
         })
@@ -85,14 +86,14 @@ export class ImageGenerationJobs {
       throw error
     }
   }
-  private async run(active: ActiveJob, configuration: ReturnType<ImageConfigurationStore['snapshot']>, parameters: ImageGenerationParameters): Promise<void> {
+  private async run(active: ActiveJob, configuration: ReturnType<ImageConfigurationStore['snapshot']>, parameters: ImageGenerationParameters, source?: ResolvedSourceImage): Promise<void> {
     if (this.active !== active) return
     active.started = true
     let generated = false
     try {
       this.assertActive(active)
       this.store.running(active.jobId!)
-      const image = await generateImage(configuration, parameters, active.controller.signal, active.assertBeforePost)
+      const image = await generateImage(configuration, parameters, source, active.controller.signal, active.assertBeforePost)
       generated = true
       this.assertActive(active)
       this.store.complete(active.jobId!, image, () => this.assertActive(active))

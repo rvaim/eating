@@ -1,3 +1,5 @@
+import { getAutonomyRuntimeSource } from './autonomy-runtime'
+
 /** Runs inside the installed runtime. All Agent APIs below are public npm contracts. */
 export function getRuntimeAgentSource(): string {
   return String.raw`
@@ -11,7 +13,7 @@ export function getRuntimeAgentSource(): string {
   const controlUrl = process.env.EATING_DSH_CONTROL_URL;
   const controlToken = process.env.EATING_DSH_CONTROL_TOKEN;
   const mcpEntry = process.env.EATING_DSH_MCP_ENTRY;
-  const clockEntry = process.env.EATING_DSH_TIME_CONTEXT_ENTRY;
+  const native = ctx.eatingNativeCapabilities;
   // Official packages may be named by bare specifier so the child resolves them from
   // its own installation (app.asar when packaged); only our own files are absolute.
   const moduleSpec = value => typeof value === 'string' && (isAbsolute(value) || /^@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i.test(value));
@@ -22,14 +24,7 @@ export function getRuntimeAgentSource(): string {
     const requireFromRuntime = createRequire(process.argv[1] || process.execPath);
     return import(pathToFileURL(requireFromRuntime.resolve(spec)).href);
   };
-  if (!moduleSpec(clockEntry)) throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
-  const clocks = new WeakSet();
-  async function mountClock(agent) {
-    if (clocks.has(agent)) return;
-    const Clock = await loadModule(clockEntry);
-    await agent.ctx.plugin(Clock, { timeZone: 'Asia/Shanghai', refreshIntervalMs: 600000 });
-    clocks.add(agent);
-  }
+  if (!native || typeof native.mount !== 'function' || typeof native.allowedGlobal !== 'function') throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
   if (!controlUrl || !/^http:\/\/127\.0\.0\.1:\d+$/.test(controlUrl) || !opaque(controlToken) || !moduleSpec(mcpEntry)) throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
 
   async function control(operation, value, signal) {
@@ -88,15 +83,17 @@ export function getRuntimeAgentSource(): string {
     agent.ctx.systemPrompt.section({ name: 'eating:owner-system', order: 0, complete: true, interpolate: false, text: () => configuration.systemPrompt });
     // Child Agent scopes are separate from their runtime parent; a preset layer may
     // contribute capabilities, so filter every inherited tool before own MCP mounts.
-    agent.ctx.tools.restrict({ allow: [] });
+    agent.ctx.tools.restrict({ allow: native.allowedGlobal(configuration.agentTypeId) });
+    const nativeNames = await native.mount(agent, configuration.agentTypeId);
     const Mcp = await loadModule(mcpEntry);
     await agent.ctx.plugin(Mcp, { transport: 'streamable-http', serverName: 'qq', url: configuration.mcp.url, headers: configuration.mcp.headers,
       toolCallTimeoutMs: taskDeadlineMs, failOnStartupError: true, reconnect: { enabled: false } });
     const capabilityNames = await mountCapabilities(agent, configuration.capabilities);
-    const expectedNames = [...configuration.tools.map(name => 'mcp__qq__' + name), ...capabilityNames].sort();
+    const expectedNames = [...configuration.tools.map(name => 'mcp__qq__' + name), ...capabilityNames, ...nativeNames].sort();
+    native.reportTools(agent, configuration.agentTypeId, expectedNames);
     const actualNames = agent.ctx.tools.schemas(agent).map(schema => schema.name).sort();
     if (JSON.stringify(expectedNames) !== JSON.stringify(actualNames)) throw new Error('Scoped MCP tools differ from the approved Agent type');
-    agent.ctx.tools.guard(exec => exec.agent !== agent || !expectedNames.includes(exec.name) ? 'This child cannot call that tool.' : undefined);
+    agent.ctx.tools.guard(exec => native.authorize(exec, agent, configuration.agentTypeId, expectedNames));
   }
   function resultOutputSchema() {
     return { type: 'object', properties: { childId: { type: 'string' }, status: { type: 'string' }, summary: { type: 'string' }, actions: { type: 'array', items: { type: 'object', additionalProperties: true } } }, required: ['childId', 'status', 'summary', 'actions'], additionalProperties: false };
@@ -107,6 +104,10 @@ export function getRuntimeAgentSource(): string {
     const taskId = createHash('sha256').update(sessionId + '\0' + exec.callId).digest('hex');
     const context = activeContext;
     if (!context || context.contextRef !== args.context_ref || context.binding.agentTypeId !== args.type_id) throw new Error('Only the current verified external batch may be delegated to its bound Agent type');
+    return runDelegation(context, args.type_id, args.task, taskId, exec);
+  }
+  async function runDelegation(context, typeId, task, taskId, exec, preparedConfiguration) {
+    const args = { type_id: typeId, context_ref: context.contextRef, task };
     const childId = context.binding.agentId;
     const deadline = new AbortController();
     const signal = AbortSignal.any([exec.signal, initialization.signal, deadline.signal]);
@@ -115,11 +116,11 @@ export function getRuntimeAgentSource(): string {
     let releaseEnd;
     let cancel;
     let submitted = false;
-    let prepared = false;
+    let prepared = Boolean(preparedConfiguration);
     try {
       await registerAgentTypes();
       if (ctx.agents.get(childId)) await ctx.subagents.drainChildren(exec.agent, [childId]);
-      const configuration = await control('prepare-task', { agentId: childId, agentTypeId: args.type_id, contextRef: args.context_ref, taskId }, signal);
+      const configuration = preparedConfiguration || await control('prepare-task', { agentId: childId, agentTypeId: args.type_id, contextRef: args.context_ref, taskId }, signal);
       prepared = true;
       taskConfigurations.set(childId, configuration);
       const prompt = [{ type: 'text', text: JSON.stringify({ eating: { protocolVersion: 1, contextRef: args.context_ref, agentTypeId: args.type_id }, task: args.task,
@@ -170,17 +171,22 @@ export function getRuntimeAgentSource(): string {
     }
   }
   async function onAgentCreated({ agent }) {
-    await mountClock(agent);
     if (agent.id !== sessionId) {
       if (taskConfigurations.has(agent.id)) await mountChild(agent);
       else {
+        agent.ctx.tools.restrict({ allow: native.allowedGlobal('main') });
+        const nativeNames = await native.mount(agent, 'main');
         const connections = await control('capabilities', { agentId: agent.id, agentTypeId: 'main' }, initialization.signal);
-        await mountCapabilities(agent, connections.capabilities);
+        const capabilityNames = await mountCapabilities(agent, connections.capabilities);
+        const allowedNames = [...nativeNames, ...capabilityNames];
+        native.reportTools(agent, 'main', allowedNames);
+        agent.ctx.tools.guard(exec => native.authorize(exec, agent, 'main', allowedNames));
       }
       return;
     }
     agent.ctx.systemPrompt.section({ name: 'eating:owner-system', order: 0, complete: true, interpolate: false, text: () => readValidatedOwnerPolicy().systemPrompt });
-    agent.ctx.tools.restrict({ allow: [] });
+    agent.ctx.tools.restrict({ allow: native.allowedGlobal('main') });
+    const nativeNames = await native.mount(agent, 'main');
     const output = { render: (_, value) => [{ type: 'text', text: JSON.stringify(value) }] };
     agent.ctx.tools.register({ name: 'eating_list_agent_types', description: 'List the enabled execution Agent types. The main Agent delegates tasks using verified context references.', parameters: { type: 'object', properties: {}, additionalProperties: false },
       output: { ...output, schema: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' } }, required: ['id', 'title', 'description'], additionalProperties: false } } },
@@ -190,8 +196,10 @@ export function getRuntimeAgentSource(): string {
       output: { ...output, schema: resultOutputSchema() }, execute: delegate });
     const connections = await control('capabilities', { agentId: agent.id, agentTypeId: 'main' }, initialization.signal);
     const capabilityNames = await mountCapabilities(agent, connections.capabilities);
-    const allowedNames = ['eating_list_agent_types', 'eating_delegate_task', ...capabilityNames];
-    agent.ctx.tools.guard(exec => exec.agent !== agent || !allowedNames.includes(exec.name) ? 'The main Agent may only use its approved tools.' : undefined);
+    const autonomyNames = await mountAutonomy(agent);
+    const allowedNames = ['eating_list_agent_types', 'eating_delegate_task', ...capabilityNames, ...nativeNames, ...autonomyNames];
+    native.reportTools(agent, 'main', allowedNames);
+    agent.ctx.tools.guard(exec => autonomyDriver?.flight?.entered && ['schedule_create', 'schedule_update'].includes(exec.name) ? 'Use eating_plan_activity for autonomous wake arrangements so owner pause remains authoritative.' : native.authorize(exec, agent, 'main', allowedNames));
   }
   async function registerAgentTypes() {
     const policy = readValidatedOwnerPolicy();
@@ -207,5 +215,6 @@ export function getRuntimeAgentSource(): string {
       releases.push(release);
     }
   }
+  ${getAutonomyRuntimeSource()}
 `;
 }

@@ -18,6 +18,13 @@ import { getNativeWebRuntimeSource } from './native-web-runtime'
 import { listModels, testModelConnection } from './model-service'
 import { agentInstanceLabel } from './agent-label'
 import { DshModelCapabilitiesFile } from './model-capabilities'
+import { DshModelInformationFile } from './model-information'
+import { DshAutonomy } from './autonomy'
+import { DshProactivePolicy } from './proactive-policy'
+import { DshNativeConfigurationFile, publicNativeConfiguration } from './native-configuration'
+import { getNativeCapabilitiesRuntimeSource } from './native-runtime'
+import { requestNativeManagement } from './native-management'
+import { isJsonObject } from '@eating/plugin-sdk'
 
 export interface DshHarnessClient {
   start(): Promise<void>
@@ -34,6 +41,8 @@ export interface DshAdapterOptions {
   readonly startupTimeoutMs?: number
   readonly readyTimeoutMs?: number
   readonly closeTimeoutMs?: number
+  /** Isolated fixtures replace the native management transport, never production discovery. */
+  readonly nativeRequest?: (operation: string, input: JsonObject, running: boolean) => Promise<JsonObject>
 }
 
 interface BatchIdentity {
@@ -106,9 +115,9 @@ export function createRuntimeEnvironment(dataDirectory: string, configuration: D
 }
 
 /** Official package names resolve from the system DSH installation (inside app.asar when packaged). */
-export function createRuntimePatch(bridgePath: string, configuration: DshConfiguration, imageInput = false): string {
+export function createRuntimePatch(bridgePath: string, configuration: DshConfiguration, imageInput = false, nativePath?: string, limits?: { readonly contextWindow: number | null; readonly maxOutputTokens: number | null }): string {
   const provider = { providers: { 'eating-openai': { api: 'openai-completions', baseURL: configuration.endpoint,
-    apiKeyEnv: 'EATING_DSH_API_KEY', models: [{ id: configuration.model, input: imageInput ? ['text', 'image'] : ['text'], reasoningEfforts: false }] } } }
+    apiKeyEnv: 'EATING_DSH_API_KEY', models: [{ id: configuration.model, input: imageInput ? ['text', 'image'] : ['text'], ...(limits?.contextWindow ? { contextWindow: limits.contextWindow } : {}), ...(limits?.maxOutputTokens ? { maxTokens: limits.maxOutputTokens } : {}), reasoningEfforts: false }] } } }
   const disabled = ['llm-deepseek', 'tool-fs', 'tool-working-directory', 'persistent-bash', 'persistent-pwsh', 'mcp-resources', 'terminal-bash', 'terminal-pwsh', 'pty']
   const rows = [
     { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: provider },
@@ -116,7 +125,8 @@ export function createRuntimePatch(bridgePath: string, configuration: DshConfigu
     { id: 'subagent-spawn-in-process', name: '@deepseek-ai/dsh-subagent-spawn-in-process' },
     { id: 'session-query-sqlite', name: '@deepseek-ai/dsh-session-query-sqlite', config: { path: ':memory:', openAt: 'never' } },
     { id: 'agent-preset-registry', name: '@deepseek-ai/dsh-agent-preset-registry', config: { default: 'eating-main' } },
-    { id: 'eating-owner-bridge', name: bridgePath },
+    ...(nativePath ? [{ id: 'eating-native-capabilities', name: nativePath }] : []),
+    ...(bridgePath ? [{ id: 'eating-owner-bridge', name: bridgePath }] : []),
   ]
   return disabled.map(id => `- id: ${id}\n  disabled: true\n`).join('') + '- insert:\n' + rows.map(row => `    - ${JSON.stringify(row)}\n`).join('')
 }
@@ -126,8 +136,9 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.8.0'
+  readonly version = '0.11.2'
   readonly tools = []
+  readonly agentInstructions = [{ id: 'dsh.autonomous-activity', title: '自主活动与受控主动联系', localizedTitles: { 'zh-CN': '自主活动与受控主动联系', 'en-US': 'Autonomous activity and scoped proactive contact' }, body: 'The main Agent may receive owner-authorized autonomous opportunities without an incoming message or a human task. Read eating_activity_state and use eating_plan_activity to choose continuation, rest until a time, or waiting for external events. Prose alone does not change the schedule. Owner pause and limits remain authoritative. During an autonomous round, use eating_list_contact_targets and eating_contact_target to contact only a currently approved target; no old incoming-message scope is implied. Native goals and incoming messages retain their own priority. Report actual action receipts and unknown outcomes truthfully.' }]
   readonly capabilities = [
     { id: 'dsh.fixed-session', name: '固定 DSH 主会话', support: 'supported' as const, description: '使用独立官方 DSH 运行时与固定原生会话；可靠交接须经持久屏障。' },
     { id: 'dsh.qq-mcp', name: 'QQ MCP 自主发送', support: 'supported' as const, description: '由 DSH 模型决定是否调用已授权 QQ 工具；模型文本不会由 Host 自动转发。' },
@@ -137,11 +148,21 @@ export class DshPlugin implements BackendPlugin {
   private readonly configurationFile: DshConfigurationFile
   private readonly sessionFile: DshSessionFile
   private readonly modelCapabilities: DshModelCapabilitiesFile
+  private readonly modelInformation: DshModelInformationFile
+  private runtimeImageInput: boolean | null = null
+  private readonly nativeCapabilities: DshNativeConfigurationFile
+  private nativeToken = ''
+  private nativeTask: Promise<JsonValue> | null = null
+  private nativeHelper: DshHarnessClient | null = null
+  private readonly nativeResults = new Map<string, { digest: string; result?: JsonObject }>()
   private readonly locateSystem: () => SystemDshLocation | null
   private readonly launcherPath: string
   private readonly createHarness: (options: DeepSeekHarnessOptions) => DshHarnessClient
   private readonly bridgeDirectory: string
   private readonly agentControl: DshAgentControl
+  private readonly activity: DshAutonomy
+  private readonly contactPolicy: DshProactivePolicy
+  readonly autonomy: import('@eating/plugin-sdk').HarnessAutonomy
   private readonly managementRequests = new Set<AbortController>()
   private configuration: DshConfiguration
   private metadata: DshSessionMetadata | null
@@ -171,10 +192,49 @@ export class DshPlugin implements BackendPlugin {
     this.configurationFile = new DshConfigurationFile(context.dataDirectory)
     this.configuration = this.configurationFile.read()
     this.modelCapabilities = new DshModelCapabilitiesFile(context.dataDirectory)
+    this.modelInformation = new DshModelInformationFile(context.dataDirectory)
+    this.nativeCapabilities = new DshNativeConfigurationFile(context.dataDirectory, () => this.host.readOwnerConfiguration().agentTypes.map(type => type.id))
     this.sessionFile = new DshSessionFile(context.dataDirectory)
     this.metadata = this.sessionFile.read()
     this.bridgeDirectory = prepareRestrictedDirectory(join(context.dataDirectory, 'bridge'))
     this.agentControl = new DshAgentControl(context.dataDirectory, this.host)
+    this.contactPolicy = new DshProactivePolicy(context.dataDirectory, this.host)
+    this.activity = new DshAutonomy(context.dataDirectory, () => this.runtimeReady && !this.closed, targets => {
+      if (targets.length && (!this.host.readProactiveChannels || !this.host.prepareProactiveScope)) throw failure('PROACTIVE_CHANNEL_UNAVAILABLE', 'Host未提供主动通讯授权服务。', 'not-sent')
+      const channels = this.host.readProactiveChannels?.() ?? []
+      for (const target of targets) {
+        const channel = channels.find(channel => channel.pluginId === target.pluginId && channel.instanceId === target.instanceId && channel.accountId === target.accountId && channel.agentTypeId === target.agentTypeId)
+        if (!channel || target.toolNames.some(name => !channel.tools.some(tool => tool.name === name))) throw failure('PROACTIVE_TARGET_INVALID', '主动联系范围与当前账号或已授权工具不匹配。', 'not-sent')
+        this.host.prepareProactiveScope!(target.pluginId, { ...target, agentId: '00000000-0000-4000-8000-000000000001' })
+      }
+    }, () => this.agentControl.revokeProactive())
+    this.activity.setTargetDirectory(() => this.contactPolicy.targets())
+    this.agentControl.setAutonomy(this.activity, () => this.metadata?.sessionId ?? null, () => this.runtimeReady)
+    this.autonomy = {
+      snapshot: () => ({ ...this.activity.snapshot(), contactTasks: this.agentControl.proactiveStatus(), contactPolicy: this.contactPolicy.snapshot() as unknown as JsonObject }),
+      configure: async input => { if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH已停用。', 'not-sent'); if (isJsonObject(input) && isJsonObject(input.configuration) && input.configuration.enabled === true) this.requireAutonomyServices(); await this.activity.configure(input); return this.autonomy.snapshot() },
+      contacts: async input => {
+        if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH已停用。', 'not-sent')
+        if (!isJsonObject(input) || Object.keys(input).length !== 4 || !['pluginId', 'instanceId', 'accountId', 'agentTypeId'].every(key => typeof input[key] === 'string' && String(input[key]).length <= 160) || !this.host.readProactiveContacts) throw failure('PROACTIVE_CONTACTS_UNAVAILABLE', '当前账号未提供联系人目录查询。', 'not-sent')
+        const contacts = await this.host.readProactiveContacts(String(input.pluginId), { instanceId: String(input.instanceId), accountId: String(input.accountId), agentTypeId: String(input.agentTypeId) })
+        if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH已停用。', 'not-sent')
+        return { ...this.autonomy.snapshot(), contactDirectory: { ...input, contacts: contacts as unknown as JsonValue[] } }
+      },
+      control: async (operation, input) => {
+        if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH已停用。', 'not-sent')
+        if (operation === 'configure-contact-policy') {
+          if (!isJsonObject(input) || Object.keys(input).length !== 5 || !['expectedRevision', 'expectedConfigurationRevision', 'expectedActivityRevision', 'mode', 'entries'].every(key => Object.hasOwn(input, key))) throw failure('PROACTIVE_POLICY_INVALID', '联系策略保存参数无效。', 'not-sent')
+          const next = this.contactPolicy.prepare({ expectedRevision: input.expectedRevision, mode: input.mode, entries: input.entries })
+          await this.activity.control('pause', { expectedRevision: input.expectedConfigurationRevision, expectedActivityRevision: input.expectedActivityRevision })
+          this.activity.invalidateTargets()
+          this.contactPolicy.commit(next)
+        } else if (operation === 'acknowledge-contact') {
+          if (!isJsonObject(input) || Object.keys(input).length !== 4 || input.confirmed !== true || input.expectedRevision !== this.activity.snapshot().revision || typeof input.agentId !== 'string' || typeof input.taskId !== 'string') throw failure('AUTONOMY_CONFIGURATION_CONFLICT', '请重新读取并明确核对未知联系任务。', 'not-sent')
+          this.agentControl.acknowledgeProactive(input.agentId, input.taskId)
+        } else await this.activity.control(operation, input)
+        return this.autonomy.snapshot()
+      },
+    }
     this.locateSystem = options.locateSystemDsh ?? (() => locateSystemDsh())
     this.launcherPath = fileURLToPath(new URL(import.meta.url.endsWith('.ts') ? '../../launch/dsh-system.mjs' : './launch/dsh-system.mjs', import.meta.url))
     this.system = this.locateSystem()
@@ -191,7 +251,7 @@ export class DshPlugin implements BackendPlugin {
     return { ...configuration, apiKeyConfigured: Boolean(apiKey), configurationPath: this.configurationFile.filePath,
       dataDirectory: this.configurationFile.directory, updatedAt: this.configurationFile.updatedAt,
       runtimeStatus: { system: { found: this.system !== null, path: this.system?.bin ?? null, version: this.system?.version ?? null, source: this.system?.source ?? null },
-        lastError: this.lastError, ready: this.runtimeReady, busy: this.busy,
+        lastError: this.lastError, ready: this.runtimeReady, busy: this.busy || Boolean(this.activity.activeCycle()),
         sessionId: this.metadata?.sessionId ?? null, lastOutcome: this.metadata?.lastOutcome ?? null, nativeWeb: { ready: this.nativeWebReady } },
       warning: this.configuration.endpoint.startsWith('http:') && !['127.0.0.1', '[::1]', 'localhost'].includes(new URL(this.configuration.endpoint).hostname)
         ? '远端 HTTP 模型地址会明文传输请求与 API 密钥，建议使用 HTTPS。' : null }
@@ -199,6 +259,7 @@ export class DshPlugin implements BackendPlugin {
 
   async updateConfiguration(input: unknown): Promise<JsonObject> {
     if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH 插件已停用。', 'not-sent')
+    if (this.nativeTask) throw failure('NATIVE_BUSY', '原生能力管理正在操作，请完成后再修改连接配置。', 'not-sent')
     const next = parseConfiguration(input, this.configuration)
     // Stop first: if shutdown or the atomic save fails, the caller receives a failure.
     await this.disconnect()
@@ -215,12 +276,19 @@ export class DshPlugin implements BackendPlugin {
   connect(): Promise<void> {
     if (this.closed) return Promise.reject(failure('PLUGIN_DISPOSED', 'DSH 插件已停用。', 'not-sent'))
     if (this.connectTask) return this.connectTask
+    if (this.nativeTask) return Promise.reject(failure('NATIVE_BUSY', '原生管理正在读取或修改此实例，请完成后再启动。', 'not-sent'))
+    if (this.nativeHelper) return Promise.reject(failure('NATIVE_STOP_FAILED', '上次原生管理进程尚未清理完成，请先停止实例，未启动第二个进程。', 'not-sent'))
     if (this.runtimeReady) return Promise.resolve()
     this.connectTask = this.startRuntime().finally(() => { this.connectTask = null })
     return this.connectTask
   }
 
+  private requireAutonomyServices(): void {
+    if (typeof this.host.hasPendingMessages !== 'function' || typeof this.host.readProactiveChannels !== 'function' || typeof this.host.prepareProactiveScope !== 'function') throw failure('AUTONOMY_HOST_UNSUPPORTED', 'Host缺少当前自主运行必需的队列协调或主动范围服务。', 'not-sent')
+  }
+
   private async startRuntime(): Promise<void> {
+    if (this.activity.configuration().enabled) this.requireAutonomyServices()
     if (!this.configuration.endpoint || !this.configuration.model) throw failure('NOT_CONFIGURED', '请先保存 OpenAI 兼容地址与模型名称。', 'not-sent')
     if (this.stopTask) await this.stopTask
     if (this.client) await this.stopRuntime()
@@ -232,6 +300,7 @@ export class DshPlugin implements BackendPlugin {
     this.lastError = null
     this.nonce = randomUUID()
     try {
+      this.activity.startRuntime(this.nonce)
       await this.agentControl.start(this.nonce)
       if (!this.metadata) {
         this.metadata = { sessionId: randomUUID(), created: false }
@@ -248,13 +317,20 @@ export class DshPlugin implements BackendPlugin {
       writePrivateSource(join(this.bridgeDirectory, 'native-web.mjs'), getNativeWebRuntimeSource())
       prepareNativeWebProfile(this.bridgeDirectory, this.configuration, writePrivateSource)
       writePrivateSource(bridgePath, getRuntimeBridgeSource())
-      writePrivateSource(patchPath, createRuntimePatch(bridgePath, this.configuration, this.modelCapabilities.read().imageInput))
+      const nativePath = join(this.bridgeDirectory, 'native-capabilities.mjs')
+      const nativeConfiguration = join(this.bridgeDirectory, 'native-configuration.json')
+      this.nativeToken = randomUUID()
+      writePrivateSource(nativePath, getNativeCapabilitiesRuntimeSource())
+      writeRestrictedJson(nativeConfiguration, this.nativeCapabilities.read() as unknown as JsonObject)
+      this.runtimeImageInput = this.effectiveImageInput()
+      writePrivateSource(patchPath, createRuntimePatch(bridgePath, this.configuration, this.runtimeImageInput, nativePath, this.modelInformation.selected(this.configuration).model?.capabilities))
       const workspace = join(resolve(this.context.dataDirectory), 'workspace')
       const client = this.createHarness({ dshBin: this.launcherPath, profile: 'sdk-minimal', patches: [patchPath],
         dshHome: join(resolve(this.context.dataDirectory), 'dsh-home'), env: { ...createRuntimeEnvironment(this.context.dataDirectory, this.configuration, this.nonce, sessionId),
           EATING_DSH_SYSTEM_BIN: this.system!.bin, EATING_DSH_TIME_CONTEXT_ENTRY: '@deepseek-ai/dsh-time-context',
+          EATING_DSH_NATIVE_TOKEN: this.nativeToken, EATING_DSH_NATIVE_CONFIGURATION: nativeConfiguration,
           EATING_DSH_CONTROL_URL: this.agentControl.url, EATING_DSH_CONTROL_TOKEN: this.agentControl.token,
-          EATING_DSH_MCP_ENTRY: '@deepseek-ai/dsh-mcp-client', EATING_DSH_TASK_TIMEOUT: String(this.configuration.timeoutMs) },
+          EATING_DSH_MCP_ENTRY: '@deepseek-ai/dsh-mcp-client', EATING_DSH_TASK_TIMEOUT: String(this.configuration.timeoutMs), EATING_DSH_AUTONOMY: 'true' },
         processCwd: workspace, cwd: workspace, provider: 'eating-openai', model: this.configuration.model, maxTokens: this.configuration.maxTokens,
         initializeTimeoutMs: MAX_STARTUP_MS, requestTimeoutMs: this.configuration.timeoutMs,
         shutdownTimeoutMs: 500, disposeEofGraceMs: 1000, disposeGraceMs: 1000 })
@@ -393,7 +469,7 @@ export class DshPlugin implements BackendPlugin {
     this.metadata = metadata
   }
 
-  isReady(): boolean { return this.runtimeReady && !this.busy && !this.delivery && !this.closed && this.session !== null }
+  isReady(): boolean { return this.runtimeReady && !this.busy && !this.delivery && !this.activity.activeCycle() && !this.closed && this.session !== null }
 
   private readAck(identity: BatchIdentity): { readonly receiptId: string } | null {
     const value = readRestrictedJson(join(this.bridgeDirectory, `ack-${identity.batchId}.json`))
@@ -505,12 +581,22 @@ export class DshPlugin implements BackendPlugin {
   }
 
   private async stopRuntime(): Promise<void> {
+    if (this.nativeTask) {
+      for (const controller of this.managementRequests) controller.abort()
+      await this.nativeTask.catch(() => {})
+    }
+    if (this.nativeHelper) {
+      await bounded(this.nativeHelper.close(), 10000, failure('NATIVE_STOP_FAILED', '原生管理进程清理未完成，未启动其他实例。'))
+      this.nativeHelper = null
+    }
+    let autonomyFailure: unknown
+    try { this.activity.stopRuntime() } catch (error) { autonomyFailure = error }
     this.runtimeReady = false
     this.nativeWebReady = false
     this.detach?.(); this.detach = null
     this.lifetime?.abort()
     this.delivery?.abort()
-    await this.agentControl.close()
+    try { await this.agentControl.close() } catch (error) { autonomyFailure ??= error }
     const client = this.client
     if (client) {
       try { await bounded(client.close().then(async () => { await this.runTask }), this.options.closeTimeoutMs ?? 6000, failure('RUNTIME_STOP_FAILED', 'DSH 进程清理未完成，请先停止运行时。')) }
@@ -526,16 +612,114 @@ export class DshPlugin implements BackendPlugin {
     this.connectedAt = null
     this.state = 'disconnected'
     if (!this.runTask) this.busy = false
+    if (autonomyFailure) throw failure('AUTONOMY_PERSISTENCE_FAILED', '运行时已停止，但自主状态或撤权记录保存失败，请核对本地资料。')
+  }
+
+  private effectiveImageInput(): boolean {
+    return this.modelInformation.selected(this.configuration).model?.capabilities?.imageInput ?? this.modelCapabilities.read().imageInput
+  }
+
+  private modelInformationSnapshot(): JsonObject {
+    const selected = this.modelInformation.selected(this.configuration)
+    return { model: this.configuration.model, capabilities: selected.model?.capabilities ? { ...selected.model.capabilities, inputModalities: selected.model.capabilities.inputModalities ? [...selected.model.capabilities.inputModalities] : null, outputModalities: selected.model.capabilities.outputModalities ? [...selected.model.capabilities.outputModalities] : null } : null,
+      fetchedAt: selected.fetchedAt, imageInput: this.effectiveImageInput(), appliedImageInput: this.runtimeReady ? this.runtimeImageInput : null }
+  }
+
+  private async nativeCall(operation: string, input: JsonObject, signal: AbortSignal): Promise<JsonObject> {
+    if (this.options.nativeRequest) return this.options.nativeRequest(operation, input, this.runtimeReady)
+    if (this.runtimeReady && this.client) return requestNativeManagement(this.bridgeDirectory, this.nonce, this.nativeToken, operation, input, signal)
+    if (this.client || this.connectTask || this.stopTask) throw failure('NATIVE_STOP_FIRST', '请先完全停止 Harness，再管理原生能力或插件。', 'not-sent')
+    this.system = this.locateSystem()
+    if (!this.system) throw failure('DSH_NOT_INSTALLED', '未检测到系统 DSH，无法读取真实原生能力目录。', 'not-sent')
+    const directory = prepareRestrictedDirectory(join(this.context.dataDirectory, 'native-management'))
+    const workspace = prepareRestrictedDirectory(join(this.context.dataDirectory, 'workspace'))
+    const nonce = randomUUID(), token = randomUUID(), managementId = randomUUID()
+    const nativePath = join(directory, 'native-capabilities.mjs'), configurationPath = join(directory, 'native-configuration.json'), patchPath = join(directory, 'runtime.patch.yaml')
+    writePrivateSource(join(this.bridgeDirectory, 'native-web.mjs'), getNativeWebRuntimeSource())
+    prepareNativeWebProfile(this.bridgeDirectory, this.configuration, writePrivateSource)
+    writePrivateSource(nativePath, getNativeCapabilitiesRuntimeSource())
+    writeRestrictedJson(configurationPath, this.nativeCapabilities.read() as unknown as JsonObject)
+    writePrivateSource(patchPath, createRuntimePatch('', this.configuration, this.effectiveImageInput(), nativePath))
+    const client = this.createHarness({ dshBin: this.launcherPath, profile: 'sdk-minimal', patches: [patchPath], dshHome: join(resolve(this.context.dataDirectory), 'dsh-home'),
+      env: { ...createRuntimeEnvironment(this.context.dataDirectory, this.configuration, nonce, managementId), EATING_DSH_SYSTEM_BIN: this.system.bin,
+        EATING_DSH_BRIDGE_DIRECTORY: directory, EATING_DSH_NATIVE_TOKEN: token, EATING_DSH_NATIVE_CONFIGURATION: configurationPath, EATING_DSH_NATIVE_MANAGEMENT: 'true' },
+      processCwd: workspace, cwd: workspace, initializeTimeoutMs: MAX_STARTUP_MS, requestTimeoutMs: 180000, shutdownTimeoutMs: 500, disposeEofGraceMs: 1000, disposeGraceMs: 1000 })
+    this.nativeHelper = client
+    try {
+      await bounded(client.start(), MAX_STARTUP_MS, failure('NATIVE_START_FAILED', '原生管理进程未能启动，未调用模型或创建会话。'), signal)
+      const deadline = Date.now() + 10000
+      await new Promise<void>((accept, reject) => {
+        const check = () => {
+          if (signal.aborted) { reject(failure('NATIVE_INTERRUPTED', '原生管理操作已取消。')); return }
+          const value = readRestrictedJson(join(directory, 'native-control.json'))
+          if (value?.nonce === nonce) { accept(); return }
+          if (Date.now() >= deadline) { reject(failure('NATIVE_CONTROL_NOT_READY', '原生能力管理接口未能就绪，请检查依赖。')); return }
+          const timer = setTimeout(() => { try { check() } catch (error) { reject(error) } }, 30); timer.unref()
+        }
+        check()
+      })
+      return await requestNativeManagement(directory, nonce, token, operation, input, signal)
+    } finally {
+      await bounded(client.close(), 10000, failure('NATIVE_STOP_FAILED', '原生管理进程清理未完成，禁止启动另一个实例。'))
+      if (this.nativeHelper === client) this.nativeHelper = null
+    }
+  }
+
+  private async manageNative(operation: string, input: unknown): Promise<JsonValue> {
+    if (!isJsonObject(input)) throw new PlatformError('NATIVE_INPUT_INVALID', '原生管理参数必须为对象。', 400, 'not-sent')
+    const action = operation.slice('native-'.length)
+    if (!['list', 'save', 'inspect', 'bundle', 'plugin', 'configure', 'install', 'remove'].includes(action)) throw new PlatformError('MANAGEMENT_OPERATION_NOT_FOUND', '未提供此原生管理操作。', 404, 'not-sent')
+    if (action !== 'list' && action !== 'inspect' && (this.client || this.connectTask || this.stopTask || this.runtimeReady)) throw failure('NATIVE_STOP_FIRST', '请先完全停止 Harness，再保存原生能力或修改插件。', 'not-sent')
+    if (this.nativeHelper) throw failure('NATIVE_STOP_FAILED', '上次管理进程尚未清理完成，请先停止实例。', 'not-sent')
+    const requestId = !['list', 'save', 'inspect'].includes(action) ? input.requestId : undefined
+    if (requestId !== undefined) {
+      if (typeof requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(requestId)) throw new PlatformError('NATIVE_INPUT_INVALID', '插件修改必须提供稳定请求标识。', 400, 'not-sent')
+      const digest = createHash('sha256').update(JSON.stringify({ action, input })).digest('hex'), previous = this.nativeResults.get(requestId)
+      if (previous) {
+        if (previous.digest !== digest) throw failure('NATIVE_REQUEST_CONFLICT', '同一请求标识不能用于另一项插件修改。', 'not-sent')
+        if (previous.result) return previous.result
+        throw failure('NATIVE_CONTROL_UNKNOWN', '此插件操作的结果待核对，未重复执行。', 'unknown')
+      }
+      if (this.nativeResults.size >= 256) throw failure('NATIVE_CAPACITY', '本次插件管理操作数量达到上限，请停止并重新加载插件。', 'not-sent')
+      this.nativeResults.set(requestId, { digest })
+    } else if (!['list', 'save', 'inspect'].includes(action)) throw new PlatformError('NATIVE_INPUT_INVALID', '插件修改必须提供稳定请求标识。', 400, 'not-sent')
+    const controller = new AbortController(); this.managementRequests.add(controller)
+    const timer = setTimeout(() => controller.abort(), 180000); timer.unref()
+    try {
+      if (action === 'save') {
+        const next = this.nativeCapabilities.prepare(input)
+        await this.nativeCall('validate', { configuration: next as unknown as JsonObject }, controller.signal)
+        controller.signal.throwIfAborted()
+        const saved = this.nativeCapabilities.commit(next, input.expectedRevision as number)
+        return { configuration: publicNativeConfiguration(saved) }
+      }
+      const result = await this.nativeCall(action, input, controller.signal)
+      if (typeof requestId === 'string') this.nativeResults.get(requestId)!.result = result
+      if (action !== 'list') return result
+      const owner = this.host.readOwnerConfiguration()
+      return { configuration: publicNativeConfiguration(this.nativeCapabilities.read()), catalog: result,
+        agentTypes: [{ id: 'main', title: 'main', enabled: true }, ...owner.agentTypes.map(type => ({ id: type.id, title: type.title, enabled: type.enabled }))] }
+    } finally { clearTimeout(timer); this.managementRequests.delete(controller) }
   }
 
   async manage(operation: string, input: unknown): Promise<JsonValue> {
     if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH 插件已停用。', 'not-sent')
+    if (operation.startsWith('native-')) {
+      if (this.nativeTask) throw failure('NATIVE_BUSY', '已有原生管理操作正在执行，请等待其完成。', 'not-sent')
+      this.nativeTask = this.manageNative(operation, input).finally(() => { this.nativeTask = null })
+      return this.nativeTask
+    }
+    if (operation === 'get-model-information') {
+      if (!isJsonObject(input) || Object.keys(input).length) throw new PlatformError('INVALID_MODEL_INFORMATION', '模型信息读取参数无效。')
+      return this.modelInformationSnapshot()
+    }
     if (operation === 'get-model-capabilities') {
       if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length) throw new PlatformError('INVALID_MODEL_CAPABILITIES', '模型能力读取参数无效。')
       return { ...this.modelCapabilities.read() }
     }
     if (operation === 'save-model-capabilities') {
-      if (this.client || this.connectTask || this.stopTask || this.runtimeReady) throw failure('MODEL_CAPABILITIES_RUNTIME_ACTIVE', '请先完全停止 DSH，再保存模型图片输入能力。', 'not-sent')
+      if (this.client || this.connectTask || this.stopTask || this.runtimeReady || this.nativeTask || this.nativeHelper) throw failure('MODEL_CAPABILITIES_RUNTIME_ACTIVE', '请先完全停止 DSH，再保存模型图片输入能力。', 'not-sent')
+      if (this.modelInformation.selected(this.configuration).model?.capabilities?.imageInput != null) throw failure('MODEL_CAPABILITIES_REPORTED', '当前模型服务已声明图片输入能力，将自动采用；无需重复手动声明。', 'not-sent')
       return { ...this.modelCapabilities.update(input) }
     }
     if (operation === 'detect-system-dsh') {
@@ -543,10 +727,17 @@ export class DshPlugin implements BackendPlugin {
       this.system = this.locateSystem()
       return { found: this.system !== null, path: this.system?.bin ?? null, version: this.system?.version ?? null, source: this.system?.source ?? null }
     }
-    if (operation === 'list-models' || operation === 'test-connection') {
+    if (operation === 'list-models' || operation === 'read-model-information' || operation === 'test-connection') {
+      if (operation === 'read-model-information' && (!isJsonObject(input) || Object.keys(input).length)) throw new PlatformError('INVALID_MODEL_INFORMATION', '模型信息读取参数无效。')
+      const configuration = this.configuration
       const controller = new AbortController(); this.managementRequests.add(controller)
-      try { return operation === 'list-models' ? { models: [...(await listModels(this.configuration, controller.signal)).models].map(model => ({ ...model })) } : { ...await testModelConnection(this.configuration, controller.signal) } }
-      finally { this.managementRequests.delete(controller) }
+      try {
+        if (operation === 'test-connection') return { ...await testModelConnection(configuration, controller.signal) }
+        const result = await listModels(configuration, controller.signal)
+        if (this.closed || controller.signal.aborted || this.configuration !== configuration) throw failure('MODEL_INFORMATION_CHANGED', '模型配置已变化，请重新读取当前模型能力。', 'not-sent')
+        this.modelInformation.save(configuration, result.models)
+        return operation === 'read-model-information' ? this.modelInformationSnapshot() : { models: result.models.map(model => ({ ...model, ...(model.capabilities ? { capabilities: { ...model.capabilities, inputModalities: model.capabilities.inputModalities ? [...model.capabilities.inputModalities] : null, outputModalities: model.capabilities.outputModalities ? [...model.capabilities.outputModalities] : null } } : {}) })) }
+      } finally { this.managementRequests.delete(controller) }
     }
     if (operation === 'open-native-web') {
       if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length) throw new PlatformError('NATIVE_WEB_INPUT_INVALID', 'DSH Web 入口参数无效。', 400, 'not-sent')
@@ -564,6 +755,8 @@ export class DshPlugin implements BackendPlugin {
   async dispose(): Promise<void> {
     this.closed = true
     for (const controller of this.managementRequests) controller.abort()
+    if (this.nativeTask) await this.nativeTask.catch(() => {})
+    if (this.nativeHelper) { await this.nativeHelper.close(); this.nativeHelper = null }
     await this.disconnect()
   }
 }

@@ -1,4 +1,12 @@
 .plugins-page { display: block; }
+.plugins-sidebar { overflow: hidden; }
+.plugins-sidebar nav { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+@media (max-width: 600px) { .plugins-sidebar nav { overflow-y: hidden; } }
+.plugins-page > :not(.workspace-rail) { max-width: var(--panel-content-max); }
+.plugins-page .plugins-toolbar { position: sticky; top: calc(-1 * var(--content-inset-block-start)); z-index: 5; padding-block: 10px; margin-bottom: 8px; }
+.plugins-panel-actions { margin-left: auto; }
+.plugins-panel-title { flex: 1; }
+.plugins-filter-item { min-height: 40px; }
 .plugins-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding-bottom: 16px; border-bottom: 1px solid var(--color-line); }
 .plugins-filter { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; border: 1px solid var(--color-line); border-radius: 6px; background: var(--color-surface-sunken); }
 .plugins-filter-item { min-height: 30px; padding: 4px 12px; border: 0; border-radius: 4px; background: transparent; color: var(--color-muted); font-size: 12px; font-weight: 550; cursor: pointer; }

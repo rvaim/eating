@@ -123,7 +123,7 @@ test.describe('Harness 独立面板与泛型目录', () => {
     const connection = delay()
     await page.route('**/api/workspace', route => json(route, { ...initial, plugins: initial.plugins.map(plugin => plugin.id === 'dsh' ? { ...plugin, configuration, status } : plugin) }))
     await page.route('**/api/plugins/dsh/manage', async route => {
-      if (route.request().postDataJSON().operation === 'get-model-capabilities') { await route.continue(); return }
+      if (['get-model-capabilities', 'get-model-information', 'read-model-information'].includes(route.request().postDataJSON().operation)) { await route.continue(); return }
       throw new Error('Unexpected manage operation in harness UI fixture')
     })
     await page.route('**/api/plugins/dsh/connect', async route => {

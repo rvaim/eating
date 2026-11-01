@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState, useSyncExternalStore } from 'react'
-import { Bot, BrainCircuit, Cable, Check, FileText, LayoutDashboard, Plus, Puzzle, Settings as SettingsIcon, Sprout, TriangleAlert, UserRound, X } from 'lucide-react'
+import { ArrowLeft, Bot, BrainCircuit, Cable, Check, FileText, LayoutDashboard, Plus, Puzzle, Settings as SettingsIcon, Sprout, TriangleAlert, UserRound, X } from 'lucide-react'
 import { useI18n } from '@eating/ui-sdk'
 import './i18n/app'
 import { Overview } from './pages/Overview'
@@ -14,11 +14,11 @@ import type { PlatformWorkspace } from './state/workspace'
 const Authoring = lazy(() => import('./pages/Authoring').then(module => ({ default: module.Authoring })))
 
 type Page = 'overview' | 'robots' | 'harness' | 'mcp' | 'plugins' | 'settings' | 'prompts' | 'personas'
-type Route = { readonly page: Page; readonly pluginId: string | null; readonly section: 'delivery' | 'queue'; readonly documentId?: string | null }
+type Route = { readonly page: Page; readonly pluginId: string | null; readonly section: 'delivery' | 'queue' | 'autonomy'; readonly documentId?: string | null }
 
 function readRoute(): Route {
   const [page, id] = window.location.hash.slice(1).split('/')
-  if (page === 'settings') return { page, pluginId: null, section: id === 'queue' ? 'queue' : 'delivery' }
+  if (page === 'settings') return { page, pluginId: null, section: id === 'autonomy' ? 'autonomy' : id === 'queue' ? 'queue' : 'delivery' }
   if (page === 'prompts' || page === 'personas') {
     try { return { page, pluginId: null, section: 'delivery', documentId: id ? decodeURIComponent(id) : null } }
     catch { return { page, pluginId: null, section: 'delivery', documentId: null } }
@@ -92,6 +92,7 @@ export function App({ workspace }: { readonly workspace: PlatformWorkspace }) {
     </aside>
     <div className="app-main">
       <header className="page-header"><div><h1>{t(`nav.${route.page}`)}</h1><p>{t(`page.${route.page}.description`)}</p></div>
+        {route.page === 'plugins' && route.pluginId && <a className="button button-secondary plugins-page-back" href="#plugins"><ArrowLeft size={16} aria-hidden="true" />{t('plugins.backToList')}</a>}
         {pluginPage && <button className="button button-secondary" onClick={() => setCatalogOpen(current => !current)} aria-expanded={catalogOpen}><Plus size={17} />{t('app.addPlugin')}</button>}
       </header>
       {snapshot.storageError && <div className="storage-alert" role="alert"><TriangleAlert size={19} /><p>{snapshot.storageError} <strong>{t('app.statusStale')}</strong></p></div>}

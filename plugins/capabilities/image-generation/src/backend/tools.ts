@@ -3,12 +3,18 @@ import { IMAGE_GENERATION_LIMITS } from '../types'
 const jobId: JsonObject = { type: 'string', pattern: '^[a-fA-F0-9-]{36}$' }
 const assetId: JsonObject = { type: 'string', pattern: '^[a-f0-9]{64}$' }
 const page: JsonObject = { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 50, default: 20 } }
-const generation: JsonObject = { prompt: { type: 'string', minLength: 1, maxLength: IMAGE_GENERATION_LIMITS.prompt }, size: { type: 'string', maxLength: 64 }, quality: { type: 'string', maxLength: 64 }, response_format: { type: 'string', enum: ['', 'b64_json', 'url'] }, request_id: { type: 'string', minLength: 8, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$' } }
+const source: JsonObject = { type: 'object', properties: {
+  kind: { type: 'string', enum: ['received', 'asset'] },
+  messageId: { type: 'string', minLength: 1, maxLength: 160, description: '当前会话消息 ID。' },
+  imageId: { type: 'string', minLength: 1, maxLength: 2048, description: '消息中 image 段的原始 file 引用，不是图片 URL。' },
+  assetId: { type: 'string', pattern: '^[a-f0-9]{64}$', description: '之前生成图片的 assetId。' },
+}, required: ['kind'], additionalProperties: false }
+const generation: JsonObject = { prompt: { type: 'string', minLength: 1, maxLength: IMAGE_GENERATION_LIMITS.prompt }, size: { type: 'string', maxLength: 64 }, quality: { type: 'string', maxLength: 64 }, response_format: { type: 'string', enum: ['', 'b64_json', 'url'] }, source, request_id: { type: 'string', minLength: 8, maxLength: 128, pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$' } }
 function tool(name: string, title: string, description: string, properties: JsonObject, required: string[], content = false): PluginToolDefinition {
   return { name, title, description, readOnly: name !== 'image_generate', destructive: false, resultFormat: content ? 'content' : 'json', inputSchema: { type: 'object', properties, required, additionalProperties: false } }
 }
 export const imageGenerationTools: readonly PluginToolDefinition[] = [
-  tool('image_generate', '提交生图任务', '可能产生付费请求。提交一次异步任务后返回 jobId，不代表图片已生成；通过 image_job_get 查询。复用稳定 request_id 防重，unknown 不要以新 ID 自动重试。只支持文生图，固定 n=1。', generation, ['prompt', 'request_id']),
+  tool('image_generate', '提交生图或图片编辑任务', '可能产生付费请求。提交一次异步任务后返回 jobId，不代表图片已生成；通过 image_job_get 查询。复用稳定 request_id 防重，unknown 不要以新 ID 自动重试。不传 source 为文生图；传 source 为单图编辑：当前会话收到的图片用 {kind:"received",messageId,imageId}（imageId 是 image 段的原始 file 引用，不是 URL），之前生成的图片用 {kind:"asset",assetId}。只接受当前会话已授权图片或本插件资源，不接受任意路径/URL；固定 n=1。', generation, ['prompt', 'request_id']),
   tool('image_job_get', '查询生图任务', '查询实际持久任务状态；waitMs 只作最多20秒有限等待，未知结果不重放。', { jobId, waitMs: { type: 'integer', minimum: 0, maximum: 20000, default: 0 } }, ['jobId']),
   tool('image_jobs', '列出生图任务', '分页读取任务元数据，不含 Key、服务原响应或签名下载地址。', page, []),
   tool('image_list', '列出生成图片', '分页读取图片元数据，不返回原图或 Base64。', page, []),

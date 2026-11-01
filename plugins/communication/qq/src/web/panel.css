@@ -7,7 +7,7 @@
 .qq-result-image { display: block; max-width: 100%; max-height: min(600px, 65dvh); width: auto; height: auto; object-fit: contain; object-position: left top; border: 1px solid var(--color-line); border-radius: 5px; }
 .qq-image-metadata { margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-muted); font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .qq-panel { display: contents; }
-.qq-panel > * { max-width: 1050px; min-width: 0; }
+.qq-panel > * { max-width: var(--panel-content-max); min-width: 0; }
 .qq-panel p { overflow-wrap: anywhere; }
 .qq-panel button, .qq-panel input, .qq-panel select, .qq-panel textarea, .qq-panel summary { touch-action: manipulation; }
 .qq-panel textarea { font: inherit; caret-color: var(--color-primary); transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease; }

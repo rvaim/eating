@@ -37,7 +37,7 @@ describe('owner plugin management over real Host HTTP', () => {
     const installed = await f.request('/plugin-packages', { operation: 'install', input: { planId: preview.value.planId, confirmed: true } })
     expect(installed.response.status).toBe(200)
     const catalog = (await f.request('/plugin-packages')).value
-    expect(catalog.plugins).toEqual([expect.objectContaining({ id: 'stickers', kind: 'capability', enabled: true, frontend: expect.objectContaining({ entry: expect.stringContaining('/plugins/stickers/0.1.0/') }) })])
+    expect(catalog.plugins).toEqual([expect.objectContaining({ id: 'stickers', kind: 'capability', enabled: true, frontend: expect.objectContaining({ entry: expect.stringContaining('/plugins/stickers/0.1.1/') }) })])
     expect((await f.request('/mcp')).value.services).toEqual([expect.objectContaining({ id: 'plugin.stickers', tools: expect.any(Array), source: { kind: 'plugin', pluginId: 'stickers', pluginName: '表情包' } })])
     const image = createImageFixturePng().toString('base64')
     const added = await f.request('/plugins/stickers/manage', { operation: 'add', input: { data: image, mimeType: 'image/png', description: '手动添加并保留', tags: ['测试'] } })

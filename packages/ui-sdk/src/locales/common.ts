@@ -2,6 +2,7 @@ import type { LocaleResources } from '../i18n.js'
 
 export const commonResources: LocaleResources = {
   'zh-CN': {
+    'actionReason.busy': '正在处理另一项操作，请完成后再试。', 'actionReason.loading': '正在读取当前状态，请稍候。', 'actionReason.unchanged': '当前没有尚未保存的更改。', 'actionReason.draft': '请先保存或撤销未保存更改。', 'actionReason.configure': '请先填写并保存必需的连接配置。', 'actionReason.enable': '请先启用此插件。', 'actionReason.connect': '请先连接此服务。', 'actionReason.stop': '请先停止运行中的实例。', 'actionReason.running': '当前已经启动或正在连接，无需重复启动。', 'actionReason.stopped': '当前尚未运行，无需停止。', 'actionReason.confirm': '请先核对操作后果并勾选确认。', 'actionReason.read': '请先重新读取最新设置并核对结果。', 'actionReason.unknown': '上次操作结果待核对，请先核对再继续。', 'actionReason.invalid': '请先修正标记的输入或变量错误。', 'actionReason.deactivate': '请先停用当前人格，再删除。', 'actionReason.source': '来源插件不可用，请先恢复或启用来源。', 'actionReason.firstPage': '当前已是第一页。', 'actionReason.lastPage': '当前已是最后一页。', 'actionReason.empty': '当前没有可操作的内容。', 'actionReason.active': '有任务正在执行，请先等待任务结束。', 'actionReason.prompt': '先填写图片描述，再发起生成。', 'actionReason.runtime': '尚未检测到系统 DSH，请先安装或重新检测。', 'actionReason.preview': '正在读取图片预览，请稍候。',
     'language.label': '界面语言',
     'language.zh-CN': '简体中文',
     'language.en-US': 'English',
@@ -91,6 +92,7 @@ export const commonResources: LocaleResources = {
     'errors.onebot_account_not_online': 'QQ 账号尚未在线，请检查 OneBot 服务。',
   },
   'en-US': {
+    'actionReason.busy': 'Another operation is in progress. Wait for it to finish.', 'actionReason.loading': 'Reading the current state. Please wait.', 'actionReason.unchanged': 'There are no unsaved changes.', 'actionReason.draft': 'Save or discard your unsaved changes first.', 'actionReason.configure': 'Complete and save the required connection settings first.', 'actionReason.enable': 'Enable this plugin first.', 'actionReason.connect': 'Connect this service first.', 'actionReason.stop': 'Stop the running instance first.', 'actionReason.running': 'Already running or connecting. There is no need to start it again.', 'actionReason.stopped': 'Not running. There is nothing to stop.', 'actionReason.confirm': 'Review the consequences and check the confirmation first.', 'actionReason.read': 'Read the latest settings and verify the outcome first.', 'actionReason.unknown': 'The previous outcome is unconfirmed. Review it before continuing.', 'actionReason.invalid': 'Correct the marked fields or template variables first.', 'actionReason.deactivate': 'Deactivate the current persona before deleting it.', 'actionReason.source': 'The source plugin is unavailable. Restore or enable it first.', 'actionReason.firstPage': 'Already on the first page.', 'actionReason.lastPage': 'Already on the last page.', 'actionReason.empty': 'There is no content to act on.', 'actionReason.active': 'A task is running. Wait for it to finish.', 'actionReason.prompt': 'Enter an image description before generating.', 'actionReason.runtime': 'System DSH was not found. Install or detect it first.', 'actionReason.preview': 'Loading the image preview. Please wait.',
     'language.label': 'Display language',
     'language.zh-CN': '简体中文',
     'language.en-US': 'English',

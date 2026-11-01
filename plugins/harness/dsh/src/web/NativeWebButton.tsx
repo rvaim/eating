@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, ExternalLink } from 'lucide-react'
-import { hostRequest, useI18n } from '@eating/ui-sdk'
+import { ActionButton, hostRequest, useI18n } from '@eating/ui-sdk'
 import { readNativeWebLaunch } from './panel-data'
 
 /**
@@ -70,9 +70,9 @@ export function NativeWebButton({ enabled, ready, blocked, visible }: {
 
   const title = !enabled ? t('native.disabled') : !ready ? t('native.unavailable') : undefined
   return <div className="dsh-native-control">
-    <button type="button" className="button button-secondary dsh-native-open" disabled={!available || pending} title={title} onClick={() => void open()}>
+    <ActionButton reason={title} reasonCode="busy" type="button" className="button button-secondary dsh-native-open" disabled={!available || pending} title={title} onClick={() => void open()}>
       <ExternalLink size={15} aria-hidden="true" />{t(pending ? 'native.opening' : 'native.open')}
-    </button>
+    </ActionButton>
     {failure && <p className="dsh-native-failure" role="alert"><AlertCircle size={13} aria-hidden="true" />{t(failure === 'blocked' ? 'native.blocked' : 'native.failed')}</p>}
   </div>
 }

@@ -1,18 +1,31 @@
+import { randomUUID } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { ClientRequest, IncomingMessage } from 'node:http'
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
+import type { ImageMimeType } from '@eating/plugin-sdk'
 import { IMAGE_GENERATION_LIMITS } from '../types'
 import type { ImageGenerationParameters } from '../types'
 import type { PrivateImageConfiguration } from './config'
 import { base64Image, imageBytes } from './image'
 import type { GeneratedImageBytes } from './image'
 
+export interface ImageEditSource { readonly mimeType: ImageMimeType; readonly bytes: Buffer }
 function failure(code: string, message: string, outcome: 'failed' | 'unknown' = 'unknown'): PlatformError { return new PlatformError(code, message, 502, outcome) }
 function canceled(): PlatformError { return failure('IMAGE_GENERATION_CANCELLED', '生图任务已取消或授权已撤销；请求可能已计费，未自动重放。') }
 
+function multipartBody(fields: readonly (readonly [string, string])[], image: ImageEditSource, boundary: string): Buffer {
+  const chunks: Buffer[] = []
+  for (const [name, value] of fields) chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`))
+  const extension = image.mimeType === 'image/jpeg' ? 'jpg' : image.mimeType.slice('image/'.length)
+  chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="source.${extension}"\r\nContent-Type: ${image.mimeType}\r\n\r\n`))
+  chunks.push(image.bytes)
+  chunks.push(Buffer.from(`\r\n--${boundary}--\r\n`))
+  return Buffer.concat(chunks)
+}
+
 /** One request, no redirects, retries, ambient cookies or proxy credential forwarding. */
-function requestBytes(url: URL, signal: AbortSignal, maximum: number, body?: Buffer, apiKey?: string): Promise<{ bytes: Buffer; mime?: string }> {
+function requestBytes(url: URL, signal: AbortSignal, maximum: number, body?: Buffer, apiKey?: string, contentType = 'application/json'): Promise<{ bytes: Buffer; mime?: string }> {
   return new Promise((accept, reject) => {
     let request: ClientRequest | undefined, response: IncomingMessage | undefined, done = false
     const finish = (error?: unknown, value?: { bytes: Buffer; mime?: string }) => {
@@ -25,7 +38,7 @@ function requestBytes(url: URL, signal: AbortSignal, maximum: number, body?: Buf
     if (signal.aborted) { abort(); return }
     try {
       request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, { method: body ? 'POST' : 'GET', agent: false,
-        headers: body ? { Authorization: 'Bearer ' + apiKey!, 'Content-Type': 'application/json', 'Content-Length': body.length, Accept: 'application/json', 'Accept-Encoding': 'identity' }
+        headers: body ? { Authorization: 'Bearer ' + apiKey!, 'Content-Type': contentType, 'Content-Length': body.length, Accept: 'application/json', 'Accept-Encoding': 'identity' }
           : { Accept: 'image/png,image/jpeg,image/webp,image/gif', 'Accept-Encoding': 'identity' } }, incoming => {
         response = incoming
         const status = incoming.statusCode ?? 0
@@ -52,15 +65,22 @@ function requestBytes(url: URL, signal: AbortSignal, maximum: number, body?: Buf
   })
 }
 
-export async function generateImage(configuration: PrivateImageConfiguration, input: ImageGenerationParameters, signal: AbortSignal, assertBeforePost: () => void = () => {}): Promise<GeneratedImageBytes> {
+export async function generateImage(configuration: PrivateImageConfiguration, input: ImageGenerationParameters, editSource: ImageEditSource | undefined, signal: AbortSignal, assertBeforePost: () => void = () => {}): Promise<GeneratedImageBytes> {
   const timeout = new AbortController(), combined = AbortSignal.any([signal, timeout.signal])
   const timer = setTimeout(() => timeout.abort(), configuration.timeoutMs)
   try {
     const size = input.size ?? configuration.size, quality = input.quality ?? configuration.quality, format = input.response_format ?? configuration.responseFormat
-    const body = Buffer.from(JSON.stringify({ model: configuration.model, prompt: input.prompt, n: 1, ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(format ? { response_format: format } : {}) }))
-    const endpoint = new URL(configuration.baseUrl.replace(/\/+$/, '') + '/images/generations')
+    let body: Buffer, contentType = 'application/json'
+    if (editSource) {
+      const fields: Array<readonly [string, string]> = [['model', configuration.model], ['prompt', input.prompt], ['n', '1'],
+        ...(size ? [['size', size] as const] : []), ...(quality ? [['quality', quality] as const] : []), ...(format ? [['response_format', format] as const] : [])]
+      const boundary = '----eating-image-' + randomUUID()
+      body = multipartBody(fields, editSource, boundary)
+      contentType = 'multipart/form-data; boundary=' + boundary
+    } else body = Buffer.from(JSON.stringify({ model: configuration.model, prompt: input.prompt, n: 1, ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(format ? { response_format: format } : {}) }))
+    const endpoint = new URL(configuration.baseUrl.replace(/\/+$/, '') + (editSource ? '/images/edits' : '/images/generations'))
     assertBeforePost()
-    const response = await requestBytes(endpoint, combined, 8 * 1024 * 1024, body, configuration.apiKey)
+    const response = await requestBytes(endpoint, combined, 8 * 1024 * 1024, body, configuration.apiKey, contentType)
     let value: unknown
     try { value = JSON.parse(response.bytes.toString('utf8')) } catch { throw failure('IMAGE_GENERATION_INVALID_RESPONSE', '生成服务成功响应格式无效；请求可能已计费。') }
     if (!isJsonObject(value) || !Array.isArray(value.data) || !isJsonObject(value.data[0])) throw failure('IMAGE_GENERATION_INVALID_RESPONSE', '生成服务未返回有效图片；请求可能已计费。')
@@ -68,10 +88,10 @@ export async function generateImage(configuration: PrivateImageConfiguration, in
     const item = value.data[0]
     if (item.b64_json !== undefined) return base64Image(item.b64_json)
     if (typeof item.url !== 'string' || !item.url || item.url.length > 16384) throw failure('IMAGE_GENERATION_INVALID_RESPONSE', '生成服务未返回有效图片；请求可能已计费。')
-    let source: URL
-    try { source = new URL(item.url) } catch { throw failure('IMAGE_GENERATION_INVALID_RESPONSE', '生成图片地址格式无效；请求可能已计费。') }
-    if (!['http:', 'https:'].includes(source.protocol) || source.username || source.password || source.hash) throw failure('IMAGE_GENERATION_INVALID_RESPONSE', '生成图片地址不受支持；请求可能已计费。')
-    const downloaded = await requestBytes(source, combined, IMAGE_GENERATION_LIMITS.imageBytes)
+    let imageUrl: URL
+    try { imageUrl = new URL(item.url) } catch { throw failure('IMAGE_GENERATION_INVALID_RESPONSE', '生成图片地址格式无效；请求可能已计费。') }
+    if (!['http:', 'https:'].includes(imageUrl.protocol) || imageUrl.username || imageUrl.password || imageUrl.hash) throw failure('IMAGE_GENERATION_INVALID_RESPONSE', '生成图片地址不受支持；请求可能已计费。')
+    const downloaded = await requestBytes(imageUrl, combined, IMAGE_GENERATION_LIMITS.imageBytes)
     combined.throwIfAborted()
     if (!downloaded.mime) throw failure('IMAGE_GENERATION_INVALID_IMAGE', '生成图片没有有效媒体类型；请求可能已计费。')
     return imageBytes(downloaded.bytes, downloaded.mime)

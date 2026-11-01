@@ -1,5 +1,5 @@
 import { memo, useCallback, useId, useLayoutEffect, useRef, useState } from 'react'
-import { getErrorMessage, HostApiError, subscribePluginLogs, useI18n } from '@eating/ui-sdk'
+import { ActionButton, getErrorMessage, HostApiError, subscribePluginLogs, useI18n } from '@eating/ui-sdk'
 import type { PluginLogEntry } from '@eating/plugin-sdk'
 import './i18n'
 import './live-logs.css'
@@ -179,7 +179,7 @@ export function LiveLogs({ active, enabled, available }: LiveLogsProps) {
     <div className="section-heading"><h3 id={`${prefix}-heading`}>{t('tabs.logs')}</h3><p id={`${prefix}-notice`}>{t('logs.description')}</p></div>
     <div className="qq-live-logs-toolbar">
       <div className="field qq-live-logs-limit"><label htmlFor={`${prefix}-limit`}>{t('logs.limit.label')}</label><select id={`${prefix}-limit`} value={limit} aria-describedby={`${prefix}-limit-hint`} onChange={event => changeLimit(event.target.value)}>{retentionOptions.map(value => <option key={value} value={value}>{t('logs.limit.option', { count: value, value: formatNumber(value) })}</option>)}</select></div>
-      <button className="button button-secondary" type="button" disabled={entries.length === 0} onClick={() => clearDisplay()}>{t('action.clearLogs')}</button>
+      <ActionButton reasonCode="empty" className="button button-secondary" type="button" disabled={entries.length === 0} onClick={() => clearDisplay()}>{t('action.clearLogs')}</ActionButton>
     </div>
     <p className="qq-help" id={`${prefix}-limit-hint`}>{t('logs.limit.help')}</p>
     <div className="qq-live-logs-status">

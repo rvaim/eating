@@ -2,7 +2,7 @@ import type { OneBotConfig } from '../config'
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent, MutableRefObject, ReactNode } from 'react'
 import { AlertCircle, Check, Copy, RefreshCw } from 'lucide-react'
-import { formatNumber, getErrorMessage, HostApiError, hostRequest, translate, useI18n } from '@eating/ui-sdk'
+import { ActionButton, formatNumber, getErrorMessage, HostApiError, hostRequest, translate, useI18n } from '@eating/ui-sdk'
 import type { PluginPanelProps } from '@eating/ui-sdk'
 import { enumValue, parseToolArguments, schemaFields } from './tool-fields'
 import type { FieldFormat } from './tool-fields'
@@ -118,7 +118,7 @@ function JsonPreview({ label, value, onFeedback }: { label: string; value: unkno
     try { await navigator.clipboard.writeText(text); setCopyFailure(null); onFeedback(t('copy.done', { label })) }
     catch { setCopyFailure(localFailure('CLIPBOARD_UNAVAILABLE', 'error.copy')) }
   }
-  return <div className="qq-json"><div className="qq-json-heading"><strong>{label}</strong><button type="button" className="text-button" onClick={() => void copy()}><Copy size={14} aria-hidden="true" />{t('action.copy')}</button></div><pre tabIndex={0} aria-label={label}>{text}</pre><ErrorNotice failure={copyFailure} /></div>
+  return <div className="qq-json"><div className="qq-json-heading"><strong>{label}</strong><ActionButton reasonCode="busy" type="button" className="text-button" onClick={() => void copy()}><Copy size={14} aria-hidden="true" />{t('action.copy')}</ActionButton></div><pre tabIndex={0} aria-label={label}>{text}</pre><ErrorNotice failure={copyFailure} /></div>
 }
 function FormField({ id, label, hint, error, children }: { id: string; label: string; hint?: string; error?: string; children: ReactNode }) {
   return <div className={`field${error ? ' field-invalid' : ''}`}><label htmlFor={id}>{label}</label>{children}
@@ -289,11 +289,11 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
     <div className="qq-connection-strip"><div><strong>{plugin ? t(`connection.${plugin.status.state}`) : t('connection.loading')}</strong>
       {plugin?.status.accountId && <span>{t('connection.account', { name: plugin.status.accountName || 'QQ', id: plugin.status.accountId })}</span>}
       {plugin?.status.lastEventAt && <span>{t('connection.lastEvent', { time: formatDateTime(plugin.status.lastEventAt) })}</span>}
-    </div><button className="text-button" type="button" disabled={busy} onClick={() => void refreshWorkspace()}><RefreshCw size={14} aria-hidden="true" />{t('action.refresh')}</button></div>
+    </div><ActionButton reasonCode="busy" className="text-button" type="button" disabled={busy} onClick={() => void refreshWorkspace()}><RefreshCw size={14} aria-hidden="true" />{t('action.refresh')}</ActionButton></div>
     {plugin?.status.lastError && <ErrorNotice failure={{ message: plugin.status.lastError, code: 'ONEBOT_CONNECTION_ERROR', outcome: 'failed', messageKey: 'error.connection' }} />}
     <ErrorNotice failure={refreshFailure} />
-    {refreshFailure && !plugin && <button className="button button-secondary" type="button" onClick={() => void refreshWorkspace()}>{t('action.reload')}</button>}
-    <div className="qq-tabs" role="tablist" aria-label={t('tabs.label')}>{tabs.map((item, index) => <button key={item.id} type="button" role="tab" id={`${prefix}-tab-${item.id}`} aria-selected={tab === item.id} aria-controls={`${prefix}-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1} onClick={() => setTab(item.id)} onKeyDown={event => switchTab(event, index)}>{t(item.title)}</button>)}</div>
+    {refreshFailure && !plugin && <ActionButton reasonCode="busy" className="button button-secondary" type="button" onClick={() => void refreshWorkspace()}>{t('action.reload')}</ActionButton>}
+    <div className="qq-tabs workspace-rail" role="tablist" aria-label={t('tabs.label')}>{tabs.map((item, index) => <ActionButton reasonCode="busy" key={item.id} type="button" role="tab" id={`${prefix}-tab-${item.id}`} aria-selected={tab === item.id} aria-controls={`${prefix}-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1} onClick={() => setTab(item.id)} onKeyDown={event => switchTab(event, index)}>{t(item.title)}</ActionButton>)}</div>
     {loading && <p className="qq-loading" role="status">{t('loading.configuration')}</p>}
     <section hidden={tab !== 'configuration'} role="tabpanel" id={`${prefix}-panel-configuration`} aria-labelledby={`${prefix}-tab-configuration`}>
       <div className="section-heading"><h3>{t('tabs.configuration')}</h3><p>{t('config.description')}</p></div>
@@ -316,9 +316,9 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
           <label className="check-field"><input type="checkbox" checked={draft.forwardToHarness} onChange={event => updateDraft('forwardToHarness', event.target.checked)} /><span><strong>{t('config.forward.label')}</strong><small>{t('config.forward.help')}</small></span></label>
           <label className="check-field"><input type="checkbox" checked={draft.receiveGroups} onChange={event => updateDraft('receiveGroups', event.target.checked)} /><span><strong>{t('config.groups.label')}</strong><small>{t('config.groups.help')}</small></span></label>
         </fieldset>
-        <div className="form-actions"><button type="submit" className="button button-primary" disabled={busy}>{t(mutation === 'save' ? 'action.saving' : 'action.save')}</button>
-          <button type="button" className="button button-secondary" disabled={busy || dirty || !saved?.endpoint || plugin?.enabled !== true || ['connected', 'connecting', 'reconnecting'].includes(plugin.status.state)} onClick={() => void mutate('connect')}>{t(mutation === 'connect' ? 'action.connecting' : 'action.connect')}</button>
-          <button type="button" className="button button-secondary" disabled={busy || !plugin || !['connected', 'connecting', 'reconnecting', 'error'].includes(plugin.status.state)} onClick={() => void mutate('disconnect')}>{t(mutation === 'disconnect' ? 'action.disconnecting' : 'action.disconnect')}</button>
+        <div className="form-actions"><ActionButton reasonCode="busy" type="submit" className="button button-primary" disabled={busy}>{t(mutation === 'save' ? 'action.saving' : 'action.save')}</ActionButton>
+          <ActionButton reasonCode={busy ? 'busy' : dirty ? 'draft' : plugin?.enabled !== true ? 'enable' : !saved?.endpoint ? 'configure' : 'running'} type="button" className="button button-secondary" disabled={busy || dirty || !saved?.endpoint || plugin?.enabled !== true || ['connected', 'connecting', 'reconnecting'].includes(plugin.status.state)} onClick={() => void mutate('connect')}>{t(mutation === 'connect' ? 'action.connecting' : 'action.connect')}</ActionButton>
+          <ActionButton reasonCode={busy ? 'busy' : 'stopped'} type="button" className="button button-secondary" disabled={busy || !plugin || !['connected', 'connecting', 'reconnecting', 'error'].includes(plugin.status.state)} onClick={() => void mutate('disconnect')}>{t(mutation === 'disconnect' ? 'action.disconnecting' : 'action.disconnect')}</ActionButton>
           <span className="save-indicator">{t(dirty ? 'config.dirty' : saved?.endpoint ? 'config.savedDraft' : 'config.needsEndpoint')}</span>
         </div>
       </form>}
@@ -523,14 +523,14 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
       </div>}
       {schemaError && <p className="qq-schema-error" role="alert">{t('tests.schemaError', { message: messageLabel(schemaError) })}</p>}
       <ErrorNotice failure={validationFailure} />
-      <div className="qq-actions"><button className="button button-primary" type="submit" disabled={blocked || !enabled || (hasSideEffect && !confirmed)}>{t(pending ? 'action.running' : 'action.runTest')}</button><span className="qq-request-id">{t('tests.requestId', { id: requestId })}</span></div>
+      <div className="qq-actions"><ActionButton reasonCode={pending || mutationBusy ? 'busy' : unknown ? 'unknown' : !enabled ? 'connect' : 'confirm'} className="button button-primary" type="submit" disabled={blocked || !enabled || (hasSideEffect && !confirmed)}>{t(pending ? 'action.running' : 'action.runTest')}</ActionButton><span className="qq-request-id">{t('tests.requestId', { id: requestId })}</span></div>
     </form>}
     {unknown && execution && <div className="qq-unknown" role="alert"><h4>{t('tests.unknown.title')}</h4><p>{t('tests.unknown.help')}</p>
       <label className="qq-check"><input type="checkbox" checked={unknownReviewed} disabled={pending} onChange={event => setUnknownReviewed(event.target.checked)} /><span>{t('tests.unknown.reviewed')}</span></label>
-      <div className="qq-actions"><button type="button" className="button button-secondary" disabled={!unknownReviewed || pending || mutationBusy || !enabled || ((!execution.tool.readOnly || execution.tool.destructive) && !confirmed)} onClick={() => void execute(execution)}>{t('action.retryRequest')}</button>
-        <button type="button" className="button button-secondary" disabled={!unknownReviewed || pending || mutationBusy} onClick={allowNewRequest}>{t('action.newRequest')}</button></div><p className="qq-help">{t('tests.unknown.newRequestHelp')}</p>
+      <div className="qq-actions"><ActionButton reasonCode={pending || mutationBusy ? 'busy' : !unknownReviewed ? 'unknown' : !enabled ? 'connect' : 'confirm'} type="button" className="button button-secondary" disabled={!unknownReviewed || pending || mutationBusy || !enabled || ((!execution.tool.readOnly || execution.tool.destructive) && !confirmed)} onClick={() => void execute(execution)}>{t('action.retryRequest')}</ActionButton>
+        <ActionButton reasonCode={pending || mutationBusy ? 'busy' : 'unknown'} type="button" className="button button-secondary" disabled={!unknownReviewed || pending || mutationBusy} onClick={allowNewRequest}>{t('action.newRequest')}</ActionButton></div><p className="qq-help">{t('tests.unknown.newRequestHelp')}</p>
     </div>}
-    {pending && execution?.tool.resultFormat === 'content' && <button type="button" className="button button-secondary qq-image-cancel" onClick={clearSensitive}>{t('image.cancel')}</button>}
+    {pending && execution?.tool.resultFormat === 'content' && <ActionButton reasonCode="busy" type="button" className="button button-secondary qq-image-cancel" onClick={clearSensitive}>{t('image.cancel')}</ActionButton>}
     {execution && <ExecutionResult execution={execution} onFeedback={onFeedback} />}
     {imagePreview && active && enabled && !document.hidden && <ImageResult result={imagePreview} onClear={clearSensitive} />}
     <p className="qq-help">{t('tests.historyHelp', { limit: formatNumber(historyLimit) })}</p>
@@ -577,7 +577,7 @@ function McpCapabilities({ active, enabled, capabilities, harness, onFeedback }:
   return <>
     <div className="section-heading"><h3>{t('tabs.mcp')}</h3><p>{t('mcp.description')}</p></div>
     <div className="qq-harness-status"><strong>{t(harness?.state === 'attached' ? 'mcp.harnessAttached' : 'mcp.harnessDetached')}</strong><p>{harness ? t('mcp.delivery', { pending: formatNumber(harness.pending), accepted: formatNumber(harness.accepted), uncertain: formatNumber(harness.uncertain) }) : t('mcp.deliveryLoading')}</p></div>
-    <div className="qq-mcp-access"><p>{t('mcp.credentialsHelp')}</p><div className="qq-actions"><button className="button button-secondary" type="button" disabled={pending || !enabled} onClick={() => void revealRegistration()}>{t(pending ? 'action.revealingMcp' : 'action.revealMcp')}</button>{registration && <button type="button" className="text-button" onClick={() => { ++generation.current; controllerRef.current?.abort(); controllerRef.current = null; setRegistration(null); setPending(false) }}>{t('action.hideMcp')}</button>}</div><ErrorNotice failure={failure} />
+    <div className="qq-mcp-access"><p>{t('mcp.credentialsHelp')}</p><div className="qq-actions"><ActionButton reasonCode={pending ? 'busy' : 'enable'} className="button button-secondary" type="button" disabled={pending || !enabled} onClick={() => void revealRegistration()}>{t(pending ? 'action.revealingMcp' : 'action.revealMcp')}</ActionButton>{registration && <ActionButton reasonCode="busy" type="button" className="text-button" onClick={() => { ++generation.current; controllerRef.current?.abort(); controllerRef.current = null; setRegistration(null); setPending(false) }}>{t('action.hideMcp')}</ActionButton>}</div><ErrorNotice failure={failure} />
       {registration && <><p className="qq-help">{t('mcp.hideHelp')}</p><JsonPreview label={t('mcp.configuration')} value={registration} onFeedback={onFeedback} /></>}
     </div>
     <div className="qq-capability-heading"><h3>{t('capabilities.title')}</h3><p>{t('capabilities.help')}</p></div>

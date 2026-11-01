@@ -47,6 +47,19 @@ function deferred<T>() {
 }
 
 describe('HostStore outstanding delivery queue', () => {
+  it('reports incoming work without deserializing bodies and excludes uncertain deliveries from autonomous priority', () => {
+    const f = fixture(), store = f.open()
+    expect(store.hasPendingHarnessMessages()).toBe(false)
+    const recorded = store.recordEvent('test-platform', 'autonomy-priority-event', {}, event())
+    expect(store.hasPendingHarnessMessages()).toBe(true)
+    store.markHarnessDeliveryBatch([recorded.eventId], 'delivering')
+    expect(store.hasPendingHarnessMessages()).toBe(true)
+    f.close(store)
+    const reopened = f.open()
+    expect(reopened.hasPendingHarnessMessages()).toBe(false)
+    expect(reopened.harnessSummary()).toMatchObject({ uncertain: 1 })
+  })
+
   it('persists settings and deduplicates messages across a close/reopen without replacing the original', () => {
     const { open, close } = fixture()
     const first = open()

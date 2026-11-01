@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { JsonObject } from '@eating/plugin-sdk'
+import type { ReportedModelCapabilities } from '../../plugins/harness/dsh/src/model-information'
 import type { EatingHost } from '../../apps/host/src/app'
 import { createInstalledHost } from '../../apps/host/src/installed-host'
 import { installPluginPackage } from '../../apps/host/src/plugin-installation'
@@ -23,6 +24,7 @@ test.describe('DSH 原生 Web 入口与独立能力', () => {
   let reads: number, opens: number, saves: JsonObject[], errors: string[]
   let snapshot: { schemaVersion: 1; revision: number; imageInput: boolean }
   let readFailure: boolean, conflict: boolean
+  let reported: ReportedModelCapabilities | null, informationReads: number
 
   test.beforeEach(async ({ page }) => {
     directory = await realpath(await mkdtemp(join(tmpdir(), 'Eating_native_web_ui_')))
@@ -34,6 +36,8 @@ test.describe('DSH 原生 Web 入口与独立能力', () => {
     const initial = await workspaceResponse.json() as { plugins: (typeof dsh & { id: string })[] }
     dsh = initial.plugins.find(plugin => plugin.id === 'dsh')!; runtime = dsh.configuration.runtimeStatus as JsonObject
     runtime.nativeWeb = { ready: false }
+    dsh.configuration.endpoint = 'http://127.0.0.1:1/v1'; dsh.configuration.model = 'fixture-model'
+    reported = null; informationReads = 0
     reads = 0; opens = 0; saves = []; errors = []; readFailure = false; conflict = false; nativeGate = null
     snapshot = { schemaVersion: 1, revision: 0, imageInput: false }
     launch = { url: url + '/native-ui-fixture/session?token=fixture-only-private-entry', rootSessionId: 'native-ui-main' }
@@ -42,6 +46,8 @@ test.describe('DSH 原生 Web 入口与独立能力', () => {
     await page.route('**/api/workspace', route => json(route, initial))
     await page.route('**/api/plugins/dsh/manage', async route => {
       const body = route.request().postDataJSON() as { operation: string; input: JsonObject }
+      if (body.operation === 'read-model-information' || body.operation === 'get-model-information') { informationReads++; await json(route, { model: dsh.configuration.model, capabilities: reported, fetchedAt: reported ? '2026-11-01T08:00:00.000Z' : null, imageInput: reported?.imageInput ?? snapshot.imageInput, appliedImageInput: runtime.ready ? snapshot.imageInput : null }); return }
+      if (body.operation === 'list-models') { await json(route, { models: [{ id: 'fixture-model', ...(reported ? { capabilities: reported } : {}) }, { id: 'another-model', capabilities: { ...reported, imageInput: false, toolCalling: null, reasoning: null, inputModalities: ['text'], outputModalities: ['text'], contextWindow: 32768, maxOutputTokens: 4096 } }] }); return }
       if (body.operation === 'get-model-capabilities') { reads++; await json(route, readFailure ? { error: { code: 'FIXTURE_READ_FAILED', outcome: 'failed' } } : snapshot, readFailure ? 500 : 200); return }
       if (body.operation === 'save-model-capabilities') {
         saves.push(body.input)
@@ -140,11 +146,46 @@ test.describe('DSH 原生 Web 入口与独立能力', () => {
     await popup.close()
   })
 
+  test('服务声明的能力紧邻模型选择自动显示，语言切换不重新读取，未知手动补充隐藏', async ({ page }, info) => {
+    reported = { imageInput: true, toolCalling: true, reasoning: true, inputModalities: ['text', 'image'], outputModalities: ['text'], contextWindow: 1000000, maxOutputTokens: 128000 }
+    ready(false); await open(page)
+    const capabilities = page.locator('.dsh-model-feedback .dsh-model-capabilities')
+    await expect(capabilities).toContainText('1,000,000 token')
+    await expect(capabilities).toContainText('128,000 token')
+    await expect(capabilities.locator('dd').filter({ hasText: '支持' })).toHaveCount(3)
+    await expect(capabilities.locator('input[type="checkbox"]')).toHaveCount(0)
+    const inputBox = await page.getByLabel('模型名称', { exact: true }).boundingBox(), capabilityBox = await capabilities.boundingBox(), keyBox = await page.getByLabel('API Key', { exact: true }).boundingBox()
+    expect(capabilityBox!.y).toBeGreaterThan(inputBox!.y)
+    expect(capabilityBox!.y + capabilityBox!.height).toBeLessThanOrEqual(keyBox!.y)
+    const before = informationReads
+    await page.locator('#display-language').selectOption('en-US')
+    await expect(capabilities.getByRole('heading', { name: 'Model capabilities' })).toBeVisible()
+    expect(informationReads).toBe(before); expect(saves).toEqual([])
+    await page.screenshot({ path: info.outputPath('model-capabilities-en-desktop.png') })
+    await page.locator('#display-language').selectOption('zh-CN'); await page.setViewportSize({ width: 390, height: 844 }); await capabilities.scrollIntoViewIfNeeded()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.screenshot({ path: info.outputPath('model-capabilities-zh-mobile.png') })
+  })
+
+  test('切换草稿模型立即显示对应能力，保存前不采用为运行配置', async ({ page }) => {
+    reported = { imageInput: true, toolCalling: true, reasoning: true, inputModalities: ['text', 'image'], outputModalities: ['text'], contextWindow: 1000000, maxOutputTokens: 128000 }
+    await open(page)
+    await page.getByRole('button', { name: '获取模型列表', exact: true }).click()
+    await page.getByLabel('从模型列表选择', { exact: true }).selectOption('another-model')
+    const capabilities = page.locator('.dsh-model-capabilities')
+    await expect(capabilities).toContainText('不支持')
+    await expect(capabilities).toContainText('32,768 token')
+    await expect(capabilities).toContainText('这是未保存模型的能力预览')
+    await expect(capabilities.getByRole('button', { name: '刷新模型能力' })).toBeDisabled()
+    expect(dsh.configuration.model).toBe('fixture-model'); expect(saves).toEqual([])
+  })
+
   test('能力只初读一次，CAS冲突保草稿且必须重读，独立保存不改变连接草稿', async ({ page }, info) => {
     ready(false); await open(page)
+    await page.getByText('服务未声明图片能力时，手动补充', { exact: true }).click()
     const checkbox = page.locator('.dsh-capabilities input[type="checkbox"]')
     await expect(checkbox).not.toBeChecked(); expect(reads).toBe(1)
-    await page.getByLabel('模型名称', { exact: true }).fill('connection-draft-kept')
+    await page.getByLabel('显示名称', { exact: true }).fill('connection-draft-kept')
     await checkbox.check(); conflict = true; snapshot = { ...snapshot, revision: 3 }
     await page.getByRole('button', { name: '保存输入能力', exact: true }).click()
     await expect(page.getByText(/能力配置已被修改/)).toBeVisible(); await expect(checkbox).toBeChecked()
@@ -157,9 +198,9 @@ test.describe('DSH 原生 Web 入口与独立能力', () => {
     await page.getByRole('button', { name: '保存输入能力', exact: true }).click()
     await expect(page.getByText('模型输入能力已保存。下次启动 Harness 时生效。', { exact: true })).toBeVisible()
     expect(saves).toEqual([{ expectedRevision: 0, imageInput: true }, { expectedRevision: 3, imageInput: true }])
-    await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('connection-draft-kept')
+    await expect(page.getByLabel('显示名称', { exact: true })).toHaveValue('connection-draft-kept')
     const before = reads; await page.locator('#display-language').selectOption('en-US')
-    await expect(page.getByLabel('Model name', { exact: true })).toHaveValue('connection-draft-kept')
+    await expect(page.getByLabel('Display name', { exact: true })).toHaveValue('connection-draft-kept')
     await page.waitForTimeout(2200); expect(reads).toBe(before)
     await page.setViewportSize({ width: 390, height: 844 }); await page.screenshot({ path: info.outputPath('capabilities-en-mobile.png') })
     expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false)
@@ -168,6 +209,7 @@ test.describe('DSH 原生 Web 入口与独立能力', () => {
   test('读取失败不会显示false已读状态，运行中不能保存', async ({ page }) => {
     readFailure = true; ready(false); await open(page)
     await expect(page.getByText(/无法读取模型输入能力/)).toBeVisible()
+    await page.getByText('服务未声明图片能力时，手动补充', { exact: true }).click()
     await expect(page.locator('.dsh-capabilities input')).toHaveCount(0)
     await expect(page.getByRole('button', { name: '保存输入能力', exact: true })).toBeDisabled()
     readFailure = false; await page.getByRole('button', { name: '重新读取能力配置', exact: true }).click()

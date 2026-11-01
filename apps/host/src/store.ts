@@ -354,6 +354,11 @@ export class HostStore {
     }))
   }
 
+  hasPendingHarnessMessages(): boolean {
+    if (this.deliverySettings.storageMode === 'persistent') return this.db.prepare("SELECT 1 FROM delivery_queue WHERE status = 'delivering' OR status = 'pending' AND delivery_attempts < ? LIMIT 1").get(this.deliverySettings.maxDeliveryAttempts) !== undefined
+    return this.getQueuedHarnessEvents().some(item => item.status === 'delivering' || item.status === 'pending' && item.attempts < this.deliverySettings.maxDeliveryAttempts)
+  }
+
   pendingHarnessEvents(limit = 20): readonly PendingHarnessEvent[] {
     return this.getQueuedHarnessEvents().filter(item => item.status === 'pending' && item.attempts < this.deliverySettings.maxDeliveryAttempts && item.nextAttemptAt <= Date.now())
       .slice(0, Math.max(0, limit)).map(({ event, attempts }) => ({ event, attempts }))

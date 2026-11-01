@@ -2,6 +2,7 @@ export * from './authoring.js'
 export * from './agents.js'
 export * from './capabilities.js'
 export * from './media.js'
+export * from './autonomy.js'
 import type { CapabilityInvocationScope, HarnessCapabilityConnection, ImageResource, PluginKind, PluginMediaProvider, PluginResourceServices, ReceivedImageReference } from './capabilities.js'
 
 export type JsonPrimitive = string | number | boolean | null
@@ -165,7 +166,12 @@ export interface HarnessHostServices {
   registerSink(sink: HarnessMessageSink): () => void
   wake(): void
   readOwnerConfiguration(): HarnessOwnerConfiguration
-  getMcpConnection(pluginId: string, scope: import('./agents.js').AgentInvocationScope): import('./agents.js').AgentMcpConnection
+  getMcpConnection(pluginId: string, scope: import('./agents.js').AgentInvocationScope, policy?: import('./autonomy.js').ScopedAccessPolicy): import('./agents.js').AgentMcpConnection
+  /** Capability discovery is optional; an enabled autonomy implementation must require these services. */
+  readProactiveChannels?(): readonly import('./autonomy.js').ProactiveChannel[]
+  prepareProactiveScope?(pluginId: string, request: import('./autonomy.js').ProactiveScopeRequest): import('./agents.js').AgentInvocationScope
+  readProactiveContacts?(pluginId: string, request: import('./autonomy.js').ProactiveContactChannel): Promise<readonly import('./autonomy.js').ProactiveContact[]>
+  hasPendingMessages?(): boolean
   getCapabilityMcpConnections(scope: CapabilityInvocationScope): readonly HarnessCapabilityConnection[]
   readAgentActions(agentId: string): readonly import('./agents.js').AgentActionReceipt[]
   revokeAgentAccess(agentId: string): void
@@ -212,6 +218,8 @@ export interface PluginLogSource {
 
 export interface BackendPlugin {
   readonly kind: PluginKind
+  readonly autonomy?: import('./autonomy.js').HarnessAutonomy
+  readonly proactive?: import('./autonomy.js').CommunicationProactive
   manage?(operation: string, input: unknown): Promise<JsonValue>
   readonly logs?: PluginLogSource
   readonly id: string

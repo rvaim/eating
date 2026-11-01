@@ -1,6 +1,9 @@
 import { HostApiError } from '@eating/ui-sdk'
 
-export interface ModelOption { readonly id: string; readonly name?: string }
+import { validReportedCapabilities } from '../model-information'
+import type { ModelInformation, ReportedModelCapabilities } from '../model-information'
+export type ModelOption = ModelInformation
+export interface ModelInformationSnapshot { readonly model: string; readonly capabilities: ReportedModelCapabilities | null; readonly fetchedAt: string | null; readonly imageInput: boolean; readonly appliedImageInput: boolean | null }
 export interface ModelTestResult { readonly ok: true; readonly model: string; readonly latencyMs: number }
 export interface SystemDshStatus {
   readonly found: boolean
@@ -54,13 +57,19 @@ export function readModelCapabilities(value: unknown): ModelCapabilities {
   return { schemaVersion: 1, revision: value.revision, imageInput: value.imageInput }
 }
 
+export function readModelInformation(value: unknown): ModelInformationSnapshot {
+  if (!object(value) || !onlyKeys(value, ['model', 'capabilities', 'fetchedAt', 'imageInput', 'appliedImageInput']) || !text(value.model, 160) || value.capabilities !== null && !validReportedCapabilities(value.capabilities) || value.fetchedAt !== null && (!text(value.fetchedAt, 64) || !Number.isFinite(Date.parse(value.fetchedAt))) || typeof value.imageInput !== 'boolean' || value.appliedImageInput !== null && typeof value.appliedImageInput !== 'boolean') return invalid()
+  return value as unknown as ModelInformationSnapshot
+}
+
 export function readModels(value: unknown): readonly ModelOption[] {
   if (!object(value) || !Array.isArray(value.models) || value.models.length > 2000) return invalid()
   const seen = new Set<string>()
   return value.models.map(entry => {
     if (!object(entry) || !text(entry.id, 160) || !entry.id.trim() || seen.has(entry.id) || entry.name !== undefined && !text(entry.name, 256)) return invalid()
     seen.add(entry.id)
-    return { id: entry.id, ...(typeof entry.name === 'string' ? { name: entry.name } : {}) }
+    if (entry.capabilities !== undefined && !validReportedCapabilities(entry.capabilities)) return invalid()
+    return { id: entry.id, ...(typeof entry.name === 'string' ? { name: entry.name } : {}), ...(entry.capabilities ? { capabilities: entry.capabilities as unknown as ReportedModelCapabilities } : {}) }
   })
 }
 

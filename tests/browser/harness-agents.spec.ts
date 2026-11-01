@@ -56,6 +56,7 @@ test.describe('Harness 模型连接（本地夹具）', () => {
         if (key === 'updateConfiguration') return async (input: unknown) => { const result = await target.updateConfiguration(input); configuration = parseConfiguration(input, configuration); return result }
         if (key === 'manage') return async (operation: string, input: unknown): Promise<JsonValue> => {
           if (operation === 'get-model-capabilities') return target.manage!(operation, input)
+          if (operation === 'get-model-information' || operation === 'read-model-information') return { model: configuration.model, capabilities: null, fetchedAt: null, imageInput: false, appliedImageInput: null }
           operations.push({ operation, input })
           if (operation === 'list-models') return { models: (await listModels(configuration)).models.map(model => ({ ...model })) }
           if (operation === 'test-connection') return testModelConnection(configuration)

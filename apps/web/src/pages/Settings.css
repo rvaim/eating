@@ -1,5 +1,6 @@
 .settings-workspace { min-width: 0; }
 .settings-content { min-width: 0; }
+.settings-content > * { max-width: var(--panel-content-max); }
 .settings-title-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 16px 20px; }
 .settings-title-row > div { min-width: 0; }
 .settings-read-button { flex-shrink: 0; }

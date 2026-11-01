@@ -21,3 +21,13 @@ export function base64Image(value: unknown): GeneratedImageBytes {
   if (bytes.toString('base64') !== value) imageFailure()
   return imageBytes(bytes)
 }
+function sourceImageFailure(): never { throw new PlatformError('IMAGE_GENERATION_INVALID_SOURCE_IMAGE', '参考图片无效、格式不符或超过 5 MiB；未发送生成请求。', 400, 'not-sent') }
+export function sourceImageBytes(bytes: Buffer, declared?: string): GeneratedImageBytes {
+  try { return imageBytes(bytes, declared) } catch { sourceImageFailure() }
+}
+export function sourceBase64Image(value: unknown, declared?: string): GeneratedImageBytes {
+  if (typeof value !== 'string' || !value || value.length > Math.ceil(IMAGE_GENERATION_LIMITS.imageBytes / 3) * 4 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) sourceImageFailure()
+  const bytes = Buffer.from(value, 'base64')
+  if (bytes.toString('base64') !== value) sourceImageFailure()
+  return sourceImageBytes(bytes, declared)
+}

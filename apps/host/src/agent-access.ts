@@ -56,6 +56,7 @@ interface Lease {
   readonly plugin: BackendPlugin
   readonly handler: ReturnType<typeof createPluginMcpHandler>
   readonly tokenHash: string
+  readonly policy?: import('@eating/plugin-sdk').ScopedAccessPolicy
 }
 
 /** Agent credentials are short-lived, memory-only, and independent of owner MCP credentials. */
@@ -68,7 +69,7 @@ export class AgentAccessRegistry {
 
   private actorKey(harnessId: string, agentId: string) { return `${harnessId}\0${agentId}` }
   private requireLive(lease: Lease): Actor {
-    if (this.closed || this.leases.get(lease.tokenHash) !== lease || !this.enabled(lease.actor.harnessId) || !this.enabled(lease.plugin.id)) forbidden()
+    if (this.closed || this.leases.get(lease.tokenHash) !== lease || !this.enabled(lease.actor.harnessId) || !this.enabled(lease.plugin.id) || lease.policy && !lease.policy.active()) forbidden()
     return lease.actor
   }
   private typeTools(actor: Actor, plugin: BackendPlugin) {
@@ -89,7 +90,7 @@ export class AgentAccessRegistry {
   private async invoke(lease: Lease, name: string, input: unknown, requestId: string): Promise<JsonValue> {
     const actor = this.requireLive(lease)
     const receipts = actor.receipts
-    const tool = this.typeTools(actor, lease.plugin).find(candidate => candidate.name === name)
+    const tool = this.typeTools(actor, lease.plugin).find(candidate => candidate.name === name && (!lease.policy || lease.policy.toolNames.includes(candidate.name)))
     if (!tool || !isJsonObject(input)) forbidden()
     const args: JsonObject = { ...input }
     let scopedRequestId = requestId
@@ -115,7 +116,8 @@ export class AgentAccessRegistry {
     }
   }
 
-  issue(harnessId: string, pluginId: string, scope: AgentInvocationScope, baseUrl: string): AgentMcpConnection {
+  issue(harnessId: string, pluginId: string, scope: AgentInvocationScope, baseUrl: string, policy?: import('@eating/plugin-sdk').ScopedAccessPolicy): AgentMcpConnection {
+    if (policy && (typeof policy.active !== 'function' || !policy.active() || !Array.isArray(policy.toolNames) || policy.toolNames.length === 0 || policy.toolNames.some(name => !opaque(name, 160)))) forbidden()
     if (this.closed || !this.enabled(harnessId) || !this.enabled(pluginId) || scope.pluginId !== pluginId || !opaque(scope.agentId, 160) || !opaque(scope.agentTypeId, 160)
       || !opaque(scope.instanceId, 160) || !opaque(scope.accountId, 160) || !opaque(scope.conversationId) || !opaque(scope.targetId, 160)
       || !['private', 'group'].includes(scope.kind) || !Array.isArray(scope.messageIds) || !Array.isArray(scope.resourceIds)
@@ -130,21 +132,22 @@ export class AgentAccessRegistry {
       this.actors.set(key, actor)
     } else {
       if (actor.tokenHash) this.retire(actor.tokenHash)
-      actor.scope = { ...structuredClone(scope), messageIds: boundedReferences([...actor.scope.messageIds, ...scope.messageIds]), resourceIds: boundedReferences([...actor.scope.resourceIds, ...scope.resourceIds]) }
+      actor.scope = { ...structuredClone(scope), messageIds: boundedReferences([...(policy ? [] : actor.scope.messageIds), ...scope.messageIds]), resourceIds: boundedReferences([...(policy ? [] : actor.scope.resourceIds), ...scope.resourceIds]) }
       actor.receipts = new Map()
     }
-    this.typeTools(actor, plugin)
+    const currentTools = this.typeTools(actor, plugin)
+    if (policy && policy.toolNames.some(name => !currentTools.some(tool => tool.name === name))) forbidden()
     const token = secret(), tokenHash = createHash('sha256').update(token).digest('hex')
     let lease: Lease
     const registry = this
     const view: BackendPlugin = {
       id: plugin.id, kind: plugin.kind, name: plugin.name, version: plugin.version, capabilities: [],
-      get tools() { registry.requireLive(lease); return registry.typeTools(actor!, plugin) },
+      get tools() { registry.requireLive(lease); return registry.typeTools(actor!, plugin).filter(tool => !lease.policy || lease.policy.toolNames.includes(tool.name)) },
       getStatus: () => plugin.getStatus(), getPublicConfiguration: () => ({}),
       updateConfiguration: async () => forbidden(), connect: async () => forbidden(), disconnect: async () => {}, dispose: async () => {},
       invoke: (name, input, requestId) => registry.invoke(lease, name, input, requestId),
     }
-    lease = { actor, plugin, tokenHash, abort: new AbortController(), handler: createPluginMcpHandler(view) }
+    lease = { actor, plugin, tokenHash, abort: new AbortController(), handler: createPluginMcpHandler(view), ...(policy ? { policy: { toolNames: [...policy.toolNames], active: policy.active } } : {}) }
     actor.tokenHash = tokenHash
     this.leases.set(tokenHash, lease)
     return Object.freeze({ url: `${baseUrl}/mcp/${pluginId}`, headers: Object.freeze({ Authorization: `Bearer ${token}` }) })

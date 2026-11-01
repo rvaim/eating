@@ -122,6 +122,49 @@ async function configure(plugin: DshPlugin) {
 function result(client: { launch: DeepSeekHarnessOptions }): RunResult { return { sessionId: client.launch.env!.EATING_DSH_SESSION_ID!, finalResponse: 'fixture-finalResponse-must-never-be-sent', events: [], notifications: [] } }
 
 describe('DSH isolated runtime lifecycle', () => {
+  it('automatically uses provider image and context metadata without changing manual declarations or calling a model', async () => {
+    const setup = fixture()
+    await configure(setup.plugin)
+    const originalFetch = globalThis.fetch
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ data: [{ id: 'fixture-model', modalities: { input: ['text', 'image'] }, context_window: 1000000, max_output_tokens: 128000 }] }), { headers: { 'Content-Type': 'application/json' } }))
+    globalThis.fetch = fetcher
+    try {
+      const manualBefore = await setup.plugin.manage('get-model-capabilities', {})
+      expect(await setup.plugin.manage('read-model-information', {})).toMatchObject({ model: 'fixture-model', capabilities: { imageInput: true, contextWindow: 1000000 }, imageInput: true, appliedImageInput: null })
+      expect(await setup.plugin.manage('get-model-capabilities', {})).toEqual(manualBefore)
+      expect(fetcher).toHaveBeenCalledTimes(1)
+      expect(fetcher.mock.calls[0]).toBeDefined()
+      await setup.plugin.connect()
+      const patch = readFileSync(setup.clients[0]!.launch.patches![0]!, 'utf8')
+      expect(patch).toContain('"input":["text","image"]')
+      expect(patch).toContain('"contextWindow":1000000')
+      expect(patch).toContain('"maxTokens":128000')
+      expect(setup.clients[0]!.launch.maxTokens).toBe(4096)
+      await setup.plugin.disconnect()
+      await expect(setup.plugin.manage('save-model-capabilities', { expectedRevision: 0, imageInput: false })).rejects.toMatchObject({ code: 'MODEL_CAPABILITIES_REPORTED' })
+    } finally { globalThis.fetch = originalFetch }
+  })
+  it('blocks another process and image configuration while failed native management cleanup still owns the profile', async () => {
+    const setup = fixture()
+    await configure(setup.plugin)
+    Reflect.set(setup.plugin, 'nativeHelper', { close: vi.fn(async () => {}) })
+    try {
+      await expect(setup.plugin.connect()).rejects.toMatchObject({ code: 'NATIVE_STOP_FAILED' })
+      await expect(setup.plugin.manage('save-model-capabilities', { expectedRevision: 0, imageInput: true })).rejects.toMatchObject({ code: 'MODEL_CAPABILITIES_RUNTIME_ACTIVE' })
+      expect(setup.factory).not.toHaveBeenCalled()
+    } finally { Reflect.set(setup.plugin, 'nativeHelper', null) }
+  })
+  it('does not repeat a native plugin mutation for the same request id or reuse it for another command', async () => {
+    const nativeRequest = vi.fn(async () => ({ changed: true, application: 'restart-required', stage: 'enable', target: '@fixture/native' }))
+    const setup = fixture({ adapter: { nativeRequest } })
+    const request = { requestId: '00000000-0000-4000-8000-000000000001', name: '@fixture/native', enabled: true, expectedFingerprint: 'a'.repeat(64) }
+    const result = await setup.plugin.manage('native-bundle', request)
+    expect(await setup.plugin.manage('native-bundle', request)).toEqual(result)
+    expect(nativeRequest).toHaveBeenCalledTimes(1)
+    await expect(setup.plugin.manage('native-bundle', { ...request, enabled: false })).rejects.toMatchObject({ code: 'NATIVE_REQUEST_CONFLICT' })
+    expect(nativeRequest).toHaveBeenCalledTimes(1)
+  })
+
   it('does not start for incomplete drafts or missing installations', async () => {
     const setup = fixture({ missing: true })
     await expect(setup.plugin.connect()).rejects.toMatchObject({ code: 'NOT_CONFIGURED' })

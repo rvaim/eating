@@ -1,8 +1,8 @@
 {
   "name": "@eating/plugin-image-generation",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Eating 独立 OpenAI Images API 生图插件，提供异步任务和受控图片资源。",
+  "description": "Eating 独立 OpenAI Images API 生图与单图编辑插件，提供异步任务和受控图片资源。",
   "files": ["dist"],
   "exports": { ".": "./dist/server.mjs" },
   "scripts": { "build": "node ../../../scripts/build.mjs plugin plugins/capabilities/image-generation" },

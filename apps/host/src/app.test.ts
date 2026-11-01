@@ -249,7 +249,7 @@ describe('generic Host Harness services and management boundary', () => {
     expect(Object.isFrozen(configuration.activePersona)).toBe(true)
     expect(Reflect.set(configuration.prompts[0]!, 'body', 'override')).toBe(false)
     expect(Reflect.set(configuration.activePersona!, 'body', 'override')).toBe(false)
-    expect(Object.keys(services).sort()).toEqual(['getCapabilityMcpConnections', 'getMcpConnection', 'readAgentActions', 'readOwnerConfiguration', 'registerSink', 'revokeAgentAccess', 'wake'])
+    expect(Object.keys(services).sort()).toEqual(['getCapabilityMcpConnections', 'getMcpConnection', 'hasPendingMessages', 'prepareProactiveScope', 'readAgentActions', 'readOwnerConfiguration', 'readProactiveChannels', 'readProactiveContacts', 'registerSink', 'revokeAgentAccess', 'wake'])
     const updated = context.host.authoring.updatePersona(persona.id, persona.name, '主人新设定', persona.revision)
     expect(configuration.activePersona?.body).toBe(persona.body)
     expect(services.readOwnerConfiguration().activePersona?.body).toBe(updated.persona.body)

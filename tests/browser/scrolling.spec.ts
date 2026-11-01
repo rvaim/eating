@@ -186,7 +186,7 @@ test.describe('视口框架、独立滚动区与 QQ 固定页签', () => {
       expect((await box(tabbar(page))).y).toBeGreaterThanOrEqual(strip.y + strip.height - 1)
       expect((await box(tabbar(page))).y).toBeGreaterThan((await box(pane)).y + 40)
       const mutations: string[] = []
-      page.on('request', request => { if (request.method() === 'POST' && !(request.url().endsWith('/api/plugins/dsh/manage') && request.postDataJSON()?.operation === 'get-model-capabilities')) mutations.push(request.url()) })
+      page.on('request', request => { if (request.method() === 'POST' && !(request.url().endsWith('/api/plugins/dsh/manage') && ['get-model-capabilities', 'get-model-information', 'read-model-information'].includes(request.postDataJSON()?.operation))) mutations.push(request.url()) })
 
       await wheel(page, pane, 650)
       await expect.poll(() => scrollTop(pane)).toBeGreaterThan(0)
@@ -226,7 +226,7 @@ test.describe('视口框架、独立滚动区与 QQ 固定页签', () => {
     await chooseLanguage(page, 'en-US')
     const pane = rightPane(page)
     const mutations: string[] = []
-    page.on('request', request => { if (request.method() === 'POST' && !(request.url().endsWith('/api/plugins/dsh/manage') && request.postDataJSON()?.operation === 'get-model-capabilities')) mutations.push(request.url()) })
+    page.on('request', request => { if (request.method() === 'POST' && !(request.url().endsWith('/api/plugins/dsh/manage') && ['get-model-capabilities', 'get-model-information', 'read-model-information'].includes(request.postDataJSON()?.operation))) mutations.push(request.url()) })
     const name = page.getByLabel('Display name', { exact: true })
     await name.fill('Unsaved connection draft')
     await wheelToTop(page, pane)
@@ -357,7 +357,7 @@ test.describe('视口框架、独立滚动区与 QQ 固定页签', () => {
     await page.goto(`${url}/#overview`)
     await chooseLanguage(page, 'en-US')
     const mutations: string[] = []
-    page.on('request', request => { if (request.method() === 'POST' && !(request.url().endsWith('/api/plugins/dsh/manage') && request.postDataJSON()?.operation === 'get-model-capabilities')) mutations.push(request.url()) })
+    page.on('request', request => { if (request.method() === 'POST' && !(request.url().endsWith('/api/plugins/dsh/manage') && ['get-model-capabilities', 'get-model-information', 'read-model-information'].includes(request.postDataJSON()?.operation))) mutations.push(request.url()) })
     const routes = ['overview', 'harness/dsh', 'settings/delivery', 'settings/queue', 'prompts/main']
     for (const route of routes) await test.step(route, async () => {
       await page.goto(`${url}/#${route}`)

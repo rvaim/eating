@@ -4,7 +4,7 @@ import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import type { BackendPluginEntry, HarnessHostServices, JsonObject } from '@eating/plugin-sdk'
+import type { AgentInvocationScope, BackendPluginEntry, HarnessHostServices, JsonObject } from '@eating/plugin-sdk'
 import { isJsonObject } from '@eating/plugin-sdk'
 import imagesEntry from '../../../plugins/capabilities/image-generation/src/server'
 import qqEntry from '../../../plugins/communication/qq/src/server'
@@ -82,6 +82,49 @@ describe('OpenAI Images through actual Host capability MCP', () => {
   })
 })
 
+describe('received-image editing through actual Host resource scope', () => {
+  it('reads one authorized conversation image and submits a single multipart edit', async () => {
+    const root = await home(), provider = await startImagesProviderFixture('base64', { edit: true }); stops.push(() => provider.close())
+    const messageId = '900', imageId = 'fixture-source.png'
+    let services!: HarnessHostServices
+    const communication: BackendPluginEntry = { id: 'fixture-chat', kind: 'communication', storageDirectory: 'fixture-chat-bot', create() {
+      return {
+        id: 'fixture-chat', kind: 'communication' as const, name: 'Fixture Chat', version: '1.0.0', tools: [], capabilities: [],
+        getStatus: () => ({ state: 'connected' as const, accountId: '100', accountName: 'Fixture Chat', lastError: null, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 }),
+        getPublicConfiguration: () => ({ accountId: '100', autoConnect: false }), updateConfiguration: async () => ({}),
+        connect: async () => {}, disconnect: async () => {}, dispose: async () => {}, invoke: async () => null,
+        readReceivedImage: async (reference, scope) => {
+          if (reference.messageId !== messageId || reference.imageId !== imageId || !scope.messageIds.includes(messageId) || !scope.resourceIds.includes(imageId)) throw new Error('Unexpected received-image reference')
+          return { mimeType: 'image/png' as const, data: provider.image.toString('base64') }
+        },
+      }
+    } }
+    const harness: BackendPluginEntry = { id: 'fixture', kind: 'harness', storageDirectory: 'fixture', create(context) { services = context.harness!; return { id: 'fixture', kind: 'harness', name: 'Fixture', version: '1.0.0', tools: [], capabilities: [], getStatus: () => ({ state: 'connected', accountId: null, accountName: null, lastError: null, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 }), getPublicConfiguration: () => ({}), updateConfiguration: async () => ({}), connect: async () => {}, disconnect: async () => {}, dispose: async () => {}, invoke: async () => null } } }
+    const host = new EatingHost({ dataDirectory: root, entries: [imagesEntry, communication, harness], port: 0, allowedUiOrigins: [] }); stops.push(() => host.close())
+    const api = await ownerApi(host); await configure(api, provider)
+    const scope: AgentInvocationScope = { agentId: 'source-image-agent', agentTypeId: 'main', pluginId: 'fixture-chat', instanceId: 'fixture-chat', accountId: '100', conversationId: 'fixture-chat:100:private:200', kind: 'private', targetId: '200', messageIds: [messageId], resourceIds: [imageId] }
+    const connection = services.getCapabilityMcpConnections({ agentId: scope.agentId, agentTypeId: scope.agentTypeId, source: scope })[0]!
+    const client = new Client({ name: 'received-edit-fixture', version: '1.0.0' })
+    await client.connect(new StreamableHTTPClientTransport(new URL(connection.url), { requestInit: { headers: { ...connection.headers } } })); stops.push(() => client.close())
+    const prompt = '把收到的图改成蓝色'
+    const input = { prompt, request_id: 'host-edit-received-0001', source: { kind: 'received', messageId, imageId } }
+    const submitted = await client.callTool({ name: 'image_generate', arguments: input })
+    expect(submitted.isError).toBe(false)
+    const job = object(object(submitted.structuredContent).result)
+    let done = job
+    for (let count = 0; count < 20 && ['queued', 'running'].includes(String(done.status)); count++) {
+      const status = await client.callTool({ name: 'image_job_get', arguments: { jobId: job.jobId!, waitMs: 250 } })
+      expect(status.isError).toBe(false); done = object(object(status.structuredContent).result)
+    }
+    expect(done).toMatchObject({ status: 'succeeded', source: { kind: 'received', mimeType: 'image/png', bytes: provider.image.length } })
+    expect(provider.requests).toHaveLength(0)
+    expect(provider.edits).toHaveLength(1)
+    expect(provider.edits[0]!.fields).toEqual({ model: 'fixture-images-model', prompt, n: '1' })
+    expect(provider.edits[0]!.image).toEqual(provider.image)
+    expect(JSON.stringify([job, done, await api('/plugins/image-generation/manage', { operation: 'jobs', input: {} })])).not.toContain(imageId)
+  })
+})
+
 describe('accepted generation ownership', () => {
   it('keeps an accepted paid task after Agent access ends, while denying further Agent reads', async () => {
     const root = await home(), provider = await startImagesProviderFixture('base64', { defer: true }); stops.push(() => provider.close())
@@ -111,7 +154,7 @@ describe.skipIf(!process.env.EATING_DSH_TEST_SYSTEM_BIN)('system DSH uses OpenAI
     const onebot = await startOneBotFixture(); stops.push(() => onebot.close())
     const prefix = 'mcp__plugin_image_generation__'
     const model = await startStickersModel((request): FixtureModelAction => {
-      expect((request.tools ?? []).map(tool => tool.function?.name).sort()).toEqual(['eating_delegate_task', 'eating_list_agent_types', ...grants.map(name => prefix + name)].sort())
+      expect((request.tools ?? []).map(tool => tool.function?.name).sort()).toEqual(['eating_activity_state', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', ...grants.map(name => prefix + name)].sort())
       const turns = fixtureToolTurns(request)
       if (!turns.length) return { name: prefix + 'image_generate', arguments: { prompt: 'NATIVE-IMAGES-FIXTURE', request_id: 'native-images-stable-0001' } }
       const last = turns.at(-1)!, value = object(JSON.parse(last.text.split('\n')[0]!))

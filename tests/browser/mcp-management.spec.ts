@@ -92,19 +92,76 @@ test.describe('MCP 服务管理页', () => {
   }
   async function open(page: Page) {
     await goto(page)
-    await expect(page.getByText('本地工具', { exact: true })).toBeVisible()
+    await expect(page.locator('.mcp-service-slot:not([hidden])').getByRole('heading', { name: '本地工具', exact: true })).toBeVisible()
   }
+  const select = async (page: Page, name: string) => { await page.getByRole('navigation', { name: 'MCP 服务', exact: true }).getByRole('button', { name, exact: true }).click() }
   const card = (page: Page, name: string) => page.locator('.mcp-service').filter({ has: page.getByRole('heading', { name, exact: true }) })
+
+  test('二级目录固定且右侧仅显示一个服务，切换保留授权草稿，长工具目录只在内部滚动', async ({ page }, info) => {
+    snapshot.services[0].tools.push(...Array.from({ length: 50 }, (_, index) => tool(`fixture_tool_${index}`, `目录工具 ${index}`)))
+    await open(page); await expect(page.locator('.mcp-service:visible')).toHaveCount(1)
+    const local = card(page, '本地工具'); await local.getByRole('button', { name: '编辑授权', exact: true }).click()
+    const agents = local.locator('.mcp-grant-picker').getByRole('checkbox', { name: 'QQ 群聊', exact: true }); await agents.check()
+    await select(page, '远程 HTTP'); await expect(page.locator('.mcp-service:visible')).toHaveCount(1)
+    await select(page, '本地工具'); await expect(agents).toBeChecked(); expect(lastOperation).toBeNull()
+    await local.locator('.mcp-tools > summary').click()
+    const list = local.locator('.mcp-tools > ul'); await expect(list).toBeVisible()
+    expect(await list.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true)
+    expect((await list.boundingBox())!.height).toBeLessThanOrEqual(420)
+    const sidebar = await page.locator('.mcp-sidebar').boundingBox(); await list.evaluate(element => { element.scrollTop = element.scrollHeight }); expect((await page.locator('.mcp-sidebar').boundingBox())!.y).toBe(sidebar!.y)
+    await local.getByLabel('搜索当前服务工具', { exact: true }).fill('fixture_tool_49'); await expect(list.locator('li')).toHaveCount(1)
+    await page.screenshot({ path: info.outputPath('mcp-two-pane-search.png') })
+  })
+
+  test('刷新目录不能把授权草稿隐式变成新版本，必须核对后明确继续', async ({ page }) => {
+    await open(page); const local = card(page, '本地工具')
+    await local.getByRole('button', { name: '编辑授权', exact: true }).click(); await local.locator('.mcp-grant-picker').getByRole('checkbox', { name: 'QQ 群聊', exact: true }).check()
+    snapshot.revision++; snapshot.services[0].grant = { agentTypeIds: [], toolNames: [] }
+    await page.getByRole('button', { name: '刷新服务', exact: true }).click()
+    await expect(local.getByText('目录版本已变化，授权草稿已保留。先刷新并核对已保存授权，再继续保存。', { exact: true })).toBeVisible()
+    await expect(local.getByRole('button', { name: '保存授权', exact: true })).toBeDisabled(); expect(lastOperation).toBeNull()
+    await local.getByRole('button', { name: '已核对，保留授权草稿继续编辑', exact: true }).click()
+    await local.getByRole('button', { name: '保存授权', exact: true }).click(); await expect.poll(() => lastOperation).toBe('save-grants')
+    expect(lastInput).toMatchObject({ expectedRevision: 4, agentTypeIds: ['main', 'qq.group'] })
+  })
+
+  test('宽屏内容有统一边界，已连接编辑按钮解释原因，授权可全选清空且需保存才生效', async ({ page }, info) => {
+    await page.setViewportSize({ width: 2560, height: 1100 }); await page.goto(url + '/#mcp')
+    const local = card(page, '本地工具'); await expect(local).toBeVisible()
+    const box = await local.boundingBox(); expect(box!.width).toBeLessThanOrEqual(1200)
+    const edit = local.getByRole('button', { name: '编辑配置', exact: true }); await edit.locator('..').hover()
+    await expect(page.getByRole('tooltip')).toContainText('先断开')
+    await page.keyboard.press('Escape'); await expect(page.getByRole('tooltip')).not.toBeVisible()
+    await edit.locator('..').focus(); await expect(page.getByRole('tooltip')).toBeVisible()
+    await local.getByRole('button', { name: '编辑授权', exact: true }).click()
+    const grant = local.locator('.mcp-grant-picker'); await grant.getByRole('button', { name: '允许全部当前工具', exact: true }).click()
+    await grant.getByRole('button', { name: '选择全部', exact: true }).click()
+    expect(await grant.locator('input:checked').count()).toBe(4)
+    await grant.getByRole('button', { name: '清空选择', exact: true }).last().click(); expect(await grant.locator('input:checked').count()).toBe(3)
+    expect(lastOperation).toBeNull()
+    const grantBox = await local.locator('.mcp-block-grants').boundingBox(); expect(grantBox!.width).toBeGreaterThan(box!.width * .85)
+    await page.screenshot({ path: info.outputPath('mcp-wide-authorization.png') })
+    await page.setViewportSize({ width: 1280, height: 420 })
+    await page.locator('.mcp-page').evaluate(element => { element.scrollTop = element.scrollHeight })
+    const toolbar = await page.locator('.mcp-toolbar').boundingBox(), main = await page.locator('.mcp-page').boundingBox()
+    expect(Math.abs(toolbar!.y - main!.y)).toBeLessThan(1)
+    await page.setViewportSize({ width: 390, height: 844 }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    expect((await page.locator('.mcp-sidebar').boundingBox())!.height).toBeLessThanOrEqual(70)
+    expect((await page.locator('.mcp-sidebar-add').boundingBox())!.height).toBeLessThanOrEqual(48)
+  })
 
   test('区分直接接入与插件来源，通讯插件授权不能绕过机器人面板', async ({ page }, info) => {
     await open(page)
     await expect(page.getByText('直接接入', { exact: true }).first()).toBeVisible()
+    await select(page, 'QQ 会话工具')
     await expect(card(page, 'QQ 会话工具').getByText('权限由通讯插件管理', { exact: false })).toBeVisible()
     await expect(card(page, 'QQ 会话工具').getByRole('button', { name: '编辑授权', exact: true })).toHaveCount(0)
     expect(await card(page, 'QQ 会话工具').getByRole('link', { name: '打开来源插件面板', exact: true }).getAttribute('href')).toBe('#robots/qq')
+    await select(page, '图片能力 MCP')
     await expect(card(page, '图片能力 MCP').getByRole('button', { name: '编辑授权', exact: true })).toBeVisible()
+    await select(page, '本地工具')
     await expect(card(page, '本地工具').getByRole('button', { name: '编辑配置', exact: true })).toBeDisabled()
-    await expect(card(page, '本地工具').getByText('保存配置前请先断开此 MCP 服务。', { exact: true })).toBeVisible()
+    await expect(card(page, '本地工具').getByRole('paragraph').filter({ hasText: '保存配置前请先断开此 MCP 服务。' })).toBeVisible()
     await expect(page.locator('body')).not.toContainText('super-secret-value')
     expect(await page.evaluate(() => JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage)]))).not.toContain('super-secret-value')
     await page.screenshot({ path: info.outputPath('mcp-direct-and-plugin.png'), fullPage: true })
@@ -136,6 +193,7 @@ test.describe('MCP 服务管理页', () => {
     await expect.poll(() => lastInput?.transport).toBe('streamable-http')
     expect(lastInput).toMatchObject({ name: 'HTTP 新工具', url: 'https://mcp.example.com/mcp?token=private-query' })
 
+    await select(page, '远程 HTTP')
     await card(page, '远程 HTTP').getByRole('button', { name: '编辑配置', exact: true }).click()
     editor = page.locator('.mcp-editor')
     const urlInput = editor.getByLabel('服务地址', { exact: true })
@@ -152,9 +210,11 @@ test.describe('MCP 服务管理页', () => {
   test('授权保存返回 harnessStopped 时提示重启，普通配置保存需先断开', async ({ page }) => {
     harnessStopped = true
     await open(page)
+    await select(page, '远程 HTTP')
     await card(page, '远程 HTTP').getByRole('button', { name: '编辑授权', exact: true }).click()
     const picker = card(page, '远程 HTTP').locator('.mcp-grant-picker')
     await picker.getByRole('checkbox', { name: 'QQ 群聊', exact: true }).check()
+    await select(page, '远程 HTTP')
     await card(page, '远程 HTTP').getByRole('button', { name: '保存授权', exact: true }).click()
     await expect.poll(() => lastOperation).toBe('save-grants')
     expect(lastInput).toMatchObject({ id: 'direct-http', expectedRevision: 3, agentTypeIds: ['qq.group'], toolNames: [] })
@@ -163,6 +223,7 @@ test.describe('MCP 服务管理页', () => {
 
   test('隐藏页面清空编辑中的密钥与带查询地址，保留非密钥草稿', async ({ page }) => {
     await open(page)
+    await select(page, '远程 HTTP')
     await card(page, '远程 HTTP').getByRole('button', { name: '编辑配置', exact: true }).click()
     const editor = page.locator('.mcp-editor')
     await editor.getByLabel('名称', { exact: true }).fill('保留这个名称')

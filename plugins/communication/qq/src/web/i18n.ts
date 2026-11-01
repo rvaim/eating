@@ -3,6 +3,7 @@ import type { TranslationParams } from '@eating/ui-sdk'
 import type { JsonObject, PluginCapability, PluginToolDefinition } from '@eating/plugin-sdk'
 
 const zhCN = {
+  'policy.allowAll': '允许全部当前工具',
   'image.previewTitle': '图片结果预览',
   'image.previewAlt': '从此会话读取的图片',
   'image.previewHelp': '图片仅在当前可见页签预览，离开、隐藏、停用或取消后清除。',
@@ -429,6 +430,7 @@ export type QQTranslationKey = keyof typeof zhCN
 export interface QQMessage { key: QQTranslationKey; params?: Record<string, string | number> }
 
 const enUS: Record<QQTranslationKey, string> = {
+  'policy.allowAll': 'Allow all current tools',
   'image.previewTitle': 'Image result preview',
   'image.previewAlt': 'Image read from this conversation',
   'image.previewHelp': 'Images are shown only in this visible tab and cleared when leaving, hiding, disabling, or canceling.',

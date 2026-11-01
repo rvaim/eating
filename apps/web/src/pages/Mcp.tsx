@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { AlertCircle, Cable, ChevronDown, LoaderCircle, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import type { McpDirectorySnapshot, McpGrant, McpServiceSummary, PluginToolDefinition } from '@eating/plugin-sdk'
-import { getErrorMessage, hostRequest, useI18n } from '@eating/ui-sdk'
+import { ActionButton, getErrorMessage, hostRequest, useI18n } from '@eating/ui-sdk'
 import type { HostApiError } from '@eating/ui-sdk'
 import { httpSaveInput, readMcpDirectory, readMcpMutationResult, stdioSaveInput } from '../state/mcp'
 import type { DirectMcpSaveInput } from '../state/mcp'
@@ -11,6 +11,7 @@ import './Mcp.css'
 
 interface KvRow { readonly key: string; readonly value: string; readonly saved: boolean; readonly clear: boolean }
 interface Draft {
+  readonly revision: number
   readonly id: string | null
   readonly name: string
   readonly transport: 'stdio' | 'streamable-http'
@@ -25,13 +26,13 @@ interface Draft {
   readonly headers: readonly KvRow[]
 }
 const emptyGrant = (): McpGrant => ({ agentTypeIds: [], toolNames: [] })
-const emptyDraft = (): Draft => ({ id: null, name: '', transport: 'stdio', command: '', args: '', url: '', savedUrl: '', savedQueryKeys: [], autoConnect: false,
+const emptyDraft = (revision: number): Draft => ({ revision, id: null, name: '', transport: 'stdio', command: '', args: '', url: '', savedUrl: '', savedQueryKeys: [], autoConnect: false,
   grant: emptyGrant(), env: [], headers: [] })
 const stringArray = (value: unknown): readonly string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 const stringValue = (value: unknown): string => typeof value === 'string' ? value : ''
-function draftFrom(service: McpServiceSummary): Draft {
+function draftFrom(service: McpServiceSummary, revision: number): Draft {
   const configuration = service.configuration
-  return { id: service.id, name: service.name, transport: service.transport === 'stdio' ? 'stdio' : 'streamable-http',
+  return { revision, id: service.id, name: service.name, transport: service.transport === 'stdio' ? 'stdio' : 'streamable-http',
     command: stringValue(configuration.command), args: stringArray(configuration.args).join('\n'), url: '', savedUrl: stringValue(configuration.url), savedQueryKeys: stringArray(configuration.queryKeys), autoConnect: service.autoConnect,
     grant: { agentTypeIds: [...service.grant.agentTypeIds], toolNames: [...service.grant.toolNames] },
     env: stringArray(configuration.envKeys).map(key => ({ key, value: '', saved: true, clear: false })),
@@ -47,6 +48,8 @@ export function McpPage({ onFeedback }: { readonly onFeedback: (message: string)
   const [stale, setStale] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [editor, setEditor] = useState<Draft | null>(null)
+  const [selectedService, setSelectedService] = useState<string | null>(null)
+  const mainContent = useRef<HTMLElement | null>(null)
   const mounted = useRef(false)
   const lock = useRef(false)
   const generation = useRef(0)
@@ -101,6 +104,11 @@ export function McpPage({ onFeedback }: { readonly onFeedback: (message: string)
       try {
         const result = readMcpMutationResult(value)
         setSnapshot(result.snapshot); setStale(false)
+        if (operation === 'save' && typeof input === 'object' && input !== null) {
+          const saved = input as { id?: string; name?: string }, ids = new Set(snapshot?.services.map(service => service.id) ?? [])
+          const selected = saved.id ?? result.snapshot.services.find(service => !ids.has(service.id))?.id
+          if (selected) setSelectedService(selected)
+        }
         if (result.harnessStopped) setNotice(t('mcp.harnessStopped'))
       } catch { await refresh(true) }
       if (!mounted.current) return false
@@ -137,7 +145,7 @@ export function McpPage({ onFeedback }: { readonly onFeedback: (message: string)
       else if (!row.saved && row.key.trim()) headers[row.key.trim()] = row.value
       else if (row.saved && row.value) headers[row.key] = row.value
     }
-    const base: DirectMcpSaveInput = { expectedRevision: revision, ...(draft.id ? { id: draft.id } : {}), name: draft.name.trim(),
+    const base: DirectMcpSaveInput = { expectedRevision: draft.revision, ...(draft.id ? { id: draft.id } : {}), name: draft.name.trim(),
       transport: draft.transport, command: draft.command.trim(), args: draft.args === '' ? [] : draft.args.split(/\r?\n/),
       env, clearEnvKeys, url: draft.url.trim(), headers, clearHeaderKeys, autoConnect: draft.autoConnect, grant: draft.grant }
     const ok = await mutate('save', 'save', draft.transport === 'stdio' ? stdioSaveInput(base) : httpSaveInput(base), t('mcp.savedFeedback'))
@@ -145,35 +153,38 @@ export function McpPage({ onFeedback }: { readonly onFeedback: (message: string)
     return ok
   }
 
-  return <main id="main-content" className="robot-content mcp-page">
-    <div className="mcp-toolbar">
+  const selectedId = selectedService === 'new' && editor ? 'new' : services.some(service => service.id === selectedService) ? selectedService : services[0]?.id
+  const addService = () => { setEditor(emptyDraft(revision)); setSelectedService('new'); if (mainContent.current) mainContent.current.scrollTop = 0 }
+  return <div className="robot-workspace mcp-workspace"><aside className="platform-sidebar mcp-sidebar" aria-label={t('mcp.navigation')}><p className="platform-nav-heading">{t('mcp.navigation')}<span>{formatNumber(services.length)}</span></p><nav aria-label={t('mcp.navigation')}>{services.map(service => <button type="button" key={service.id} className={`platform-nav-item${selectedId === service.id ? ' is-selected' : ''}`} aria-current={selectedId === service.id ? 'page' : undefined} onClick={() => { setSelectedService(service.id); if (mainContent.current) mainContent.current.scrollTop = 0 }}><Cable size={17} aria-hidden="true" /><span>{service.name}</span></button>)}</nav><ActionButton reason={t(stale ? 'ui.reason.read' : loading ? 'ui.reason.loading' : 'ui.reason.busy')} className="text-button mcp-sidebar-add" type="button" disabled={loading || stale || busy !== null} onClick={addService}><Plus size={16} aria-hidden="true" />{t('mcp.addDirect')}</ActionButton></aside>
+  <main ref={mainContent} id="main-content" className="robot-content mcp-page">
+    <div className="mcp-toolbar workspace-rail">
       <div className="mcp-toolbar-copy">
         <p className="mcp-summary">{t('mcp.revision', { revision: formatNumber(revision) })}</p>
         {snapshot && <p className="mcp-summary">{t('mcp.count', { count: services.length, value: formatNumber(services.length) })}</p>}
       </div>
       <div className="mcp-toolbar-actions">
-        <button type="button" className="button button-secondary" disabled={loading || busy !== null} onClick={() => void refresh()}><RefreshCw size={16} aria-hidden="true" />{t(loading ? 'mcp.refreshing' : 'mcp.refresh')}</button>
-        <button type="button" className="button button-primary" disabled={loading || stale || busy !== null} onClick={() => setEditor(emptyDraft())}><Plus size={16} aria-hidden="true" />{t('mcp.addDirect')}</button>
+        <ActionButton reason={t(loading ? 'ui.reason.loading' : 'ui.reason.busy')} type="button" className="button button-secondary" disabled={loading || busy !== null} onClick={() => void refresh()}><RefreshCw size={16} aria-hidden="true" />{t(loading ? 'mcp.refreshing' : 'mcp.refresh')}</ActionButton>
       </div>
     </div>
-    {failure && <div className="mcp-alert" role="alert"><AlertCircle size={17} aria-hidden="true" /><div><p>{failure}</p><p className="mcp-alert-action"><button type="button" className="text-button" onClick={() => void refresh()}>{t('mcp.retry')}</button></p></div></div>}
+    {failure && <div className="mcp-alert" role="alert"><AlertCircle size={17} aria-hidden="true" /><div><p>{failure}</p><p className="mcp-alert-action"><ActionButton reason={t('ui.reason.busy')} type="button" className="text-button" onClick={() => void refresh()}>{t('mcp.retry')}</ActionButton></p></div></div>}
     {notice && <div className="mcp-notice" role="status"><AlertCircle size={17} aria-hidden="true" /><p>{notice}</p></div>}
-    {editor && <McpEditor draft={editor} onChange={setEditor} onCancel={() => setEditor(null)} onSave={saveDraft} saving={busy === 'save'} />}
+    {editor && (selectedId === 'new' || editor.id === selectedId) && <McpEditor draft={editor} onChange={setEditor} onCancel={() => setEditor(null)} onSave={saveDraft} saving={busy === 'save'} />}
     {!snapshot && loading && <p className="mcp-loading" role="status"><LoaderCircle size={16} aria-hidden="true" />{t('mcp.loading')}</p>}
-    {snapshot && services.length === 0 && <div className="empty-state mcp-empty"><Cable size={30} aria-hidden="true" /><h3>{t('mcp.emptyTitle')}</h3><p>{t('mcp.emptyDescription')}</p><button type="button" className="button button-primary" disabled={stale} onClick={() => setEditor(emptyDraft())}><Plus size={16} aria-hidden="true" />{t('mcp.addDirect')}</button></div>}
+    {snapshot && services.length === 0 && <div className="empty-state mcp-empty"><Cable size={30} aria-hidden="true" /><h3>{t('mcp.emptyTitle')}</h3><p>{t('mcp.emptyDescription')}</p><ActionButton reason={t('ui.reason.read')} type="button" className="button button-primary" disabled={stale} onClick={addService}><Plus size={16} aria-hidden="true" />{t('mcp.addDirect')}</ActionButton></div>}
     <div className="mcp-service-list" aria-busy={loading}>
-      {services.map(service => <ServiceCard key={service.id} service={service} agentTypes={agentTypes} busy={busy} stale={stale}
-        onEdit={() => setEditor(draftFrom(service))}
+      {services.map(service => <div key={service.id} hidden={service.id !== selectedId} className="mcp-service-slot"><ServiceCard service={service} agentTypes={agentTypes} busy={busy} stale={stale} revision={revision}
+        onEdit={() => setEditor(draftFrom(service, revision))}
         onConnect={() => void mutate('connect', 'connect', { id: service.id }, t('mcp.connectedFeedback'))}
         onDisconnect={() => void mutate('disconnect', 'disconnect', { id: service.id }, t('mcp.disconnectedFeedback'))}
         onDelete={() => void mutate('delete', 'delete', { id: service.id, expectedRevision: revision }, t('mcp.deletedFeedback'))}
-        onSaveGrants={(grant) => mutate('save-grants', 'save-grants', { id: service.id, expectedRevision: revision, agentTypeIds: grant.agentTypeIds, toolNames: grant.toolNames }, t('mcp.grantSavedFeedback'))} />)}
+        onSaveGrants={(grant, expectedRevision) => mutate('save-grants', 'save-grants', { id: service.id, expectedRevision, agentTypeIds: grant.agentTypeIds, toolNames: grant.toolNames }, t('mcp.grantSavedFeedback'))} /></div>)}
     </div>
-  </main>
+  </main></div>
 }
 
-function ServiceCard({ service, agentTypes, busy, stale, onEdit, onConnect, onDisconnect, onDelete, onSaveGrants }: {
+function ServiceCard({ service, agentTypes, busy, stale, revision, onEdit, onConnect, onDisconnect, onDelete, onSaveGrants }: {
   readonly service: McpServiceSummary
+  readonly revision: number
   readonly agentTypes: McpDirectorySnapshot['agentTypes']
   readonly busy: string | null
   readonly stale: boolean
@@ -181,11 +192,14 @@ function ServiceCard({ service, agentTypes, busy, stale, onEdit, onConnect, onDi
   readonly onConnect: () => void
   readonly onDisconnect: () => void
   readonly onDelete: () => void
-  readonly onSaveGrants: (grant: McpGrant) => Promise<boolean>
+  readonly onSaveGrants: (grant: McpGrant, revision: number) => Promise<boolean>
 }) {
   const { t, formatNumber } = useI18n('app')
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [editingGrant, setEditingGrant] = useState(false)
+  const [grantRevision, setGrantRevision] = useState(revision)
+  const [toolQuery, setToolQuery] = useState('')
+  const visibleTools = service.tools.filter(tool => `${tool.title} ${tool.name} ${tool.description}`.toLocaleLowerCase().includes(toolQuery.trim().toLocaleLowerCase()))
   const [grant, setGrant] = useState<McpGrant>({ agentTypeIds: [...service.grant.agentTypeIds], toolNames: [...service.grant.toolNames] })
   const [grantSaving, setGrantSaving] = useState(false)
   const direct = service.source.kind === 'direct'
@@ -201,19 +215,20 @@ function ServiceCard({ service, agentTypes, busy, stale, onEdit, onConnect, onDi
   const transport = service.transport === 'stdio' ? t('mcp.transport.stdio') : service.transport === 'streamable-http' ? t('mcp.transport.http') : t('mcp.transport.plugin')
   const partner = (id: string) => agentTypes.find(type => type.id === id)?.title ?? id
   const disabled = busy !== null || stale
+  const disabledReason = t(stale ? 'ui.reason.read' : 'ui.reason.busy')
 
   async function saveGrants() {
     if (grantSaving) return
     setGrantSaving(true)
-    try { if (await onSaveGrants(grant)) setEditingGrant(false) } finally { setGrantSaving(false) }
+    try { if (await onSaveGrants(grant, grantRevision)) setEditingGrant(false) } finally { setGrantSaving(false) }
   }
 
   return <section className="mcp-service" aria-labelledby={`mcp-${service.id}`}>
     <header className="mcp-service-head">
       <div className="mcp-service-title"><h2 id={`mcp-${service.id}`}>{service.name}</h2><span className={`status-badge mcp-state mcp-state-${service.state}`}>{t(`mcp.state.${service.state}`)}</span><span className="mcp-source">{service.source.kind === 'direct' ? t('mcp.source.direct') : t('mcp.source.plugin', { name: service.source.pluginName })}</span><span className="mcp-transport">{transport}</span></div>
       <div className="mcp-service-actions">
-        {direct && <button type="button" className="button button-secondary" disabled={disabled} onClick={() => void (service.state === 'connected' ? onDisconnect() : onConnect())}>{service.state === 'connected' ? (busy === 'disconnect' ? t('mcp.disconnecting') : t('mcp.disconnect')) : (busy === 'connect' ? t('mcp.connecting') : t('mcp.connect'))}</button>}
-        {direct && <button type="button" className="button button-secondary" disabled={disabled || service.state === 'connected'} onClick={onEdit}>{t('mcp.edit')}</button>}
+        {direct && <ActionButton reason={disabledReason} type="button" className="button button-secondary" disabled={disabled} onClick={() => void (service.state === 'connected' ? onDisconnect() : onConnect())}>{service.state === 'connected' ? (busy === 'disconnect' ? t('mcp.disconnecting') : t('mcp.disconnect')) : (busy === 'connect' ? t('mcp.connecting') : t('mcp.connect'))}</ActionButton>}
+        {direct && <ActionButton reason={disabled ? disabledReason : t('mcp.disconnectFirst')} type="button" className="button button-secondary" disabled={disabled || service.state === 'connected'} onClick={onEdit}>{t('mcp.edit')}</ActionButton>}
         {service.source.kind === 'plugin' && <a className="text-button" href={`${pluginKind === 'communication' ? '#robots/' : '#plugins/'}${encodeURIComponent(service.source.pluginId)}`}>{t('mcp.openSourcePlugin')}</a>}
       </div>
     </header>
@@ -235,30 +250,32 @@ function ServiceCard({ service, agentTypes, busy, stale, onEdit, onConnect, onDi
       <section className="mcp-block" aria-labelledby={`mcp-ready-${service.id}`}>
         <h3 id={`mcp-ready-${service.id}`}>{t('mcp.ready.title')}</h3>
         <p className={`mcp-readiness mcp-readiness-${service.state}`}>{t(`mcp.state.${service.state}`)}</p>
-        <p className="mcp-muted">{service.source.kind === 'plugin' ? t('mcp.managedByPlugin', { name: service.source.pluginName }) : t('mcp.readyHint')}</p>
+        {direct && <p className="mcp-muted">{t('mcp.readyHint')}</p>}
       </section>
-      <section className="mcp-block" aria-labelledby={`mcp-grant-${service.id}`}>
+      <section className="mcp-block mcp-block-grants" aria-labelledby={`mcp-grant-${service.id}`}>
         <h3 id={`mcp-grant-${service.id}`}>{t('mcp.grant.title')}</h3>
         {permissionsManaged ? <>
-          <p className="mcp-grant-tools">{service.tools.map(tool => tool.name).join('、') || '—'}</p>
+          <p className="mcp-grant-summary">{t('mcp.tools.title', { count: service.tools.length, value: formatNumber(service.tools.length) })}</p>
           <p className="mcp-hint">{t('mcp.grant.managedByPlugin', { name: service.source.kind === 'plugin' ? service.source.pluginName : '' })}</p>
         </> : !editingGrant ? <>
           <p className="mcp-grant-summary">{service.grant.agentTypeIds.length ? service.grant.agentTypeIds.map(partner).join('、') : t('mcp.grant.none')}</p>
-          <p className="mcp-grant-tools">{service.grant.toolNames.length ? service.grant.toolNames.join('、') : '—'}</p>
+          <details className="mcp-granted-tools"><summary>{t('mcp.grant.selectedTools', { count: service.grant.toolNames.length, value: formatNumber(service.grant.toolNames.length) })}</summary><ul>{service.grant.toolNames.map(name => <li key={name}>{service.tools.find(tool => tool.name === name)?.title ?? name}</li>)}</ul></details>
           <p className="mcp-hint">{t('mcp.grant.note')}</p>
-          <button type="button" className="text-button" disabled={disabled} onClick={() => { setGrant({ agentTypeIds: [...service.grant.agentTypeIds], toolNames: [...service.grant.toolNames] }); setEditingGrant(true) }}>{t('mcp.grant.edit')}</button>
+          <ActionButton reason={disabledReason} type="button" className="text-button" disabled={disabled} onClick={() => { setGrant({ agentTypeIds: [...service.grant.agentTypeIds], toolNames: [...service.grant.toolNames] }); setGrantRevision(revision); setEditingGrant(true) }}>{t('mcp.grant.edit')}</ActionButton>
         </> : <>
+          {grantRevision !== revision && <div className="mcp-notice" role="alert"><div><p>{t('mcp.grant.changed')}</p><details><summary>{t('mcp.grant.latest')}</summary><p>{service.grant.agentTypeIds.map(partner).join(', ') || t('mcp.grant.none')}</p><p>{service.grant.toolNames.join(', ')}</p></details><ActionButton type="button" className="text-button" reasonCode="busy" disabled={disabled || grantSaving} onClick={() => setGrantRevision(revision)}>{t('mcp.grant.rebase')}</ActionButton></div></div>}
           <GrantPicker agentTypes={agentTypes} tools={service.tools} value={grant} onChange={setGrant} disabled={grantSaving} />
           <p className="mcp-hint">{t('mcp.grant.note')}</p>
-          <div className="mcp-inline-actions"><button type="button" className="button button-primary" disabled={grantSaving || stale} onClick={() => void saveGrants()}>{grantSaving ? t('mcp.grant.saving') : t('mcp.grant.save')}</button><button type="button" className="button button-secondary" disabled={grantSaving} onClick={() => setEditingGrant(false)}>{t('mcp.grant.close')}</button></div>
+          <div className="mcp-inline-actions"><ActionButton reason={t(!grantSaving && (stale || grantRevision !== revision) ? 'ui.reason.read' : 'ui.reason.busy')} type="button" className="button button-primary" disabled={grantSaving || stale || grantRevision !== revision} onClick={() => void saveGrants()}>{grantSaving ? t('mcp.grant.saving') : t('mcp.grant.save')}</ActionButton><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-secondary" disabled={grantSaving} onClick={() => setEditingGrant(false)}>{t('mcp.grant.close')}</ActionButton></div>
         </>}
       </section>
     </div>
     <details className="mcp-tools"><summary><ChevronDown size={15} aria-hidden="true" />{t('mcp.tools.title', { count: service.tools.length, value: formatNumber(service.tools.length) })}</summary>
-      {service.tools.length === 0 ? <p className="mcp-muted">{t('mcp.tools.empty')}</p> : <ul>{service.tools.map(tool => <li key={tool.name}><div className="mcp-tool-head"><strong>{tool.title}</strong><code>{tool.name}</code>{tool.readOnly && <span className="mcp-tool-badge">{t('mcp.tools.readOnly')}</span>}{tool.destructive && <span className="mcp-tool-badge mcp-tool-badge-warn">{t('mcp.tools.destructive')}</span>}</div><p>{tool.description}</p></li>)}</ul>}
+      <label className="mcp-tool-search"><span>{t('mcp.tools.search')}</span><input type="search" value={toolQuery} onChange={event => setToolQuery(event.target.value)} /></label>
+      {visibleTools.length === 0 ? <p className="mcp-muted">{t('mcp.tools.empty')}</p> : <ul>{visibleTools.map(tool => <li key={tool.name}><div className="mcp-tool-head"><strong>{tool.title}</strong><code>{tool.name}</code>{tool.readOnly && <span className="mcp-tool-badge">{t('mcp.tools.readOnly')}</span>}{tool.destructive && <span className="mcp-tool-badge mcp-tool-badge-warn">{t('mcp.tools.destructive')}</span>}</div><p>{tool.description}</p></li>)}</ul>}
     </details>
     {direct && <div className="mcp-danger-zone">
-      {!confirmDelete ? <button type="button" className="text-button mcp-danger-trigger" disabled={disabled} onClick={() => setConfirmDelete(true)}><Trash2 size={14} aria-hidden="true" />{t('mcp.delete')}</button> : <div className="mcp-confirm" role="alertdialog" aria-label={t('mcp.deleteConfirmTitle', { name: service.name })}><div><strong>{t('mcp.deleteConfirmTitle', { name: service.name })}</strong><p>{t('mcp.deleteConfirmDescription')}</p></div><div className="mcp-inline-actions"><button type="button" className="button button-secondary" disabled={busy !== null} onClick={() => setConfirmDelete(false)}>{t('mcp.cancel')}</button><button type="button" className="button button-danger" disabled={disabled || busy !== null} onClick={onDelete}>{busy === 'delete' ? t('mcp.deleting') : t('mcp.deleteConfirm')}</button></div></div>}
+      {!confirmDelete ? <ActionButton reason={disabledReason} type="button" className="text-button mcp-danger-trigger" disabled={disabled} onClick={() => setConfirmDelete(true)}><Trash2 size={14} aria-hidden="true" />{t('mcp.delete')}</ActionButton> : <div className="mcp-confirm" role="alertdialog" aria-label={t('mcp.deleteConfirmTitle', { name: service.name })}><div><strong>{t('mcp.deleteConfirmTitle', { name: service.name })}</strong><p>{t('mcp.deleteConfirmDescription')}</p></div><div className="mcp-inline-actions"><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-secondary" disabled={busy !== null} onClick={() => setConfirmDelete(false)}>{t('mcp.cancel')}</ActionButton><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-danger" disabled={disabled || busy !== null} onClick={onDelete}>{busy === 'delete' ? t('mcp.deleting') : t('mcp.deleteConfirm')}</ActionButton></div></div>}
     </div>}
   </section>
 }
@@ -273,8 +290,8 @@ function GrantPicker({ agentTypes, tools, value, onChange, disabled }: {
   const { t } = useI18n('app')
   const toggle = (list: readonly string[], id: string) => list.includes(id) ? list.filter(item => item !== id) : [...list, id]
   return <div className="mcp-grant-picker">
-    <fieldset disabled={disabled}><legend>{t('mcp.grant.agentTypes')}</legend>{agentTypes.length === 0 ? <p className="mcp-muted">{t('mcp.grant.none')}</p> : agentTypes.map(type => <label className="mcp-check" key={type.id}><input type="checkbox" checked={value.agentTypeIds.includes(type.id)} onChange={() => onChange({ ...value, agentTypeIds: toggle(value.agentTypeIds, type.id) })} /><span>{type.title}</span></label>)}</fieldset>
-    <fieldset disabled={disabled}><legend>{t('mcp.grant.toolNames')}</legend>{tools.length === 0 ? <p className="mcp-muted">{t('mcp.tools.empty')}</p> : tools.map(tool => <label className="mcp-check" key={tool.name}><input type="checkbox" checked={value.toolNames.includes(tool.name)} onChange={() => onChange({ ...value, toolNames: toggle(value.toolNames, tool.name) })} /><span>{tool.title} · <code>{tool.name}</code></span></label>)}</fieldset>
+    <fieldset disabled={disabled}><legend>{t('mcp.grant.agentTypes')}</legend><div className="mcp-grant-actions"><ActionButton type="button" className="text-button" reason={t(disabled ? 'ui.reason.busy' : 'mcp.grant.none')} disabled={disabled || agentTypes.length === 0} onClick={() => onChange({ ...value, agentTypeIds: agentTypes.map(type => type.id) })}>{t('ui.selectAll')}</ActionButton><ActionButton type="button" className="text-button" reason={t(disabled ? 'ui.reason.busy' : 'ui.reason.empty')} disabled={disabled || value.agentTypeIds.length === 0} onClick={() => onChange({ ...value, agentTypeIds: [] })}>{t('ui.clearAll')}</ActionButton></div>{agentTypes.length === 0 ? <p className="mcp-muted">{t('mcp.grant.none')}</p> : agentTypes.map(type => <label className="mcp-check" key={type.id}><input type="checkbox" checked={value.agentTypeIds.includes(type.id)} onChange={() => onChange({ ...value, agentTypeIds: toggle(value.agentTypeIds, type.id) })} /><span>{type.title}</span></label>)}</fieldset>
+    <fieldset disabled={disabled}><legend>{t('mcp.grant.toolNames')}</legend><p className="mcp-hint">{t('ui.allowList')}</p><div className="mcp-grant-actions"><ActionButton type="button" className="text-button" reason={t(disabled ? 'ui.reason.busy' : 'ui.reason.noTools')} disabled={disabled || tools.length === 0} onClick={() => onChange({ ...value, toolNames: tools.map(tool => tool.name) })}>{t('ui.allowAll')}</ActionButton><ActionButton type="button" className="text-button" reason={t(disabled ? 'ui.reason.busy' : 'ui.reason.empty')} disabled={disabled || value.toolNames.length === 0} onClick={() => onChange({ ...value, toolNames: [] })}>{t('ui.clearAll')}</ActionButton></div><div className="mcp-grant-options">{tools.length === 0 ? <p className="mcp-muted">{t('mcp.tools.empty')}</p> : tools.map(tool => <label className="mcp-check" key={tool.name}><input type="checkbox" checked={value.toolNames.includes(tool.name)} onChange={() => onChange({ ...value, toolNames: toggle(value.toolNames, tool.name) })} /><span>{tool.title}<code>{tool.name}</code></span></label>)}</div></fieldset>
   </div>
 }
 
@@ -330,7 +347,7 @@ function McpEditor({ draft, onChange, onCancel, onSave, saving }: {
   }
 
   return <section className="mcp-editor" aria-labelledby={`${prefix}-title`}>
-    <div className="mcp-editor-heading"><div><h2 id={`${prefix}-title`}>{t(draft.id ? 'mcp.form.editTitle' : 'mcp.form.createTitle')}</h2><p>{t('mcp.form.description')}</p></div><button type="button" className="icon-button" aria-label={t('mcp.cancel')} onClick={onCancel}><X size={18} aria-hidden="true" /></button></div>
+    <div className="mcp-editor-heading"><div><h2 id={`${prefix}-title`}>{t(draft.id ? 'mcp.form.editTitle' : 'mcp.form.createTitle')}</h2><p>{t('mcp.form.description')}</p></div><ActionButton reason={t('ui.reason.busy')} type="button" className="icon-button" aria-label={t('mcp.cancel')} onClick={onCancel}><X size={18} aria-hidden="true" /></ActionButton></div>
     <form className="form-fields" noValidate onSubmit={event => void submit(event)}>
       <div className={`field${errors.name ? ' field-invalid' : ''}`}><label htmlFor={`${prefix}-name`}>{t('mcp.field.name')}</label><input id={`${prefix}-name`} value={draft.name} maxLength={200} autoComplete="off" onChange={event => editable('name', event.target.value)} /><p className="field-hint">{t('mcp.field.nameHint')}</p>{errors.name && <p className="field-error">{errors.name}</p>}</div>
       <div className="field"><label htmlFor={transportId}>{t('mcp.field.transport')}</label><div className="mcp-choice-row" id={transportId} role="radiogroup">{([['stdio', 'mcp.transport.stdio'], ['streamable-http', 'mcp.transport.http']] as const).map(([value, label]) => <label className="mcp-choice" key={value}><input type="radio" name="transport" checked={draft.transport === value} onChange={() => onChange({ ...draft, transport: value })} /><span>{t(label)}</span></label>)}</div></div>
@@ -343,7 +360,7 @@ function McpEditor({ draft, onChange, onCancel, onSave, saving }: {
         <div className="field"><label>{t('mcp.field.headers')}</label><div><KvEditor rows={rowsFor('headers')} onPatch={(index, patch) => setRow('headers', index, patch)} onAdd={() => addRow('headers')} onRemove={index => onChange({ ...draft, headers: draft.headers.filter((_, current) => current !== index) })} addLabel={t('mcp.kv.addHeader')} keyLabel={t('mcp.kv.headerKey')} error={errors.headers} /></div></div>
       </>}
       <label className="check-field mcp-compact-check"><input type="checkbox" checked={draft.autoConnect} onChange={event => editable('autoConnect', event.target.checked)} /><span><strong>{t('mcp.field.autoConnect')}</strong><small>{t('mcp.field.autoConnectHint')}</small></span></label>
-      <div className="form-actions"><button type="submit" className="button button-primary" disabled={saving || submitting}>{saving ? t('mcp.form.saving') : t(draft.id ? 'mcp.form.save' : 'mcp.form.create')}</button><button type="button" className="button button-secondary" disabled={saving || submitting} onClick={onCancel}>{t('mcp.cancel')}</button></div>
+      <div className="form-actions"><ActionButton reason={t('ui.reason.busy')} type="submit" className="button button-primary" disabled={saving || submitting}>{saving ? t('mcp.form.saving') : t(draft.id ? 'mcp.form.save' : 'mcp.form.create')}</ActionButton><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-secondary" disabled={saving || submitting} onClick={onCancel}>{t('mcp.cancel')}</ActionButton></div>
     </form>
   </section>
 }
@@ -362,9 +379,9 @@ function KvEditor({ rows, onPatch, onAdd, onRemove, addLabel, keyLabel, error }:
     {rows.map(({ row, index }) => <div className={`mcp-kv-row${row.clear ? ' is-cleared' : ''}`} key={index}>
       <input aria-label={keyLabel} value={row.key} disabled={row.saved} maxLength={200} autoComplete="off" spellCheck={false} onChange={event => onPatch(index, { key: event.target.value })} />
       <input aria-label={t('mcp.kv.value')} type="password" value={row.value} maxLength={4096} autoComplete="new-password" placeholder={row.saved ? t('mcp.kv.savedPlaceholder') : t('mcp.kv.value')} disabled={row.clear} onChange={event => onPatch(index, { value: event.target.value })} />
-      {row.saved ? <label className="mcp-check mcp-kv-clear"><input type="checkbox" checked={row.clear} onChange={event => onPatch(index, { clear: event.target.checked })} /><span>{t('mcp.kv.clear')}</span></label> : <button type="button" className="icon-button" aria-label={t('mcp.kv.remove')} onClick={() => onRemove(index)}><X size={15} aria-hidden="true" /></button>}
+      {row.saved ? <label className="mcp-check mcp-kv-clear"><input type="checkbox" checked={row.clear} onChange={event => onPatch(index, { clear: event.target.checked })} /><span>{t('mcp.kv.clear')}</span></label> : <ActionButton reason={t('ui.reason.busy')} type="button" className="icon-button" aria-label={t('mcp.kv.remove')} onClick={() => onRemove(index)}><X size={15} aria-hidden="true" /></ActionButton>}
     </div>)}
-    <button type="button" className="text-button mcp-kv-add" onClick={onAdd}><Plus size={14} aria-hidden="true" />{addLabel}</button>
+    <ActionButton reason={t('ui.reason.busy')} type="button" className="text-button mcp-kv-add" onClick={onAdd}><Plus size={14} aria-hidden="true" />{addLabel}</ActionButton>
     {error && <p className="field-error">{error}</p>}
   </div>
 }

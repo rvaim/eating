@@ -88,6 +88,20 @@ test.describe('插件管理页', () => {
     await expect(page.getByRole('heading', { name: '插件', level: 1 })).toBeVisible()
   }
 
+  test('宽屏插件行与操作共用内容边界，打开面板后返回始终在顶部右侧', async ({ page }, info) => {
+    await page.setViewportSize({ width: 2560, height: 1100 }); await goto(page)
+    const item = row(page, 'DeepSeek Harness'); expect((await item.boundingBox())!.width).toBeLessThanOrEqual(1200)
+    await item.getByRole('link', { name: '打开面板', exact: true }).click()
+    const back = page.locator('.page-header').getByRole('link', { name: '返回插件列表', exact: true })
+    await expect(back).toBeVisible()
+    await page.locator('.robot-content').evaluate(element => { element.scrollTop = element.scrollHeight })
+    await expect(back).toBeInViewport()
+    const box = await back.boundingBox(), header = await page.locator('.page-header').boundingBox(); expect(box!.x).toBeGreaterThan(header!.x + header!.width / 2)
+    await page.screenshot({ path: info.outputPath('plugin-panel-fixed-return.png') })
+    await back.click(); await expect(page.locator('.plugins-list')).toBeVisible()
+    expect(installCalls + uninstallCalls + disableCalls + enableCalls).toBe(0)
+  })
+
   test('统一列出三类插件，可筛选并跳转业务配置与独立面板', async ({ page }, info) => {
     await goto(page)
     await expect(row(page, 'QQ')).toContainText('通讯插件')
@@ -191,7 +205,7 @@ test.describe('插件真实安装与表情库（临时 Host，无路由桩）', 
     await page.getByRole('button', { name: '安装或更新', exact: true }).click()
     await page.locator('#plugins-source').fill(stickersDirectory)
     await page.getByRole('button', { name: '预览', exact: true }).click()
-    await expect(page.getByText('表情包 · v0.1.0', { exact: true })).toBeVisible()
+    await expect(page.getByText('表情包 · v0.1.1', { exact: true })).toBeVisible()
     await page.getByRole('button', { name: '确认安装', exact: true }).click()
     await expect(row(page, '表情包')).toBeVisible()
   }

@@ -3,7 +3,7 @@ import type { ImageMimeType, JsonObject } from '@eating/plugin-sdk'
 import { HostApiError, hostRequest } from '@eating/ui-sdk'
 import type {
   GeneratedImageItem, ImageGenerationConfiguration, ImageGenerationJob, ImageGenerationJobError,
-  ImageGenerationPage, ImageGenerationPreview, ImageGenerationResponseFormat,
+  ImageGenerationPage, ImageGenerationPreview, ImageGenerationResponseFormat, ImageGenerationSourceKind, ImageGenerationSourceSummary,
 } from '../types'
 import { IMAGE_GENERATION_LIMITS } from '../types'
 import { it } from './i18n'
@@ -17,6 +17,7 @@ function invalid(): never { throw new HostApiError('INVALID_HOST_RESPONSE', '', 
 const onlyKeys = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).every(key => keys.includes(key))
 const formats: readonly ImageGenerationResponseFormat[] = ['', 'b64_json', 'url']
 const statuses = ['queued', 'running', 'succeeded', 'failed', 'unknown'] as const
+const sourceKinds: readonly ImageGenerationSourceKind[] = ['received', 'asset', 'upload']
 const mimeTypes: readonly ImageMimeType[] = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
 
 export function readConfiguration(value: unknown): ImageGenerationConfiguration {
@@ -36,15 +37,26 @@ function readError(value: unknown): ImageGenerationJobError {
   return { code: value.code, message: value.message, outcome: value.outcome as ImageGenerationJobError['outcome'] }
 }
 
+function readSource(value: unknown): ImageGenerationSourceSummary {
+  if (!isJsonObject(value) || !onlyKeys(value, ['kind', 'mimeType', 'bytes', 'assetId'])
+    || !sourceKinds.includes(value.kind as ImageGenerationSourceKind) || !mimeTypes.includes(value.mimeType as ImageMimeType)
+    || !integer(value.bytes, IMAGE_GENERATION_LIMITS.imageBytes) || value.bytes < 1
+    || (value.kind === 'asset' ? !nonEmpty(value.assetId, 160) : value.assetId !== undefined)) return invalid()
+  return { kind: value.kind as ImageGenerationSourceKind, mimeType: value.mimeType as ImageMimeType, bytes: value.bytes,
+    ...(value.kind === 'asset' ? { assetId: value.assetId as string } : {}) }
+}
+
 export function readJob(value: unknown): ImageGenerationJob {
-  if (!isJsonObject(value) || !onlyKeys(value, ['jobId', 'requestId', 'status', 'prompt', 'model', 'createdAt', 'updatedAt', 'assetIds', 'error'])
+  if (!isJsonObject(value) || !onlyKeys(value, ['jobId', 'requestId', 'status', 'prompt', 'model', 'createdAt', 'updatedAt', 'assetIds', 'source', 'error'])
     || !nonEmpty(value.jobId, 160) || !nonEmpty(value.requestId, 128) || !statuses.includes(value.status as (typeof statuses)[number])
     || !nonEmpty(value.prompt, IMAGE_GENERATION_LIMITS.prompt) || !text(value.model, 200) || !date(value.createdAt) || !date(value.updatedAt)
     || !Array.isArray(value.assetIds) || value.assetIds.length > IMAGE_GENERATION_LIMITS.images || value.assetIds.some(assetId => !nonEmpty(assetId, 160))
     || new Set(value.assetIds).size !== value.assetIds.length
+    || value.source !== undefined && (!isJsonObject(value.source) || !readSource(value.source))
     || value.error !== undefined && (!isJsonObject(value.error) || !readError(value.error))) return invalid()
   return { jobId: value.jobId, requestId: value.requestId, status: value.status as ImageGenerationJob['status'], prompt: value.prompt,
     model: value.model, createdAt: value.createdAt, updatedAt: value.updatedAt, assetIds: [...value.assetIds] as string[],
+    ...(value.source !== undefined ? { source: readSource(value.source) } : {}),
     ...(value.error !== undefined ? { error: readError(value.error) } : {}) }
 }
 
@@ -87,6 +99,18 @@ export function imageBlob(image: { readonly mimeType: ImageMimeType; readonly da
   return new Blob([Uint8Array.from(binary, character => character.charCodeAt(0))], { type: image.mimeType })
 }
 
+export interface ImageGenerationUpload { readonly mimeType: ImageMimeType; readonly data: string }
+export async function localImage(file: File): Promise<ImageGenerationUpload> {
+  const declared = file.type === 'image/jpg' ? 'image/jpeg' : file.type
+  const mime = declared || (/\.png$/i.test(file.name) ? 'image/png' : /\.jpe?g$/i.test(file.name) ? 'image/jpeg' : /\.gif$/i.test(file.name) ? 'image/gif' : /\.webp$/i.test(file.name) ? 'image/webp' : '')
+  if (!file.size || file.size > IMAGE_GENERATION_LIMITS.imageBytes || !mimeTypes.includes(mime as ImageMimeType)) throw new HostApiError('IMAGE_GENERATION_INVALID_SOURCE_IMAGE', it('generate.sourceInvalid'), 'not-sent')
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  if (bytes.length !== file.size) invalid()
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 16384) binary += String.fromCharCode(...bytes.subarray(offset, offset + 16384))
+  return { mimeType: mime as ImageMimeType, data: btoa(binary) }
+}
+
 export async function fetchConfiguration(signal?: AbortSignal): Promise<ImageGenerationConfiguration> {
   return readConfiguration(await hostRequest<unknown>('/plugins/image-generation/configuration', { signal }))
 }
@@ -103,6 +127,9 @@ const errorKeys: Readonly<Record<string, ImageGenerationTranslationKey>> = {
   IMAGE_GENERATION_CONFIGURATION_CONFLICT: 'error.configConflict',
   IMAGE_GENERATION_CONFIGURATION_CORRUPTED: 'error.configCorrupted',
   IMAGE_GENERATION_INVALID_IMAGE: 'error.invalidImage',
+  IMAGE_GENERATION_INVALID_SOURCE_IMAGE: 'error.invalidSourceImage',
+  IMAGE_GENERATION_SOURCE_DENIED: 'error.sourceDenied',
+  IMAGE_GENERATION_RESOURCE_UNAVAILABLE: 'error.sourceUnavailable',
   IMAGE_GENERATION_CANCELLED: 'error.cancelled',
   IMAGE_GENERATION_REDIRECT_REFUSED: 'error.redirect',
   IMAGE_GENERATION_HTTP_401: 'error.http401',

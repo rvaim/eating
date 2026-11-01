@@ -6,10 +6,12 @@ import { basename, dirname, join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { AgentInvocationScope, BackendPluginEntry, HarnessHostServices, JsonObject } from '@eating/plugin-sdk'
+import type { AgentInvocationScope, BackendPluginEntry, HarnessHostServices, JsonObject, ScopedAccessPolicy } from '@eating/plugin-sdk'
 import qqEntry from '../../../plugins/communication/qq/src/server'
 import { startOneBotFixture } from '../../../tests/fixtures/onebot'
 import { EatingHost } from './app'
+import { DshProactivePolicy } from '../../../plugins/harness/dsh/src/backend/proactive-policy'
+import { AUTONOMY_DEFAULTS, DshAutonomy } from '../../../plugins/harness/dsh/src/backend/autonomy'
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
@@ -46,8 +48,8 @@ async function setup() {
   const configuration = await api('/plugins/qq/configuration')
   const instanceId = String(configuration.instanceId)
   const scope = (agentId = randomUUID(), kind: 'private' | 'group' = 'private'): AgentInvocationScope => ({ agentId, agentTypeId: `qq.${kind}`, pluginId: 'qq', instanceId, accountId: '123456789', conversationId: `qq:123456789:${kind}:${kind === 'private' ? '987654321' : '123456'}`, kind, targetId: kind === 'private' ? '987654321' : '123456', messageIds: ['42'], resourceIds: ['known-image.jpg'] })
-  const client = async (binding: AgentInvocationScope) => {
-    const connection = services.getMcpConnection('qq', binding)
+  const client = async (binding: AgentInvocationScope, policy?: ScopedAccessPolicy) => {
+    const connection = services.getMcpConnection('qq', binding, policy)
     const mcp = new Client({ name: 'Eating-scoped-agent-fixture', version: '1.0.0' })
     cleanups.push(() => mcp.close())
     await mcp.connect(new StreamableHTTPClientTransport(new URL(connection.url), { requestInit: { headers: { ...connection.headers, Origin: url } } }))
@@ -57,6 +59,59 @@ async function setup() {
 }
 
 describe('Host scoped agent MCP and plugin prompt registry', () => {
+  it('discovers real joined groups and applies object deny lists to an actual scoped MCP task and in-flight revocation', async () => {
+    const f = await setup(), channel = f.services.readProactiveChannels!().find(channel => channel.kind === 'group')!
+    const joined = await f.services.readProactiveContacts!('qq', { instanceId: channel.instanceId, accountId: channel.accountId, agentTypeId: channel.agentTypeId })
+    expect(joined).toEqual([{ id: '123456', name: '夹具测试群' }])
+    expect(await f.services.readProactiveContacts!('qq', { instanceId: channel.instanceId, accountId: channel.accountId, agentTypeId: 'qq.private' })).toEqual([{ id: f.scope().targetId, name: '夹具联系人' }])
+    const policies = new DshProactivePolicy(join(f.home, 'contact-policy'), f.services)
+    policies.commit(policies.prepare({ expectedRevision: 0, mode: 'all', entries: [] }))
+    const agentId = randomUUID(), activity = new DshAutonomy(join(f.home, 'group-rules'), () => true, () => {}, () => f.services.revokeAgentAccess(agentId))
+    activity.setTargetDirectory(() => policies.targets())
+    await activity.configure({ expectedRevision: 0, configuration: { ...AUTONOMY_DEFAULTS, enabled: true } }); activity.startRuntime('group-nonce')
+    let state = activity.snapshot(); await activity.control('resume', { expectedRevision: state.revision, expectedActivityRevision: (state.state as JsonObject).revision })
+    const admitted = activity.claim('group-nonce') as JsonObject, cycleId = String((admitted.cycle as JsonObject).id), target = (await activity.listTargets()).find(target => target.agentTypeId === 'qq.group')!
+    const scope = f.services.prepareProactiveScope!('qq', { ...target, agentId }); expect(scope.messageIds).toEqual([]); expect(scope.resourceIds).toEqual([])
+    const issued = await f.client(scope, { toolNames: target.toolNames, active: () => activity.targetStillAllowed('group-nonce', cycleId, target) })
+    const wrong = await issued.mcp.callTool({ name: 'qq_send_group_message', arguments: { group_id: '999999', message: 'wrong group fixture', request_id: 'group-wrong-1' } }); expect(wrong.isError).toBe(true)
+    expect((await issued.mcp.callTool({ name: 'qq_send_group_message', arguments: { group_id: '123456', message: 'loopback-only group fixture', request_id: 'group-before-1' } })).isError).toBe(false)
+    const next = policies.prepare({ expectedRevision: 1, mode: 'denylist', entries: [{ pluginId: target.pluginId, instanceId: target.instanceId, accountId: target.accountId, agentTypeId: target.agentTypeId, targetId: target.targetId, label: target.label }] })
+    state = activity.snapshot(); await activity.control('pause', { expectedRevision: state.revision, expectedActivityRevision: (state.state as JsonObject).revision }); activity.invalidateTargets(); policies.commit(next)
+    expect((await activity.listTargets()).every(target => target.agentTypeId === 'qq.private')).toBe(true)
+    const after = await issued.mcp.callTool({ name: 'qq_send_group_message', arguments: { group_id: '123456', message: 'must never reach fixture', request_id: 'group-after-1' } }).catch(() => ({ isError: true })); expect(after.isError).toBe(true)
+    expect(f.onebot.requests.filter(request => request.action === 'send_group_msg')).toHaveLength(1)
+  })
+
+  it('derives a proactive scope from the real account, limits its tools and rejects expired authority before a write', async () => {
+    const f = await setup()
+    const channels = f.services.readProactiveChannels!()
+    const channel = channels.find(channel => channel.agentTypeId === 'qq.private')!
+    const request = { instanceId: channel.instanceId, accountId: channel.accountId, agentTypeId: channel.agentTypeId, targetId: '987654321', agentId: randomUUID() }
+    const binding = f.services.prepareProactiveScope!('qq', request)
+    expect(binding).toMatchObject({ accountId: '123456789', targetId: '987654321', messageIds: [], resourceIds: [] })
+    expect(() => f.services.prepareProactiveScope!('qq', { ...request, accountId: 'different-account' })).toThrow()
+    let active = true
+    const { mcp } = await f.client(binding, { toolNames: ['qq_send_private_message'], active: () => active })
+    expect((await mcp.listTools()).tools.map(tool => tool.name)).toEqual(['qq_send_private_message'])
+    const before = f.onebot.requests.length
+    expect(await mcp.callTool({ name: 'qq_send_private_message', arguments: { user_id: '111111111', message: 'DENIED-PROACTIVE-TARGET', request_id: 'proactive-wrong-target' } })).toMatchObject({ isError: true })
+    expect(f.onebot.requests).toHaveLength(before)
+    active = false
+    await expect(mcp.callTool({ name: 'qq_send_private_message', arguments: { user_id: binding.targetId, message: 'DENIED-EXPIRED-AUTHORITY', request_id: 'proactive-expired' } })).rejects.toThrow()
+    expect(f.onebot.requests).toHaveLength(before)
+  })
+
+  it('does not inherit message or media references when rotating an actor into a proactive task', async () => {
+    const f = await setup(), binding = f.scope()
+    const first = await f.client(binding)
+    expect(await first.mcp.callTool({ name: 'qq_get_message', arguments: { message_id: '42' } })).toMatchObject({ isError: false })
+    f.services.revokeAgentAccess(binding.agentId)
+    const next = await f.client({ ...binding, messageIds: [], resourceIds: [] }, { toolNames: ['qq_send_private_message', 'qq_get_message'], active: () => true })
+    const before = f.onebot.requests.length
+    expect(await next.mcp.callTool({ name: 'qq_get_message', arguments: { message_id: '42' } })).toMatchObject({ isError: true })
+    expect(f.onebot.requests).toHaveLength(before)
+  })
+
   it('publishes dynamic role and instruction prompts with real owner identity bindings and saved preview', async () => {
     const { api, configuration, services } = await setup()
     const saved = await api('/plugins/qq/manage', { operation: 'save-agent-policy', input: { expectedRevision: configuration.policyRevision, owners: ['987654321', '1234567890'], administrators: ['111111111'], agentTools: configuration.agentTools } })

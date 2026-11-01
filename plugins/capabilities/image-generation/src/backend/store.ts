@@ -3,13 +3,14 @@ import { lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import { IMAGE_GENERATION_LIMITS } from '../types'
-import type { GeneratedImageItem, ImageGenerationJob, ImageGenerationJobError, ImageGenerationPage, ImageGenerationPreview } from '../types'
+import type { GeneratedImageItem, ImageGenerationJob, ImageGenerationJobError, ImageGenerationPage, ImageGenerationPreview, ImageGenerationSourceSummary } from '../types'
 import { ImageStorageError, jsonBytes, prepareDirectory, readBytes, removeOwnBlob, writeBytes } from './files'
 import { imageBytes } from './image'
 import type { GeneratedImageBytes } from './image'
 import { assetIdentifier, identifier, pageInput, text } from './validation'
+import type { ResolvedSourceImage } from './validation'
 
-interface StoredJob extends ImageGenerationJob { readonly requestHash: string }
+interface StoredJob extends ImageGenerationJob { readonly requestHash: string; readonly sourceHash?: string }
 interface State { readonly schemaVersion: 1; readonly revision: number; readonly jobs: readonly StoredJob[]; readonly images: readonly GeneratedImageItem[] }
 const MAX_STATE_BYTES = 64 * 1024 * 1024
 const hash = (bytes: Buffer | null) => bytes ? createHash('sha256').update(bytes).digest('hex') : null
@@ -17,7 +18,16 @@ const stamp = (value: unknown): value is string => typeof value === 'string' && 
 const exact = (value: object, keys: string[], optional: string[] = []) => keys.every(key => Object.hasOwn(value, key)) && Object.keys(value).every(key => keys.includes(key) || optional.includes(key))
 const interrupted: ImageGenerationJobError = { code: 'IMAGE_GENERATION_INTERRUPTED', message: '上次任务在重启前未确认完成，未自动重放；请求可能已计费。', outcome: 'unknown' }
 function corrupt(): never { throw new PlatformError('IMAGE_GENERATION_STATE_CORRUPTED', '生图任务或资源索引损坏或不是当前 schema1，原文件未覆盖。', 500, 'not-sent') }
-function publicJob(value: StoredJob): ImageGenerationJob { const { requestHash: _hash, ...job } = value; return structuredClone(job) }
+function publicJob(value: StoredJob): ImageGenerationJob { const { requestHash: _hash, sourceHash: _sourceHash, ...job } = value; return structuredClone(job) }
+function sourceSummary(source: ResolvedSourceImage): ImageGenerationSourceSummary {
+  return { kind: source.kind, mimeType: source.mimeType, bytes: source.bytes.length, ...(source.assetId ? { assetId: source.assetId } : {}) }
+}
+function validSource(value: unknown): value is ImageGenerationSourceSummary {
+  return isJsonObject(value) && exact(value, ['kind', 'mimeType', 'bytes'], ['assetId']) && ['received', 'asset', 'upload'].includes(String(value.kind))
+    && ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(String(value.mimeType)) && typeof value.bytes === 'number'
+    && Number.isSafeInteger(value.bytes) && value.bytes > 0 && value.bytes <= IMAGE_GENERATION_LIMITS.imageBytes
+    && (value.kind === 'asset' ? typeof value.assetId === 'string' && /^[a-f0-9]{64}$/.test(value.assetId) : value.assetId === undefined)
+}
 
 /** Only jobs and generated assets are stored here; provider responses, URLs and keys are never indexed. */
 export class ImageGenerationStore {
@@ -53,11 +63,14 @@ export class ImageGenerationStore {
     }
     if (bytes > IMAGE_GENERATION_LIMITS.libraryBytes) corrupt()
     for (const item of value.jobs) {
-      if (!isJsonObject(item) || !exact(item, ['jobId', 'requestId', 'requestHash', 'status', 'prompt', 'model', 'createdAt', 'updatedAt', 'assetIds'], ['error'])
+      if (!isJsonObject(item) || !exact(item, ['jobId', 'requestId', 'requestHash', 'status', 'prompt', 'model', 'createdAt', 'updatedAt', 'assetIds'], ['error', 'source', 'sourceHash'])
         || typeof item.jobId !== 'string' || !/^[a-f0-9-]{36}$/i.test(item.jobId) || jobs.has(item.jobId) || typeof item.requestId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$/.test(item.requestId) || requests.has(item.requestId)
         || typeof item.requestHash !== 'string' || !/^[a-f0-9]{64}$/.test(item.requestHash) || !['queued', 'running', 'succeeded', 'failed', 'unknown'].includes(String(item.status))
         || text(item.prompt, IMAGE_GENERATION_LIMITS.prompt, false) !== item.prompt || text(item.model, 160, false) !== item.model || !stamp(item.createdAt) || !stamp(item.updatedAt) || String(item.updatedAt) < String(item.createdAt)
-        || !Array.isArray(item.assetIds) || item.assetIds.length > 1 || item.assetIds.some(id => typeof id !== 'string' || !images.has(id)) || item.status === 'succeeded' && item.assetIds.length !== 1) corrupt()
+        || !Array.isArray(item.assetIds) || item.assetIds.length > 1 || item.assetIds.some(id => typeof id !== 'string' || !images.has(id)) || item.status === 'succeeded' && item.assetIds.length !== 1
+        || item.source !== undefined && (!validSource(item.source) || item.source.kind === 'asset' && !images.has(item.source.assetId!))
+        || item.sourceHash !== undefined && (typeof item.sourceHash !== 'string' || !/^[a-f0-9]{64}$/.test(item.sourceHash))
+        || (item.source === undefined) !== (item.sourceHash === undefined)) corrupt()
       if (item.error !== undefined && (!isJsonObject(item.error) || !exact(item.error, ['code', 'message', 'outcome']) || typeof item.error.code !== 'string' || item.error.code.length > 160 || typeof item.error.message !== 'string' || item.error.message.length > 2000 || !['not-sent', 'failed', 'unknown'].includes(String(item.error.outcome)))) corrupt()
       jobs.add(item.jobId); requests.add(item.requestId)
     }
@@ -80,9 +93,10 @@ export class ImageGenerationStore {
     const used = this.value.images.reduce((total, item) => total + item.bytes, 0)
     if (this.value.jobs.length >= IMAGE_GENERATION_LIMITS.jobs || this.value.images.length >= IMAGE_GENERATION_LIMITS.images || used + IMAGE_GENERATION_LIMITS.imageBytes > IMAGE_GENERATION_LIMITS.libraryBytes) throw new PlatformError('IMAGE_GENERATION_CAPACITY_REACHED', '任务或图片容量已满，或剩余空间不足单图 5 MiB 上限；未发送付费请求。', 409, 'not-sent')
   }
-  enqueue(requestId: string, requestHash: string, prompt: string, model: string): ImageGenerationJob {
+  enqueue(requestId: string, requestHash: string, prompt: string, model: string, source?: ResolvedSourceImage): ImageGenerationJob {
     this.ensureCapacity()
-    const now = new Date().toISOString(), job: StoredJob = { jobId: randomUUID(), requestId, requestHash, prompt, model, status: 'queued', createdAt: now, updatedAt: now, assetIds: [] }
+    const now = new Date().toISOString(), job: StoredJob = { jobId: randomUUID(), requestId, requestHash, prompt, model, status: 'queued', createdAt: now, updatedAt: now, assetIds: [],
+      ...(source ? { source: sourceSummary(source), sourceHash: source.hash } : {}) }
     this.save({ ...this.value, jobs: [...this.value.jobs, job] })
     return publicJob(job)
   }

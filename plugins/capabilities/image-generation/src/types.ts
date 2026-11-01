@@ -2,6 +2,13 @@ import type { ImageMimeType, ImageResource } from '@eating/plugin-sdk'
 
 export type ImageGenerationResponseFormat = '' | 'b64_json' | 'url'
 export type ImageGenerationJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'unknown'
+export type ImageGenerationSourceKind = 'received' | 'asset' | 'upload'
+export interface ImageGenerationSourceSummary {
+  readonly kind: ImageGenerationSourceKind
+  readonly mimeType: ImageMimeType
+  readonly bytes: number
+  readonly assetId?: string
+}
 export interface ImageGenerationConfiguration {
   readonly schemaVersion: 1
   readonly revision: number
@@ -47,6 +54,7 @@ export interface ImageGenerationJob {
   readonly createdAt: string
   readonly updatedAt: string
   readonly assetIds: readonly string[]
+  readonly source?: ImageGenerationSourceSummary
   readonly error?: ImageGenerationJobError
 }
 export interface GeneratedImageItem {

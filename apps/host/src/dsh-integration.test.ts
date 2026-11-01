@@ -46,7 +46,7 @@ function tools(request: ModelFixtureRequest) { return request.tools?.map(tool =>
 function system(request: ModelFixtureRequest) { return JSON.stringify(request.messages?.filter(message => message.role === 'system')) }
 function toolResults(request: ModelFixtureRequest) { return JSON.stringify(request.messages?.slice(batch(request).messageIndex + 1).filter(message => message.role === 'tool')) }
 function assertRootTools(request: ModelFixtureRequest) {
-  expect(tools(request)).toEqual(['eating_delegate_task', 'eating_list_agent_types'])
+  expect(tools(request)).toEqual(['eating_activity_state', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity'])
   expect(tools(request).some(name => name?.startsWith('mcp__qq__'))).toBe(false)
 }
 function assertChildTools(request: ModelFixtureRequest, kind: 'private' | 'group', approved: JsonValue | undefined) {
@@ -325,7 +325,17 @@ describe.runIf(Boolean(systemDshBin))('真实DSH SDK → 原生主子会话 → 
     await expect(plugin.manage('open-native-web', {})).rejects.toMatchObject({ code: 'NATIVE_WEB_NOT_READY' })
     await api('/plugins/dsh/connect', {})
     const reopenedWeb = await connectNativeWeb(await plugin.manage('open-native-web', {}), String(sessionId))
-    expect(JSON.stringify(await reopenedWeb.events(String(sessionId)))).toContain(`MAIN-SUMMARY:${groupContext}`)
+    const rootHistory = await reopenedWeb.events(String(sessionId))
+    expect(JSON.stringify(rootHistory)).toContain(`MAIN-SUMMARY:${groupContext}`)
+    const externalMessages = rootHistory.filter(event => event.type === 'user/message' && object(object(event.data).source).kind === 'eating-external').map(event => object(event.data))
+    expect(externalMessages).toHaveLength(3)
+    const externalKinds = externalMessages.map(message => {
+      expect(message.role).toBe('user')
+      const envelope = object(JSON.parse((message.content as JsonObject[]).map(block => block.text).join('')))
+      expect(message.source).toEqual({ kind: 'eating-external', batchId: object(envelope.eating).batchId })
+      return object(envelope.context).kind
+    })
+    expect(externalKinds).toEqual(['private', 'private', 'group'])
     expect((await reopenedWeb.listSessions()).map(row => row.sessionId).sort()).toEqual(allSessions.map(row => row.sessionId).sort())
     expect(runtime().sessionId).toBe(sessionId)
     expect(runtime().ready).toBe(true)

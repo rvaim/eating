@@ -17,7 +17,7 @@ async function wheel(page: Page, target: Locator, amount: number) {
   await page.evaluate(() => new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done()))))
 }
 
-test.describe('面板页签与 DSH 无页签布局', () => {
+test.describe('面板页签与 DSH 原生能力布局', () => {
   let directory: string, host: EatingHost, url: string
   let errors: string[]
   test.beforeEach(async ({ page }) => {
@@ -61,25 +61,26 @@ test.describe('面板页签与 DSH 无页签布局', () => {
     await noOverflow(page)
   })
 
-  test('dsh 无页签，状态栏按钮与长表单在窄屏不溢出且草稿保留', async ({ page }, info) => {
+  test('dsh 设置页签与长表单在窄屏不溢出且连接草稿保留', async ({ page }, info) => {
     await page.setViewportSize({ width: 1280, height: 700 })
     await page.goto(url + '/#harness/dsh')
     const name = page.getByLabel('显示名称', { exact: true })
     await expect(name).toBeVisible()
     await name.fill('Layout draft stays intact')
-    await expect(page.getByRole('tablist')).toHaveCount(0)
+    await expect(page.getByRole('tablist', { name: 'DSH 设置', exact: true })).toBeVisible()
+    await expect(page.getByRole('tab', { name: '原生能力与插件', exact: true })).toBeVisible()
     const main = page.locator('#main-content'), button = page.getByRole('button', { name: '打开 DSH Web', exact: true })
     await wheel(page, main, 100000)
     await expect(button).toBeVisible()
     await info.attach('dsh-status-actions', { body: JSON.stringify(await box(button)), contentType: 'application/json' })
-    await page.screenshot({ path: info.outputPath('dsh-no-tabs-desktop.png') })
+    await page.screenshot({ path: info.outputPath('dsh-settings-tabs-desktop.png') })
     await expect(name).toHaveValue('Layout draft stays intact')
     await noOverflow(page)
     await page.setViewportSize({ width: 390, height: 844 })
     await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }))
     await expect(button).toBeVisible()
     await info.attach('dsh-status-actions-mobile', { body: JSON.stringify(await box(button)), contentType: 'application/json' })
-    await page.screenshot({ path: info.outputPath('dsh-no-tabs-mobile.png') })
+    await page.screenshot({ path: info.outputPath('dsh-settings-tabs-mobile.png') })
     await noOverflow(page)
   })
 })

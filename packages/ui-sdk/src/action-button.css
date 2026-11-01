@@ -1,0 +1,5 @@
+.eating-action { display: contents; }
+.eating-action-hint { display: inline-flex; align-items: stretch; min-width: 0; max-width: 100%; vertical-align: middle; border-radius: var(--radius, 5px); cursor: not-allowed; }
+.eating-action-hint > button:disabled { pointer-events: none; }
+.eating-action-hint:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.eating-action-tooltip { position: fixed; inset: auto; margin: 0; width: max-content; max-width: min(320px, calc(100vw - 16px)); padding: 10px 12px; border: 1px solid var(--color-line-strong); border-radius: 6px; background: var(--color-surface-quiet); color: var(--color-ink); font-family: inherit; font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; pointer-events: none; box-shadow: 0 4px 16px var(--color-shadow); }

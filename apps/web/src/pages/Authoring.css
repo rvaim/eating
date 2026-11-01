@@ -1,5 +1,6 @@
 .authoring-workspace, .authoring-content, .authoring-form { min-width: 0; }
 .authoring-content { padding-right: 36px; }
+.authoring-content > * { max-width: var(--panel-content-max); }
 .authoring-title-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 16px 20px; }
 .authoring-title-row > div { min-width: 0; flex: 1; }
 .authoring-title-row h2 { overflow-wrap: anywhere; }

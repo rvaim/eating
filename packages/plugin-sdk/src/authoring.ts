@@ -51,7 +51,9 @@ export interface PromptDocument {
   readonly title: string
   readonly localizedTitles?: Readonly<Record<string, string>>
   readonly body: string
+  /** Monotonic document CAS revision, including explicit restoration of defaults. */
   readonly revision: number
+  /** Null follows the current default; a timestamp marks an owner-authored override. */
   readonly updatedAt: string | null
   readonly scope: TemplateScope
   readonly source: 'owner' | 'plugin'

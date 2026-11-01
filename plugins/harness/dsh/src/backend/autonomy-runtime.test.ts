@@ -2,6 +2,56 @@ import { describe, expect, it, vi } from 'vitest'
 import { getAutonomyRuntimeSource } from './autonomy-runtime'
 
 describe('native autonomous driver publication lifecycle', () => {
+  it('publishes Chinese tools and policy while preserving the admitted opportunity context and trusted source', async () => {
+    vi.useFakeTimers()
+    const releases: (() => void)[] = []
+    const initialization = new AbortController()
+    try {
+      const cycle = { id: 'fixture-cycle', deadline: Date.now() + 60000 }
+      const activity = { mode: 'active', note: '继续未完成的创作' }
+      const limits = { minIntervalSeconds: 60, maxCyclesPerHour: 10 }
+      const tools: { name: string; description: string; parameters: unknown }[] = []
+      const sections: { name: string; order: number; interpolate: boolean; text: () => string }[] = []
+      const agent = { id: 'root', status: 'idle', session: { id: 'root' }, followup: vi.fn(), cancel: () => {}, inbox: { nextTurn: [], nextStep: [], remove: () => false },
+        ctx: { tools: { register: (tool: typeof tools[number]) => tools.push(tool) }, systemPrompt: { section: (section: typeof sections[number]) => sections.push(section) } } }
+      const ctx = { agents: { get: () => agent }, sessions: { flush: vi.fn(async () => true) }, on: () => () => {}, get: () => undefined }
+      const createUserMessage = vi.fn((message: { content: { type: string; text: string }[]; source: { kind: string; cycleId: string; nonce: string } }) => ({ id: 'fixture-message', ...message }))
+      const context = {
+        process: { env: { EATING_DSH_AUTONOMY: 'true' } }, sessionId: 'root', ctx, releases, initialization, nonce: 'fixture-runtime',
+        loadModule: async () => ({ createUserMessage }),
+        control: async (operation: string) => operation === 'autonomy-snapshot' ? { ready: true, configuration: { enabled: true }, state: { ownerPaused: false, errorCode: null, active: null } }
+          : operation === 'autonomy-claim' ? { admitted: true, cycle, activity, limits } : {},
+        record: (value: unknown) => value !== null && typeof value === 'object', opaque: () => true, runDelegation: () => {}, createHash: () => {},
+      }
+      const mount = new Function(...Object.keys(context), getAutonomyRuntimeSource() + '\nreturn mountAutonomy;')(...Object.values(context)) as (agent: unknown) => Promise<string[]>
+      const names = await mount(agent)
+      expect(names).toEqual(['eating_activity_state', 'eating_plan_activity', 'eating_list_contact_targets', 'eating_contact_target'])
+      expect(tools.map(tool => tool.name)).toEqual(names)
+      for (const tool of tools) expect(tool.description).toMatch(/^\p{Script=Han}/u)
+      expect(tools[1]!.parameters).toMatchObject({ properties: { mode: { enum: ['active', 'sleeping', 'waiting'] } }, required: ['expected_revision', 'mode', 'wake_at', 'note'], additionalProperties: false })
+      expect(sections).toHaveLength(1)
+      expect(sections[0]).toMatchObject({ name: 'eating:autonomy-policy', order: 20, interpolate: false })
+      expect(sections[0]!.text()).toMatch(/^\p{Script=Han}/u)
+
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(createUserMessage).toHaveBeenCalledOnce()
+      const message = createUserMessage.mock.results[0]!.value
+      expect(message.source).toEqual({ kind: 'eating-autonomy', cycleId: cycle.id, nonce: 'fixture-runtime' })
+      expect(message.content).toHaveLength(1)
+      expect(message.content[0]!.type).toBe('text')
+      const envelope = JSON.parse(message.content[0]!.text)
+      expect(Object.keys(envelope).sort()).toEqual(['eating_autonomous_opportunity', 'instruction'])
+      expect(envelope.eating_autonomous_opportunity).toEqual({ cycleId: cycle.id, activity, limits })
+      expect(envelope.instruction).toMatch(/^\p{Script=Han}/u)
+      expect(agent.followup).toHaveBeenCalledExactlyOnceWith(message)
+      expect(ctx.sessions.flush).toHaveBeenCalledExactlyOnceWith(agent.session)
+    } finally {
+      for (const release of releases) release()
+      initialization.abort()
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the wake check alive across delayed native publication and replaces a retired root driver on cold restoration', async () => {
     vi.useFakeTimers()
     try {

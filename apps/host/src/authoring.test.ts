@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PlatformError, analyzeTemplate, composeAgentPrompt, getPromptTemplateScope } from '@eating/plugin-sdk'
 import type { HarnessEvent, RegisteredAgentInstructions, RegisteredAgentType, TemplateVariable } from '@eating/plugin-sdk'
 import { AUTHORING_SETTING_KEY, AuthoringService } from './authoring'
+import { defaultPromptBodies } from './authoring-defaults'
 import { HostStore } from './store'
 
 const cleanups: Array<() => void> = []
@@ -67,7 +68,7 @@ describe('AuthoringService defaults and document persistence', () => {
     const mainRole = snapshot.prompts.find(prompt => prompt.id === 'main')!
     expect(mainRole.body).toContain('eating_list_agent_types')
     expect(mainRole.body).toContain('eating_delegate_task')
-    expect(mainRole.body).toContain('由对应子代理')
+    expect(mainRole.body).toContain('对应子代理')
     expect(snapshot).not.toHaveProperty('legacyPrompts')
     for (const prompt of snapshot.prompts) {
       expect(prompt).toMatchObject({ revision: 0, updatedAt: null })
@@ -80,8 +81,9 @@ describe('AuthoringService defaults and document persistence', () => {
     expect(main.body).toContain('主动调用')
     expect(main.body).toContain('外部')
     expect(main.body).toContain('主人独立配置')
-    expect(analyzeTemplate(main.body, 'main').tokens.map(token => token.name)).toEqual(['人格名称'])
-    expect(main.body).toContain('时间上下文')
+    expect(analyzeTemplate(main.body, 'common').tokens).toEqual([])
+    expect(main.body).toContain('运行时上下文')
+    expect(main.body).toContain('可用记忆')
     expect(service.getSnapshot()).toEqual(snapshot)
     failure(() => service.getPersona('missing'), 'PERSONA_NOT_FOUND', 404)
     expect(store.getSetting(AUTHORING_SETTING_KEY)).toBeNull()
@@ -437,7 +439,7 @@ describe('AuthoringService current format boundary', () => {
     const id = currentDocument().activePersonaId
     for (const operation of [
       () => service.getSnapshot(), () => service.getPersona(id), () => service.readOwnerConfiguration(),
-      () => service.updatePrompt('common', '新正文', 4), () => service.createPersona('新', '新正文'),
+      () => service.updatePrompt('common', '新正文', 4), () => service.resetPrompt('common', 4), () => service.createPersona('新', '新正文'),
       () => service.updatePersona(id, '新', '新正文', 3), () => service.setPersonaEnabled(id, false, 9), () => service.deletePersona(id, 3),
     ]) failure(operation, 'AUTHORING_STORAGE_CORRUPTED', 500)
     expect(write).not.toHaveBeenCalled()
@@ -613,6 +615,233 @@ describe('AuthoringService v2 metadata integrity', () => {
     expect(service.updatePrompt('common', '新通用正文', 4)).toMatchObject({ revision: 10 })
     expect(parseStored(store).schemaVersion).toBe(2)
     expect(service.getPersona(data.activePersonaId)).toEqual(data.personas[0])
+  })
+})
+
+
+describe('AuthoringService following defaults and explicit reset', () => {
+  it('resolves stored unedited base and plugin bodies to current defaults for reads, composition and unchanged saves without writing', () => {
+    const store = fixture().open()
+    const service = new AuthoringService(store, () => ({ agentTypes: [role()], pluginInstructions: [instruction()] }))
+    const initial = service.getSnapshot()
+    const configuration = service.readOwnerConfiguration()
+    const expectedMain = composeAgentPrompt(configuration, null, { 当前时间: 'now' })
+    const expectedChild = composeAgentPrompt(configuration, 'qq.private', { 当前时间: 'now' })
+    service.createPersona('保留的人格', '保留的正文')
+    const data = parseStored(store)
+    data.prompts = initial.prompts.map(prompt => {
+      const { enabled: _enabled, available: _available, localizedTitles: _localizedTitles, defaultBody: _defaultBody, ...document } = prompt
+      return { ...document, body: `旧版默认 ${prompt.id}`, ...(prompt.source === 'plugin' ? { defaultBody: `旧版默认 ${prompt.id}` } : {}) }
+    })
+    const raw = JSON.stringify(data, null, 2) + '\n'
+    store.setSetting(AUTHORING_SETTING_KEY, raw)
+    const write = vi.spyOn(store, 'setSetting')
+    const snapshot = service.getSnapshot()
+    expect(snapshot.prompts).toEqual(initial.prompts)
+    expect(service.readOwnerConfiguration().prompts).toEqual(initial.prompts)
+    expect(composeAgentPrompt(service.readOwnerConfiguration(), null, { 当前时间: 'now' }).systemPrompt).toBe(expectedMain.systemPrompt)
+    expect(composeAgentPrompt(service.readOwnerConfiguration(), 'qq.private', { 当前时间: 'now' }).systemPrompt).toBe(expectedChild.systemPrompt)
+    for (const prompt of snapshot.prompts) {
+      expect(service.updatePrompt(prompt.id, prompt.body, 0)).toEqual(snapshot)
+      expect(service.resetPrompt(prompt.id, 0)).toEqual(snapshot)
+    }
+    expect(write).not.toHaveBeenCalled()
+    expect(stored(store)).toBe(raw)
+  })
+
+  it('follows later base defaults after reset while preserving explicit owner bodies and their timestamps', () => {
+    const store = fixture().open()
+    const service = new AuthoringService(store, () => ({ agentTypes: [role()], pluginInstructions: [] }))
+    service.updatePrompt('common', '主人明确保留的通用规则', 0)
+    service.updatePrompt('subagent', '待恢复的子代理规则', 0)
+    const reset = service.resetPrompt('subagent', 1)
+    const custom = reset.prompts.find(prompt => prompt.id === 'common')!
+    const raw = stored(store)
+    const write = vi.spyOn(store, 'setSetting')
+    const previousDefaults = { ...defaultPromptBodies }
+    try {
+      Object.assign(defaultPromptBodies, { common: '升级通用默认', subagent: '升级子代理默认', main: '升级主代理默认' })
+      const snapshot = service.getSnapshot()
+      expect(snapshot.prompts.find(prompt => prompt.id === 'common')).toEqual({ ...custom, defaultBody: '升级通用默认' })
+      expect(snapshot.prompts.find(prompt => prompt.id === 'subagent')).toMatchObject({ body: '升级子代理默认', defaultBody: '升级子代理默认', revision: 2, updatedAt: null })
+      expect(snapshot.prompts.find(prompt => prompt.id === 'main')).toMatchObject({ body: '升级主代理默认', revision: 0, updatedAt: null })
+      expect(composeAgentPrompt(service.readOwnerConfiguration(), null, { 当前时间: 'now' }).systemPrompt).toContain('升级主代理默认')
+      expect(composeAgentPrompt(service.readOwnerConfiguration(), 'qq.private', { 当前时间: 'now' }).systemPrompt).toContain('升级子代理默认')
+      expect(service.resetPrompt('subagent', 2)).toEqual(snapshot)
+      expect(service.updatePrompt('subagent', '升级子代理默认', 2)).toEqual(snapshot)
+      expect(write).not.toHaveBeenCalled()
+      expect(stored(store)).toBe(raw)
+      const edited = service.updatePrompt('subagent', '主人再次修改', 2)
+      expect(edited.prompts.find(prompt => prompt.id === 'subagent')).toMatchObject({ body: '主人再次修改', revision: 3, updatedAt: expect.any(String) })
+    } finally { Object.assign(defaultPromptBodies, previousDefaults) }
+  })
+
+  it.each(['common', 'subagent', 'main', 'agent:qq.private', 'plugin:qq.instructions'])('keeps %s reset revisions monotonic and checks stale CAS before every no-op', id => {
+    const store = fixture().open()
+    const service = new AuthoringService(store, () => ({ agentTypes: [role()], pluginInstructions: [instruction()] }))
+    const defaultBody = service.getSnapshot().prompts.find(prompt => prompt.id === id)!.body
+    service.updatePrompt(id, '主人覆盖正文', 0)
+    service.updatePrompt(id, defaultBody, 1)
+    const before = service.getSnapshot()
+    expect(before.prompts.find(prompt => prompt.id === id)).toMatchObject({ body: defaultBody, revision: 2, updatedAt: expect.any(String) })
+    const reset = service.resetPrompt(id, 2)
+    expect(reset.revision).toBe(before.revision + 1)
+    expect(reset.prompts.find(prompt => prompt.id === id)).toMatchObject({ body: defaultBody, defaultBody, revision: 3, updatedAt: null })
+    const savedPrompts = parseStored(store).prompts as Array<Record<string, unknown>>
+    expect(savedPrompts.find(prompt => prompt.id === id)).toMatchObject({ revision: 3, updatedAt: null })
+    expect(savedPrompts).toHaveLength(id.includes(':') ? 4 : 3)
+    const raw = stored(store)
+    const write = vi.spyOn(store, 'setSetting')
+    expect(service.resetPrompt(id, 3)).toEqual(reset)
+    expect(service.updatePrompt(id, defaultBody, 3)).toEqual(reset)
+    for (const staleRevision of [0, 1, 2]) {
+      failure(() => service.updatePrompt(id, defaultBody, staleRevision), 'AUTHORING_REVISION_CONFLICT', 409)
+      failure(() => service.resetPrompt(id, staleRevision), 'AUTHORING_REVISION_CONFLICT', 409)
+    }
+    expect(stored(store)).toBe(raw)
+    expect(write).not.toHaveBeenCalled()
+    const next = service.updatePrompt(id, '重置后编辑', 3)
+    expect(next.prompts.find(prompt => prompt.id === id)).toMatchObject({ body: '重置后编辑', revision: 4, updatedAt: expect.any(String) })
+    expect(service.resetPrompt(id, 4).prompts.find(prompt => prompt.id === id)).toMatchObject({ revision: 5, updatedAt: null })
+  })
+
+  it('keeps reset plugin revision records across default upgrades, source removal and reinstall', () => {
+    const { open, close } = fixture()
+    const store = open()
+    let contribution = { agentTypes: [role()], pluginInstructions: [instruction()] }
+    const service = new AuthoringService(store, () => contribution)
+    for (const id of ['agent:qq.private', 'plugin:qq.instructions']) {
+      service.updatePrompt(id, '主人覆盖', 0)
+      service.resetPrompt(id, 1)
+    }
+    const raw = stored(store)
+    const write = vi.spyOn(store, 'setSetting')
+    contribution = { agentTypes: [{ ...role(), defaultPrompt: '新版角色默认' }], pluginInstructions: [{ ...instruction(), body: '新版插件默认' }] }
+    expect(service.getSnapshot().prompts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'agent:qq.private', body: '新版角色默认', defaultBody: '新版角色默认', revision: 2, updatedAt: null }),
+      expect.objectContaining({ id: 'plugin:qq.instructions', body: '新版插件默认', defaultBody: '新版插件默认', revision: 2, updatedAt: null }),
+    ]))
+    expect(composeAgentPrompt(service.readOwnerConfiguration(), null, { 当前时间: 'now' }).systemPrompt).toContain('新版插件默认')
+    expect(composeAgentPrompt(service.readOwnerConfiguration(), 'qq.private', { 当前时间: 'now' }).systemPrompt).toContain('新版角色默认')
+    contribution = { agentTypes: [], pluginInstructions: [] }
+    for (const id of ['agent:qq.private', 'plugin:qq.instructions']) {
+      expect(service.getSnapshot().prompts.find(prompt => prompt.id === id)).toMatchObject({ revision: 2, updatedAt: null, available: false })
+      failure(() => service.resetPrompt(id, 2), 'PROMPT_SOURCE_UNAVAILABLE', 409)
+      failure(() => service.updatePrompt(id, '来源已消失', 2), 'PROMPT_SOURCE_UNAVAILABLE', 409)
+    }
+    failure(() => service.resetPrompt('missing', 0), 'PROMPT_NOT_FOUND', 404)
+    expect(write).not.toHaveBeenCalled()
+    expect(stored(store)).toBe(raw)
+    service.createPersona('不相关保存', '人格不变')
+    const saved = stored(store)
+    close(store)
+    contribution = { agentTypes: [{ ...role(), defaultPrompt: '重新安装角色默认' }], pluginInstructions: [{ ...instruction(), body: '重新安装插件默认' }] }
+    const reopened = new AuthoringService(open(), () => contribution)
+    for (const id of ['agent:qq.private', 'plugin:qq.instructions']) {
+      expect(reopened.getSnapshot().prompts.find(prompt => prompt.id === id)).toMatchObject({ revision: 2, updatedAt: null, available: true })
+      failure(() => reopened.updatePrompt(id, '过期零版本', 0), 'AUTHORING_REVISION_CONFLICT', 409)
+      failure(() => reopened.resetPrompt(id, 1), 'AUTHORING_REVISION_CONFLICT', 409)
+    }
+    expect(reopened.getSnapshot().prompts.find(prompt => prompt.id === 'agent:qq.private')!.body).toBe('重新安装角色默认')
+    expect(reopened.getSnapshot().prompts.find(prompt => prompt.id === 'plugin:qq.instructions')!.body).toBe('重新安装插件默认')
+    expect(JSON.parse(saved).prompts).toHaveLength(5)
+  })
+
+  it('resets only the selected prompt and preserves personas, other settings, the queue and action ledger', async () => {
+    const store = fixture().open()
+    const service = new AuthoringService(store, () => ({ agentTypes: [role()], pluginInstructions: [instruction()] }))
+    store.setSetting('test:account-owner-configuration', '{"connected":true}')
+    store.recordEvent('test-platform', 'test-authoring-reset-pending', {}, message())
+    const execute = vi.fn(async () => ({ messageId: 'test-reset-sent' }))
+    await store.executeIdempotent('test-platform', 'send', { text: 'test-action' }, 'authoring-reset-action-001', execute)
+    const persona = service.createPersona('保留人格', '保留人格正文').persona
+    service.setPersonaEnabled(persona.id, true, 1)
+    service.updatePrompt('common', '保留通用覆盖', 0)
+    service.updatePrompt('agent:qq.private', '待恢复角色覆盖', 0)
+    service.updatePrompt('plugin:qq.instructions', '保留插件覆盖', 0)
+    const before = service.getSnapshot()
+    const persisted = parseStored(store)
+    const queue = store.getQueuedHarnessEvents(), delivery = store.getDeliverySettingsSnapshot()
+    const write = vi.spyOn(store, 'setSetting')
+    const reset = service.resetPrompt('agent:qq.private', 1)
+    expect(reset.revision).toBe(before.revision + 1)
+    expect(reset.activePersonaId).toBe(persona.id)
+    expect(reset.personas).toEqual(before.personas)
+    expect(service.getPersona(persona.id)).toEqual(persona)
+    expect(reset.prompts.filter(prompt => prompt.id !== 'agent:qq.private')).toEqual(before.prompts.filter(prompt => prompt.id !== 'agent:qq.private'))
+    const after = parseStored(store)
+    expect(after.personas).toEqual(persisted.personas)
+    expect((after.prompts as Array<Record<string, unknown>>).filter(prompt => prompt.id !== 'agent:qq.private')).toEqual((persisted.prompts as Array<Record<string, unknown>>).filter(prompt => prompt.id !== 'agent:qq.private'))
+    expect(store.getSetting('test:account-owner-configuration')).toBe('{"connected":true}')
+    expect(store.getQueuedHarnessEvents()).toEqual(queue)
+    expect(store.getDeliverySettingsSnapshot()).toEqual(delivery)
+    expect(write.mock.calls.map(([key]) => key)).toEqual([AUTHORING_SETTING_KEY])
+    await store.executeIdempotent('test-platform', 'send', { text: 'test-action' }, 'authoring-reset-action-001', execute)
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('collects source contributions before reading the CAS revision so reentrant changes cannot be overwritten', () => {
+    const store = fixture().open()
+    const writer = new AuthoringService(store, () => ({ agentTypes: [role()], pluginInstructions: [] }))
+    writer.updatePrompt('agent:qq.private', '原角色覆盖', 0)
+    const collect = vi.fn(() => {
+      writer.updatePrompt('agent:qq.private', '收集来源期间的主人新修改', 1)
+      return { agentTypes: [role()], pluginInstructions: [] }
+    })
+    const resetter = new AuthoringService(store, collect)
+    failure(() => resetter.resetPrompt('agent:qq.private', 1), 'AUTHORING_REVISION_CONFLICT', 409)
+    expect(collect).toHaveBeenCalledOnce()
+    expect(writer.getSnapshot().prompts.find(prompt => prompt.id === 'agent:qq.private')).toMatchObject({ body: '收集来源期间的主人新修改', revision: 2, updatedAt: expect.any(String) })
+  })
+
+  it('keeps the exact previous JSON when reset storage fails, then accepts a retry with the original revision', () => {
+    const store = fixture().open()
+    const data = currentDocument()
+    const raw = JSON.stringify(data, null, 2) + '\n'
+    store.setSetting(AUTHORING_SETTING_KEY, raw)
+    const service = new AuthoringService(store)
+    const before = service.getSnapshot()
+    const write = vi.spyOn(store, 'setSetting').mockImplementationOnce(() => { throw new Error('Test SQLite reset write failure') })
+    expect(() => service.resetPrompt('common', 4)).toThrow('Test SQLite reset write failure')
+    expect(stored(store)).toBe(raw)
+    expect(service.getSnapshot()).toEqual(before)
+    write.mockRestore()
+    expect(service.resetPrompt('common', 4)).toMatchObject({ revision: 10, prompts: expect.arrayContaining([expect.objectContaining({ id: 'common', revision: 5, updatedAt: null })]) })
+  })
+
+  it.each(['document', 'global'])('refuses reset on %s revision exhaustion without changing stored bytes', kind => {
+    const store = fixture().open()
+    const data = currentDocument()
+    data.revision = Number.MAX_SAFE_INTEGER
+    if (kind === 'document') data.prompts[0]!.revision = Number.MAX_SAFE_INTEGER
+    const raw = JSON.stringify(data)
+    store.setSetting(AUTHORING_SETTING_KEY, raw)
+    const service = new AuthoringService(store)
+    const write = vi.spyOn(store, 'setSetting')
+    failure(() => service.resetPrompt('common', data.prompts[0]!.revision), 'AUTHORING_REVISION_EXHAUSTED', 500)
+    expect(write).not.toHaveBeenCalled()
+    expect(stored(store)).toBe(raw)
+  })
+
+  it('refuses reset if a longer current default would exceed the storage byte limit', () => {
+    const store = fixture().open()
+    const data = currentDocument()
+    data.prompts[0]!.body = 'x'
+    data.personas = Array.from({ length: 35 }, (_, index) => ({ ...data.personas[0]!,
+      id: index === 0 ? data.personas[0]!.id : `12345678-1234-4123-8123-${String(index).padStart(12, '0')}`,
+      name: `人格${index}`, body: index < 34 ? '字'.repeat(50_000) : 'a' }))
+    const remainingBytes = 5 * 1024 * 1024 - 1 - Buffer.byteLength(JSON.stringify(data), 'utf8')
+    data.personas.at(-1)!.body += '字'.repeat(Math.floor(remainingBytes / 3)) + 'a'.repeat(remainingBytes % 3)
+    expect(data.personas.at(-1)!.body.length).toBeLessThanOrEqual(50_000)
+    const raw = JSON.stringify(data)
+    expect(Buffer.byteLength(raw, 'utf8')).toBe(5 * 1024 * 1024 - 1)
+    store.setSetting(AUTHORING_SETTING_KEY, raw)
+    const service = new AuthoringService(store)
+    const write = vi.spyOn(store, 'setSetting')
+    failure(() => service.resetPrompt('common', 4), 'AUTHORING_CAPACITY_EXCEEDED')
+    expect(write).not.toHaveBeenCalled()
+    expect(stored(store)).toBe(raw)
+    expect(service.getSnapshot().prompts[0]).toMatchObject({ body: 'x', revision: 4, updatedAt: expect.any(String) })
   })
 })
 

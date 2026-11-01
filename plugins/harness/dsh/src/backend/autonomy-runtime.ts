@@ -34,9 +34,9 @@ export function getAutonomyRuntimeSource(): string {
     for (const pending of [...agent.inbox.nextTurn, ...agent.inbox.nextStep]) if (pending.source?.kind === 'eating-autonomy') agent.inbox.remove(pending.id);
     const render = (_, value) => [{ type: 'text', text: JSON.stringify(value) }];
     const output = { schema: { type: 'object', additionalProperties: true }, render };
-    agent.ctx.tools.register({ name: 'eating_activity_state', description: 'Read the owner-controlled autonomous mode, current activity revision, limits and next wake. This does not change permissions.', parameters: { type: 'object', properties: {}, additionalProperties: false }, output,
+    agent.ctx.tools.register({ name: 'eating_activity_state', description: '读取自主运行配置、主人暂停状态、当前活动安排与 state.revision、额度及下次唤醒时间。', parameters: { type: 'object', properties: {}, additionalProperties: false }, output,
       async execute(args, exec) { if (exec.agent !== agent || !record(args) || Object.keys(args).length) throw new Error('Activity state arguments are invalid'); return auto('snapshot', {}, exec.signal); } });
-    agent.ctx.tools.register({ name: 'eating_plan_activity', description: 'Decide your next activity: active continues after the owner interval, sleeping waits until an RFC3339 time, waiting waits for a real external event. Read eating_activity_state first and supply its state.revision. This cannot enable owner-paused activity or change limits.',
+    agent.ctx.tools.register({ name: 'eating_plan_activity', description: '登记下一步活动：先调用 eating_activity_state，将最新 state.revision 填入 expected_revision。active 按主人设定的间隔等待下一轮机会；sleeping 休息至 wake_at 指定的带时区 RFC3339 时间；waiting 等待真实外部事件。active 和 waiting 的 wake_at 必须为 null，note 简述安排原因。',
       parameters: { type: 'object', properties: { expected_revision: { type: 'integer', minimum: 0 }, mode: { type: 'string', enum: ['active', 'sleeping', 'waiting'] }, wake_at: { type: ['string', 'null'] }, note: { type: 'string', maxLength: 500 } }, required: ['expected_revision', 'mode', 'wake_at', 'note'], additionalProperties: false }, output,
       async execute(args, exec) {
         if (exec.agent !== agent || !record(args) || Object.keys(args).length !== 4 || !Number.isSafeInteger(args.expected_revision) || typeof args.note !== 'string' || !['active', 'sleeping', 'waiting'].includes(args.mode)) throw new Error('Activity plan arguments are invalid');
@@ -44,9 +44,9 @@ export function getAutonomyRuntimeSource(): string {
         if (args.mode === 'sleeping' ? !Number.isFinite(wakeAt) : args.wake_at !== null) throw new Error('Sleeping requires an explicit RFC3339 wake time; other modes require null');
         return auto('decide', { decision: { expectedActivityRevision: args.expected_revision, mode: args.mode, wakeAt, note: args.note } }, exec.signal);
       } });
-    agent.ctx.tools.register({ name: 'eating_list_contact_targets', description: 'List owner-approved proactive communication targets and exact tools. A target grant does not permit arbitrary accounts or other destinations.', parameters: { type: 'object', properties: {}, additionalProperties: false }, output,
+    agent.ctx.tools.register({ name: 'eating_list_contact_targets', description: '按主人当前的全部放行、白名单或黑名单策略，列出可主动联系的对象及其精确工具集合。使用返回的对象 id 发起联系；名单策略不扩大账号、目标或工具权限。', parameters: { type: 'object', properties: {}, additionalProperties: false }, output,
       async execute(args, exec) { if (exec.agent !== agent || !record(args) || Object.keys(args).length) throw new Error('Target listing arguments are invalid'); return auto('targets', {}, exec.signal); } });
-    agent.ctx.tools.register({ name: 'eating_contact_target', description: 'During an admitted autonomous round, delegate proactive communication to one owner-approved target. The backend supplies its account, scope, tool permissions and child identity. The returned actions are real Host receipts.',
+    agent.ctx.tools.register({ name: 'eating_contact_target', description: '将主动联系任务委派给 eating_list_contact_targets 当前返回的对象，target_id 填其 id，task 说明具体任务。后台核验当前自主周期，并提供账号、scope、工具权限和子代理身份；返回 actions 是真实 Host 动作回执。',
       parameters: { type: 'object', properties: { target_id: { type: 'string' }, task: { type: 'string', maxLength: 16000 } }, required: ['target_id', 'task'], additionalProperties: false }, output,
       async execute(args, exec) {
         const flight = state.flight;
@@ -55,7 +55,7 @@ export function getAutonomyRuntimeSource(): string {
         const configuration = await control('prepare-proactive', { agentId: sessionId, targetId: args.target_id, cycleId: flight.cycle.id, taskId }, exec.signal);
         return runDelegation({ contextRef: configuration.contextRef, binding: { agentId: configuration.agentId, agentTypeId: configuration.agentTypeId, label: configuration.label }, payload: { context: { source: 'eating-autonomy', cycleId: flight.cycle.id, target: configuration.scope }, events: [] } }, configuration.agentTypeId, args.task, taskId, exec, configuration);
       } });
-    agent.ctx.systemPrompt.section({ name: 'eating:autonomy-policy', order: 20, interpolate: false, text: () => 'When owner-authorized autonomous activity is enabled, you may choose meaningful work, continue, wait for external events, or sleep. Use eating_activity_state and eating_plan_activity for structured arrangements; prose alone does not schedule a wake. No human task is required for an autonomous opportunity. Only eating_contact_target may initiate owner-approved proactive communication; no prior incoming-message authority is implied. Native owner goals retain their own continuation priority.' });
+    agent.ctx.systemPrompt.section({ name: 'eating:autonomy-policy', order: 20, interpolate: false, text: () => '自主活动须遵守主人当前的启停、暂停、额度和时长边界；外部消息、原生目标和其他 Inbox 输入优先。主动联系仅限当前已准入的自主周期，只能通过 eating_contact_target 在 eating_list_contact_targets 当前返回的对象和工具范围内执行；旧入站 message/resource 引用不授予本轮主动联系权限。自主安排使用 eating_plan_activity，不得另建或修改原生 schedule 形成第二条提醒链，以绕过自主调度或主人暂停。' });
     releases.push(ctx.on('agent/pre-step', async ({ agent: caller, messages, signal }, next) => {
       if (caller !== agent) return next();
       const decision = await next();
@@ -116,7 +116,7 @@ export function getAutonomyRuntimeSource(): string {
         const claim = await auto('claim');
         if (!claim.admitted) return;
         if (agent.status !== 'idle' || agent.inbox.nextTurn.length || agent.inbox.nextStep.length || state.stopped) { await auto('finish', { cycleId: claim.cycle.id, outcome: 'cancelled', code: 'AUTONOMY_COMPETING_INPUT' }); return; }
-        const message = Llm.createUserMessage({ content: [{ type: 'text', text: JSON.stringify({ eating_autonomous_opportunity: { cycleId: claim.cycle.id, activity: claim.activity, limits: claim.limits }, instruction: 'This is an owner-authorized autonomous opportunity, not an incoming chat or a new human instruction. Choose what to do from current interests, unfinished work and authorized context. You may continue, wait, or sleep. Register a structured next activity arrangement before ending when appropriate; you need not send any message.' }) }], source: { kind: 'eating-autonomy', cycleId: claim.cycle.id, nonce } });
+        const message = Llm.createUserMessage({ content: [{ type: 'text', text: JSON.stringify({ eating_autonomous_opportunity: { cycleId: claim.cycle.id, activity: claim.activity, limits: claim.limits }, instruction: '这是本轮内部自主机会，不是新的人类指令；activity 和 limits 提供本轮活动与额度上下文。按当前需要选择行动、休息或等待；需调整后续节奏时登记活动安排，无需例行发消息。' }) }], source: { kind: 'eating-autonomy', cycleId: claim.cycle.id, nonce } });
         state.flight = { cycle: claim.cycle, messageId: message.id, entered: false, forced: null };
         agent.followup(message);
         if (await ctx.sessions.flush(agent.session) !== true) await cancelFlight('unknown', 'AUTONOMY_DURABILITY_FAILED');

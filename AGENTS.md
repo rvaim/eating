@@ -33,7 +33,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`。
 
-当前应用／Host／Web0.13.2，plugin-sdk4.4.0、ui-sdk4.1.0、plugin-core4.0.0，QQ0.13.1、DSH0.11.2、表情包0.1.1、生图0.2.0；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前应用／Host／Web0.14.0，plugin-sdk4.4.0、ui-sdk4.1.0、plugin-core4.0.0，QQ0.13.2、DSH0.11.3、表情包0.1.1、生图0.2.0；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -52,6 +52,8 @@ Eating 不建立聊天历史库；只保存有界未交接规范化信封。send
 ## 代理、人格与工具
 
 主系统层：common→main→启用插件使用说明→统一当前人格；子：common→subagent→类型独有→同一人格。只有6种模板作用域和9个可信变量，无旧群私消息模板和外部正文变量。人格最多启用一个，也可全部停用，明确显示空共享层，不编造其他 AI 身份。
+
+人格模板只生成新增人格的可编辑草稿，不自动保存或启用，名称由主人填写；保存后是普通人格，模板更新不改已有正文。本轮AI女儿模板依据上下文与可用记忆延续经历，不指定记忆插件或预设成长阶段。提示词文档 updatedAt:null 表示跟随当前默认，非null为主人覆盖；恢复默认保留记录并递增文档/全局revision，不删除归零或自动覆盖自定义。schema2保持，普通读取不回写默认。见[ADR-0027](docs/decisions/ADR-0027-人格模板与默认提示词生命周期.md)。
 
 DSH 主保留列类型／受控委派两个基础工具，并可挂主人批准给main的通用MCP和原生能力；主／各子类型的原生功能及插件工具按[ADR-0021](docs/decisions/ADR-0021-DSH原生能力与插件管理.md)显式授权，实例启用不等于全部工具授权。子按真实账号实例、登录账号、会话、目标与类型绑定稳定 UUID，独立挂受限通讯MCP及当前类型获准的额外能力。`deliverBatch` 是唯一交接接口；Harness 取得 MCP 必须带完整 scope，真实回执和撤权服务必需，不能回退主人全权令牌。
 

@@ -323,14 +323,17 @@ export class EatingHost {
           if (!isJsonObject(input) || !(input.agentTypeId === null || typeof input.agentTypeId === 'string') || Object.keys(input).some(key => key !== 'agentTypeId')) throw new PlatformError('INVALID_AUTHORING_REQUEST', '请指定需要预览的代理类型。', 400, 'not-sent')
           json(response, 200, composeAgentPrompt(this.authoring.readOwnerConfiguration(), input.agentTypeId, { 当前时间: new Date().toISOString() })); return
         }
-        const promptMatch = /^\/api\/prompts\/([^/]{1,220})$/.exec(pathname)
+        const promptMatch = /^\/api\/prompts\/([^/]{1,220})(?:\/(reset))?$/.exec(pathname)
         if (promptMatch) {
-          if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '保存提示词需使用 POST。', 405)
+          if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '提示词管理需使用 POST。', 405)
           const input = await readJson(request)
-          if (!isJsonObject(input) || typeof input.body !== 'string' || typeof input.expectedRevision !== 'number') throw new PlatformError('INVALID_AUTHORING_REQUEST', '请提供提示词正文与版本。')
+          const reset = promptMatch[2] === 'reset'
+          if (!isJsonObject(input) || typeof input.expectedRevision !== 'number' || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0
+            || Object.keys(input).some(key => !(reset ? ['expectedRevision'] : ['body', 'expectedRevision']).includes(key))
+            || !reset && typeof input.body !== 'string') throw new PlatformError('INVALID_AUTHORING_REQUEST', reset ? '请提供有效的提示词版本。' : '请提供提示词正文与有效版本。')
           let promptId: string
           try { promptId = decodeURIComponent(promptMatch[1]!) } catch { throw new PlatformError('INVALID_AUTHORING_REQUEST', '提示词标识无效。', 400, 'not-sent') }
-          json(response, 200, this.authoring.updatePrompt(promptId, input.body, input.expectedRevision)); return
+          json(response, 200, reset ? this.authoring.resetPrompt(promptId, input.expectedRevision) : this.authoring.updatePrompt(promptId, input.body as string, input.expectedRevision)); return
         }
         const personaMatch = /^\/api\/personas(?:\/([a-zA-Z0-9-]{1,80})(?:\/(activate|delete))?)?$/.exec(pathname)
         if (personaMatch) {
@@ -340,19 +343,20 @@ export class EatingHost {
           const input = await readJson(request)
           if (!isJsonObject(input)) throw new PlatformError('INVALID_AUTHORING_REQUEST', '人格配置必须为对象。')
           if (!id) {
-            if (typeof input.name !== 'string' || typeof input.body !== 'string') throw new PlatformError('INVALID_AUTHORING_REQUEST', '请提供人格名称和设定。')
+            if (typeof input.name !== 'string' || typeof input.body !== 'string' || Object.keys(input).some(key => !['name', 'body'].includes(key))) throw new PlatformError('INVALID_AUTHORING_REQUEST', '请提供人格名称和设定。')
             json(response, 201, this.authoring.createPersona(input.name, input.body)); return
           }
           if (typeof input.expectedRevision !== 'number') throw new PlatformError('INVALID_AUTHORING_REQUEST', '人格操作缺少版本，请重新读取。')
           if (operation === 'activate') {
-            if (typeof input.enabled !== 'boolean') throw new PlatformError('INVALID_AUTHORING_REQUEST', '请明确选择启用或停用人格。')
+            if (typeof input.enabled !== 'boolean' || Object.keys(input).some(key => !['enabled', 'expectedRevision'].includes(key))) throw new PlatformError('INVALID_AUTHORING_REQUEST', '请明确选择启用或停用人格。')
             json(response, 200, this.authoring.setPersonaEnabled(id, input.enabled, input.expectedRevision)); return
           }
           if (operation === 'delete') {
+            if (Object.keys(input).some(key => !['confirmed', 'expectedRevision'].includes(key))) throw new PlatformError('INVALID_AUTHORING_REQUEST', '人格删除参数无效。')
             if (input.confirmed !== true) throw new PlatformError('PERSONA_DELETE_CONFIRMATION_REQUIRED', '请确认删除此人格配置。', 409)
             json(response, 200, this.authoring.deletePersona(id, input.expectedRevision)); return
           }
-          if (typeof input.name !== 'string' || typeof input.body !== 'string') throw new PlatformError('INVALID_AUTHORING_REQUEST', '请提供人格名称和设定。')
+          if (typeof input.name !== 'string' || typeof input.body !== 'string' || Object.keys(input).some(key => !['name', 'body', 'expectedRevision'].includes(key))) throw new PlatformError('INVALID_AUTHORING_REQUEST', '请提供人格名称和设定。')
           json(response, 200, this.authoring.updatePersona(id, input.name, input.body, input.expectedRevision)); return
         }
         if (pathname === '/api/autonomy') {

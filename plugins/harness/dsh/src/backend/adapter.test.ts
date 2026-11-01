@@ -5,7 +5,7 @@ import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { validatedSessionEvent } from '@deepseek-ai/dsh-sdk-client'
 import type { DeepSeekHarnessOptions, RunResult } from '@deepseek-ai/dsh-sdk-client'
-import { isJsonObject } from '@eating/plugin-sdk'
+import { analyzeTemplate, isJsonObject } from '@eating/plugin-sdk'
 import type { HarnessDeliveryBatch, HarnessMessageSink, HarnessOwnerConfiguration, HostPluginContext, JsonObject } from '@eating/plugin-sdk'
 import { DshPlugin, createRuntimeEnvironment } from './adapter'
 import type { DshAdapterOptions, DshHarnessClient } from './adapter'
@@ -122,6 +122,13 @@ async function configure(plugin: DshPlugin) {
 function result(client: { launch: DeepSeekHarnessOptions }): RunResult { return { sessionId: client.launch.env!.EATING_DSH_SESSION_ID!, finalResponse: 'fixture-finalResponse-must-never-be-sent', events: [], notifications: [] } }
 
 describe('DSH isolated runtime lifecycle', () => {
+  it('publishes Chinese autonomous instructions as a stable valid plugin template', () => {
+    const [instructions] = fixture().plugin.agentInstructions
+    expect(instructions!.id).toBe('dsh.autonomous-activity')
+    expect(instructions!.body).toMatch(/^\p{Script=Han}/u)
+    expect(analyzeTemplate(instructions!.body, 'plugin')).toEqual({ valid: true, tokens: [], diagnostics: [] })
+  })
+
   it('automatically uses provider image and context metadata without changing manual declarations or calling a model', async () => {
     const setup = fixture()
     await configure(setup.plugin)

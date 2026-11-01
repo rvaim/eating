@@ -1,6 +1,6 @@
 # Eating Harness 适配设计
 
-更新：2026-11-01。用户选择的 Harness 承担认知与行动，Eating 提供连接、运行、授权和可靠交接。DSH0.9.0是当前具体适配；其他Harness不自动继承其能力。当前应用／Host／Web0.11.0、QQ0.11.0，共享SDK4.0.0、插件唯一API4，默认不兼容旧版，见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)。系统DSH与官方原样Web见[ADR-0018](../decisions/ADR-0018-系统DSH原生Web与看板移除.md)，原生能力与插件管理见[ADR-0021](../decisions/ADR-0021-DSH原生能力与插件管理.md)。
+更新：2026-11-02。用户选择的 Harness 承担认知与行动，Eating 提供连接、运行、授权和可靠交接。DSH0.11.3是当前具体适配；其他Harness不自动继承其能力。当前应用／Host／Web0.14.0、QQ0.13.2、plugin-sdk4.4.0、ui-sdk4.1.0、plugin-core4.0.0、插件唯一API4，默认不兼容旧版，见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)。系统DSH与官方原样Web见[ADR-0018](../decisions/ADR-0018-系统DSH原生Web与看板移除.md)，原生能力与插件管理见[ADR-0021](../decisions/ADR-0021-DSH原生能力与插件管理.md)，人格模板与默认生命周期见[ADR-0027](../decisions/ADR-0027-人格模板与默认提示词生命周期.md)。
 
 ## 依赖与唯一控制者
 
@@ -39,7 +39,15 @@ DSH复用系统安装的命令与 Web 组件，使用 Eating 专属的DSH_HOME�
 
 插件通过公开契约贡献类型、默认规则、主使用说明、可选／默认工具和展示标题。QQ提供qq.private／qq.group，通用Host与UI不硬编码QQ目录。未启用人格明确空共享层，最多启用一份；不复制人格到每个角色。
 
-作者只收当前schema2，6种scope、9个可信变量，scope/source必填并核对来源。不存在旧群私输入模板、legacy集合或外部正文变量。一次渲染不递归解释替换值，不执行eval。未编辑插件默认可随当前插件更新，主人覆盖优先；停用可编辑不可执行，卸载保覆盖只读。这是当前配置生命周期，不是旧格式迁移。
+作者只收当前schema2，保留common、subagent、main、agent、plugin、persona共6种scope与9个可信变量，scope/source必填并核对来源。不存在旧群私输入模板、legacy集合或外部正文变量。一次渲染不递归解释替换值，不执行eval；DSH仍使用既有`openai-completions`模型路径。
+
+基础默认由[独立默认模块](../../apps/host/src/authoring-defaults.ts)维护，角色与插件说明默认来自当前注册贡献。[作者服务](../../apps/host/src/authoring.ts)以`updatedAt:null`表示跟随默认，非null时间戳表示主人覆盖；恢复后的跟随文档revision可以大于0，不能仅按revision0识别。存储即使留有旧默认body，快照、Harness配置和组合也只读解析当前默认，不刷新落盘。自定义正文保持；同正文保存先核对CAS，通过后不写。
+
+主人显式恢复一个文档时，`resetPrompt`在同一同步CAS内核对来源和目标revision，再将文档revision及全局revision各加一、`updatedAt:null`。角色／插件记录保留，不能删除后归零导致旧CAS重现；已跟随时只读。来源停用可编辑或恢复但不可执行，卸载后保留记录只读，稳定ID重装后接续当前默认与原revision。恢复保持其他提示词、人格、启用关系、设置、队列与账本；冲突、容量、版本上限或存储失败保原数据。旧schema仍拒绝，不添加迁移读取。
+
+[静态人格模板](../../apps/web/src/persona-templates.ts)本轮仅一份主人批准的“AI女儿”。新增人格页只把模板正文填入未保存草稿，名称由主人填写且保留已填名称，已有非空正文先确认；不自动创建或启用，不写模板目录到`host:authoring`。显式保存后是普通人格，不随模板更新而改变；locale只改UI。当前上下文与可用记忆承载经历连续性，人格可以影响兴趣和表达，但不授予后台权限，也不自动共享全部会话经历。
+
+默认指引要求主Agent在子回执后核对真实结果，必要时继续当前有效授权工作，再判断后续自主安排。`waiting`处理新消息后不自动变为`active`；希望继续时由AI读取`eating_activity_state`并通过`eating_plan_activity`登记。正文承诺或记忆记录不安排真实唤醒。本轮只调整行为说明，不修改自主调度状态机；联系人继续按当前全部放行／白名单／黑名单策略及工具权限解析，见[自主活动](自主活动.md)。操作与验证入口见[提示词与人格模板](../operations/提示词与人格模板.md)和[本轮报告](../reports/2026-11-02-人格模板与默认提示词验证.md)。
 
 主按真实context_ref与类型委派，不能传任意system／tools／persona／scope。DSH从实际批次取得targetId并预绑定插件、账号、会话和引用；不猜sender或解析会话字符串补目标。user信封只有当前context/events，子任务另含实际任务，不再有renderedPrompt。
 
@@ -63,7 +71,7 @@ DSH复用系统安装的命令与 Web 组件，使用 Eating 专属的DSH_HOME�
 
 本轮图片CDN主机multimedia.nt.qq.com.cn的dns.lookup仅返回198.18.7.115，符合Fake-IP特征；SSRF对198.18/15保留段的拒绝发生在HTTP GET前。未确认具体代理来源，不记录QQ标识、签名URL、rkey或消息正文。本轮保留图片／SSRF策略，修复方向只说明用户网络DNS层恢复真实公网解析，或未来显式授权受信图片代理，不实施、不全局放行198.18／私网或开放目录。
 
-API3工具必须声明resultFormat为json或content。QQ原39项OneBot工具保持json语义；新增qq_view_received_image返回标准MCP image内容，由原生MCP客户端转为附件并进入支持视觉的子Agent请求。图片只按当前账号／会话已授权的message与resource配对读取，网络取得后再次核验权限；主Agent先取得子摘要，未默认自动接收原图。纯文本能力拒绝真实图片并给明确诊断。网络与图片校验边界见[QQ架构](QQ与平台能力.md)。
+API4工具必须声明resultFormat为json或content。QQ原39项OneBot工具保持json语义；新增qq_view_received_image返回标准MCP image内容，由原生MCP客户端转为附件并进入支持视觉的子Agent请求。图片只按当前账号／会话已授权的message与resource配对读取，网络取得后再次核验权限；主Agent先取得子摘要，未默认自动接收原图。纯文本能力拒绝真实图片并给明确诊断。网络与图片校验边界见[QQ架构](QQ与平台能力.md)。
 
 ## 时间上下文
 

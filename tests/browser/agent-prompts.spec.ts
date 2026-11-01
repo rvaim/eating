@@ -71,11 +71,17 @@ test.describe('动态代理提示词与已保存组合', () => {
     if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click()
     await expect(toggle).toHaveAttribute('aria-expanded', 'true')
   }
+  async function expectDocument(page: Page, document: PromptDocument) {
+    // CodeMirror renders a viewport of long documents; the character count uses the complete draft.
+    await editor(page).press('ControlOrMeta+Home')
+    await expect(editor(page)).toContainText(document.body.split('\n')[0]!)
+    await expect(page.locator('.authoring-editor-heading > span')).toHaveText(`${document.body.length.toLocaleString('zh-CN')} / 50,000 字符`)
+  }
   async function choose(page: Page, document: PromptDocument) {
     if (document.pluginId) await expandPlatform(page, document.pluginId)
     await navigation(page).getByRole('button', { name: document.localizedTitles?.['zh-CN'] ?? document.title, exact: true }).click()
     await expect(page).toHaveURL(`${url}/#prompts/${encodeURIComponent(document.id)}`)
-    await expect(editor(page)).toHaveText(document.body, { useInnerText: true })
+    await expectDocument(page, document)
   }
   async function savedPreview(page: Page): Promise<AgentPromptPreview> {
     const response = page.waitForResponse(response => response.request().method() === 'POST' && response.url() === `${url}/api/authoring/preview`)
@@ -223,7 +229,7 @@ test.describe('动态代理提示词与已保存组合', () => {
       if (document.id === 'common' || document.id === 'subagent') await navigation(page).getByRole('button', { name: document.id === 'common' ? '通用前置提示词' : '通用子代理前置', exact: true }).click()
       else await choose(page, document)
       await expect(page).toHaveURL(`${url}/#prompts/${encodeURIComponent(document.id)}`)
-      await expect(editor(page)).toHaveText(document.body, { useInnerText: true })
+      await expectDocument(page, document)
       await editor(page).fill('')
       await expect(editor(page)).toHaveText('')
       await editor(page).pressSequentially('{{')

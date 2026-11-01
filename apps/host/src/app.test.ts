@@ -456,6 +456,122 @@ describe('real Eating Host → QQ OneBot → SQLite → authenticated MCP', () =
     expect(persisted).toMatchObject({ revision: 1, prompts: expect.arrayContaining([expect.objectContaining({ id: 'main', body, revision: 1 })]) })
   })
 
+  it('resets a prompt through authenticated HTTP, preserves monotonic CAS and leaves default-following requests read-only', async () => {
+    const context = await createHost('', [])
+    const path = '/api/prompts/main/reset'
+    const initial = context.host.authoring.getSnapshot()
+    const defaultBody = initial.prompts.find(prompt => prompt.id === 'main')!.body
+    const body = { expectedRevision: 0 }
+    expect((await http(context.url, path, { method: 'POST', body })).status).toBe(401)
+    expect((await http(context.url, path, { method: 'POST', body, headers: { Cookie: context.cookie } })).status).toBe(403)
+    const invalidCsrf = await context.api(path, { method: 'POST', body, headers: { 'X-Eating-CSRF': 'invalid' } })
+    expect(invalidCsrf.status).toBe(403)
+    expect(invalidCsrf.body).toMatchObject({ error: { code: 'INVALID_CSRF_TOKEN' } })
+    expect((await context.api(path, { method: 'POST', body, headers: { Origin: 'https://outside.invalid' } })).status).toBe(403)
+    expect((await context.api(path)).status).toBe(405)
+    const invalidBodies: JsonValue[] = [null, [], {}, { expectedRevision: '0' }, { expectedRevision: -1 }, { expectedRevision: 0.5 }, { expectedRevision: Number.MAX_SAFE_INTEGER + 1 }, { expectedRevision: 0, body: defaultBody }, { expectedRevision: 0, confirmed: true }]
+    for (const invalidBody of invalidBodies) {
+      const invalid = await context.api(path, { method: 'POST', body: invalidBody })
+      expect(invalid.status).toBe(400)
+      expect(invalid.body).toMatchObject({ error: { code: 'INVALID_AUTHORING_REQUEST' } })
+    }
+    expect((await context.api('/api/prompts/%invalid/reset', { method: 'POST', body })).status).toBe(400)
+    expect((await context.api('/api/prompts/missing/reset', { method: 'POST', body })).status).toBe(404)
+    expect((await context.api(path, { method: 'POST', body })).body).toEqual(initial)
+    expect(context.host.store.getSetting('host:authoring')).toBeNull()
+    const saved = await context.api('/api/prompts/main', { method: 'POST', body: { expectedRevision: 0, body: '主人明确修改' } })
+    expect(saved.status).toBe(200)
+    const reset = await context.api(path, { method: 'POST', body: { expectedRevision: 1 } })
+    expect(reset.status).toBe(200)
+    expect(reset.body).toMatchObject({ revision: 2, prompts: expect.arrayContaining([expect.objectContaining({ id: 'main', body: defaultBody, defaultBody, revision: 2, updatedAt: null })]) })
+    const raw = context.host.store.getSetting('host:authoring')
+    const write = vi.spyOn(context.host.store, 'setSetting')
+    expect((await context.api(path, { method: 'POST', body: { expectedRevision: 2 } })).body).toEqual(reset.body)
+    expect((await context.api('/api/prompts/main', { method: 'POST', body: { expectedRevision: 2, body: defaultBody } })).body).toEqual(reset.body)
+    for (const expectedRevision of [0, 1]) {
+      const staleReset = await context.api(path, { method: 'POST', body: { expectedRevision } })
+      expect(staleReset.status).toBe(409)
+      expect(staleReset.body).toMatchObject({ error: { code: 'AUTHORING_REVISION_CONFLICT' } })
+      expect((await context.api('/api/prompts/main', { method: 'POST', body: { expectedRevision, body: defaultBody } })).status).toBe(409)
+    }
+    expect(context.host.store.getSetting('host:authoring')).toBe(raw)
+    expect(write).not.toHaveBeenCalled()
+    await context.host.close()
+    const reopened = await createHost(context.home, [])
+    expect((await reopened.api('/api/authoring')).body).toEqual(reset.body)
+    expect((await reopened.api('/api/prompts/main', { method: 'POST', body: { expectedRevision: 2, body: '恢复后新编辑' } })).body).toMatchObject({ revision: 3, prompts: expect.arrayContaining([expect.objectContaining({ id: 'main', revision: 3, updatedAt: expect.any(String) })]) })
+  })
+
+  it('resets encoded plugin and role IDs, follows changed contributions in HTTP preview and rejects removed sources', async () => {
+    const types = [{ id: 'comm.private', title: '测试私聊代理', description: '测试范围', conversationKind: 'private' as const, defaultPrompt: '旧角色默认', availableTools: [], defaultTools: [], enabledTools: [] }]
+    const instructions = [{ id: 'comm.instructions', title: '测试插件说明', body: '旧插件默认' }]
+    const context = await createHost('', [testEntry('comm', 'communication', () => {}, { agentTypes: types, agentInstructions: instructions })])
+    const ids = ['agent:comm.private', 'plugin:comm.instructions']
+    for (const id of ids) {
+      const path = `/api/prompts/${encodeURIComponent(id)}`
+      expect((await context.api(path, { method: 'POST', body: { expectedRevision: 0, body: '主人覆盖' } })).status).toBe(200)
+      const reset = await context.api(`${path}/reset`, { method: 'POST', body: { expectedRevision: 1 } })
+      expect(reset.status).toBe(200)
+      expect(reset.body).toMatchObject({ prompts: expect.arrayContaining([expect.objectContaining({ id, revision: 2, updatedAt: null })]) })
+    }
+    const raw = context.host.store.getSetting('host:authoring')
+    const write = vi.spyOn(context.host.store, 'setSetting')
+    types[0]!.defaultPrompt = '升级角色默认'
+    instructions[0]!.body = '升级插件默认'
+    const snapshot = (await context.api('/api/authoring')).body
+    expect(snapshot).toMatchObject({ prompts: expect.arrayContaining([
+      expect.objectContaining({ id: ids[0], body: '升级角色默认', revision: 2, updatedAt: null }),
+      expect.objectContaining({ id: ids[1], body: '升级插件默认', revision: 2, updatedAt: null }),
+    ]) })
+    const mainPreview = await context.api('/api/authoring/preview', { method: 'POST', body: { agentTypeId: null } })
+    expect(mainPreview.status).toBe(200)
+    expect(mainPreview.body.systemPrompt).toContain('升级插件默认')
+    const childPreview = await context.api('/api/authoring/preview', { method: 'POST', body: { agentTypeId: 'comm.private' } })
+    expect(childPreview.status).toBe(200)
+    expect(childPreview.body.systemPrompt).toContain('升级角色默认')
+    types.splice(0)
+    instructions.splice(0)
+    for (const id of ids) {
+      const reset = await context.api(`/api/prompts/${encodeURIComponent(id)}/reset`, { method: 'POST', body: { expectedRevision: 2 } })
+      expect(reset.status).toBe(409)
+      expect(reset.body).toMatchObject({ error: { code: 'PROMPT_SOURCE_UNAVAILABLE' } })
+    }
+    expect(context.host.store.getSetting('host:authoring')).toBe(raw)
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  it('rejects unknown fields on every authoring mutation and preview without changing saved data', async () => {
+    const context = await createHost('', [])
+    const persona = context.host.authoring.createPersona('保留人格', '保留正文').persona
+    const raw = context.host.store.getSetting('host:authoring')
+    const requests: Array<[string, JsonObject]> = [
+      ['/api/prompts/main', { expectedRevision: 0, body: '覆盖', extra: true }],
+      ['/api/prompts/main/reset', { expectedRevision: 0, extra: true }],
+      ['/api/authoring/preview', { agentTypeId: null, extra: true }],
+      ['/api/personas', { name: '新增', body: '正文', extra: true }],
+      [`/api/personas/${persona.id}`, { name: '覆盖', body: '正文', expectedRevision: 1, extra: true }],
+      [`/api/personas/${persona.id}/activate`, { enabled: true, expectedRevision: 1, extra: true }],
+      [`/api/personas/${persona.id}/delete`, { confirmed: true, expectedRevision: 1, extra: true }],
+    ]
+    for (const [path, body] of requests) {
+      const invalid = await context.api(path, { method: 'POST', body })
+      expect(invalid.status).toBe(400)
+      expect(invalid.body).toMatchObject({ error: { code: 'INVALID_AUTHORING_REQUEST' } })
+      expect(context.host.store.getSetting('host:authoring')).toBe(raw)
+    }
+    expect(context.host.authoring.getPersona(persona.id)).toEqual(persona)
+  })
+
+  it('rejects old authoring storage at the HTTP reset boundary and preserves its exact bytes', async () => {
+    const context = await createHost('', [])
+    const raw = '{"schemaVersion":1,"revision":0,"prompts":[],"personas":[],"activePersonaId":null}\n'
+    context.host.store.setSetting('host:authoring', raw)
+    const reset = await context.api('/api/prompts/main/reset', { method: 'POST', body: { expectedRevision: 0 } })
+    expect(reset.status).toBe(500)
+    expect(reset.body).toMatchObject({ error: { code: 'AUTHORING_STORAGE_CORRUPTED' } })
+    expect(context.host.store.getSetting('host:authoring')).toBe(raw)
+  })
+
   it('creates multiple personas without activation and atomically enables only one', async () => {
     const context = await createHost()
     const make = async (name: string) => {

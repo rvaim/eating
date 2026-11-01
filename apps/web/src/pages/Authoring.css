@@ -1,5 +1,5 @@
 .authoring-workspace, .authoring-content, .authoring-form { min-width: 0; }
-.authoring-content { padding-right: 36px; }
+.authoring-content { padding-right: 36px; overflow-anchor: none; }
 .authoring-content > * { max-width: var(--panel-content-max); }
 .authoring-title-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 16px 20px; }
 .authoring-title-row > div { min-width: 0; flex: 1; }
@@ -79,6 +79,17 @@
 .authoring-preview-source { margin-bottom: 10px; color: var(--color-muted); font-size: 12px; overflow-wrap: anywhere; }
 .authoring-preview-source code { margin-inline-start: 8px; }
 .authoring-preview-layer pre { margin: 0 0 14px; padding: 14px; border-radius: 5px; background: var(--color-surface-sunken); color: var(--color-ink); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.8; }
+.authoring-default-state { margin: 0 0 20px; color: var(--color-muted); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.authoring-templates { min-width: 0; margin-bottom: 24px; border-top: 1px solid var(--color-line); border-bottom: 1px solid var(--color-line); }
+.authoring-templates summary, .authoring-reset-preview summary { min-height: 44px; padding: 12px 0; color: var(--color-ink); cursor: pointer; font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
+.authoring-templates ul { margin: 0; padding: 0; list-style: none; }
+.authoring-templates li { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 24px; padding: 16px 0; }
+.authoring-templates li > div { flex: 1 1 240px; min-width: 0; }
+.authoring-templates strong { font-size: 13px; font-weight: 600; }
+.authoring-templates li p { max-width: 65ch; margin-top: 5px; color: var(--color-muted); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.authoring-templates .button, .authoring-confirm-actions .button, .authoring-actions .button { min-height: 44px; white-space: normal; }
+.authoring-reset-preview { min-width: 0; }
+.authoring-reset-preview pre { max-height: 280px; margin: 0; padding: 14px; overflow: auto; border-radius: 5px; background: var(--color-surface-sunken); color: var(--color-ink); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.8; }
 @media (max-width: 1100px) {
   .authoring-content { padding-right: 28px; }
 }
@@ -110,10 +121,10 @@
   .authoring-name-field { margin-bottom: 24px; }
   .authoring-editor .cm-scroller { min-height: 240px; }
   .authoring-actions { gap: 8px; }
-  .authoring-actions .button { min-height: 40px; }
+  .authoring-actions .button { min-height: 44px; }
   .authoring-save-state { flex-basis: 100%; margin-top: 3px; }
   .authoring-confirmation { padding: 15px; }
-  .authoring-confirm-actions .button { white-space: normal; min-height: 40px; }
+  .authoring-confirm-actions .button { white-space: normal; min-height: 44px; }
   .authoring-delete-section > div { min-width: 0; flex-basis: 100%; }
   .authoring-delete-trigger { min-height: 40px; }
 }

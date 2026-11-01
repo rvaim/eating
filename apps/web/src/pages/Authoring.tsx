@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Check, ChevronRight, Eye, FileText, Info, Plus, Power, RefreshCw, Save, Trash2, UserRound } from 'lucide-react'
+import { Check, ChevronRight, Eye, FileText, Info, Plus, Power, RefreshCw, RotateCcw, Save, Trash2, UserRound } from 'lucide-react'
 import { TEMPLATE_SCOPES, TEMPLATE_VARIABLES, analyzeTemplate, getPromptTemplateScope } from '@eating/plugin-sdk'
 import type { AgentPromptPreview, AuthoringSnapshot, PersonaDocument, PersonaMutationResult, PersonaSummary, PromptDocument, TemplateScope } from '@eating/plugin-sdk'
 import { ActionButton, HostApiError, formatDateTime, getErrorMessage, getLocale, hostRequest, translate, useI18n } from '@eating/ui-sdk'
 import '../i18n/authoring'
 import { TemplateEditor } from '../components/TemplateEditor'
+import { PERSONA_TEMPLATES } from '../persona-templates'
 import './Authoring.css'
 
 export interface AuthoringProps {
@@ -18,7 +19,7 @@ export interface AuthoringProps {
 
 type Notice = { readonly kind: 'error' | 'success' | 'info'; readonly key: string }
   | { readonly kind: 'error'; readonly error: unknown; readonly operation: Operation }
-type Operation = 'read' | 'save' | 'activate' | 'delete'
+type Operation = 'read' | 'save' | 'reset' | 'activate' | 'delete'
 type Selection = { readonly key: string; readonly id: string; readonly scope: TemplateScope }
 interface Draft extends Selection {
   readonly name: string
@@ -168,6 +169,8 @@ export function Authoring({ mode, selectedId, pluginDisplayNames, onSelect, onFe
   const [snapshotNeedsRead, setSnapshotNeedsRead] = useState(false)
   const [confirmRead, setConfirmRead] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [confirmReset, setConfirmReset] = useState<string | null>(null)
+  const [confirmTemplate, setConfirmTemplate] = useState<string | null>(null)
   const [preview, setPreview] = useState<{ readonly key: string; readonly loading: boolean; readonly data?: AgentPromptPreview; readonly error?: unknown } | null>(null)
   const previewRequest = useRef<{ readonly key: string; readonly controller: AbortController } | null>(null)
   const mounted = useRef(false)
@@ -183,6 +186,11 @@ export function Authoring({ mode, selectedId, pluginDisplayNames, onSelect, onFe
   const readCancel = useRef<HTMLButtonElement>(null)
   const deleteTrigger = useRef<HTMLButtonElement>(null)
   const deleteCancel = useRef<HTMLButtonElement>(null)
+  const resetTrigger = useRef<HTMLButtonElement>(null)
+  const resetCancel = useRef<HTMLButtonElement>(null)
+  const templatePicker = useRef<HTMLDetailsElement>(null)
+  const templateCancel = useRef<HTMLButtonElement>(null)
+  const personaName = useRef<HTMLInputElement>(null)
   feedback.current = onFeedback
   select.current = onSelect
 
@@ -235,6 +243,8 @@ export function Authoring({ mode, selectedId, pluginDisplayNames, onSelect, onFe
   const canPreview = mode === 'prompts' && (selection.scope === 'main' || selection.scope === 'agent')
   const currentPreview = preview?.key === selection.key ? preview : null
   const hasUnsavedDrafts = Object.values(drafts).some(draft => isDirty(draft))
+  const followsDefault = mode === 'prompts' && currentDraft?.saved?.updatedAt === null
+  const canReset = mode === 'prompts' && Boolean(selectedPrompt?.defaultBody && currentDraft?.saved && (!followsDefault || dirty))
   const visibleLayers = currentPreview?.data?.layers.filter(layer => !(layer.id === 'persona' && layer.body === '')) ?? []
 
   const cancelPreview = useCallback(() => {
@@ -285,6 +295,8 @@ export function Authoring({ mode, selectedId, pluginDisplayNames, onSelect, onFe
     setOperation({ kind, key })
     setConfirmRead(null)
     setConfirmDelete(null)
+    setConfirmReset(null)
+    setConfirmTemplate(null)
     setReadError(null)
     return ticket
   }, [cancelPreview])
@@ -336,6 +348,8 @@ export function Authoring({ mode, selectedId, pluginDisplayNames, onSelect, onFe
     if (!ready) return
     setConfirmRead(null)
     setConfirmDelete(null)
+    setConfirmReset(null)
+    setConfirmTemplate(null)
     setReadError(null)
     const key = `${mode}:${resolvedId}`
     if (!draftsRef.current[key]) {
@@ -365,12 +379,19 @@ export function Authoring({ mode, selectedId, pluginDisplayNames, onSelect, onFe
 
   useEffect(() => { if (confirmRead) readCancel.current?.focus() }, [confirmRead])
   useEffect(() => { if (confirmDelete) deleteCancel.current?.focus() }, [confirmDelete])
+  useEffect(() => { if (confirmReset) resetCancel.current?.focus() }, [confirmReset])
+  useEffect(() => { if (confirmTemplate) templateCancel.current?.focus() }, [confirmTemplate])
+  useEffect(() => {
+    if (!busy && currentDraft?.notice && 'key' in currentDraft.notice && currentDraft.notice.key === 'success.promptReset') readTrigger.current?.focus()
+  }, [busy, currentDraft?.notice])
 
   function choose(id: string) {
     if (!snapshotRef.current || id === resolvedId || activeRequest.current?.kind && activeRequest.current.kind !== 'read') return
     cancelRequest()
     setConfirmRead(null)
     setConfirmDelete(null)
+    setConfirmReset(null)
+    setConfirmTemplate(null)
     select.current(id)
   }
 
@@ -381,13 +402,43 @@ export function Authoring({ mode, selectedId, pluginDisplayNames, onSelect, onFe
     replaceDrafts({ ...draftsRef.current, [draft.key]: { ...draft, [field]: value, notice: draft.notice?.kind === 'error' ? draft.notice : null } })
     setConfirmRead(null)
     setConfirmDelete(null)
+    setConfirmReset(null)
+    setConfirmTemplate(null)
   }
 
   function requestRead() {
     if (lock.current) return
+    setConfirmReset(null)
+    setConfirmTemplate(null)
     const draft = draftsRef.current[selection.key]
     if (draft && isDirty(draft)) { setConfirmDelete(null); setConfirmRead(selection.key); return }
     void readSnapshot(snapshotRef.current ? selection : null)
+  }
+
+  function requestReset() {
+    if (lock.current || blocked || sourceUnavailable || !canReset) return
+    setConfirmRead(null)
+    setConfirmDelete(null)
+    setConfirmTemplate(null)
+    setConfirmReset(selection.key)
+  }
+
+  function applyTemplate(id: string, confirmed = false) {
+    if (lock.current || mode !== 'personas' || resolvedId !== 'new') return
+    const draft = draftsRef.current[selection.key]
+    const template = PERSONA_TEMPLATES.find(candidate => candidate.id === id)
+    if (!draft || draft.saved || !template) return
+    if (draft.body.trim() && !confirmed) { setConfirmRead(null); setConfirmTemplate(id); return }
+    replaceDrafts({ ...draftsRef.current, [draft.key]: { ...draft, body: template.body, notice: { kind: 'info', key: 'template.applied' } } })
+    setConfirmTemplate(null)
+    cancelPreview()
+    personaName.current?.focus()
+  }
+
+  function cancelTemplate() {
+    const id = confirmTemplate
+    setConfirmTemplate(null)
+    templatePicker.current?.querySelector<HTMLButtonElement>(`[data-template-id="${id}"]`)?.focus()
   }
 
   async function mutate(kind: Exclude<Operation, 'read'>) {
@@ -398,6 +449,7 @@ export function Authoring({ mode, selectedId, pluginDisplayNames, onSelect, onFe
     if (kind === 'save' && (mode === 'prompts' && sourceUnavailable || !isDirty(draft) || !draft.body.trim() || draft.body.length > 50000
       || draft.scope === 'persona' && (!draft.name.trim() || draft.name.trim().length > 80)
       || !analyzeTemplate(draft.body, draft.scope).valid)) return
+    if (kind === 'reset' && (draft.scope === 'persona' || sourceUnavailable || !canReset || confirmReset !== draft.key)) return
     if (kind === 'activate' && (!draft.saved || !currentlyActive && isDirty(draft))) return
     if (kind === 'delete' && (!draft.saved || currentlyActive || confirmDelete !== draft.key)) return
     const ticket = beginRequest(kind, draft.key)
@@ -407,15 +459,17 @@ export function Authoring({ mode, selectedId, pluginDisplayNames, onSelect, onFe
       let next: AuthoringSnapshot
       let savedDraft: Draft | null = null
       let messageKey: string
-      if (kind === 'save' && draft.scope !== 'persona') {
+      if ((kind === 'save' || kind === 'reset') && draft.scope !== 'persona') {
         if (!draft.saved) throw responseError()
-        next = checkSnapshot(await hostRequest<AuthoringSnapshot>(`/prompts/${encodeURIComponent(draft.id)}`, {
-          method: 'POST', signal: ticket.controller.signal, body: { expectedRevision: draft.saved.revision, body: draft.body },
+        const resetting = kind === 'reset'
+        next = checkSnapshot(await hostRequest<AuthoringSnapshot>(`/prompts/${encodeURIComponent(draft.id)}${resetting ? '/reset' : ''}`, {
+          method: 'POST', signal: ticket.controller.signal,
+          body: { expectedRevision: draft.saved.revision, ...(resetting ? {} : { body: draft.body }) },
         }))
         const doc = next.prompts.find(prompt => prompt.id === draft.id)
         if (!doc) throw responseError()
         savedDraft = promptDraft(doc)
-        messageKey = 'success.promptSaved'
+        messageKey = resetting ? 'success.promptReset' : 'success.promptSaved'
       } else if (kind === 'save') {
         const result = checkMutation(await hostRequest<PersonaMutationResult>(draft.saved ? `/personas/${encodeURIComponent(draft.id)}` : '/personas', {
           method: 'POST', signal: ticket.controller.signal,
@@ -533,18 +587,36 @@ export function Authoring({ mode, selectedId, pluginDisplayNames, onSelect, onFe
       <div className="authoring-title-row"><div><div className="panel-title-row"><h2>{title}</h2>{active && <span className="status-badge authoring-active-badge"><Check size={12} aria-hidden="true" />{t('status.active')}</span>}</div><p className="panel-description">{t(mode === 'prompts' ? `prompt.${selection.scope}.description` : 'persona.description')}</p></div><ActionButton reasonCode="busy" ref={readTrigger} type="button" className="button button-secondary authoring-read-button" disabled={busy} onClick={requestRead}><RefreshCw size={15} aria-hidden="true" />{t(operation?.kind === 'read' ? 'action.reading' : mode === 'prompts' ? 'action.readPrompt' : 'action.readPersona')}</ActionButton></div>
       <div className="authoring-runtime-note"><Info size={16} aria-hidden="true" /><p>{t(mode === 'prompts' ? 'prompt.runtimeNote' : 'runtimeNote')}</p></div>
       {selectedPrompt?.pluginId && <p className="authoring-source-detail">{t('source.plugin', { pluginId: selectedPrompt.pluginId })}</p>}
+      {mode === 'prompts' && currentDraft?.saved && <p className="authoring-default-state">{t(followsDefault ? 'default.following' : 'default.customized')}</p>}
       {(sourceUnavailable || sourceDisabled) && <p className="authoring-notice authoring-notice-info" role="status">{t(sourceUnavailable ? 'source.unavailable' : 'source.disabled')}</p>}
       {snapshotNeedsRead && <p className="authoring-notice authoring-notice-error" role="alert">{t(mode === 'prompts' ? 'read.requiredPrompt' : 'read.requiredPersona')}</p>}
       {currentReadError && <p className="authoring-notice authoring-notice-error" role="alert">{currentDraft ? t('read.errorWithDraft', { message: currentReadError }) : currentReadError}</p>}
       {confirmRead === selection.key && <div className="authoring-confirmation" role="group" aria-label={t('read.confirmLabel')}><div><strong>{t('read.confirmTitle')}</strong><p>{t('read.confirmDescription')}</p></div><div className="authoring-confirm-actions"><ActionButton reasonCode="busy" ref={readCancel} type="button" className="button button-secondary" onClick={() => { setConfirmRead(null); readTrigger.current?.focus() }}>{t('action.continue')}</ActionButton><ActionButton reasonCode="busy" type="button" className="button button-danger" onClick={() => void readSnapshot(selection)}>{t('read.confirmAction')}</ActionButton></div></div>}
       {!snapshot ? <p className="authoring-read-state" role="status">{t(busy ? 'read.loading' : 'read.empty')}</p> : !currentDraft ? <p className="authoring-read-state" role="status">{t(busy ? 'read.loadingPersona' : 'read.documentEmpty')}</p> : <form className="authoring-form" onSubmit={submit}>
         {mode === 'personas' && !currentDraft.saved && <div className="authoring-new-note"><h3>{t(snapshot.personas.length === 0 ? 'new.emptyTitle' : 'new.title')}</h3><p>{t('new.description')}</p></div>}
-        {mode === 'personas' && <div className="authoring-name-field"><label htmlFor="authoring-persona-name">{t('name.label')}</label><input id="authoring-persona-name" type="text" autoComplete="off" value={currentDraft.name} disabled={busy} aria-describedby="authoring-name-hint" aria-invalid={Boolean(nameError && (currentDraft.name || currentDraft.saved))} onChange={event => updateDraft('name', event.target.value)} /><p id="authoring-name-hint" className={nameError && (currentDraft.name || currentDraft.saved) ? 'authoring-field-error' : 'authoring-field-hint'}>{nameError && (currentDraft.name || currentDraft.saved) ? nameError : t('name.hint')}</p></div>}
+        {mode === 'personas' && !currentDraft.saved && <details ref={templatePicker} className="authoring-templates">
+          <summary>{t('template.title')}</summary>
+          <p className="authoring-field-hint">{t('template.hint')}</p>
+          <ul>{PERSONA_TEMPLATES.map(template => <li key={template.id}>
+            <div><strong>{t(`template.${template.id}.title`)}</strong><p>{t(`template.${template.id}.description`)}</p></div>
+            <ActionButton reasonCode="busy" type="button" className="button button-secondary" data-template-id={template.id} disabled={busy} onClick={() => applyTemplate(template.id)}>{t('template.use', { name: t(`template.${template.id}.title`) })}</ActionButton>
+          </li>)}</ul>
+        </details>}
+        {mode === 'personas' && !currentDraft.saved && confirmTemplate && <div className="authoring-confirmation" role="group" aria-label={t('template.confirmLabel')}>
+          <div><strong>{t('template.confirmTitle')}</strong><p>{t('template.confirmDescription')}</p></div>
+          <div className="authoring-confirm-actions"><ActionButton reasonCode="busy" ref={templateCancel} type="button" className="button button-secondary" onClick={cancelTemplate}>{t('action.continue')}</ActionButton><ActionButton reasonCode="busy" type="button" className="button button-secondary" disabled={busy} onClick={() => applyTemplate(confirmTemplate, true)}>{t('template.confirmAction')}</ActionButton></div>
+        </div>}
+        {mode === 'personas' && <div className="authoring-name-field"><label htmlFor="authoring-persona-name">{t('name.label')}</label><input ref={personaName} id="authoring-persona-name" type="text" autoComplete="off" value={currentDraft.name} disabled={busy} aria-describedby="authoring-name-hint" aria-invalid={Boolean(nameError && (currentDraft.name || currentDraft.saved))} onChange={event => updateDraft('name', event.target.value)} /><p id="authoring-name-hint" className={nameError && (currentDraft.name || currentDraft.saved) ? 'authoring-field-error' : 'authoring-field-hint'}>{nameError && (currentDraft.name || currentDraft.saved) ? nameError : t('name.hint')}</p></div>}
         <div className="authoring-editor-heading"><h3>{t(mode === 'prompts' ? 'body.prompt' : 'body.persona')}</h3><span className={currentDraft.body.length > 50000 ? 'authoring-field-error' : ''}>{t('body.count', { countText: formatNumber(currentDraft.body.length), limitText: formatNumber(50000) })}</span></div>
         <div className="authoring-editor"><TemplateEditor docKey={currentDraft.key} scope={currentDraft.scope} value={currentDraft.body} onChange={value => updateDraft('body', value)} disabled={busy || sourceUnavailable} ariaLabel={t(mode === 'prompts' ? 'body.prompt' : 'body.persona')} variables={snapshot.variables} /></div>
         {bodyError && (currentDraft.body.length > 0 || currentDraft.saved !== null) && <p className="authoring-field-error" role="alert">{bodyError}</p>}
-        <div className="authoring-actions"><ActionButton reasonCode={busy ? 'busy' : sourceUnavailable ? 'source' : blocked ? 'read' : !valid ? 'invalid' : 'unchanged'} type="submit" className="button button-primary" disabled={busy || sourceUnavailable || blocked || !valid || !dirty}><Save size={15} aria-hidden="true" />{t(operation?.kind === 'save' ? 'action.saving' : mode === 'prompts' ? 'action.savePrompt' : 'action.savePersona')}</ActionButton>{mode === 'personas' && currentDraft.saved && <ActionButton reasonCode={busy ? 'busy' : blocked ? 'read' : 'draft'} type="button" className="button button-secondary" disabled={busy || blocked || !active && dirty} aria-describedby={!active && dirty ? 'authoring-activation-hint' : undefined} onClick={() => void mutate('activate')}><Power size={15} aria-hidden="true" />{t(operation?.kind === 'activate' ? active ? 'action.deactivating' : 'action.activating' : active ? 'action.deactivate' : 'action.activate')}</ActionButton>}<span className="authoring-save-state">{t(blocked ? 'status.waitingRead' : !currentDraft.saved ? 'status.notSaved' : dirty ? 'status.unsaved' : 'status.saved')}</span></div>
+        <div className="authoring-actions"><ActionButton reasonCode={busy ? 'busy' : sourceUnavailable ? 'source' : blocked ? 'read' : !valid ? 'invalid' : 'unchanged'} type="submit" className="button button-primary" disabled={busy || sourceUnavailable || blocked || !valid || !dirty}><Save size={15} aria-hidden="true" />{t(operation?.kind === 'save' ? 'action.saving' : mode === 'prompts' ? 'action.savePrompt' : 'action.savePersona')}</ActionButton>{mode === 'prompts' && selectedPrompt?.defaultBody && <ActionButton ref={resetTrigger} reason={busy || blocked || sourceUnavailable ? undefined : t('reset.alreadyDefault')} reasonCode={busy ? 'busy' : blocked ? 'read' : 'source'} type="button" className="button button-secondary" disabled={busy || blocked || sourceUnavailable || !canReset} onClick={requestReset}><RotateCcw size={15} aria-hidden="true" />{t(operation?.kind === 'reset' ? 'action.resetting' : 'action.resetPrompt')}</ActionButton>}{mode === 'personas' && currentDraft.saved && <ActionButton reasonCode={busy ? 'busy' : blocked ? 'read' : 'draft'} type="button" className="button button-secondary" disabled={busy || blocked || !active && dirty} aria-describedby={!active && dirty ? 'authoring-activation-hint' : undefined} onClick={() => void mutate('activate')}><Power size={15} aria-hidden="true" />{t(operation?.kind === 'activate' ? active ? 'action.deactivating' : 'action.activating' : active ? 'action.deactivate' : 'action.activate')}</ActionButton>}<span className="authoring-save-state">{t(blocked ? 'status.waitingRead' : !currentDraft.saved ? 'status.notSaved' : dirty ? 'status.unsaved' : 'status.saved')}</span></div>
         {mode === 'personas' && currentDraft.saved && dirty && <p id="authoring-activation-hint" className="authoring-field-hint">{t(active ? 'activation.activeDirty' : 'activation.inactiveDirty')}</p>}
+        {confirmReset === currentDraft.key && <div className="authoring-confirmation" role="group" aria-label={t('reset.confirmLabel')}>
+          <div><strong>{t('reset.confirmTitle')}</strong><p>{t('reset.confirmDescription')}</p></div>
+          <details className="authoring-reset-preview"><summary>{t('reset.preview')}</summary><pre>{selectedPrompt?.defaultBody}</pre></details>
+          <div className="authoring-confirm-actions"><ActionButton ref={resetCancel} reasonCode="busy" type="button" className="button button-secondary" onClick={() => { setConfirmReset(null); resetTrigger.current?.focus() }}>{t('action.continue')}</ActionButton><ActionButton reasonCode={busy ? 'busy' : blocked ? 'read' : 'source'} type="button" className="button button-primary" disabled={busy || blocked || sourceUnavailable} onClick={() => void mutate('reset')}>{t('reset.confirmAction')}</ActionButton></div>
+        </div>}
         {currentDraft.notice && <p className={`authoring-notice authoring-result authoring-notice-${currentDraft.notice.kind}`} role={currentDraft.notice.kind === 'error' ? 'alert' : 'status'}>{noticeMessage(currentDraft.notice)}</p>}
         <p className="authoring-draft-hint">{t(mode === 'prompts' ? 'draft.promptHint' : 'draft.personaHint')}</p>
         {canPreview && <section className="authoring-preview" aria-labelledby="authoring-preview-title" aria-busy={Boolean(currentPreview?.loading)}>

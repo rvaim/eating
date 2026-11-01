@@ -38,7 +38,9 @@ describe('QQ agent identity and permission policy', () => {
       expect(role.defaultTools.every(name => role.availableTools.includes(name))).toBe(true)
       expect(role.availableTools).not.toEqual(expect.arrayContaining(['qq_get_friend_list']))
       for (const forbidden of ['qq_get_friend_list', 'qq_get_group_list', 'qq_get_cookies', 'qq_get_csrf_token', 'qq_get_credentials', 'qq_set_restart', 'qq_clean_cache', 'qq_send_message', 'qq_handle_quick_operation']) expect(role.availableTools).not.toContain(forbidden)
-      expect(analyzeTemplate(role.defaultPrompt, 'agent').valid).toBe(true)
+      const template = analyzeTemplate(role.defaultPrompt, 'agent')
+      expect(template.valid).toBe(true)
+      expect(template.tokens.map(token => token.name)).toEqual(['主人', '管理员', '平台', '机器人账号', '会话编号', '会话类型', '目标编号'])
       expect(role.defaultPrompt).not.toContain('{{当前时间}}')
       expect(role.defaultPrompt).not.toMatch(/\{\{(?:消息列表|消息内容|发送者列表)\}\}/)
     }

@@ -88,14 +88,19 @@ test.describe('用户文案与宿主/独立插件的共享语言', () => {
     await page.goto(`${url}/#prompts/main`)
     const editor = promptEditor(page)
     await expect(editor).toBeVisible()
-    const original = await editor.innerText()
+    const original = host.authoring.getSnapshot().prompts.find(prompt => prompt.id === 'main')!.body
     const draft = '用户填写的正文保持原样 {{当前时间}}'
     await editor.fill(draft)
     await chooseLanguage(page, 'en-US')
     await expect(editor).toHaveAttribute('aria-label', 'Prompt content')
     await expect(editor).toHaveText(draft)
     await editor.press('ControlOrMeta+z')
-    await expect.poll(() => editor.innerText()).toBe(original)
+    // Long documents are virtualized. A valid, unchanged draft must equal the complete saved body.
+    await expect(page.getByRole('button', { name: 'Save prompt', exact: true })).toBeDisabled()
+    await expect(page.locator('.authoring-editor-heading > span')).toHaveText(`${original.length.toLocaleString('en-US')} / 50,000 characters`)
+    await expect(page.getByLabel('Template variable diagnostics', { exact: true })).toContainText('No variable errors found')
+    await editor.press('ControlOrMeta+End')
+    await expect(editor).toContainText(original.split('\n').at(-1)!)
     await editor.fill('用户正文 {{未提供的变量}}')
     await expect(page.getByLabel('Template variable diagnostics', { exact: true })).toContainText('Unknown variable')
     await expect(page.getByRole('button', { name: 'Save prompt', exact: true })).toBeDisabled()

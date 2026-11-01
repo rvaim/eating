@@ -3,6 +3,7 @@ export * from './agents.js'
 export * from './capabilities.js'
 export * from './media.js'
 export * from './autonomy.js'
+export * from './memory.js'
 import type { CapabilityInvocationScope, HarnessCapabilityConnection, ImageResource, PluginKind, PluginMediaProvider, PluginResourceServices, ReceivedImageReference } from './capabilities.js'
 
 export type JsonPrimitive = string | number | boolean | null
@@ -163,6 +164,7 @@ export interface HarnessOwnerConfiguration {
 }
 
 export interface HarnessHostServices {
+  readonly memory?: import('./memory.js').HarnessMemoryServices
   registerSink(sink: HarnessMessageSink): () => void
   wake(): void
   readOwnerConfiguration(): HarnessOwnerConfiguration
@@ -226,6 +228,7 @@ export interface BackendPlugin {
   readonly name: string
   readonly version: string
   readonly media?: PluginMediaProvider
+  readonly memory?: import('./memory.js').MemoryProvider
   readReceivedImage?(reference: ReceivedImageReference, scope: import('./agents.js').AgentInvocationScope): Promise<ImageResource>
   invokeCapability?(name: string, input: unknown, requestId: string, scope: CapabilityInvocationScope): Promise<JsonValue>
   readonly capabilities: readonly PluginCapability[]

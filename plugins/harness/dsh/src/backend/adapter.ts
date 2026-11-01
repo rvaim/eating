@@ -136,7 +136,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.11.2'
+  readonly version = '0.12.0'
   readonly tools = []
   readonly agentInstructions = [{ id: 'dsh.autonomous-activity', title: '自主活动与受控主动联系', localizedTitles: { 'zh-CN': '自主活动与受控主动联系', 'en-US': 'Autonomous activity and scoped proactive contact' }, body: 'The main Agent may receive owner-authorized autonomous opportunities without an incoming message or a human task. Read eating_activity_state and use eating_plan_activity to choose continuation, rest until a time, or waiting for external events. Prose alone does not change the schedule. Owner pause and limits remain authoritative. During an autonomous round, use eating_list_contact_targets and eating_contact_target to contact only a currently approved target; no old incoming-message scope is implied. Native goals and incoming messages retain their own priority. Report actual action receipts and unknown outcomes truthfully.' }]
   readonly capabilities = [

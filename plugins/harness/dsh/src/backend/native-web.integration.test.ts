@@ -40,7 +40,7 @@ async function descendants(): Promise<number[]> {
   return rows.filter(row => row.pid !== process.pid && ids.has(row.pid) && row.command !== '/bin/ps').map(row => row.pid)
 }
 function alive(pid: number): boolean { try { process.kill(pid, 0); return true } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false; throw error } }
-async function fixture(modelTool?: { name: string; args: JsonObject }, autonomous = false) {
+async function fixture(modelTool?: { name: string; args: JsonObject }, autonomous = false, firstModelGate?: Promise<void>) {
   const parent = realpathSync(tmpdir()), home = realpathSync(mkdtempSync(join(parent, 'eating-system-native-web-')))
   stops.push(() => { if (realpathSync(home) !== home || dirname(home) !== parent || !basename(home).startsWith('eating-system-native-web-')) throw new Error('Unsafe native Web fixture cleanup'); rmSync(home, { recursive: true }) })
   const probe = join(home, 'version-probe'); mkdirSync(probe)
@@ -59,6 +59,7 @@ async function fixture(modelTool?: { name: string; args: JsonObject }, autonomou
       const payload = object(JSON.parse(Buffer.concat(chunks).toString('utf8')))
       expect(payload.model).toBe('native-web-loopback-fixture'); expect(payload.stream).toBe(true)
       requests.push(payload)
+      if (requests.length === 1 && firstModelGate) await firstModelGate
       response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' })
       const chunk = (delta: object, finish: string | null) => response.write(`data: ${JSON.stringify({ id: `native-web-${requests.length}`, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: payload.model, choices: [{ index: 0, delta, finish_reason: finish }], ...(finish ? { usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } } : {}) })}\n\n`)
       if (autonomous) {
@@ -118,6 +119,68 @@ async function fixture(modelTool?: { name: string; args: JsonObject }, autonomou
 }
 
 describe.runIf(enabled)('system DSH official native Web and SDK integration', () => {
+  it('recalls and captures an external main turn automatically without any model memory tool call', async () => {
+    const f = await fixture()
+    const begin = vi.fn(async () => ({ text: 'AUTOMATIC-MEMORY-RECALL-CONTEXT', items: [] }))
+    const finish = vi.fn(async () => {})
+    Object.assign(f.host.harness!, { memory: { begin, append: vi.fn(async () => ({ text: '', items: [] })), finish, end: vi.fn() } })
+    await f.connect()
+    expect(begin).not.toHaveBeenCalled()
+    const receipt = await f.plugin.deliverBatch(f.batch, new AbortController().signal)
+    expect(receipt).toMatchObject({ accepted: true, durable: true })
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce(), { timeout: 15000 })
+    expect(begin).toHaveBeenCalledWith(expect.objectContaining({ agentTypeId: 'main', batch: f.batch }), expect.any(AbortSignal))
+    expect(f.requests).toHaveLength(1)
+    expect(JSON.stringify(f.requests[0]!.messages)).toContain('AUTOMATIC-MEMORY-RECALL-CONTEXT')
+    expect(finish).toHaveBeenCalledWith(expect.objectContaining({ assistantText: f.reply, outcome: 'completed', actions: [] }))
+    expect(JSON.stringify((f.requests[0]!.tools as JsonObject[]).map(tool => object(tool.function).name))).not.toContain('memory_save')
+    expect(f.modelErrors).toEqual([])
+    await f.plugin.disconnect(); await f.connect()
+    expect(begin).toHaveBeenCalledOnce()
+    expect(finish).toHaveBeenCalledOnce()
+    expect(f.requests).toHaveLength(1)
+  }, 60000)
+
+  it('captures native steering admitted after external input in the same live turn', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const f = await fixture({ name: 'eating_list_agent_types', args: {} }, false, gate)
+    stops.push(() => release())
+    const begin = vi.fn(async () => ({ text: '', items: [] })), append = vi.fn(async () => ({ text: 'NATIVE-STEERING-RECALL', items: [] })), finish = vi.fn(async () => {})
+    Object.assign(f.host.harness!, { memory: { begin, append, finish, end: vi.fn() } })
+    await f.connect()
+    await f.plugin.deliverBatch(f.batch, new AbortController().signal)
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1), { timeout: 10000 })
+    const entry = object(await f.plugin.manage('open-native-web', {})), rpc = await f.authenticated(String(entry.url))
+    expect(valueOf(await rpc('session/prompt', { request: { sessionId: entry.rootSessionId!, requestId: randomUUID(), mode: 'steer', content: [{ type: 'text', text: 'NATIVE-OWNER-STEERING-INPUT' }] } }))).toMatchObject({ accepted: true })
+    release()
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce(), { timeout: 10000 })
+    expect(begin).toHaveBeenCalledOnce()
+    expect(append).toHaveBeenCalledOnce()
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({ messages: [expect.objectContaining({ text: 'NATIVE-OWNER-STEERING-INPUT', messageId: expect.any(String) })] }), expect.any(AbortSignal))
+    expect(JSON.stringify(f.requests[1]!.messages)).toContain('NATIVE-STEERING-RECALL')
+    expect(finish).toHaveBeenCalledWith(expect.objectContaining({ assistantText: f.reply, outcome: 'completed' }))
+    expect(f.modelErrors).toEqual([])
+  }, 60000)
+
+  it('records a real tool boundary and autonomous activity without storing mechanical wake text', async () => {
+    const f = await fixture(undefined, true)
+    const begin = vi.fn(async () => ({ text: '', items: [] })), finish = vi.fn(async () => {})
+    Object.assign(f.host.harness!, { memory: { begin, append: vi.fn(async () => ({ text: '', items: [] })), finish, end: vi.fn() } })
+    await f.connect()
+    const snapshot = f.plugin.autonomy.snapshot()
+    await f.plugin.autonomy.configure({ expectedRevision: snapshot.revision!, configuration: { ...object(snapshot.configuration), enabled: true, minIntervalSeconds: 1, maxCyclesPerHour: 5, cycleTimeoutSeconds: 30 } })
+    const configured = f.plugin.autonomy.snapshot()
+    await f.plugin.autonomy.control('resume', { expectedRevision: configured.revision!, expectedActivityRevision: object(configured.state).revision! })
+    await vi.waitFor(() => expect(finish).toHaveBeenCalled(), { timeout: 15000 })
+    expect(begin).toHaveBeenCalledWith(expect.objectContaining({ autonomous: true, messages: [], query: expect.stringContaining('unfinished work') }), expect.any(AbortSignal))
+    expect(finish).toHaveBeenCalledWith(expect.objectContaining({ assistantText: 'AUTONOMOUS-ROUND-COMPLETE', actions: [{ tool: 'eating_activity_state', outcome: 'returned' }, { tool: 'eating_plan_activity', outcome: 'returned' }], outcome: 'completed' }))
+    expect(JSON.stringify(finish.mock.calls)).not.toContain('eating_autonomous_opportunity')
+    const current = f.plugin.autonomy.snapshot()
+    await f.plugin.autonomy.control('pause', { expectedRevision: current.revision!, expectedActivityRevision: object(current.state).revision! })
+    await f.plugin.disconnect()
+  }, 60000)
+
   it('wakes the same native main Agent without an external message, persists chosen sleep, wakes again and waits without a model polling loop', async () => {
     const f = await fixture(undefined, true)
     await f.connect()

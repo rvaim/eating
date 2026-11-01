@@ -14,6 +14,7 @@ interface Options {
   readonly direct: DirectMcpConnections
   readonly plugins: () => Iterable<BackendPlugin>
   readonly enabled: (id: string) => boolean
+  readonly memoryContext?: (harnessId: string, agentId: string) => import('@eating/plugin-sdk').MemoryContext | undefined
   readonly getSetting: (key: string) => string | null
   readonly setSetting: (key: string, value: string) => void
   readonly executeIdempotent: (pluginId: string, action: string, params: JsonObject, requestId: string, execute: () => Promise<JsonValue>) => Promise<JsonValue>
@@ -166,7 +167,8 @@ export class CapabilityAccess {
       if (!tool.readOnly && !requestId(input.request_id)) throw new PlatformError('REQUEST_ID_REQUIRED', '写入工具需要稳定 request_id。', 400, 'not-sent')
       const key = tool.readOnly ? randomUUID() : 'agent-' + createHash('sha256').update(lease.harnessId + '\0' + lease.scope.agentId + '\0' + String(input.request_id)).digest('hex')
       const args = { ...input, ...(!tool.readOnly ? { request_id: key } : {}) }
-      const result = await plugin.invokeCapability(name, args, key, { ...structuredClone(lease.scope), signal: lease.abort.signal })
+      const memory = plugin.memory ? this.options.memoryContext?.(lease.harnessId, lease.scope.agentId) : undefined
+      const result = await plugin.invokeCapability(name, args, key, { ...structuredClone(lease.scope), memory, signal: lease.abort.signal })
       if (!this.allowed(lease.scope, lease.sourceId, name)) return deny()
       return toolResult(tool, result, key)
     }

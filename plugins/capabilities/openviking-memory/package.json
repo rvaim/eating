@@ -1,0 +1,11 @@
+{
+  "name": "@eating/plugin-openviking-memory",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Eating OpenViking 记忆能力、自动提取与配置面板",
+  "files": ["dist"],
+  "exports": { ".": "./dist/server.mjs" },
+  "scripts": { "build": "node ../../../scripts/build.mjs plugin plugins/capabilities/openviking-memory" },
+  "dependencies": { "@eating/plugin-sdk": "workspace:^", "@eating/ui-sdk": "workspace:^", "@openviking/sdk": "0.1.0" },
+  "peerDependencies": { "react": "^19.3.1", "lucide-react": "^1.61.0" }
+}

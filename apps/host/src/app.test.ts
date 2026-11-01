@@ -231,7 +231,7 @@ describe('generic Host Harness services and management boundary', () => {
     expect(inspect).not.toHaveBeenCalled()
   })
 
-  it('returns a deeply immutable owner configuration copy without any write service', async () => {
+  it('returns a deeply immutable owner configuration copy without authoring writes', async () => {
     let pluginContext!: HostPluginContext
     const context = await createHost('', [testEntry('dsh', 'harness', value => { pluginContext = value })])
     const services = pluginContext.harness!
@@ -249,7 +249,9 @@ describe('generic Host Harness services and management boundary', () => {
     expect(Object.isFrozen(configuration.activePersona)).toBe(true)
     expect(Reflect.set(configuration.prompts[0]!, 'body', 'override')).toBe(false)
     expect(Reflect.set(configuration.activePersona!, 'body', 'override')).toBe(false)
-    expect(Object.keys(services).sort()).toEqual(['getCapabilityMcpConnections', 'getMcpConnection', 'hasPendingMessages', 'prepareProactiveScope', 'readAgentActions', 'readOwnerConfiguration', 'readProactiveChannels', 'readProactiveContacts', 'registerSink', 'revokeAgentAccess', 'wake'])
+    expect(Object.keys(services).sort()).toEqual(['getCapabilityMcpConnections', 'getMcpConnection', 'hasPendingMessages', 'memory', 'prepareProactiveScope', 'readAgentActions', 'readOwnerConfiguration', 'readProactiveChannels', 'readProactiveContacts', 'registerSink', 'revokeAgentAccess', 'wake'])
+    expect(Object.keys(services.memory!).sort()).toEqual(['append', 'begin', 'end', 'finish'])
+    expect(Object.isFrozen(services.memory)).toBe(true)
     const updated = context.host.authoring.updatePersona(persona.id, persona.name, '主人新设定', persona.revision)
     expect(configuration.activePersona?.body).toBe(persona.body)
     expect(services.readOwnerConfiguration().activePersona?.body).toBe(updated.persona.body)

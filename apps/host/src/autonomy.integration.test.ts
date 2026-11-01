@@ -9,7 +9,7 @@ import { isJsonObject } from '@eating/plugin-sdk'
 import type { BackendPluginEntry, JsonObject } from '@eating/plugin-sdk'
 import qqEntry from '../../../plugins/communication/qq/src/server'
 import { DshPlugin } from '../../../plugins/harness/dsh/src/backend/adapter'
-import { startOneBotFixture } from '../../../tests/fixtures/onebot'
+import { replyOneBot, startOneBotFixture } from '../../../tests/fixtures/onebot'
 import { EatingHost } from './app'
 
 const systemBin = process.env.EATING_DSH_TEST_SYSTEM_BIN
@@ -20,7 +20,11 @@ function object(value: unknown): JsonObject { if (!isJsonObject(value)) throw ne
 async function fixture(withholdSend = false) {
   const parent = await realpath(tmpdir()), home = await realpath(await mkdtemp(join(parent, 'Eating_native_autonomy_')))
   stops.push(async () => { const actual = await realpath(home); if (actual !== home || dirname(actual) !== parent || !basename(actual).startsWith('Eating_native_autonomy_')) throw new Error('Unsafe autonomy fixture cleanup'); await rm(actual, { recursive: true }) })
-  const onebot = await startOneBotFixture({ onRequest: request => withholdSend && request.action === 'send_private_msg' })
+  const targetId = '100000202', accountId = '100000101'
+  const onebot = await startOneBotFixture({ login: { user_id: Number(accountId), nickname: 'Autonomy fixture' }, onRequest: (request, peer) => {
+    if (request.action === 'get_friend_list') { replyOneBot(peer, request, [{ user_id: Number(targetId), nickname: 'Approved target', remark: '' }]); return true }
+    return withholdSend && request.action === 'send_private_msg'
+  } })
   stops.push(() => onebot.close())
   const requests: { main: boolean; tools: string[] }[] = [], modelErrors: string[] = []
   let mainCalls = 0, childCalls = 0
@@ -37,7 +41,12 @@ async function fixture(withholdSend = false) {
     if (main) {
       const stage = mainCalls++ % 5
       if (stage === 0) tool('eating_list_contact_targets', {})
-      else if (stage === 1) tool('eating_contact_target', { target_id: 'approved-fixture-target', task: 'Send the isolated loopback contact message to the approved target and report the real receipt.' })
+      else if (stage === 1) {
+        const last = [...messages].reverse().find(message => message.role === 'tool')!
+        const listed = object(JSON.parse(String(last.content))), target = (listed.targets as JsonObject[]).find(row => row.targetId === targetId && row.agentTypeId === 'qq.private')
+        if (!target) throw new Error('Current contact policy did not return the approved private target')
+        tool('eating_contact_target', { target_id: target.id, task: 'Send the isolated loopback contact message to the approved target and report the real receipt.' })
+      }
       else if (stage === 2) tool('eating_activity_state', {})
       else if (stage === 3) {
         const last = [...messages].reverse().find(message => message.role === 'tool')!
@@ -45,7 +54,7 @@ async function fixture(withholdSend = false) {
         tool('eating_plan_activity', { expected_revision: object(snapshot.state).revision, mode: 'waiting', wake_at: null, note: 'Fixture contact has been attempted; wait for an external event.' })
       } else { chunk({ role: 'assistant', content: 'AUTONOMY-FIXTURE-ROOT-DONE' }); chunk({}, 'stop') }
     } else {
-      if (childCalls++ % 2 === 0) tool('mcp__qq__qq_send_private_message', { user_id: '987654321', message: 'ISOLATED-AUTONOMOUS-CONTACT', request_id: 'autonomy-native-contact-write' })
+      if (childCalls++ % 2 === 0) tool('mcp__qq__qq_send_private_message', { user_id: targetId, message: 'ISOLATED-AUTONOMOUS-CONTACT', request_id: 'autonomy-native-contact-write' })
       else { chunk({ role: 'assistant', content: 'AUTONOMY-FIXTURE-CHILD-DONE' }); chunk({}, 'stop') }
     }
     response.end('data: [DONE]\n\n')
@@ -65,12 +74,16 @@ async function fixture(withholdSend = false) {
     const response = await fetch(url + '/api' + path, { method: input === undefined ? 'GET' : 'POST', headers: { Cookie: cookie, 'X-Eating-Csrf': csrfToken, 'Content-Type': 'application/json', Origin: url }, ...(input === undefined ? {} : { body: JSON.stringify(input) }), signal: AbortSignal.timeout(60000) })
     const value = object(await response.json()); if (!response.ok) throw new Error(`Autonomy owner fixture ${path}: ${response.status} ${JSON.stringify(value)}`); return value
   }
-  await api('/plugins/qq/configuration', { endpoint: onebot.endpoint, timeoutMs: 10000 }); await api('/plugins/qq/connect', {})
+  const qq = await api('/plugins/qq/configuration', { endpoint: onebot.endpoint, timeoutMs: 10000 })
+  await api('/plugins/qq/manage', { operation: 'save-agent-policy', input: { expectedRevision: qq.policyRevision, owners: [], administrators: [], agentTools: { 'qq.private': ['qq_send_private_message'], 'qq.group': [] } } })
+  await api('/plugins/qq/connect', {})
   await api('/plugins/dsh/configuration', { endpoint: `http://127.0.0.1:${address.port}/v1`, model: 'isolated-native-autonomy', apiKey: 'synthetic-autonomy-only', timeoutMs: 30000, maxTokens: 128, autoConnect: false }); await api('/plugins/dsh/connect', {})
   const directory = await api('/autonomy'), channel = (directory.channels as JsonObject[]).find(row => row.agentTypeId === 'qq.private')!
-  expect(channel.accountId).toBe('123456789')
+  expect(channel.accountId).toBe(accountId)
   const initial = plugin.autonomy.snapshot()
-  await api('/autonomy', { harnessId: 'dsh', operation: 'configure', input: { expectedRevision: initial.revision, configuration: { ...object(initial.configuration), enabled: true, minIntervalSeconds: 1, maxCyclesPerHour: 10, cycleTimeoutSeconds: 30, targets: [{ id: 'approved-fixture-target', label: 'Isolated fixture contact', pluginId: 'qq', instanceId: channel.instanceId, accountId: channel.accountId, agentTypeId: channel.agentTypeId, targetId: '987654321', toolNames: ['qq_send_private_message'] }] } } })
+  await api('/autonomy', { harnessId: 'dsh', operation: 'configure', input: { expectedRevision: initial.revision, configuration: { ...object(initial.configuration), enabled: true, minIntervalSeconds: 1, maxCyclesPerHour: 10, cycleTimeoutSeconds: 30 } } })
+  const configured = plugin.autonomy.snapshot()
+  await api('/autonomy', { harnessId: 'dsh', operation: 'configure-contact-policy', input: { expectedRevision: object(configured.contactPolicy).revision, expectedConfigurationRevision: configured.revision, expectedActivityRevision: object(configured.state).revision, mode: 'allowlist', entries: [{ pluginId: channel.pluginId, instanceId: channel.instanceId, accountId, agentTypeId: channel.agentTypeId, targetId, label: 'Isolated fixture contact' }] } })
   const state = () => object(plugin.autonomy.snapshot().state)
   const control = (operation: string) => api('/autonomy', { harnessId: 'dsh', operation, input: { expectedRevision: plugin.autonomy.snapshot().revision, expectedActivityRevision: state().revision } })
   return { home, onebot, plugin, requests, modelErrors, state, control, api, diagnostic: () => ({ state: state(), requests, modelErrors }) }
@@ -84,7 +97,7 @@ describe.runIf(Boolean(systemBin))('native autonomous activity with real scoped 
     try { await vi.waitFor(() => expect(f.state()).toMatchObject({ mode: 'waiting', lastOutcome: 'completed', contacts: 1 }), { timeout: 20000, interval: 100 }) }
     catch (error) { throw new Error(JSON.stringify(f.diagnostic()), { cause: error }) }
     const writes = f.onebot.requests.filter(request => request.action === 'send_private_msg')
-    expect(writes).toHaveLength(1); expect(writes[0]!.params.user_id).toBe(987654321)
+    expect(writes).toHaveLength(1); expect(writes[0]!.params.user_id).toBe(100000202)
     expect(f.requests.filter(request => !request.main).every(request => JSON.stringify(request.tools) === JSON.stringify(['mcp__qq__qq_send_private_message']))).toBe(true)
     expect(f.plugin.autonomy.snapshot().contactTasks).toMatchObject([{ state: 'completed' }])
     expect(f.modelErrors).toEqual([])

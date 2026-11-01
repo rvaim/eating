@@ -2,6 +2,10 @@
 
 更新：2026-11-01。用户选择的 Harness 承担认知与行动，Eating 提供连接、运行、授权和可靠交接。DSH0.9.0是当前具体适配；其他Harness不自动继承其能力。当前应用／Host／Web0.11.0、QQ0.11.0，共享SDK4.0.0、插件唯一API4，默认不兼容旧版，见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)。系统DSH与官方原样Web见[ADR-0018](../decisions/ADR-0018-系统DSH原生Web与看板移除.md)，原生能力与插件管理见[ADR-0021](../decisions/ADR-0021-DSH原生能力与插件管理.md)。
 
+## 外部记忆接入（2026-11-01）
+
+OpenViking0.1.0能力插件按[ADR-0027](../decisions/ADR-0027-OpenViking记忆能力与自动采集.md)实现公开MemoryProvider，Host仅协调当前主回合来源和短期RAM消息。DSH0.12.0采用原生pre-step/turn-end钩子自动召回和采集，不靠模型主动调用MCP；所有准入判断结束后才附历史参考，保留原ACK和主子授权。全局和可读平台/账号/会话Peer按配置保存，原始临时会话完成后清理。其他Harness可使用MCP或采用公开生命周期服务，不等于已支持自动钩子。详细范围、缓冲和故障语义见[使用说明](../operations/OpenViking记忆插件.md)。
+
 ## 依赖与唯一控制者
 
 UI、通讯、队列与授权依赖公开Eating契约，具体适配器映射到实际运行时。通用Host不导入DSH Session、Preset或内部Context，插件不引用Host／Web私有源码。同一AI数据集只有一个活跃主认知控制者；子Agent是共享人格的执行者，不创建多个自主身份。

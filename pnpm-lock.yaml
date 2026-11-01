@@ -162,6 +162,24 @@ importers:
         specifier: ^19.3.1
         version: 19.3.1
 
+  plugins/capabilities/openviking-memory:
+    dependencies:
+      '@eating/plugin-sdk':
+        specifier: workspace:^
+        version: link:../../../packages/plugin-sdk
+      '@eating/ui-sdk':
+        specifier: workspace:^
+        version: link:../../../packages/ui-sdk
+      '@openviking/sdk':
+        specifier: 0.1.0
+        version: 0.1.0
+      lucide-react:
+        specifier: ^1.61.0
+        version: 1.61.0(@types/react@19.3.0)(react@19.3.1)
+      react:
+        specifier: ^19.3.1
+        version: 19.3.1
+
   plugins/capabilities/stickers:
     dependencies:
       '@eating/plugin-sdk':
@@ -3403,6 +3421,10 @@ packages:
   '@opentelemetry/semantic-conventions@1.43.0':
     resolution: {integrity: sha512-eSYWTm620tTk45EKSedaUL8MFYI8hW164hIXsgIHyxu3VobUB3fFCu5t0hQby6OoWRPsG1KkKUG2M5UadiLiVg==}
     engines: {node: '>=14'}
+
+  '@openviking/sdk@0.1.0':
+    resolution: {integrity: sha512-5RI0GTOKAW5+NUky5NW3AwLYXDF10UQBi9TSo6Y6yp0/aq7kNMNnQdtRlkMC4Aa3Cf1kHZs9NGbtF+1cxEHrFA==}
+    engines: {node: '>=18'}
 
   '@oxc-project/types@0.155.0':
     resolution: {integrity: sha512-SeE8JPwW1xs1tHeNycjUtUBdhorRa8o4jlvjwk49R7/Z291i+4DQa7JJIgOm/TaYQZx+QrPQbVJ/9c8dMIZN8Q==}
@@ -9165,6 +9187,8 @@ snapshots:
       '@opentelemetry/semantic-conventions': 1.43.0
 
   '@opentelemetry/semantic-conventions@1.43.0': {}
+
+  '@openviking/sdk@0.1.0': {}
 
   '@oxc-project/types@0.155.0': {}
 

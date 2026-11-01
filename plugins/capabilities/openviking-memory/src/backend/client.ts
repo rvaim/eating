@@ -116,6 +116,15 @@ export class MemoryClient {
     await this.run(() => this.sdk.remove(uri, { recursive: false, wait: false }))
   }
   async create(sessionId: string, global: boolean): Promise<void> {
+    try {
+      const existing = await this.run(() => this.sdk.getSession(sessionId, false))
+      schema(isJsonObject(existing) && existing.session_id === sessionId && existing.auto_commit_policy === null && isJsonObject(existing.memory_policy))
+      const policy = existing.memory_policy
+      schema(isJsonObject(policy.peer) && policy.peer.enabled === true && isJsonObject(policy.self) && policy.self.enabled === global)
+      schema(typeof existing.message_count === 'number' && Number.isSafeInteger(existing.message_count) && existing.message_count >= 0)
+      if (existing.message_count !== 0) throw error('MEMORY_SUBMISSION_UNKNOWN', 409, 'unknown')
+      return
+    } catch (cause) { if (!(cause instanceof PlatformError) || cause.code !== 'MEMORY_NOT_FOUND') throw cause }
     // SDK 0.1.0 createSession cannot disable inherited server auto-commit.
     // This is the current documented HTTP operation, not a private SDK method.
     const response = await this.fetch(this.configuration.endpoint + '/api/v1/sessions', { method: 'POST', headers: new Headers([...this.headers, ['content-type', 'application/json']]), body: JSON.stringify({ session_id: sessionId, memory_policy: { peer: { enabled: true }, self: { enabled: global }, memory_types: ['preferences', 'entities', 'events'] }, auto_commit_policy: null }) })

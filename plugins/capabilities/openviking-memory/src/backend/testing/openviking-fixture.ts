@@ -3,7 +3,8 @@ import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:
 import { randomUUID } from 'node:crypto'
 
 export interface FixtureRequest { method: string; path: string; query: URLSearchParams; headers: IncomingHttpHeaders; body: Record<string, unknown> }
-export interface FixtureSession { id: string; policy: Record<string, unknown>; messages: Array<Record<string, unknown>>; taskId: string | null; archiveUri: string | null; deleted: boolean }
+export interface FixtureSession { id: string; policy: Record<string, unknown>; messages: Array<Record<string, unknown>>; taskId: string | null; archiveUri: string | null; deleted: boolean; committedMessages: number; nextArchive: number }
+export interface FixtureArchive { sessionId: string; taskId: string; status: string; messages: Array<Record<string, unknown>>; diff: { added: number; updated: number; deleted: number } }
 export interface FixtureTask { task_id: string; task_type: string; resource_id: string; status: string; result: Record<string, unknown>; polls: number }
 export interface FixtureControls {
   rejectAuth: boolean
@@ -18,7 +19,7 @@ export interface FixtureControls {
 }
 export async function startOpenVikingFixture(options: { prefix?: string; user?: string; account?: string; apiKey?: string } = {}) {
   const user = options.user ?? 'fixture_user', account = options.account ?? 'fixture_account', apiKey = options.apiKey ?? 'PRIVATE-OV-FIXTURE-KEY', prefix = options.prefix ?? '/nested/ov'
-  const requests: FixtureRequest[] = [], sessions = new Map<string, FixtureSession>(), tasks = new Map<string, FixtureTask>(), memories = new Map<string, string>(), cleaned: string[] = [], errors: string[] = []
+  const requests: FixtureRequest[] = [], sessions = new Map<string, FixtureSession>(), tasks = new Map<string, FixtureTask>(), archives = new Map<string, FixtureArchive>(), memories = new Map<string, string>(), cleaned: string[] = [], errors: string[] = []
   const committedSessions: FixtureSession[] = []
   const controls: FixtureControls = { rejectAuth: false, identityUser: null, initialized: true, taskStatus: 'completed', taskPollsBeforeComplete: 0, commitDisconnect: false, omitDiff: false, diff: { added: 1, updated: 2, deleted: 0 } }
   const ok = (response: ServerResponse, result: unknown): void => { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ status: 'ok', result })) }
@@ -43,10 +44,9 @@ export async function startOpenVikingFixture(options: { prefix?: string; user?: 
       const uri = url.searchParams.get('uri') ?? ''
       if (uri.endsWith('/memory_diff.json')) {
         if (controls.omitDiff) { fail(response, 404, 'NOT_FOUND'); return }
-        const session = [...sessions.values()].find(session => session.archiveUri && uri === session.archiveUri + '/memory_diff.json')
-        const task = session?.taskId ? tasks.get(session.taskId) : undefined
-        if (!session || task?.status !== 'completed') { fail(response, 409, 'NOT_READY'); return }
-        ok(response, JSON.stringify({ summary: { total_adds: controls.diff.added, total_updates: controls.diff.updated, total_deletes: controls.diff.deleted }, operations: { adds: [{ content: 'PRIVATE-DIFF-MEMORY-BODY' }], updates: [], deletes: [] } })); return
+        const archive = archives.get(uri.slice(0, -'/memory_diff.json'.length))
+        if (!archive || archive.status !== 'completed') { fail(response, 409, 'NOT_READY'); return }
+        ok(response, JSON.stringify({ summary: { total_adds: archive.diff.added, total_updates: archive.diff.updated, total_deletes: archive.diff.deleted }, operations: { adds: [{ content: 'PRIVATE-DIFF-MEMORY-BODY' }], updates: [], deletes: [] } })); return
       }
       const content = memories.get(uri)
       if (content === undefined) { fail(response, 404, 'NOT_FOUND'); return }
@@ -57,7 +57,7 @@ export async function startOpenVikingFixture(options: { prefix?: string; user?: 
     if (path === '/api/v1/sessions' && entry.method === 'POST') {
       const id = String(body.session_id)
       if (sessions.has(id)) { fail(response, 409, 'ALREADY_EXISTS'); return }
-      sessions.set(id, { id, policy: body.memory_policy as Record<string, unknown>, messages: [], taskId: null, archiveUri: null, deleted: false }); ok(response, { session_id: id, uri: `viking://user/${user}/sessions/${id}`, user: { user_id: user, account_id: account }, auto_commit_policy: body.auto_commit_policy }); return
+      sessions.set(id, { id, policy: body.memory_policy as Record<string, unknown>, messages: [], taskId: null, archiveUri: null, deleted: false, committedMessages: 0, nextArchive: 1 }); ok(response, { session_id: id, uri: `viking://user/${user}/sessions/${id}`, user: { user_id: user, account_id: account }, auto_commit_policy: body.auto_commit_policy }); return
     }
     const messageRoute = /^\/api\/v1\/sessions\/([^/]+)\/messages(?:\/(batch))?$/.exec(path)
     if (messageRoute && entry.method === 'POST') {
@@ -69,10 +69,13 @@ export async function startOpenVikingFixture(options: { prefix?: string; user?: 
     const commitRoute = /^\/api\/v1\/sessions\/([^/]+)\/commit$/.exec(path)
     if (commitRoute && entry.method === 'POST') {
       const session = sessions.get(decodeURIComponent(commitRoute[1]!))
-      if (!session || session.deleted || session.taskId) { fail(response, 409, 'INVALID_COMMIT'); return }
-      session.taskId = randomUUID(); session.archiveUri = `viking://user/${user}/sessions/${session.id}/history/archive_001`
+      const activeTask = session?.taskId ? tasks.get(session.taskId) : undefined
+      if (!session || session.deleted || activeTask && ['pending', 'running', 'cancelling'].includes(activeTask.status)) { errors.push('Overlapping session commit'); fail(response, 409, 'INVALID_COMMIT'); return }
+      session.taskId = randomUUID(); session.archiveUri = `viking://user/${user}/sessions/${session.id}/history/archive_${String(session.nextArchive++).padStart(3, '0')}`
+      const messages = structuredClone(session.messages.slice(session.committedMessages)); session.committedMessages = session.messages.length
       const task: FixtureTask = { task_id: session.taskId, task_type: 'session_commit', resource_id: session.id, status: controls.taskStatus, polls: 0, result: { session_id: session.id, archive_uri: session.archiveUri, memory_diff_uri: session.archiveUri + '/memory_diff.json' } }
-      tasks.set(task.task_id, task); committedSessions.push(session)
+      archives.set(session.archiveUri, { sessionId: session.id, taskId: session.taskId, status: controls.taskStatus, messages, diff: { ...controls.diff } })
+      tasks.set(task.task_id, task); committedSessions.push({ ...session, policy: structuredClone(session.policy), messages: structuredClone(messages) })
       if (controls.commitDisconnect) { response.destroy(); return }
       ok(response, { session_id: session.id, status: 'accepted', task_id: session.taskId, archive_uri: session.archiveUri, archived: true }); return
     }
@@ -82,9 +85,16 @@ export async function startOpenVikingFixture(options: { prefix?: string; user?: 
       if (!task) { fail(response, 404, 'NOT_FOUND'); return }
       task.polls++
       if (controls.taskPollsBeforeComplete && task.polls <= controls.taskPollsBeforeComplete) { ok(response, { ...task, status: 'running' }); return }
-      task.status = controls.taskStatus; ok(response, task); return
+      task.status = controls.taskStatus
+      const archive = archives.get(String(task.result.archive_uri)); if (archive) archive.status = task.status
+      ok(response, task); return
     }
     const sessionRoute = /^\/api\/v1\/sessions\/([^/]+)$/.exec(path)
+    if (sessionRoute && entry.method === 'GET') {
+      const session = sessions.get(decodeURIComponent(sessionRoute[1]!))
+      if (!session || session.deleted) { fail(response, 404, 'NOT_FOUND'); return }
+      ok(response, { session_id: session.id, uri: `viking://user/${user}/sessions/${session.id}`, user: { user_id: user, account_id: account }, auto_commit_policy: null, memory_policy: session.policy, message_count: session.messages.length - session.committedMessages }); return
+    }
     if (sessionRoute && entry.method === 'DELETE') {
       const session = sessions.get(decodeURIComponent(sessionRoute[1]!))
       if (!session || session.deleted) { fail(response, 404, 'NOT_FOUND'); return }
@@ -97,5 +107,5 @@ export async function startOpenVikingFixture(options: { prefix?: string; user?: 
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('Fixture port unavailable')
   const endpoint = `http://127.0.0.1:${address.port}${prefix}`
-  return { endpoint, user, account, apiKey, requests, sessions, tasks, memories, cleaned, committedSessions, controls, errors, close: async () => { const done = new Promise<void>((resolve, reject) => server.close(cause => cause ? reject(cause) : resolve())); server.closeAllConnections(); await done } }
+  return { endpoint, user, account, apiKey, requests, sessions, tasks, archives, memories, cleaned, committedSessions, controls, errors, close: async () => { const done = new Promise<void>((resolve, reject) => server.close(cause => cause ? reject(cause) : resolve())); server.closeAllConnections(); await done } }
 }

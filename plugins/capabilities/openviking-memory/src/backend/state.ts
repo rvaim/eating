@@ -17,19 +17,19 @@ function digest(value: unknown): string { if (typeof value !== 'string' || !/^[a
 function changes(value: unknown): MemoryJob['changes'] { if (value === null) return null; const input = object(value, ['added', 'updated', 'deleted']); return { added: integer(input.added, 0, Number.MAX_SAFE_INTEGER), updated: integer(input.updated, 0, Number.MAX_SAFE_INTEGER), deleted: integer(input.deleted, 0, Number.MAX_SAFE_INTEGER) } }
 function storedJob(value: unknown): StoredJob {
   const job = object(value, ['id', 'peerId', 'sessionId', 'taskId', 'archiveUri', 'status', 'createdAt', 'updatedAt', 'messages', 'changes', 'errorCode', 'configurationKey', 'global', 'requests', 'staged', 'commitAttempted', 'terminalStatus', 'extractionErrorCode'])
-  const id = identifier(job.id, 64), peer = text(job.peerId, 240); parsePeer(peer)
-  if (!/^[a-f0-9-]{36}$/.test(id) || job.sessionId !== 'eating-' + id || !['queued', 'submitting', 'processing', 'cleaning', 'completed', 'failed', 'unknown'].includes(String(job.status)) || !Array.isArray(job.requests) || job.requests.length > LIMITS.messages) throw error('MEMORY_STATE_CORRUPTED', 500)
-  const taskId = job.taskId === null ? null : identifier(job.taskId, 160), archiveUri = job.archiveUri === null ? null : archive(job.archiveUri, 'eating-' + id)
+  const id = identifier(job.id, 64), peer = text(job.peerId, 240), sessionId = identifier(job.sessionId, 255); parsePeer(peer)
+  if (!/^[a-f0-9-]{36}$/.test(id) || !/^eating-[A-Za-z0-9_-]+$/.test(sessionId) || !['queued', 'submitting', 'processing', 'cleaning', 'completed', 'failed', 'unknown'].includes(String(job.status)) || !Array.isArray(job.requests) || job.requests.length > LIMITS.messages) throw error('MEMORY_STATE_CORRUPTED', 500)
+  const taskId = job.taskId === null ? null : identifier(job.taskId, 160), archiveUri = job.archiveUri === null ? null : archive(job.archiveUri, sessionId)
   const staged = bool(job.staged), commitAttempted = bool(job.commitAttempted)
   if (job.terminalStatus !== null && (!['completed', 'failed'].includes(String(job.terminalStatus)) || !taskId)) throw error('MEMORY_STATE_CORRUPTED', 500)
   if (commitAttempted && !staged || Boolean(taskId) !== Boolean(archiveUri) || taskId && !commitAttempted || ['processing', 'completed'].includes(String(job.status)) && !taskId || job.status === 'cleaning' && !taskId && (!staged || commitAttempted)) throw error('MEMORY_STATE_CORRUPTED', 500)
-  return { id, peerId: peer, sessionId: 'eating-' + id, taskId, archiveUri, status: job.status as StoredJob['status'], createdAt: timestamp(job.createdAt), updatedAt: timestamp(job.updatedAt), messages: integer(job.messages, 0, LIMITS.messages), changes: changes(job.changes), errorCode: code(job.errorCode), configurationKey: digest(job.configurationKey), global: bool(job.global), staged, commitAttempted, terminalStatus: job.terminalStatus as StoredJob['terminalStatus'], extractionErrorCode: code(job.extractionErrorCode), requests: job.requests.map(value => { const key = object(value, ['id', 'hash']); return { id: digest(key.id), hash: digest(key.hash) } }) }
+  return { id, peerId: peer, sessionId, taskId, archiveUri, status: job.status as StoredJob['status'], createdAt: timestamp(job.createdAt), updatedAt: timestamp(job.updatedAt), messages: integer(job.messages, 0, LIMITS.messages), changes: changes(job.changes), errorCode: code(job.errorCode), configurationKey: digest(job.configurationKey), global: bool(job.global), staged, commitAttempted, terminalStatus: job.terminalStatus as StoredJob['terminalStatus'], extractionErrorCode: code(job.extractionErrorCode), requests: job.requests.map(value => { const key = object(value, ['id', 'hash']); return { id: digest(key.id), hash: digest(key.hash) } }) }
 }
 export function archive(value: unknown, sessionId: string, user?: string): string {
   const uri = text(value, 768), prefix = 'viking://user/', parts = uri.slice(prefix.length).split('/')
   try {
     const owner = serviceIdentity(parts[0])
-    if (!uri.startsWith(prefix) || parts.length !== 5 || user !== undefined && owner !== serviceIdentity(user) || parts[1] !== 'sessions' || parts[2] !== identifier(sessionId, 64) || parts[3] !== 'history' || !/^archive_[0-9]{3,}$/.test(parts[4]!)) throw error('MEMORY_UNSUPPORTED_SERVER', 502, 'unknown')
+    if (!uri.startsWith(prefix) || parts.length !== 5 || user !== undefined && owner !== serviceIdentity(user) || parts[1] !== 'sessions' || parts[2] !== identifier(sessionId, 255) || parts[3] !== 'history' || !/^archive_[0-9]{3,}$/.test(parts[4]!)) throw error('MEMORY_UNSUPPORTED_SERVER', 502, 'unknown')
   } catch { throw error('MEMORY_UNSUPPORTED_SERVER', 502, 'unknown') }
   return uri
 }
@@ -55,7 +55,7 @@ export class StateStore {
     let changed = false
     for (const job of this.value.jobs) {
       if (job.status === 'queued') { job.status = 'failed'; job.errorCode = 'MEMORY_BUFFER_LOST'; job.updatedAt = now(); changed = true }
-      if (job.status === 'submitting') { job.status = job.staged && !job.commitAttempted ? 'cleaning' : 'unknown'; job.errorCode = job.status === 'cleaning' ? 'MEMORY_BUFFER_LOST' : 'MEMORY_SUBMISSION_UNKNOWN'; job.updatedAt = now(); changed = true }
+      if (job.status === 'submitting' || job.status === 'cleaning' && !job.taskId) { job.status = 'unknown'; job.errorCode = 'MEMORY_SUBMISSION_UNKNOWN'; job.updatedAt = now(); changed = true }
     }
     for (const item of this.value.scopes) { if (item.bufferedMessages) changed = true; item.bufferedMessages = 0 }
     if (changed) this.save()
@@ -79,7 +79,7 @@ export class StateStore {
   }
   create(peer: string, configurationKey: string, global: boolean): StoredJob {
     this.capacity()
-    const id = randomUUID(), at = now(), job: StoredJob = { id, peerId: peer, sessionId: 'eating-' + id, taskId: null, archiveUri: null, status: 'queued', createdAt: at, updatedAt: at, messages: 0, changes: null, errorCode: null, configurationKey, global, requests: [], staged: false, commitAttempted: false, terminalStatus: null, extractionErrorCode: null }
+    const id = randomUUID(), at = now(), job: StoredJob = { id, peerId: peer, sessionId: 'eating-' + peer + (global ? '' : '-local'), taskId: null, archiveUri: null, status: 'queued', createdAt: at, updatedAt: at, messages: 0, changes: null, errorCode: null, configurationKey, global, requests: [], staged: false, commitAttempted: false, terminalStatus: null, extractionErrorCode: null }
     this.value.jobs.push(job); return job
   }
   update(job: StoredJob, patch: Partial<Pick<StoredJob, 'taskId' | 'archiveUri' | 'status' | 'messages' | 'changes' | 'errorCode' | 'staged' | 'commitAttempted' | 'terminalStatus' | 'extractionErrorCode'>>): void {

@@ -62,8 +62,9 @@ describe('real Host grants and scoped OpenViking MCP', () => {
     const saved = await client.callTool({ name: 'memory_save', arguments: args })
     expect(saved.isError).toBe(false)
     await client.callTool({ name: 'memory_save', arguments: args })
-    await until(() => service.cleaned.length === 1, 'Explicit extraction cleanup')
-    expect(service.committedSessions).toHaveLength(1)
+    await until(async () => (object(await api('/plugins/openviking-memory/manage', { operation: 'snapshot', input: {} })).jobs as JsonObject[])[0]?.status === 'completed', 'Explicit extraction did not complete')
+    expect(service.committedSessions).toHaveLength(1); expect(service.cleaned).toEqual([])
+    expect(service.sessions.get(service.committedSessions[0]!.id)).toMatchObject({ deleted: false, messages: [expect.objectContaining({ role: 'user', content: 'Explicit stable preference' })] })
     harness.revokeAgentAccess('root')
     await expect(client.callTool({ name: 'memory_search', arguments: { query: 'fixture' } })).rejects.toThrow()
     expect(service.errors).toEqual([])
@@ -71,7 +72,7 @@ describe('real Host grants and scoped OpenViking MCP', () => {
 })
 
 describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('system DSH automatic OpenViking memory end to end', () => {
-  it('recalls global plus current peer, extracts a normal QQ reply with no memory calls, and deletes the extraction transcript', async () => {
+  it('recalls global plus current peer, extracts a normal QQ reply with no memory calls, and retains the remote transcript', async () => {
     const directory = await home(), service = await startOpenVikingFixture(); stops.push(() => service.close())
     const onebot = await startOneBotFixture({ login: { user_id: 100000101, nickname: 'Memory fixture account' } }); stops.push(() => onebot.close())
     const requests: JsonObject[] = [], reply = 'Automatic memory captured this visible reply'
@@ -91,7 +92,7 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('system DSH auto
     await api('/plugins/dsh/configuration', { endpoint: `http://127.0.0.1:${modelAddress.port}/v1`, model: 'fixture-model', apiKey: 'loopback-only', timeoutMs: 30000, maxTokens: 256, autoConnect: false })
     await api('/plugins/dsh/connect', {})
     onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: 100000101, user_id: 100000202, message_id: 2001, message: 'fixture', raw_message: 'fixture' })
-    await until(() => service.cleaned.length === 1, 'Automatic memory extraction did not complete')
+    await until(async () => (object(await api('/plugins/openviking-memory/manage', { operation: 'snapshot', input: {} })).jobs as JsonObject[])[0]?.status === 'completed', 'Automatic memory extraction did not complete')
     expect(requests).toHaveLength(1)
     const wire = JSON.stringify(requests[0]!.messages)
     expect(wire).toContain('GLOBAL-RECALLED-VALUE'); expect(wire).toContain('LOCAL-RECALLED-VALUE'); expect(wire).not.toContain('OTHER-PRIVATE-MEMORY')
@@ -101,11 +102,14 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('system DSH auto
     expect(JSON.stringify(submitted.body)).not.toContain('GLOBAL-RECALLED-VALUE')
     expect(submitted.headers['x-openviking-actor-peer']).toBe('qq-100000101-private-100000202')
     expect(service.committedSessions[0]!.policy).toMatchObject({ peer: { enabled: true }, self: { enabled: true } })
-    expect(service.committedSessions[0]!.deleted).toBe(true)
-    expect(service.committedSessions[0]!.messages).toHaveLength(0)
+    const sessionId = 'eating-qq-100000101-private-100000202', remote = service.sessions.get(sessionId)!
+    expect(remote.deleted).toBe(false); expect(remote.messages).toEqual(submitted.body.messages)
+    expect(remote.messages).toMatchObject([{ role: 'user', content: expect.stringContaining('fixture') }, { role: 'assistant', content: reply }])
+    expect(service.archives.get(remote.archiveUri!)?.messages).toEqual(submitted.body.messages)
+    expect(service.cleaned).toEqual([]); expect(service.requests.filter(request => request.method === 'DELETE')).toEqual([])
     const state = object(await api('/plugins/openviking-memory/manage', { operation: 'snapshot', input: {} }))
-    expect((state.jobs as JsonObject[])[0]).toMatchObject({ status: 'completed', peerId: 'qq-100000101-private-100000202', changes: { added: 1, updated: 2, deleted: 0 } })
-    expect(JSON.stringify(state)).not.toContain(reply)
+    expect((state.jobs as JsonObject[])[0]).toMatchObject({ status: 'completed', sessionId, peerId: 'qq-100000101-private-100000202', changes: { added: 1, updated: 2, deleted: 0 } })
+    for (const body of [reply, 'GLOBAL-RECALLED-VALUE', 'LOCAL-RECALLED-VALUE', 'OTHER-PRIVATE-MEMORY']) expect(JSON.stringify(state)).not.toContain(body)
     expect(service.errors).toEqual([])
     await dsh.disconnect(); await dsh.connect()
     expect(requests).toHaveLength(1); expect(service.committedSessions).toHaveLength(1)

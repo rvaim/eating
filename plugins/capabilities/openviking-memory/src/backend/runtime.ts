@@ -196,6 +196,9 @@ export class MemoryRuntime implements MemoryProvider {
     for (const job of this.store.value.jobs) {
       if (this.workers.size >= LIMITS.concurrent) break
       if (job.configurationKey !== key || this.workers.has(job.id) || this.pausedJobs.has(job.id) || terminal(job) || job.status === 'submitting' || job.status === 'queued' && !this.bodies.get(job.id)?.submit) continue
+      // A persistent session is one ordered stream. Never interleave appends/commits,
+      // or append after an uncertain write until its remote state is checked.
+      if (this.store.value.jobs.some(other => other.id !== job.id && other.configurationKey === key && other.sessionId === job.sessionId && (other.status === 'unknown' || this.workers.has(other.id) || other.createdAt < job.createdAt && !terminal(other) && other.status !== 'queued'))) continue
       const controller = new AbortController(), signal = AbortSignal.any([this.lifetime.signal, controller.signal, ...(this.bodies.get(job.id)?.signal ? [this.bodies.get(job.id)!.signal!] : [])])
       const worker: Worker = { controller, done: Promise.resolve() }
       this.workers.set(job.id, worker)
@@ -225,9 +228,8 @@ export class MemoryRuntime implements MemoryProvider {
         this.store.update(job, { taskId, archiveUri, status: 'processing', errorCode: null })
         this.bodies.delete(job.id)
       }
-      if (job.status === 'cleaning' && !job.taskId && job.staged && !job.commitAttempted) { await this.cleanUncommitted(job, client, signal); return }
       if (!job.taskId || !job.archiveUri) throw error('MEMORY_SUBMISSION_UNKNOWN', 502, 'unknown')
-      if (job.terminalStatus) { await this.cleanTerminal(job, client, signal); return }
+      if (job.terminalStatus) { await this.finalizeTerminal(job, client, signal); return }
       const started = Date.now()
       for (;;) {
         checkSignal(signal)
@@ -242,10 +244,10 @@ export class MemoryRuntime implements MemoryProvider {
             try { schema(isJsonObject(task.result) && task.result.session_id === job.sessionId && task.result.archive_uri === job.archiveUri); if (task.result.user_config_error) throw error('MEMORY_EXTRACTION_FAILED', 502, 'failed') }
             catch (cause) { extractionErrorCode = errorCode(cause) }
           }
-          // Persist terminal proof before any cleanup. Server task records can
+          // Persist terminal proof before finalizing. Server task records can
           // expire independently; their absence cannot revoke an observed result.
           this.store.update(job, { status: 'cleaning', terminalStatus: completed ? 'completed' : 'failed', extractionErrorCode, errorCode: extractionErrorCode })
-          await this.cleanTerminal(job, client, signal); return
+          await this.finalizeTerminal(job, client, signal); return
         }
         if (Date.now() - started > 10 * 60 * 1000) { this.store.update(job, { errorCode: 'MEMORY_TASK_PENDING' }); this.retry(job); return }
         await delay(1000, signal)
@@ -256,18 +258,16 @@ export class MemoryRuntime implements MemoryProvider {
         // A known remote extraction may still run. Never delete its session on an uncertain result.
         if (job.status !== 'completed' && job.status !== 'failed' && job.status !== 'unknown') this.store.update(job, { status: extractionTerminal || job.status === 'cleaning' ? 'cleaning' : 'processing', errorCode: code })
         if (!signal.aborted) this.retry(job)
-      } else if (job.staged && !job.commitAttempted) {
-        // Verified auto_commit_policy:null and no durable commit attempt means
-        // only staging can have happened. Keep cleanup recoverable until DELETE/404.
-        this.store.update(job, { status: 'cleaning', errorCode: signal.aborted ? job.errorCode ?? code : code })
-        if (!signal.aborted) await this.cleanUncommitted(job, client, signal)
       } else if (job.status !== 'unknown' && job.status !== 'failed') {
-        this.store.update(job, { status: job.commitAttempted || signal.aborted ? 'unknown' : 'failed', errorCode: job.commitAttempted || signal.aborted ? 'MEMORY_SUBMISSION_UNKNOWN' : code })
+        // The session may already contain earlier archives. Preserve everything,
+        // including partially written messages, and block uncertain replays.
+        const uncertain = job.staged || job.commitAttempted || signal.aborted || code === 'MEMORY_SUBMISSION_UNKNOWN'
+        this.store.update(job, { status: uncertain ? 'unknown' : 'failed', errorCode: uncertain ? 'MEMORY_SUBMISSION_UNKNOWN' : code })
       }
       if (!signal.aborted) this.report(cause)
     }
   }
-  private async cleanTerminal(job: StoredJob, client: MemoryClient, signal: AbortSignal): Promise<void> {
+  private async finalizeTerminal(job: StoredJob, client: MemoryClient, signal: AbortSignal): Promise<void> {
     let failure = job.extractionErrorCode
     if (job.terminalStatus === 'completed' && job.changes === null && failure === null) {
       try {
@@ -280,22 +280,8 @@ export class MemoryRuntime implements MemoryProvider {
       } catch (cause) { if (signal.aborted) throw cause; failure = errorCode(cause); this.store.update(job, { extractionErrorCode: failure, errorCode: failure }) }
     }
     checkSignal(signal)
-    try { await client.run(() => client.sdk.deleteSession(job.sessionId)) }
-    catch (cause) { if (errorCode(cause) !== 'MEMORY_NOT_FOUND') throw cause }
-    checkSignal(signal); this.store.update(job, { status: failure ? 'failed' : 'completed', errorCode: failure })
+    this.store.update(job, { status: failure ? 'failed' : 'completed', errorCode: failure })
     this.store.value.lastErrorCode = failure; this.store.save()
-  }
-  private async cleanUncommitted(job: StoredJob, client: MemoryClient, signal: AbortSignal): Promise<void> {
-    const failure = job.errorCode ?? 'MEMORY_BUFFER_LOST'
-    try {
-      checkSignal(signal)
-      try { await client.run(() => client.sdk.deleteSession(job.sessionId)) }
-      catch (cause) { if (errorCode(cause) !== 'MEMORY_NOT_FOUND') throw cause }
-      checkSignal(signal); this.store.update(job, { status: 'failed', errorCode: failure })
-    } catch (cause) {
-      this.store.update(job, { status: 'cleaning', errorCode: signal.aborted ? job.errorCode ?? 'MEMORY_CANCELLED' : errorCode(cause) })
-      if (!signal.aborted) { this.report(cause); this.retry(job) }
-    }
   }
   invocationContext(invocation?: CapabilityInvocationScope): MemoryContext {
     if (invocation?.memory) return this.context(invocation.memory)

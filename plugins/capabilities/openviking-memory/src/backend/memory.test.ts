@@ -58,7 +58,7 @@ describe('OpenViking current backend contract', () => {
     await plugin.updateConfiguration({ ...update, expectedRevision: 2, apiKey: '', clearApiKey: true }); expect(plugin.getPublicConfiguration()).toMatchObject({ apiKeyConfigured: false, ready: false })
   })
 
-  it.each([{ user: 'eating-bot', account: 'team-1' }, { user: 'eating.bot@team', account: 'team.1@org' }])('accepts official service identities through SDK recall/capture/restart/cleanup/read/delete: %j', async service => {
+  it.each([{ user: 'eating-bot', account: 'team-1' }, { user: 'eating.bot@team', account: 'team.1@org' }])('accepts official service identities through SDK recall/capture/restart/retention/read/delete: %j', async service => {
     const f = await fixture({ ...service, settings: { submissionMode: 'turn' } }); await f.plugin.connect()
     const root = `viking://user/${service.user}`, global = root + '/memories/preferences/global.md', local = root + '/peers/qq-1001-private-2001/memories/preferences/local.md'
     expect(globalRoot(service.user)).toBe(root + '/memories'); expect(peerRoot(service.user, 'qq-1001-private-2001')).toBe(root + '/peers/qq-1001-private-2001/memories')
@@ -72,7 +72,7 @@ describe('OpenViking current backend contract', () => {
     await f.plugin.disconnect()
     const resumed = new OpenVikingMemoryPlugin(host(f.directory)); stops.push(() => resumed.disconnect()); f.controls.taskStatus = 'completed'; await resumed.connect()
     await waitFor(async () => (await snapshot(resumed)).jobs[0]?.status === 'completed')
-    expect(f.committedSessions).toHaveLength(1); expect(f.cleaned).toEqual([processing.sessionId]); expect((await snapshot(resumed)).jobs[0]?.changes).toEqual({ added: 1, updated: 2, deleted: 0 })
+    expect(f.committedSessions).toHaveLength(1); expect(f.cleaned).toEqual([]); expect(f.sessions.get(processing.sessionId)).toMatchObject({ deleted: false, archiveUri: processing.archiveUri, messages: [expect.objectContaining({ role: 'user' }), expect.objectContaining({ role: 'assistant' })] }); expect((await snapshot(resumed)).jobs[0]?.changes).toEqual({ added: 1, updated: 2, deleted: 0 })
     expect(await resumed.manage('read', { uri: global })).toEqual({ uri: global, text: 'tea global' })
     expect(await resumed.manage('delete', { uri: local, confirmed: true })).toEqual({ deleted: true }); expect(f.memories.has(local)).toBe(false); expect(f.errors).toEqual([])
   })
@@ -163,25 +163,98 @@ describe('OpenViking current backend contract', () => {
     controller.abort(); await expect(pending).rejects.toMatchObject({ code: 'MEMORY_CANCELLED' })
   })
 
-  it('turn capture uses native policy, actual diff counts and terminal cleanup, never stores bodies locally', async () => {
+  it('turn capture uses native policy, actual diff counts and retains the remote transcript without local bodies', async () => {
     const f = await fixture({ settings: { submissionMode: 'turn' } }); await f.plugin.connect()
     f.controls.taskPollsBeforeComplete = 1
     await f.plugin.memory.capture(capture())
     await waitFor(() => f.committedSessions.length === 1)
-    expect(f.cleaned).toHaveLength(0)
+    expect(f.cleaned).toEqual([])
     const stored = f.committedSessions[0]!
     expect(stored.policy).toEqual({ peer: { enabled: true }, self: { enabled: true }, memory_types: ['preferences', 'entities', 'events'] })
     expect(f.requests.find(request => request.method === 'POST' && request.path.endsWith('/sessions'))!.body.auto_commit_policy).toBeNull()
     expect(stored.messages).toMatchObject([{ role: 'user', peer_id: 'qq-1001-private-2001', content: expect.stringContaining('PRIVATE-USER-CHAT likes tea') }, { role: 'assistant', content: 'PRIVATE-ASSISTANT-CHAT noted' }])
     await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.status === 'completed')
-    expect((await snapshot(f.plugin)).jobs[0]).toMatchObject({ changes: { added: 1, updated: 2, deleted: 0 }, errorCode: null, messages: 2 })
-    expect(stored.messages).toHaveLength(0); expect(f.cleaned).toEqual([stored.id]); expect(f.errors).toEqual([])
-    const routes = f.requests.map(item => item.method + ' ' + item.path)
-    expect(routes.findIndex(item => item.includes('/content/read'))).toBeLessThan(routes.findIndex(item => item.startsWith('DELETE')))
+    expect((await snapshot(f.plugin)).jobs[0]).toMatchObject({ sessionId: 'eating-qq-1001-private-2001', changes: { added: 1, updated: 2, deleted: 0 }, errorCode: null, messages: 2 })
+    expect(f.sessions.get(stored.id)).toMatchObject({ deleted: false, messages: stored.messages, archiveUri: stored.archiveUri })
+    expect(stored.messages).toHaveLength(2); expect(f.cleaned).toEqual([]); expect(f.errors).toEqual([])
+    expect(f.requests.some(request => request.path.includes('/content/read'))).toBe(true)
+    expect(f.requests.filter(request => request.method === 'DELETE')).toEqual([])
     const metadata = await readFile(join(f.directory, 'state.json'), 'utf8')
     for (const secret of ['PRIVATE-USER-CHAT', 'PRIVATE-ASSISTANT-CHAT', 'PRIVATE-DIFF-MEMORY-BODY', f.apiKey]) expect(metadata).not.toContain(secret)
     await f.plugin.memory.capture(capture()); expect((await snapshot(f.plugin)).jobs).toHaveLength(1)
     await expect(f.plugin.memory.capture(capture(privateScope, 'turn-001', { messages: [{ role: 'user', text: 'changed', timestamp: new Date().toISOString() }] }))).rejects.toMatchObject({ code: 'MEMORY_IDEMPOTENCY_CONFLICT' })
+  })
+
+  it('retains the submitted session and archive when extraction produces zero memory changes', async () => {
+    const f = await fixture({ settings: { submissionMode: 'turn' } }); f.controls.diff = { added: 0, updated: 0, deleted: 0 }; await f.plugin.connect()
+    await f.plugin.memory.capture(capture())
+    await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.status === 'completed')
+    const job = (await snapshot(f.plugin)).jobs[0]!, session = f.sessions.get(job.sessionId)!
+    expect(job).toMatchObject({ changes: { added: 0, updated: 0, deleted: 0 }, errorCode: null })
+    expect(f.tasks.get(job.taskId!)?.status).toBe('completed')
+    expect(session).toMatchObject({ deleted: false, archiveUri: job.archiveUri, messages: [expect.objectContaining({ content: expect.stringContaining('PRIVATE-USER-CHAT') }), expect.objectContaining({ content: 'PRIVATE-ASSISTANT-CHAT noted' })] })
+    expect(f.cleaned).toEqual([]); expect(f.requests.filter(request => request.method === 'DELETE')).toEqual([])
+    await f.plugin.memory.capture(capture()); expect(f.committedSessions).toHaveLength(1)
+  })
+
+  it('reuses one peer session for two turns and a restarted third turn with three retained archives', async () => {
+    const f = await fixture({ settings: { submissionMode: 'turn' } }); await f.plugin.connect()
+    await f.plugin.memory.capture(capture(privateScope, 'stable-turn-1')); await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.status === 'completed')
+    await f.plugin.memory.capture(capture(privateScope, 'stable-turn-2')); await waitFor(async () => (await snapshot(f.plugin)).jobs.filter(job => job.status === 'completed').length === 2)
+    await f.plugin.disconnect()
+    const resumed = new OpenVikingMemoryPlugin(host(f.directory)); stops.push(() => resumed.disconnect()); await resumed.connect()
+    await resumed.memory.capture(capture(privateScope, 'stable-turn-3')); await waitFor(async () => (await snapshot(resumed)).jobs.filter(job => job.status === 'completed').length === 3)
+    const jobs = (await snapshot(resumed)).jobs.reverse(), sessionId = 'eating-qq-1001-private-2001'
+    expect(jobs.map(job => job.sessionId)).toEqual([sessionId, sessionId, sessionId])
+    expect(jobs.map(job => job.archiveUri)).toEqual([1, 2, 3].map(n => `viking://user/${f.user}/sessions/${sessionId}/history/archive_${String(n).padStart(3, '0')}`))
+    expect(f.sessions.size).toBe(1); expect(f.sessions.get(sessionId)).toMatchObject({ deleted: false, messages: expect.any(Array) }); expect(f.sessions.get(sessionId)!.messages).toHaveLength(6)
+    expect(f.committedSessions).toHaveLength(3); expect(f.committedSessions.map(session => session.messages.length)).toEqual([2, 2, 2])
+    expect([...f.archives.values()].map(archive => archive.messages.map(message => message.role))).toEqual([['user', 'assistant'], ['user', 'assistant'], ['user', 'assistant']])
+    expect(f.requests.filter(request => request.method === 'POST' && request.path.endsWith('/sessions'))).toHaveLength(1)
+    expect(f.requests.filter(request => request.path.endsWith('/commit'))).toHaveLength(3)
+    expect(f.cleaned).toEqual([]); expect(f.errors).toEqual([])
+  })
+
+  it('keeps distinct peers in separate stable sessions and archive sequences', async () => {
+    const f = await fixture({ settings: { submissionMode: 'turn' } }); await f.plugin.connect()
+    await Promise.all([f.plugin.memory.capture(capture(privateScope, 'peer-one')), f.plugin.memory.capture(capture({ ...privateScope, targetId: '2002' }, 'peer-two'))])
+    await waitFor(async () => (await snapshot(f.plugin)).jobs.filter(job => job.status === 'completed').length === 2)
+    expect([...f.sessions.keys()].sort()).toEqual(['eating-qq-1001-private-2001', 'eating-qq-1001-private-2002'])
+    for (const session of f.sessions.values()) {
+      expect(session).toMatchObject({ deleted: false, archiveUri: `viking://user/${f.user}/sessions/${session.id}/history/archive_001` })
+      expect(session.messages).toHaveLength(2); expect(session.messages.every(message => message.peer_id === session.id.slice('eating-'.length))).toBe(true)
+    }
+    expect(f.archives.size).toBe(2); expect(f.cleaned).toEqual([]); expect(f.errors).toEqual([])
+  })
+
+  it('serializes concurrent flushes for the same peer until its previous extraction completes', async () => {
+    const f = await fixture(); f.controls.taskStatus = 'running'; await f.plugin.connect()
+    await f.plugin.memory.capture(capture(privateScope, 'serialized-first')); await f.plugin.manage('flush', { peerId: 'qq-1001-private-2001' })
+    await waitFor(() => f.tasks.size === 1 && f.requests.some(request => request.path.includes('/tasks/')))
+    await f.plugin.memory.capture(capture(privateScope, 'serialized-second'))
+    await Promise.all([f.plugin.manage('flush', { peerId: 'qq-1001-private-2001' }), f.plugin.manage('flush', { peerId: 'qq-1001-private-2001' })])
+    expect((await snapshot(f.plugin)).jobs[0]?.status).toBe('queued'); expect(f.committedSessions).toHaveLength(1)
+    expect(f.requests.filter(request => request.path.endsWith('/messages/batch'))).toHaveLength(1)
+    f.controls.taskStatus = 'completed'
+    await waitFor(async () => (await snapshot(f.plugin)).jobs.filter(job => job.status === 'completed').length === 2)
+    expect(f.sessions.size).toBe(1); expect(f.committedSessions.map(session => session.archiveUri?.split('/').at(-1))).toEqual(['archive_001', 'archive_002'])
+    expect(f.committedSessions.map(session => session.messages.length)).toEqual([2, 2]); expect(f.cleaned).toEqual([]); expect(f.errors).toEqual([])
+  })
+
+  it('blocks remote writes behind an unknown same-peer submission while another peer continues', async () => {
+    const f = await fixture({ settings: { submissionMode: 'turn' } }); f.controls.commitDisconnect = true; await f.plugin.connect()
+    await f.plugin.memory.capture(capture(privateScope, 'unknown-first')); await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.status === 'unknown')
+    f.controls.commitDisconnect = false
+    await f.plugin.memory.capture(capture(privateScope, 'blocked-same-peer'))
+    await f.plugin.memory.capture(capture({ ...privateScope, targetId: '2002' }, 'unblocked-other-peer'))
+    await waitFor(async () => (await snapshot(f.plugin)).jobs.find(job => job.peerId === 'qq-1001-private-2002')?.status === 'completed')
+    expect((await snapshot(f.plugin)).jobs.map(job => job.status)).toEqual(['completed', 'queued', 'unknown'])
+    const firstSession = '/sessions/eating-qq-1001-private-2001/'
+    expect(f.requests.filter(request => request.path.includes(firstSession) && request.path.endsWith('/messages/batch'))).toHaveLength(1)
+    expect(f.requests.filter(request => request.path.includes(firstSession) && request.path.endsWith('/commit'))).toHaveLength(1)
+    expect(f.sessions.get('eating-qq-1001-private-2001')!.messages).toHaveLength(2)
+    expect(f.committedSessions.map(session => session.id)).toEqual(['eating-qq-1001-private-2001', 'eating-qq-1001-private-2002'])
+    expect(f.cleaned).toEqual([]); expect(f.errors).toEqual([])
   })
 
   it('batch buffers per peer, explicit flush is immediate acceptance, tool turn flushes one turn, token threshold works', async () => {
@@ -211,7 +284,8 @@ describe('OpenViking current backend contract', () => {
     await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.status === 'completed')
     await f.plugin.memory.capture(capture(privateScope, 'shutdown-turn'))
     expect(f.committedSessions).toHaveLength(1)
-    await f.plugin.dispose(); expect(f.committedSessions).toHaveLength(2); expect(f.cleaned).toHaveLength(2)
+    await f.plugin.dispose(); expect(f.committedSessions).toHaveLength(2); expect(f.sessions.size).toBe(1); expect(f.cleaned).toEqual([])
+    expect(f.committedSessions.every(session => !session.deleted && session.messages.length === 2)).toBe(true)
   })
 
   it.each(['allowlist', 'denylist'] as const)('group %s filters real speaker IDs and omits assistant/actions from mixed turns', async mode => {
@@ -243,7 +317,7 @@ describe('OpenViking current backend contract', () => {
     expect(f.cleaned).toHaveLength(0); expect((await snapshot(f.plugin)).jobs[0]?.status).toBe('processing')
     await f.plugin.memory.capture(capture(privateScope, 'ignored')); expect(f.requests).toHaveLength(count)
     f.controls.taskStatus = 'completed'; await f.plugin.connect()
-    await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.status === 'completed'); expect(f.committedSessions).toHaveLength(1); expect(f.cleaned).toHaveLength(1)
+    await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.status === 'completed'); expect(f.committedSessions).toHaveLength(1); expect(f.cleaned).toEqual([])
     await f.plugin.updateConfiguration({ expectedRevision: 1, endpoint: f.endpoint, account: f.account, user: f.user, autoConnect: false, timeoutMs: 1000, settings: { ...DEFAULT_SETTINGS, enabled: false } })
     expect(f.plugin.getPublicConfiguration().ready).toBe(false)
   })
@@ -260,13 +334,21 @@ describe('OpenViking current backend contract', () => {
     await waitFor(async () => (await snapshot(resumed)).jobs[0]?.status === 'completed'); expect(known.committedSessions).toHaveLength(1); expect(known.errors).toEqual([])
   })
 
-  it('cleans failed terminal tasks and missing diff truthfully fails without fabricated zero counts', async () => {
+  it('retains failed extraction transcripts and reports missing diff without fabricated zero counts', async () => {
     const failed = await fixture({ settings: { submissionMode: 'turn' } }); await failed.plugin.connect(); failed.controls.taskStatus = 'failed'
     await failed.plugin.memory.capture(capture()); await waitFor(async () => (await snapshot(failed.plugin)).jobs[0]?.status === 'failed')
-    expect((await snapshot(failed.plugin)).jobs[0]).toMatchObject({ errorCode: 'MEMORY_EXTRACTION_FAILED', changes: null }); expect(failed.cleaned).toHaveLength(1)
+    const failedJob = (await snapshot(failed.plugin)).jobs[0]!
+    expect(failedJob).toMatchObject({ errorCode: 'MEMORY_EXTRACTION_FAILED', changes: null })
+    expect(failed.tasks.get(failedJob.taskId!)?.status).toBe('failed')
+    expect(failed.sessions.get(failedJob.sessionId)).toMatchObject({ deleted: false, archiveUri: failedJob.archiveUri, messages: [expect.objectContaining({ content: expect.stringContaining('PRIVATE-USER-CHAT') }), expect.objectContaining({ content: 'PRIVATE-ASSISTANT-CHAT noted' })] })
+    expect(failed.cleaned).toEqual([]); expect(failed.requests.filter(request => request.method === 'DELETE')).toEqual([])
     const missing = await fixture({ settings: { submissionMode: 'turn' } }); await missing.plugin.connect(); missing.controls.omitDiff = true
     await missing.plugin.memory.capture(capture()); await waitFor(async () => (await snapshot(missing.plugin)).jobs[0]?.status === 'failed')
-    expect((await snapshot(missing.plugin)).jobs[0]?.changes).toBeNull(); expect(missing.cleaned).toHaveLength(1)
+    const missingJob = (await snapshot(missing.plugin)).jobs[0]!
+    expect(missingJob).toMatchObject({ errorCode: 'MEMORY_NOT_FOUND', changes: null })
+    expect(missing.tasks.get(missingJob.taskId!)?.status).toBe('completed')
+    expect(missing.sessions.get(missingJob.sessionId)).toMatchObject({ deleted: false, messages: [expect.objectContaining({ role: 'user' }), expect.objectContaining({ role: 'assistant' })] })
+    expect(missing.cleaned).toEqual([]); expect(missing.requests.filter(request => request.method === 'DELETE')).toEqual([])
   })
 
   it('MCP derives real scope, request ID dedupes without Host body ledger, saves do not permit arbitrary peer/path', async () => {
@@ -319,22 +401,23 @@ describe('OpenViking current backend contract', () => {
     expect(f.errors).toEqual([])
   })
 
-  it('cleans only after completed extraction and can resume a cleaning task after transient deletion failure', async () => {
+  it('finalizes a completed extraction without requesting DELETE even when deletion is unavailable', async () => {
     const f = await fixture({ settings: { submissionMode: 'turn' } }); await f.plugin.connect()
     f.controls.intercept = (request, response) => {
       if (request.method !== 'DELETE') return false
       response.writeHead(503); response.end('PROVIDER-PRIVATE-DELETE-ERROR'); return true
     }
-    await f.plugin.memory.capture(capture()); await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.errorCode === 'MEMORY_SERVER_ERROR')
-    expect((await snapshot(f.plugin)).jobs[0]).toMatchObject({ errorCode: 'MEMORY_SERVER_ERROR', changes: { added: 1, updated: 2, deleted: 0 } })
-    expect(f.cleaned).toHaveLength(0); await f.plugin.disconnect()
-    f.controls.intercept = undefined
-    const resumed = new OpenVikingMemoryPlugin(host(f.directory)); stops.push(() => resumed.disconnect()); await resumed.connect()
-    await waitFor(async () => (await snapshot(resumed)).jobs[0]?.status === 'completed'); expect(f.committedSessions).toHaveLength(1); expect(f.cleaned).toHaveLength(1)
+    await f.plugin.memory.capture(capture()); await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.status === 'completed')
+    const job = (await snapshot(f.plugin)).jobs[0]!
+    expect(f.tasks.get(job.taskId!)?.status).toBe('completed')
+    expect(job).toMatchObject({ errorCode: null, changes: { added: 1, updated: 2, deleted: 0 } })
+    expect(f.sessions.get(job.sessionId)).toMatchObject({ deleted: false, messages: [expect.objectContaining({ role: 'user' }), expect.objectContaining({ role: 'assistant' })] })
+    expect(f.requests.filter(request => request.method === 'DELETE')).toEqual([]); expect(f.cleaned).toEqual([])
   })
 
-  it('retries definitely uncommitted staging cleanup after add writes but fails and first DELETE fails', async () => {
+  it('retains prior archives and staged messages when add writes but fails, without deleting or replaying on restart', async () => {
     const f = await fixture({ settings: { submissionMode: 'turn' } }); await f.plugin.connect()
+    await f.plugin.memory.capture(capture(privateScope, 'prior-archive')); await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.status === 'completed')
     let deletes = 0
     f.controls.intercept = (request, response) => {
       if (request.path.endsWith('/messages/batch')) {
@@ -342,22 +425,24 @@ describe('OpenViking current backend contract', () => {
         session.messages.push(...request.body.messages as Array<Record<string, unknown>>)
         response.writeHead(503); response.end('private add failure'); return true
       }
-      if (request.method === 'DELETE' && deletes++ === 0) { response.writeHead(503); response.end('private cleanup failure'); return true }
+      if (request.method === 'DELETE') { deletes++; response.writeHead(503); response.end('private cleanup failure'); return true }
       return false
     }
-    await f.plugin.memory.capture(capture()); await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.status === 'cleaning' && deletes === 1)
+    await f.plugin.memory.capture(capture()); await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.status === 'unknown')
     const job = (await snapshot(f.plugin)).jobs[0]!, staged = f.sessions.get(job.sessionId)!
-    expect(staged.messages).toHaveLength(2); expect(job).toMatchObject({ taskId: null, archiveUri: null, errorCode: 'MEMORY_SERVER_ERROR' }); expect(f.committedSessions).toHaveLength(0)
-    const saved = JSON.parse(await readFile(join(f.directory, 'state.json'), 'utf8')).jobs[0]
-    expect(saved).toMatchObject({ staged: true, commitAttempted: false, status: 'cleaning' })
-    await f.plugin.disconnect()
+    expect(staged.messages).toHaveLength(4); expect(staged.deleted).toBe(false)
+    expect(job).toMatchObject({ taskId: null, archiveUri: null, errorCode: 'MEMORY_SUBMISSION_UNKNOWN' }); expect(f.committedSessions).toHaveLength(1); expect(f.archives.size).toBe(1)
+    const saved = JSON.parse(await readFile(join(f.directory, 'state.json'), 'utf8')).jobs[1]
+    expect(saved).toMatchObject({ staged: true, commitAttempted: false, status: 'unknown' })
+    await f.plugin.disconnect(); const adds = f.requests.filter(request => request.path.endsWith('/messages/batch')).length
     const resumed = new OpenVikingMemoryPlugin(host(f.directory)); stops.push(() => resumed.disconnect()); await resumed.connect()
-    await waitFor(async () => (await snapshot(resumed)).jobs[0]?.status === 'failed')
-    expect(staged.messages).toHaveLength(0); expect(staged.deleted).toBe(true); expect(deletes).toBe(2); expect(f.committedSessions).toHaveLength(0)
+    expect((await snapshot(resumed)).jobs[0]?.status).toBe('unknown')
+    expect(staged.messages).toHaveLength(4); expect(staged.deleted).toBe(false); expect(deletes).toBe(0); expect(f.committedSessions).toHaveLength(1)
     await resumed.memory.capture(capture()); expect(f.sessions.size).toBe(1)
+    expect(f.requests.filter(request => request.path.endsWith('/messages/batch'))).toHaveLength(adds); expect(f.cleaned).toEqual([])
   })
 
-  it('disconnect while staging retains cleanup proof and reconnect only deletes the uncommitted session', async () => {
+  it('disconnect while staging retains the stable remote transcript and reconnect does not delete or replay it', async () => {
     const f = await fixture({ settings: { submissionMode: 'turn' } }); await f.plugin.connect()
     f.controls.intercept = (request, _response) => {
       if (!request.path.endsWith('/messages/batch')) return false
@@ -365,26 +450,34 @@ describe('OpenViking current backend contract', () => {
       session.messages.push(...request.body.messages as Array<Record<string, unknown>>); return true
     }
     await f.plugin.memory.capture(capture()); await waitFor(() => [...f.sessions.values()][0]?.messages.length === 2)
-    await f.plugin.disconnect(); expect((await snapshot(f.plugin)).jobs[0]).toMatchObject({ status: 'cleaning', taskId: null })
-    expect(f.committedSessions).toHaveLength(0); expect(f.cleaned).toHaveLength(0)
+    await f.plugin.disconnect(); expect((await snapshot(f.plugin)).jobs[0]).toMatchObject({ status: 'unknown', taskId: null })
+    expect(f.committedSessions).toHaveLength(0); expect(f.cleaned).toEqual([])
     f.controls.intercept = undefined; await f.plugin.connect()
-    await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.status === 'failed')
-    expect([...f.sessions.values()][0]?.messages).toHaveLength(0); expect(f.cleaned).toHaveLength(1); expect(f.committedSessions).toHaveLength(0)
+    expect((await snapshot(f.plugin)).jobs[0]?.status).toBe('unknown')
+    expect([...f.sessions.values()][0]).toMatchObject({ deleted: false, messages: [expect.objectContaining({ role: 'user' }), expect.objectContaining({ role: 'assistant' })] })
+    expect(f.cleaned).toEqual([]); expect(f.committedSessions).toHaveLength(0)
+    expect(f.requests.filter(request => request.path.endsWith('/messages/batch'))).toHaveLength(1)
   })
 
-  it.each(['completed', 'failed'] as const)('terminal %s cleanup survives task TTL expiration after DELETE failure', async taskStatus => {
+  it.each(['completed', 'failed'] as const)('resumes persisted terminal %s in cleaning after task TTL expiry without DELETE or duplicate commit', async taskStatus => {
     const f = await fixture({ settings: { submissionMode: 'turn' } }); await f.plugin.connect(); f.controls.taskStatus = taskStatus
-    f.controls.intercept = (request, response) => { if (request.method !== 'DELETE') return false; response.writeHead(503); response.end('private deletion error'); return true }
-    await f.plugin.memory.capture(capture()); await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.errorCode === 'MEMORY_SERVER_ERROR')
-    const saved = JSON.parse(await readFile(join(f.directory, 'state.json'), 'utf8')).jobs[0]
+    await f.plugin.memory.capture(capture()); await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.status === taskStatus)
+    const job = (await snapshot(f.plugin)).jobs[0]!
+    expect(f.tasks.get(job.taskId!)?.status).toBe(taskStatus)
+    await f.plugin.disconnect()
+    const statePath = join(f.directory, 'state.json'), data = JSON.parse(await readFile(statePath, 'utf8')), saved = data.jobs[0]
     expect(saved.terminalStatus).toBe(taskStatus); expect(saved.commitAttempted).toBe(true)
-    await f.plugin.disconnect(); const polls = f.requests.filter(request => request.path.includes('/tasks/')).length
-    f.tasks.clear(); f.controls.intercept = undefined
+    saved.status = 'cleaning'; saved.errorCode = 'MEMORY_SERVER_ERROR'; if (taskStatus === 'completed') data.extractionCount--
+    await writeFile(statePath, JSON.stringify(data))
+    const polls = f.requests.filter(request => request.path.includes('/tasks/')).length
+    f.tasks.clear(); f.controls.intercept = (request, response) => { if (request.method !== 'DELETE') return false; response.writeHead(503); response.end('private deletion error'); return true }
     const resumed = new OpenVikingMemoryPlugin(host(f.directory)); stops.push(() => resumed.disconnect()); await resumed.connect()
-    await waitFor(async () => (await snapshot(resumed)).jobs[0]?.status === (taskStatus === 'completed' ? 'completed' : 'failed'))
+    await waitFor(async () => (await snapshot(resumed)).jobs[0]?.status === taskStatus)
     expect(f.requests.filter(request => request.path.includes('/tasks/'))).toHaveLength(polls)
-    expect(f.cleaned).toHaveLength(1); expect(f.committedSessions).toHaveLength(1)
-    expect((await snapshot(resumed)).jobs[0]?.changes).toEqual(taskStatus === 'completed' ? { added: 1, updated: 2, deleted: 0 } : null)
+    expect(f.requests.filter(request => request.method === 'DELETE')).toEqual([]); expect(f.cleaned).toEqual([]); expect(f.committedSessions).toHaveLength(1)
+    expect(f.sessions.get(job.sessionId)).toMatchObject({ deleted: false, archiveUri: job.archiveUri, messages: [expect.objectContaining({ role: 'user' }), expect.objectContaining({ role: 'assistant' })] })
+    expect((await snapshot(resumed)).jobs[0]).toMatchObject({ changes: taskStatus === 'completed' ? { added: 1, updated: 2, deleted: 0 } : null, errorCode: taskStatus === 'completed' ? null : 'MEMORY_EXTRACTION_FAILED' })
+    await resumed.memory.capture(capture()); expect(f.committedSessions).toHaveLength(1)
   })
 
   it('restart discards queued RAM bodies, submitting becomes unknown, missing known task becomes unknown without cleanup', async () => {
@@ -416,7 +509,7 @@ describe('OpenViking current backend contract', () => {
     const f = await fixture(); await f.plugin.connect(); f.controls.taskPollsBeforeComplete = 1
     const controller = new AbortController()
     await f.plugin.invokeCapability('memory_save', { text: 'accepted fact', request_id: 'caller-lifetime' }, 'caller-lifetime', invocation(privateScope, controller.signal)); controller.abort()
-    await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.status === 'completed'); expect(f.cleaned).toHaveLength(1)
+    await waitFor(async () => (await snapshot(f.plugin)).jobs[0]?.status === 'completed'); expect(f.cleaned).toEqual([])
     const count = f.requests.length
     await expect(f.plugin.invokeCapability('memory_save', { text: 'not accepted', request_id: 'already-revoked' }, 'already-revoked', invocation(privateScope, controller.signal))).rejects.toMatchObject({ code: 'MEMORY_CANCELLED' })
     expect(f.requests).toHaveLength(count)

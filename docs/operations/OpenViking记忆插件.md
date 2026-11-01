@@ -1,6 +1,6 @@
 # OpenViking 记忆插件
 
-适用：openviking-memory0.1.0、Eating0.14.0、plugin-sdk4.5.0、DSH0.12.0，插件API4。插件管理→OpenViking记忆提供连接配置、记忆范围、活动三个页签。机器人服务用户由主人在OpenViking创建，Eating不创建账号，也不读取主DSH记忆配置。
+适用：openviking-memory0.1.1、Eating0.14.0、plugin-sdk4.5.0、DSH0.12.0，插件API4。插件管理→OpenViking记忆提供连接配置、记忆范围、活动三个页签。机器人服务用户由主人在OpenViking创建，Eating不创建账号，也不读取主DSH记忆配置。
 
 ## 连接
 
@@ -40,13 +40,19 @@ viking://user/<user>/peers/self/memories/
 
 为了正常内存/网络运行，有2MiB暂存、单任务512KiB、2个并发工作者、有界任务/会话摘要等机械容量限制，满时明确拒绝或记录错误，不为继续运行静默丢弃在途任务。这些不是用户费用额度。长期开启自动提取会使用OpenViking服务自己的模型资源和费用。
 
-## 提取、清理与恢复
+## 持续会话、归档与恢复
 
-每批创建新的OpenViking临时Session，显式禁用服务自动提交，用插件统一提交。types为preferences/entities/events，全局开关决定允许全局self提取，peer提取始终指向本轮会话。
+同一个Peer复用固定OpenViking Session：全局开启时为 eating-<peer>，关闭时为 eating-<peer>-local。服务Session的提取策略在创建后不可通过当前公开API修改，因此两个显式模式各用一个固定根，切换回来继续原根；不会按每批随机新建。Session不存在才创建，存在则校验策略、关闭服务自动提交并继续追加。
 
-“已接收/提取中”不表示已形成记忆：后台检查任务完成、读取memory_diff实际变化计数，再删除本插件创建的临时Session。长期记忆保留，OpenViking里的本次原始对话归档清理；这不删除DSH自身已有的原生会话历史或用户其他资料。失败/取消的终态任务可清理；任务仍在运行或提交结果未知时不删其原始记录，避免破坏远端提取。结果未知不自动换ID重做。
+每批提交只为新增内容生成同根 history/archive_001、archive_002 等归档。任务ID每批独立，Session ID固定。正常完成、零条记忆、失败、取消、断开和重启都不自动删除会话、消息或归档；用户明确要求保留原始记录。本插件不调用deleteSession。已有0.1.0已删记录不会凭空恢复，也不重放历史。
 
-配置和任务元数据存储在 EATING_HOME/capabilities/openviking-memory，严格schema1/CAS；只有队列正文在RAM，不建立Eating聊天历史。Host重启时未提交缓冲丢失，活动中未知提交不重发；已取得taskId可继续查询并完成清理。服务长时间不返回终态时保留任务/错误，无法保证远端最终完成。正常退出会对已授权缓冲作有界提交；手动断开/停用或修改配置立即撤销，可能丢弃尚未提交的RAM内容。
+同一Session的写入与提取串行，不同会话仍可并行。提交结果未知、部分写入或远端存在无法确认的未提交消息时，保留记录、阻止同Session继续写入；其他会话可继续。提取成功仍以task终态和memory_diff实际变化计数核验，不能把上传或归档当成记忆一定增加。
+
+配置与任务状态保持当前schema1/CAS，状态中的sessionId按实际服务标识保存，不再从任务UUID推导；既有任务摘要和归档URI保留，不自动迁移或重写原资料。RAM缓冲崩溃时仍可能丢失，已提交的远端记录持续保留。
+
+## 自动启动
+
+Host正常启动默认按已保存的autoConnect连接通讯/MCP，再启动Harness。EATING_AUTO_CONNECT=false会明确抑制这些启动动作，即使界面开关已打开；原本地开发进程曾带此临时覆盖，现已移除。关闭的开关仍保持关闭，连接失败会保留实际错误，不伪造启动成功。
 
 ## MCP工具
 
@@ -69,4 +75,4 @@ viking://user/<user>/peers/self/memories/
 
 活动页5秒可见轮询，只读任务摘要，没有聊天正文。提取计数、状态、错误代码和精确任务ID可展开核对。搜索/读取/删除走真实服务，不在localStorage保存记忆或鉴权。
 
-当前实现选择见[ADR-0027](../decisions/ADR-0028-OpenViking记忆能力与自动采集.md)，实际验证及未验证范围见[本轮报告](../reports/2026-11-02-OpenViking记忆插件验证.md)。
+当前实现选择见[ADR-0029](../decisions/ADR-0029-持续记忆会话与记录保留.md)，实际验证及未验证范围见[本轮报告](../reports/2026-11-02-OpenViking记忆插件验证.md)。

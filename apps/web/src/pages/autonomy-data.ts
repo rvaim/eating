@@ -7,7 +7,8 @@ export interface ActivityState {
   active: { id: string; startedAt: number; deadline: number } | null; cycles: number; contacts: number; failures: number; lastStartedAt: number | null; lastFinishedAt: number | null; lastOutcome: string | null; errorCode: string | null; runRemainingMs?: number
   history: { cycleId: string; startedAt: number; finishedAt: number; outcome: string; code: string | null }[]
 }
-export interface Snapshot { contactPolicy?: ProactiveContactPolicy; protocolVersion: 1; revision: number; configuration: AutonomyConfiguration; state: ActivityState; contactTasks: { agentId: string; targetId: string; label: string; taskId: string; state: string }[] }
+export interface ScheduledTask { id: string; message: string; dueAt: number; createdAt: number }
+export interface Snapshot { contactPolicy?: ProactiveContactPolicy; agenda?: { revision: number; tasks: ScheduledTask[] }; protocolVersion: 1; revision: number; configuration: AutonomyConfiguration; state: ActivityState; contactTasks: { agentId: string; targetId: string; label: string; taskId: string; state: string }[] }
 export interface Harness { id: string; name: string; enabled: boolean; status: string; supported: boolean; snapshot: Snapshot | null }
 export interface Directory { protocolVersion: 1; harnesses: Harness[]; channels: ProactiveChannel[] }
 export type NumericKey = Exclude<keyof AutonomyConfiguration, 'enabled' | 'autoResume' | 'targets'>
@@ -29,6 +30,10 @@ export function readDirectory(value: unknown): Directory {
       const c = snapshot.configuration, s = snapshot.state
       if (typeof c.enabled !== 'boolean' || typeof c.autoResume !== 'boolean' || fields.some(field => !Number.isSafeInteger(c[field.name]) || Number(c[field.name]) < field.min || Number(c[field.name]) > field.max) || !Array.isArray(c.targets) || c.targets.length > 50 || typeof s.ownerPaused !== 'boolean' || !['active', 'sleeping', 'waiting'].includes(String(s.mode)) || typeof s.note !== 'string' || typeof s.reason !== 'string' || !Number.isSafeInteger(s.revision) || !Array.isArray(s.history) || s.history.length > 20) invalid()
       const safeText = (v: unknown, max = 256): v is string => typeof v === 'string' && v.length <= max
+      if (snapshot.agenda !== undefined) {
+        const agenda = snapshot.agenda
+        if (!isJsonObject(agenda) || !Number.isSafeInteger(agenda.revision) || Number(agenda.revision) < 0 || !Array.isArray(agenda.tasks) || agenda.tasks.length > 50 || agenda.tasks.some(task => !isJsonObject(task) || Object.keys(task).length !== 4 || !safeText(task.id) || !safeText(task.message, 2000) || !Number.isSafeInteger(task.dueAt) || !Number.isSafeInteger(task.createdAt))) return invalid()
+      }
       if ((c.targets as unknown[]).some(target => !isJsonObject(target) || ['id', 'label', 'pluginId', 'instanceId', 'accountId', 'agentTypeId', 'targetId'].some(key => !safeText(target[key])) || !Array.isArray(target.toolNames) || target.toolNames.length > 256 || target.toolNames.some(name => !safeText(name, 160)))) return invalid()
       if (['cycles', 'contacts', 'failures'].some(key => !Number.isSafeInteger(s[key]) || Number(s[key]) < 0) || ['nextWakeAt', 'lastStartedAt', 'lastFinishedAt'].some(key => s[key] !== null && (!Number.isSafeInteger(s[key]) || Number(s[key]) < 0)) || typeof s.runtimeReady !== 'boolean' || ![null, 'completed', 'failed', 'unknown', 'cancelled'].includes(s.lastOutcome as null) || s.errorCode !== null && !safeText(s.errorCode, 100)) return invalid()
       if (s.active !== null && (!isJsonObject(s.active) || !safeText(s.active.id) || !Number.isSafeInteger(s.active.startedAt) || !Number.isSafeInteger(s.active.deadline))) return invalid()

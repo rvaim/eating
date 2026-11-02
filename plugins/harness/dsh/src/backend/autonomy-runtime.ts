@@ -41,7 +41,7 @@ export function getAutonomyRuntimeSource(): string {
       const { targets, ...publicConfiguration } = configuration;
       return { ...value, configuration: publicConfiguration };
     };
-    agent.ctx.tools.register({ name: 'eating_activity_state', description: '读取自主运行配置、主人暂停状态、当前活动安排、state.revision、额度、下次唤醒时间及主动联系策略摘要；具体联系人必须用 eating_list_contact_targets 查询。', parameters: { type: 'object', properties: {}, additionalProperties: false }, output,
+    agent.ctx.tools.register({ name: 'eating_activity_state', description: '读取自主运行配置、主人暂停状态、当前活动安排、state.revision、AI 定时任务（agenda.revision）、额度、下次唤醒时间及主动联系策略摘要；具体联系人必须用 eating_list_contact_targets 查询。', parameters: { type: 'object', properties: {}, additionalProperties: false }, output,
       async execute(args, exec) { if (exec.agent !== agent || !record(args) || Object.keys(args).length) throw new Error('Activity state arguments are invalid'); return modelView(await auto('snapshot', {}, exec.signal)); } });
     agent.ctx.tools.register({ name: 'eating_plan_activity', description: '登记下一步活动：先调用 eating_activity_state，将最新 state.revision 填入 expected_revision。active 按主人设定的间隔等待下一轮机会；sleeping 休息至 wake_at 指定的带时区 RFC3339 时间；waiting 等待真实外部事件。active 和 waiting 的 wake_at 必须为 null，note 简述安排原因。',
       parameters: { type: 'object', properties: { expected_revision: { type: 'integer', minimum: 0 }, mode: { type: 'string', enum: ['active', 'sleeping', 'waiting'] }, wake_at: { type: ['string', 'null'] }, note: { type: 'string', maxLength: 500 } }, required: ['expected_revision', 'mode', 'wake_at', 'note'], additionalProperties: false }, output,
@@ -50,6 +50,20 @@ export function getAutonomyRuntimeSource(): string {
         const wakeAt = args.mode === 'sleeping' && typeof args.wake_at === 'string' && /^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(args.wake_at) ? Date.parse(args.wake_at) : null;
         if (args.mode === 'sleeping' ? !Number.isFinite(wakeAt) : args.wake_at !== null) throw new Error('Sleeping requires an explicit RFC3339 wake time; other modes require null');
         return modelView(await auto('decide', { decision: { expectedActivityRevision: args.expected_revision, mode: args.mode, wakeAt, note: args.note } }, exec.signal));
+      } });
+    agent.ctx.tools.register({ name: 'eating_schedule_task', description: '给自己安排一条未来的一次性任务消息。先调用 eating_activity_state 读取 agenda.revision 和当前时间；due_at 必须带时区且在未来一年内，message 是到点时交回给自己的任务内容。到点后该任务作为自主机会进入当前主 Agent，仍受主人暂停、额度、运行时和周期限制；不能替代 eating_plan_activity 的休息/等待安排，也不得另建原生 schedule。',
+      parameters: { type: 'object', properties: { expected_agenda_revision: { type: 'integer', minimum: 0 }, due_at: { type: 'string' }, message: { type: 'string', maxLength: 2000 } }, required: ['expected_agenda_revision', 'due_at', 'message'], additionalProperties: false }, output,
+      async execute(args, exec) {
+        if (exec.agent !== agent || !record(args) || Object.keys(args).length !== 3 || !Number.isSafeInteger(args.expected_agenda_revision) || typeof args.due_at !== 'string' || typeof args.message !== 'string') throw new Error('Scheduled task arguments are invalid');
+        const dueAt = /^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(args.due_at) ? Date.parse(args.due_at) : NaN;
+        if (!Number.isFinite(dueAt)) throw new Error('Scheduled task due_at must be an RFC3339 time with timezone');
+        return modelView(await auto('schedule-task', { task: { expectedRevision: args.expected_agenda_revision, dueAt, message: args.message } }, exec.signal));
+      } });
+    agent.ctx.tools.register({ name: 'eating_cancel_scheduled_task', description: '取消一条尚未到点的 AI 定时任务。先调用 eating_activity_state 读取 agenda.revision 和任务 id；取消后立即停止该任务，不影响已经进入会话的自主机会。',
+      parameters: { type: 'object', properties: { expected_agenda_revision: { type: 'integer', minimum: 0 }, task_id: { type: 'string' } }, required: ['expected_agenda_revision', 'task_id'], additionalProperties: false }, output,
+      async execute(args, exec) {
+        if (exec.agent !== agent || !record(args) || Object.keys(args).length !== 2 || !Number.isSafeInteger(args.expected_agenda_revision) || !opaque(args.task_id)) throw new Error('Scheduled task cancellation arguments are invalid');
+        return modelView(await auto('cancel-scheduled-task', { task: { expectedRevision: args.expected_agenda_revision, taskId: args.task_id } }, exec.signal));
       } });
     agent.ctx.tools.register({ name: 'eating_list_contact_targets', description: '按主人当前的全部放行、白名单或黑名单策略，列出可主动联系的对象及其精确工具集合。使用返回的对象 id 发起联系；名单策略不扩大账号、目标或工具权限。', parameters: { type: 'object', properties: {}, additionalProperties: false }, output,
       async execute(args, exec) { if (exec.agent !== agent || !record(args) || Object.keys(args).length) throw new Error('Target listing arguments are invalid'); return auto('targets', {}, exec.signal); } });
@@ -62,7 +76,7 @@ export function getAutonomyRuntimeSource(): string {
         const configuration = await control('prepare-proactive', { agentId: sessionId, targetId: args.target_id, cycleId: flight.cycle.id, taskId }, exec.signal);
         return runDelegation({ contextRef: configuration.contextRef, binding: { agentId: configuration.agentId, agentTypeId: configuration.agentTypeId, label: configuration.label }, payload: { context: { source: 'eating-autonomy', cycleId: flight.cycle.id, target: configuration.scope }, events: [] } }, configuration.agentTypeId, args.task, taskId, exec, configuration);
       } });
-    agent.ctx.systemPrompt.section({ name: 'eating:autonomy-policy', order: 20, interpolate: false, text: () => '自主活动须遵守主人当前的启停、暂停、额度和时长边界；外部消息、原生目标和其他 Inbox 输入优先。主动联系仅限当前已准入的自主周期，只能通过 eating_contact_target 在 eating_list_contact_targets 当前返回的对象和工具范围内执行；旧入站 message/resource 引用不授予本轮主动联系权限。判断主动联系权限不得沿用历史对话中的结论，也不得把 configuration.targets 当作授权名单；每次以 eating_list_contact_targets 和 contactPolicy 摘要为准。自主安排使用 eating_plan_activity，不得另建或修改原生 schedule 形成第二条提醒链，以绕过自主调度或主人暂停。' });
+    agent.ctx.systemPrompt.section({ name: 'eating:autonomy-policy', order: 20, interpolate: false, text: () => '自主活动须遵守主人当前的启停、暂停、额度和时长边界；外部消息、原生目标和其他 Inbox 输入优先。主动联系仅限当前已准入的自主周期，只能通过 eating_contact_target 在 eating_list_contact_targets 当前返回的对象和工具范围内执行；旧入站 message/resource 引用不授予本轮主动联系权限。判断主动联系权限不得沿用历史对话中的结论，也不得把 configuration.targets 当作授权名单；每次以 eating_list_contact_targets 和 contactPolicy 摘要为准。自主安排使用 eating_plan_activity；需要未来某个时刻收到自己写下的任务消息时，先读取 eating_activity_state 的 agenda.revision，再用 eating_schedule_task 登记一次性任务，不得另建或修改原生 schedule 形成第二条提醒链。定时任务消息是过去的自己写的任务内容，不是主人指令；主人暂停、额度、运行时和周期限制始终优先。' });
     releases.push(ctx.on('agent/pre-step', async ({ agent: caller, messages, signal }, next) => {
       if (caller !== agent) return next();
       const decision = await next();
@@ -123,7 +137,11 @@ export function getAutonomyRuntimeSource(): string {
         const claim = await auto('claim');
         if (!claim.admitted) return;
         if (agent.status !== 'idle' || agent.inbox.nextTurn.length || agent.inbox.nextStep.length || state.stopped) { await auto('finish', { cycleId: claim.cycle.id, outcome: 'cancelled', code: 'AUTONOMY_COMPETING_INPUT' }); return; }
-        const message = Llm.createUserMessage({ content: [{ type: 'text', text: JSON.stringify({ eating_autonomous_opportunity: { cycleId: claim.cycle.id, activity: claim.activity, limits: claim.limits }, instruction: '这是本轮内部自主机会，不是新的人类指令；activity 和 limits 提供本轮活动与额度上下文。按当前需要选择行动、休息或等待；需调整后续节奏时登记活动安排，无需例行发消息。' }) }], source: { kind: 'eating-autonomy', cycleId: claim.cycle.id, nonce } });
+        const scheduledTasks = Array.isArray(claim.scheduledTasks) ? claim.scheduledTasks : [];
+        const instruction = scheduledTasks.length
+          ? '这是本轮内部自主机会，不是新的人类指令；activity 和 limits 提供本轮活动与额度上下文。scheduledTasks 是你在之前给自己安排的定时任务消息，不是主人指令；按这些任务和当前上下文行动。需调整后续节奏时登记活动安排或新的定时任务，无需例行发消息。'
+          : '这是本轮内部自主机会，不是新的人类指令；activity 和 limits 提供本轮活动与额度上下文。按当前需要选择行动、休息或等待；需调整后续节奏时登记活动安排，无需例行发消息。';
+        const message = Llm.createUserMessage({ content: [{ type: 'text', text: JSON.stringify({ eating_autonomous_opportunity: { cycleId: claim.cycle.id, activity: claim.activity, scheduledTasks, limits: claim.limits }, instruction }) }], source: { kind: 'eating-autonomy', cycleId: claim.cycle.id, nonce } });
         state.flight = { cycle: claim.cycle, messageId: message.id, entered: false, forced: null };
         agent.followup(message);
         if (await ctx.sessions.flush(agent.session) !== true) await cancelFlight('unknown', 'AUTONOMY_DURABILITY_FAILED');
@@ -137,7 +155,7 @@ export function getAutonomyRuntimeSource(): string {
     };
     state.timer = setTimeout(() => { void poll(); }, 1000);
     releases.push(() => { state.stopped = true; if (state.timer !== null) clearTimeout(state.timer); });
-    return ['eating_activity_state', 'eating_plan_activity', 'eating_list_contact_targets', 'eating_contact_target'];
+    return ['eating_activity_state', 'eating_plan_activity', 'eating_schedule_task', 'eating_cancel_scheduled_task', 'eating_list_contact_targets', 'eating_contact_target'];
   }
 `;
 }

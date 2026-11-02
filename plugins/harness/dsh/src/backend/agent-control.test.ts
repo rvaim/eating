@@ -51,6 +51,20 @@ describe('trusted native Agent control boundary', () => {
     expect(await response.json()).toMatchObject({ contactPolicy: { schemaVersion: 1, revision: 4, mode: 'all', entryCount: 1 }, state: { revision: expect.any(Number) } })
   })
 
+  it('schedules and cancels one-shot AI tasks through the trusted runtime control', async () => {
+    const f = await autonomousFixture()
+    const dueAt = Date.now() + 60000
+    const created = await f.post('/autonomy-schedule-task', { agentId: parentId, task: { expectedRevision: 0, dueAt, message: 'Review the fixture later' } })
+    expect(created.status).toBe(200)
+    const agenda = await created.json() as JsonObject
+    const tasks = agenda.tasks as JsonObject[]
+    expect(tasks).toHaveLength(1); expect(tasks[0]!.message).toBe('Review the fixture later')
+    const cancelled = await f.post('/autonomy-cancel-scheduled-task', { agentId: parentId, task: { expectedRevision: agenda.revision, taskId: tasks[0]!.id } })
+    expect(cancelled.status).toBe(200)
+    expect((await cancelled.json() as JsonObject).tasks).toEqual([])
+    expect((await f.post('/autonomy-schedule-task', { agentId: 'different-root', task: { expectedRevision: 0, dueAt, message: 'Nope' } })).status).toBe(409)
+  })
+
   it('requires an admitted main round and exact saved contact while persisting native call replay protection', async () => {
     const f = await autonomousFixture()
     const input = { agentId: parentId, targetId: 'contact', cycleId: f.cycle.id, taskId: '1'.repeat(64) }

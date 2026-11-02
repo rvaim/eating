@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -17,7 +17,7 @@ const stops: Array<() => Promise<unknown>> = []
 afterEach(async () => { const failures: unknown[] = []; for (const stop of stops.splice(0).reverse()) { try { await stop() } catch (error) { failures.push(error) } }; if (failures.length) throw new AggregateError(failures, 'Autonomy fixture cleanup failed') })
 function object(value: unknown): JsonObject { if (!isJsonObject(value)) throw new Error('Expected autonomy fixture object'); return value }
 
-async function fixture(withholdSend = false) {
+async function fixture(withholdSend = false, scheduledOnly = false) {
   const parent = await realpath(tmpdir()), home = await realpath(await mkdtemp(join(parent, 'Eating_native_autonomy_')))
   stops.push(async () => { const actual = await realpath(home); if (actual !== home || dirname(actual) !== parent || !basename(actual).startsWith('Eating_native_autonomy_')) throw new Error('Unsafe autonomy fixture cleanup'); await rm(actual, { recursive: true }) })
   const targetId = '100000202', accountId = '100000101'
@@ -26,7 +26,7 @@ async function fixture(withholdSend = false) {
     return withholdSend && request.action === 'send_private_msg'
   } })
   stops.push(() => onebot.close())
-  const requests: { main: boolean; tools: string[] }[] = [], modelErrors: string[] = []
+  const requests: { main: boolean; tools: string[] }[] = [], modelErrors: string[] = [], scheduledSeen: string[] = []
   let mainCalls = 0, childCalls = 0
   const model = createServer((request, response) => { void (async () => {
     const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk))
@@ -39,6 +39,15 @@ async function fixture(withholdSend = false) {
     const chunk = (delta: object, finish: string | null = null) => response.write(`data: ${JSON.stringify({ id: 'autonomy-fixture-' + requests.length, object: 'chat.completion.chunk', model: body.model, created: 1700000000, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`)
     const tool = (name: string, args: object) => { chunk({ role: 'assistant', tool_calls: [{ index: 0, id: randomUUID(), type: 'function', function: { name, arguments: JSON.stringify(args) } }] }); chunk({}, 'tool_calls') }
     if (main) {
+      if (scheduledOnly) {
+        let scheduled = false
+        for (const message of messages.filter(candidate => candidate.role === 'user')) {
+          const content = message.content
+          const text = typeof content === 'string' ? content : Array.isArray(content) ? content.map(block => isJsonObject(block) && typeof block.text === 'string' ? block.text : '').join('') : ''
+          try { const envelope = JSON.parse(text); const tasks = envelope?.eating_autonomous_opportunity?.scheduledTasks; if (Array.isArray(tasks) && tasks.length) { scheduledSeen.push(...tasks.map(task => String(task.message))); scheduled = true } } catch { /* Not a structured envelope. */ }
+        }
+        if (scheduled) { chunk({ role: 'assistant', content: 'SCHEDULED-TASK-SEEN' }); chunk({}, 'stop'); return }
+      }
       const stage = mainCalls++ % 5
       if (stage === 0) tool('eating_list_contact_targets', {})
       else if (stage === 1) {
@@ -67,6 +76,11 @@ async function fixture(withholdSend = false) {
   const entry: BackendPluginEntry = { kind: 'harness', id: 'dsh', storageDirectory: 'dsh', create: context => {
     plugin = new DshPlugin(context, { locateSystemDsh: () => ({ bin: systemBin!, version: version.stdout.trim(), source: 'override' }) }); return plugin
   } }
+  if (scheduledOnly) {
+    const directory = join(home, 'harness', 'dsh'), now = Date.now()
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'autonomy-agenda.json'), JSON.stringify({ schemaVersion: 1, revision: 0, tasks: [{ id: randomUUID(), message: 'SELF-SCHEDULED-TASK', dueAt: now - 1000, createdAt: now - 5000 }] }))
+  }
   const host = new EatingHost({ dataDirectory: home, entries: [qqEntry, entry], port: 0, allowedUiOrigins: [] }); stops.push(() => host.close())
   const url = await host.listen(), bootstrap = await fetch(url + '/api/bootstrap'), cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!
   const { csrfToken } = await bootstrap.json() as { csrfToken: string }
@@ -86,7 +100,7 @@ async function fixture(withholdSend = false) {
   await api('/autonomy', { harnessId: 'dsh', operation: 'configure-contact-policy', input: { expectedRevision: object(configured.contactPolicy).revision, expectedConfigurationRevision: configured.revision, expectedActivityRevision: object(configured.state).revision, mode: 'allowlist', entries: [{ pluginId: channel.pluginId, instanceId: channel.instanceId, accountId, agentTypeId: channel.agentTypeId, targetId, label: 'Isolated fixture contact' }] } })
   const state = () => object(plugin.autonomy.snapshot().state)
   const control = (operation: string) => api('/autonomy', { harnessId: 'dsh', operation, input: { expectedRevision: plugin.autonomy.snapshot().revision, expectedActivityRevision: state().revision } })
-  return { home, onebot, plugin, requests, modelErrors, state, control, api, diagnostic: () => ({ state: state(), requests, modelErrors }) }
+  return { home, onebot, plugin, requests, modelErrors, scheduledSeen, state, control, api, diagnostic: () => ({ state: state(), requests, modelErrors, scheduledSeen }) }
 }
 
 describe.runIf(Boolean(systemBin))('native autonomous activity with real scoped Host and loopback OneBot', () => {
@@ -112,5 +126,13 @@ describe.runIf(Boolean(systemBin))('native autonomous activity with real scoped 
     expect(f.plugin.autonomy.snapshot().contactTasks).toMatchObject([{ state: 'unknown' }])
     expect(f.onebot.requests.filter(request => request.action === 'send_private_msg')).toHaveLength(1)
     expect(f.modelErrors).toEqual([])
+  }, 60000)
+  it('delivers a seeded AI-authored task as the next native autonomous opportunity', async () => {
+    const f = await fixture(false, true)
+    await f.control('resume')
+    try { await vi.waitFor(() => expect(f.scheduledSeen).toContain('SELF-SCHEDULED-TASK'), { timeout: 20000, interval: 100 }) }
+    catch (error) { throw new Error(JSON.stringify(f.diagnostic()), { cause: error }) }
+    expect(f.modelErrors).toEqual([])
+    expect(f.plugin.autonomy.snapshot().agenda).toMatchObject({ revision: expect.any(Number), tasks: [] })
   }, 60000)
 })

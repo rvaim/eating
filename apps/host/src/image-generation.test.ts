@@ -154,7 +154,7 @@ describe.skipIf(!process.env.EATING_DSH_TEST_SYSTEM_BIN)('system DSH uses OpenAI
     const onebot = await startOneBotFixture(); stops.push(() => onebot.close())
     const prefix = 'mcp__plugin_image_generation__'
     const model = await startStickersModel((request): FixtureModelAction => {
-      expect((request.tools ?? []).map(tool => tool.function?.name).sort()).toEqual(['eating_activity_state', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', ...grants.map(name => prefix + name)].sort())
+      expect((request.tools ?? []).map(tool => tool.function?.name).sort()).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', ...grants.map(name => prefix + name)].sort())
       const turns = fixtureToolTurns(request)
       if (!turns.length) return { name: prefix + 'image_generate', arguments: { prompt: 'NATIVE-IMAGES-FIXTURE', request_id: 'native-images-stable-0001' } }
       const last = turns.at(-1)!, value = object(JSON.parse(last.text.split('\n')[0]!))

@@ -141,6 +141,19 @@ test.describe('自主运行设置与信息', () => {
     await expect(page.getByLabel('Minimum continuation interval (seconds)', { exact: true })).toHaveValue('130')
     expect(onebot.requests.filter(request => request.action.startsWith('send_'))).toHaveLength(0)
   })
+  test('概览显示 AI 定时任务并可取消', async ({ page }) => {
+    await open(page)
+    const activity = Reflect.get(plugin(), 'activity')
+    const dueAt = Date.now() + 3600000
+    await activity.agenda.schedule({ expectedRevision: 0, dueAt, message: '稍后检查夹具任务' })
+    await page.getByRole('button', { name: '刷新自主状态', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'AI 定时任务', exact: true })).toBeVisible()
+    await expect(page.getByText('稍后检查夹具任务', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '取消任务', exact: true }).click()
+    await expect(page.getByText('定时任务已取消。', { exact: true })).toBeVisible()
+    expect(activity.snapshot().agenda.tasks).toHaveLength(0)
+  })
+
   test('配置冲突保留草稿，明确核对最新配置后才能再次保存', async ({ page }) => {
     await open(page)
     await page.getByRole('tab', { name: '运行设置', exact: true }).click()

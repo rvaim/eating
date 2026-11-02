@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { AutonomyConfiguration, JsonObject, ProactiveTarget } from '@eating/plugin-sdk'
 import { readRestrictedJson, writeRestrictedJson } from './config'
+import { DshAutonomyAgenda } from './autonomy-agenda'
 
 interface Cycle { id: string; nonce: string; startedAt: number; deadline: number; configurationRevision: number; activityRevision: number }
 interface AutonomyState {
@@ -51,6 +52,7 @@ function fresh(): Document {
 /** Owns mechanical activity state only; the installed Harness decides and executes the activity. */
 export class DshAutonomy {
   readonly filePath: string
+  readonly agenda: DshAutonomyAgenda
   private document: Document
   private runtimeNonce: string | null = null
   private runtimeStartedAt = 0
@@ -59,6 +61,7 @@ export class DshAutonomy {
   private resolvedTargets: readonly ProactiveTarget[] | null = null
   constructor(directory: string, private readonly runtimeReady: () => boolean, private readonly validateTargets: (targets: readonly ProactiveTarget[]) => void, private readonly onRevoke: () => void, private readonly clock: () => number = Date.now) {
     this.filePath = join(directory, 'autonomy.json')
+    this.agenda = new DshAutonomyAgenda(directory, clock)
     try { if (statSync(this.filePath).size > 256 * 1024) fail('AUTONOMY_STATE_CORRUPTED', 500) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     const data = readRestrictedJson(this.filePath)
     if (data === null) this.document = fresh()
@@ -101,7 +104,7 @@ export class DshAutonomy {
     // Only an active segment consumes the continuous-run budget. Sleeping/waiting
     // ends the segment; the next admitted cycle starts a new one.
     const runRemainingMs = state.startedAt === null ? configuration.maxRunMinutes * 60000 : Math.max(0, state.startedAt + configuration.maxRunMinutes * 60000 - now)
-    return { protocolVersion: 1, revision: this.document.revision, configuration: structuredClone(configuration) as unknown as JsonObject, state: { ...structuredClone(state), cycles: reset ? 0 : state.cycles, contacts: reset ? 0 : state.contacts, reason, nextWakeAt, runtimeReady: this.runtimeReady(), observedAt: this.observed?.at ?? null, runRemainingMs } as unknown as JsonObject }
+    return { protocolVersion: 1, revision: this.document.revision, configuration: structuredClone(configuration) as unknown as JsonObject, agenda: this.agenda.snapshot(), state: { ...structuredClone(state), cycles: reset ? 0 : state.cycles, contacts: reset ? 0 : state.contacts, reason, nextWakeAt, runtimeReady: this.runtimeReady(), observedAt: this.observed?.at ?? null, runRemainingMs } as unknown as JsonObject }
   }
   async configure(input: unknown): Promise<JsonObject> {
     if (!isJsonObject(input) || !exact(input, ['expectedRevision', 'configuration']) || input.expectedRevision !== this.document.revision) fail('AUTONOMY_CONFIGURATION_CONFLICT', 409)
@@ -124,6 +127,10 @@ export class DshAutonomy {
     else { s.ownerPaused = false; s.errorCode = null; s.failures = 0; s.startedAt = this.clock(); if (operation === 'wake' || s.mode === 'active') { s.mode = 'active'; s.wakeAt = this.clock() } }
     this.save(); return this.snapshot()
   }
+  private agendaAvailable(): void { const s = this.document.state; if (!this.document.configuration.enabled || s.ownerPaused || s.errorCode) fail('AUTONOMY_PAUSED', 409) }
+  scheduleTask(nonce: string, input: unknown): JsonObject { this.requireRuntime(nonce); this.agendaAvailable(); return this.agenda.schedule(input) }
+  cancelTask(nonce: string, input: unknown): JsonObject { this.requireRuntime(nonce); this.agendaAvailable(); return this.agenda.cancel(input) }
+  ownerCancelTask(input: unknown): JsonObject { return this.agenda.cancel(input) }
   startRuntime(nonce: string): void {
     const s = this.document.state
     if (s.active) { s.lastOutcome = 'unknown'; s.lastFinishedAt = this.clock(); s.errorCode = 'AUTONOMY_PREVIOUS_CYCLE_UNKNOWN'; s.active = null; s.ownerPaused = true; this.advance() }
@@ -149,14 +156,19 @@ export class DshAutonomy {
     this.requireRuntime(nonce)
     const s = this.document.state, c = this.document.configuration, now = this.clock()
     this.resetWindow()
-    if (!c.enabled || s.ownerPaused || s.errorCode || !this.runtimeReady() || s.active || s.mode === 'waiting' || (s.wakeAt ?? 0) > now || s.cycles >= c.maxCyclesPerHour) return { admitted: false }
+    const scheduled = this.agenda.due(now)
+    if (!c.enabled || s.ownerPaused || s.errorCode || !this.runtimeReady() || s.active || (!scheduled.length && (s.mode === 'waiting' || (s.wakeAt ?? 0) > now)) || s.cycles >= c.maxCyclesPerHour) return { admitted: false }
     if (s.startedAt !== null && now - s.startedAt >= c.maxRunMinutes * 60000) { s.ownerPaused = true; s.errorCode = 'AUTONOMY_RUN_LIMIT'; this.advance(); this.save(); return { admitted: false } }
     s.startedAt ??= now
     const cycle: Cycle = { id: randomUUID(), nonce, startedAt: now, deadline: Math.min(now + c.cycleTimeoutSeconds * 1000, s.startedAt + c.maxRunMinutes * 60000), configurationRevision: this.document.revision, activityRevision: s.revision }
     const activity = { mode: s.mode, note: s.note }
     const runRemainingMs = Math.max(0, s.startedAt + c.maxRunMinutes * 60000 - now)
     s.active = cycle; s.cycles++; s.lastStartedAt = now; s.mode = 'active'; s.wakeAt = null; this.save()
-    return { admitted: true, cycle: { ...cycle }, activity, limits: { minIntervalSeconds: c.minIntervalSeconds, maxCyclesPerHour: c.maxCyclesPerHour, maxRunMinutes: c.maxRunMinutes, runRemainingMs } }
+    // The cycle is durable before its one-shot task messages leave the agenda. A failed
+    // agenda write leaves the task pending and the runtime exposes a fault instead of
+    // silently dropping it.
+    if (scheduled.length) this.agenda.consume(scheduled.map(task => task.id))
+    return { admitted: true, cycle: { ...cycle }, activity, scheduledTasks: scheduled.map(task => ({ id: task.id, message: task.message, dueAt: task.dueAt })), limits: { minIntervalSeconds: c.minIntervalSeconds, maxCyclesPerHour: c.maxCyclesPerHour, maxRunMinutes: c.maxRunMinutes, runRemainingMs } }
   }
   validCycle(nonce: string, id: string): boolean { const { configuration: c, state: s } = this.document; return nonce === this.runtimeNonce && c.enabled && !s.ownerPaused && !s.errorCode && s.active?.id === id && s.active.nonce === nonce && s.active.configurationRevision === this.document.revision && this.clock() < s.active.deadline }
   activeCycle(): Cycle | null { return this.document.state.active ? { ...this.document.state.active } : null }

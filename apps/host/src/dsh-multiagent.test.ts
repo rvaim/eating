@@ -275,7 +275,7 @@ export function apply(ctx){
       expect(Object.keys(batch.payload).sort()).toEqual(batch.kind === 'root' ? ['context', 'eating', 'events'] : ['context', 'eating', 'events', 'task'])
     }
     const rootRequests = requests.filter(request => request.tools?.some(tool => tool.function?.name === 'eating_delegate_task'))
-    expect(rootRequests.every(request => request.tools?.map(tool => tool.function?.name).sort().join(',') === ['eating_activity_state', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity'].join(','))).toBe(true)
+    expect(rootRequests.every(request => request.tools?.map(tool => tool.function?.name).sort().join(',') === ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task'].join(','))).toBe(true)
     expect(requests.filter(request => request.tools?.some(tool => tool.function?.name === 'mcp__qq__qq_send_private_message')).every(request => !request.tools?.some(tool => tool.function?.name === 'mcp__qq__qq_send_group_message'))).toBe(true)
     expect(JSON.stringify(rootRequests.flatMap(request => request.messages?.filter(message => message.role === 'tool') ?? []))).toContain('succeeded')
   }, 90000)
@@ -328,7 +328,7 @@ export function apply(ctx){
     expect(model.errors).toEqual([])
     expect(plugin.isReady()).toBe(true)
     const names = model.requests.map(request => request.tools?.map(tool => tool.function?.name) ?? [])
-    expect(names[0]).toEqual(['eating_activity_state', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity'])
+    expect(names[0]).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task'])
     expect(names[3]).toEqual(names[0])
     expect(names[6]).toEqual(names[0])
     expect(names[1]).toContain('mcp__qq__qq_get_stranger_info')

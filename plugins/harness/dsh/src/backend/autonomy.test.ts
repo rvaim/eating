@@ -136,4 +136,47 @@ describe('owner controlled autonomous activity state', () => {
     expect(() => new DshAutonomy(f.directory, () => true, () => {}, () => {})).toThrow()
     expect(readFileSync(f.activity.filePath, 'utf8')).toBe(bytes)
   })
+  it('delivers due AI scheduled tasks as one opportunity and removes them exactly once', async () => {
+    const f = fixture(); await f.configure(); f.activity.startRuntime('runtime'); await f.control('resume')
+    f.activity.scheduleTask('runtime', { expectedRevision: 0, dueAt: f.now() + 5000, message: 'Task A' })
+    f.activity.scheduleTask('runtime', { expectedRevision: 1, dueAt: f.now() + 5000, message: 'Task B' })
+    const agenda = f.activity.snapshot().agenda as JsonObject
+    expect((agenda.tasks as JsonObject[]).map(task => task.message)).toEqual(['Task A', 'Task B'])
+    f.advance(5000)
+    const first = f.activity.claim('runtime') as JsonObject
+    expect((first.scheduledTasks as JsonObject[]).map(task => task.message)).toEqual(['Task A', 'Task B'])
+    expect((f.activity.snapshot().agenda as JsonObject).tasks).toEqual([])
+    const cycle = first.cycle as JsonObject
+    expect(f.activity.finish('runtime', String(cycle.id), 'completed', null)).toEqual({ accepted: true })
+    f.advance(1000)
+    expect((f.activity.claim('runtime') as JsonObject).scheduledTasks).toEqual([])
+  })
+  it('requires an active unpaused runtime and a current agenda revision to schedule or cancel tasks', async () => {
+    const f = fixture(); await f.configure(); f.activity.startRuntime('runtime')
+    expect(() => f.activity.scheduleTask('runtime', { expectedRevision: 0, dueAt: f.now() + 5000, message: 'Blocked by pause' })).toThrow(expect.objectContaining({ code: 'AUTONOMY_PAUSED' }))
+    await f.control('resume')
+    const scheduled = f.activity.scheduleTask('runtime', { expectedRevision: 0, dueAt: f.now() + 5000, message: 'Task to cancel' }) as JsonObject
+    const taskId = String((scheduled.tasks as JsonObject[])[0]!.id)
+    expect(() => f.activity.scheduleTask('runtime', { expectedRevision: 0, dueAt: f.now() + 6000, message: 'Stale revision' })).toThrow(expect.objectContaining({ code: 'AUTONOMY_AGENDA_CONFLICT' }))
+    f.activity.cancelTask('runtime', { expectedRevision: 1, taskId })
+    expect((f.activity.snapshot().agenda as JsonObject).tasks).toEqual([])
+    expect(() => f.activity.cancelTask('runtime', { expectedRevision: 2, taskId })).toThrow(expect.objectContaining({ code: 'AUTONOMY_TASK_NOT_FOUND' }))
+  })
+  it('keeps AI tasks across restart and lets the owner cancel them while paused', async () => {
+    const f = fixture(); await f.configure(); f.activity.startRuntime('old'); await f.control('resume')
+    const scheduled = f.activity.scheduleTask('old', { expectedRevision: 0, dueAt: f.now() + 10000, message: 'Persisted task' }) as JsonObject
+    const taskId = String((scheduled.tasks as JsonObject[])[0]!.id)
+    const reopened = new DshAutonomy(f.directory, () => true, () => {}, () => {}, f.now)
+    const restored = reopened.snapshot().agenda as JsonObject
+    expect((restored.tasks as JsonObject[]).map(task => task.message)).toEqual(['Persisted task'])
+    reopened.ownerCancelTask({ expectedRevision: restored.revision, taskId })
+    expect((reopened.snapshot().agenda as JsonObject).tasks).toEqual([])
+  })
+  it('rejects corrupted AI task files without overwriting them', async () => {
+    const f = fixture(); await f.configure()
+    const agendaPath = join(f.directory, 'autonomy-agenda.json'), bytes = '{"schemaVersion":1,"revision":0,"tasks":[{"bad":true}]}'
+    writeFileSync(agendaPath, bytes)
+    expect(() => new DshAutonomy(f.directory, () => true, () => {}, () => {})).toThrow()
+    expect(readFileSync(agendaPath, 'utf8')).toBe(bytes)
+  })
 })

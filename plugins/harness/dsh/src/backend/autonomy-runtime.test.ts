@@ -16,16 +16,18 @@ describe('native autonomous driver publication lifecycle', () => {
         ctx: { tools: { register: (tool: typeof tools[number]) => tools.push(tool) }, systemPrompt: { section: (section: typeof sections[number]) => sections.push(section) } } }
       const ctx = { agents: { get: () => agent }, sessions: { flush: vi.fn(async () => true) }, on: () => () => {}, get: () => undefined }
       const createUserMessage = vi.fn((message: { content: { type: string; text: string }[]; source: { kind: string; cycleId: string; nonce: string } }) => ({ id: 'fixture-message', ...message }))
+      let scheduledTask: unknown
       const context = {
         process: { env: { EATING_DSH_AUTONOMY: 'true' } }, sessionId: 'root', ctx, releases, initialization, nonce: 'fixture-runtime',
         loadModule: async () => ({ createUserMessage }),
-        control: async (operation: string) => operation === 'autonomy-snapshot' ? { ready: true, configuration: { enabled: true, targets: [{ id: 'legacy-target' }] }, state: { ownerPaused: false, errorCode: null, active: null }, contactPolicy: { mode: 'all', entryCount: 1 } }
-          : operation === 'autonomy-claim' ? { admitted: true, cycle, activity, limits } : {},
+        control: async (operation: string, body?: { task?: unknown }) => operation === 'autonomy-snapshot' ? { ready: true, configuration: { enabled: true, targets: [{ id: 'legacy-target' }] }, state: { ownerPaused: false, errorCode: null, active: null }, contactPolicy: { mode: 'all', entryCount: 1 } }
+          : operation === 'autonomy-claim' ? { admitted: true, cycle, activity, limits }
+          : operation === 'autonomy-schedule-task' ? (scheduledTask = body?.task, { revision: 1, tasks: [] }) : {},
         record: (value: unknown) => value !== null && typeof value === 'object', opaque: () => true, runDelegation: () => {}, createHash: () => {},
       }
       const mount = new Function(...Object.keys(context), getAutonomyRuntimeSource() + '\nreturn mountAutonomy;')(...Object.values(context)) as (agent: unknown) => Promise<string[]>
       const names = await mount(agent)
-      expect(names).toEqual(['eating_activity_state', 'eating_plan_activity', 'eating_list_contact_targets', 'eating_contact_target'])
+      expect(names).toEqual(['eating_activity_state', 'eating_plan_activity', 'eating_schedule_task', 'eating_cancel_scheduled_task', 'eating_list_contact_targets', 'eating_contact_target'])
       expect(tools.map(tool => tool.name)).toEqual(names)
       for (const tool of tools) expect(tool.description).toMatch(/^\p{Script=Han}/u)
       expect(tools[1]!.parameters).toMatchObject({ properties: { mode: { enum: ['active', 'sleeping', 'waiting'] } }, required: ['expected_revision', 'mode', 'wake_at', 'note'], additionalProperties: false })
@@ -37,6 +39,10 @@ describe('native autonomous driver publication lifecycle', () => {
       const modelState = await stateTool.execute!({}, { agent, callId: 'fixture-state', signal: new AbortController().signal })
       expect(modelState).toMatchObject({ configuration: { enabled: true }, contactPolicy: { mode: 'all', entryCount: 1 } })
       expect(JSON.stringify(modelState)).not.toContain('targets')
+      const scheduleTool = tools.find(tool => tool.name === 'eating_schedule_task')!
+      const dueAt = new Date(Date.now() + 60000).toISOString()
+      await scheduleTool.execute!({ expected_agenda_revision: 0, due_at: dueAt, message: 'Later task' }, { agent, callId: 'fixture-schedule', signal: new AbortController().signal })
+      expect(scheduledTask).toEqual({ expectedRevision: 0, dueAt: Date.parse(dueAt), message: 'Later task' })
 
       await vi.advanceTimersByTimeAsync(1000)
       expect(createUserMessage).toHaveBeenCalledOnce()
@@ -46,7 +52,7 @@ describe('native autonomous driver publication lifecycle', () => {
       expect(message.content[0]!.type).toBe('text')
       const envelope = JSON.parse(message.content[0]!.text)
       expect(Object.keys(envelope).sort()).toEqual(['eating_autonomous_opportunity', 'instruction'])
-      expect(envelope.eating_autonomous_opportunity).toEqual({ cycleId: cycle.id, activity, limits })
+      expect(envelope.eating_autonomous_opportunity).toEqual({ cycleId: cycle.id, activity, scheduledTasks: [], limits })
       expect(envelope.instruction).toMatch(/^\p{Script=Han}/u)
       expect(agent.followup).toHaveBeenCalledExactlyOnceWith(message)
       expect(ctx.sessions.flush).toHaveBeenCalledExactlyOnceWith(agent.session)
@@ -84,12 +90,12 @@ describe('native autonomous driver publication lifecycle', () => {
       await expect(mount(first)).rejects.toThrow('already owns')
       current = undefined
       const second = newAgent()
-      await expect(mount(second)).resolves.toHaveLength(4)
+      await expect(mount(second)).resolves.toHaveLength(6)
       current = second
       const before = reads.length
       await vi.advanceTimersByTimeAsync(1000)
       expect(reads.length - before).toBe(1)
-      expect(second.ctx.tools.register).toHaveBeenCalledTimes(4)
+      expect(second.ctx.tools.register).toHaveBeenCalledTimes(6)
       for (const release of releases) release()
       initialization.abort()
       const stopped = reads.length

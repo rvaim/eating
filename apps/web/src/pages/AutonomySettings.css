@@ -58,6 +58,13 @@
 .autonomy-arrangement-note { max-width: 75ch; margin-top: 8px; line-height: 1.75; font-size: 14px; }
 .autonomy-next-wake { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 14px; margin-top: 15px; color: var(--color-muted); font-size: 13px; }
 .autonomy-next-wake time { color: var(--color-ink); font-variant-numeric: tabular-nums; }
+.autonomy-agenda { padding: 20px 0; border-top: 1px solid var(--color-line); }
+.autonomy-agenda ul { list-style: none; margin: 12px 0 0; padding: 0; }
+.autonomy-agenda li { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 10px 16px; padding: 12px 0; border-bottom: 1px solid var(--color-line); }
+.autonomy-agenda-copy { display: flex; flex: 1; flex-direction: column; gap: 6px; min-width: 220px; }
+.autonomy-agenda-copy strong { font-size: 14px; font-weight: 500; line-height: 1.65; overflow-wrap: anywhere; white-space: pre-wrap; }
+.autonomy-agenda-copy time { color: var(--color-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.autonomy-agenda .text-button { flex-shrink: 0; }
 .autonomy-usage { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; padding: 20px 0; border-block: 1px solid var(--color-line); }
 .autonomy-usage > div { padding-inline: 24px; min-width: 0; border-right: 1px solid var(--color-line); }
 .autonomy-usage > div:first-child { padding-left: 0; }

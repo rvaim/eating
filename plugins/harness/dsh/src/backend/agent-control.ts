@@ -252,6 +252,8 @@ export class DshAgentControl {
           else if (operation === 'claim' && Object.keys(body).length === 1) { result = this.host.hasPendingMessages?.() ? { admitted: false } : this.activity.claim(this.nonce) }
           else if (operation === 'valid' && Object.keys(body).length === 2 && typeof body.cycleId === 'string') result = { valid: this.activity.validCycle(this.nonce, body.cycleId) }
           else if (operation === 'decide' && Object.keys(body).length === 2) result = this.activity.decide(this.nonce, body.decision)
+          else if (operation === 'schedule-task' && Object.keys(body).length === 2 && isJsonObject(body.task)) result = this.activity.scheduleTask(this.nonce, body.task)
+          else if (operation === 'cancel-scheduled-task' && Object.keys(body).length === 2 && isJsonObject(body.task)) result = this.activity.cancelTask(this.nonce, body.task)
           else if (operation === 'finish' && Object.keys(body).length === 4 && typeof body.cycleId === 'string' && ['completed', 'failed', 'unknown', 'cancelled'].includes(String(body.outcome))) { result = this.activity.finish(this.nonce, body.cycleId, body.outcome as 'completed', typeof body.code === 'string' ? body.code : null); this.host.wake() }
           else if (operation === 'targets' && Object.keys(body).length === 1) result = { targets: (await this.activity.listTargets()).map(target => ({ id: target.id, label: target.label, agentTypeId: target.agentTypeId, pluginId: target.pluginId, targetId: target.targetId, tools: [...target.toolNames] })) }
           else fail('CONTROL_REQUEST_INVALID', '自主运行请求形状无效。')

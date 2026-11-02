@@ -43,6 +43,14 @@ describe('trusted native Agent control boundary', () => {
     return { ...f, activity, cycle }
   }
 
+  it('exposes a contact policy summary beside activity state without a real contact directory', async () => {
+    const f = await autonomousFixture()
+    f.control.setAutonomy(f.activity, () => parentId, () => true, () => ({ schemaVersion: 1, revision: 4, mode: 'all', entryCount: 1 }))
+    const response = await f.post('/autonomy-snapshot', { agentId: parentId })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ contactPolicy: { schemaVersion: 1, revision: 4, mode: 'all', entryCount: 1 }, state: { revision: expect.any(Number) } })
+  })
+
   it('requires an admitted main round and exact saved contact while persisting native call replay protection', async () => {
     const f = await autonomousFixture()
     const input = { agentId: parentId, targetId: 'contact', cycleId: f.cycle.id, taskId: '1'.repeat(64) }

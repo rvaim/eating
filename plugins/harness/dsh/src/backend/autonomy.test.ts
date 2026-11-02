@@ -66,6 +66,26 @@ describe('owner controlled autonomous activity state', () => {
     f.advance(9000); expect(f.activity.claim('runtime').admitted).toBe(false)
     f.advance(1000); expect(f.activity.claim('runtime').admitted).toBe(true)
   })
+  it('does not charge a sleeping interval to the continuous run limit', async () => {
+    const f = fixture(); await f.configure({ maxRunMinutes: 120 }); f.activity.startRuntime('runtime'); await f.control('resume')
+    const cycle = f.activity.claim('runtime').cycle as JsonObject
+    f.activity.decide('runtime', { expectedActivityRevision: state(f.activity).revision, mode: 'sleeping', wakeAt: f.now() + 8 * 3600000, note: 'Sleep through the night' })
+    f.activity.finish('runtime', String(cycle.id), 'completed', null)
+    f.advance(8 * 3600000)
+    expect(state(f.activity)).toMatchObject({ ownerPaused: false, errorCode: null, mode: 'sleeping' })
+    const next = f.activity.claim('runtime')
+    expect(next.admitted).toBe(true)
+    expect(next.limits).toMatchObject({ maxRunMinutes: 120, runRemainingMs: 120 * 60000 })
+  })
+  it('starts a new active segment when the runtime restarts after downtime', async () => {
+    const f = fixture(); await f.configure({ maxRunMinutes: 120, autoResume: true }); f.activity.startRuntime('first'); await f.control('resume')
+    const cycle = f.activity.claim('first').cycle as JsonObject
+    f.activity.finish('first', String(cycle.id), 'completed', null)
+    f.advance(121 * 60000)
+    f.activity.startRuntime('second')
+    expect(state(f.activity)).toMatchObject({ ownerPaused: false, errorCode: null, mode: 'active' })
+    expect(f.activity.claim('second').admitted).toBe(true)
+  })
   it('revokes in-flight authority on pause and refuses the AI to resume owner-paused activity', async () => {
     const f = fixture(); await f.configure({ targets: [target] }); f.activity.startRuntime('runtime'); await f.control('resume')
     const cycle = f.activity.claim('runtime').cycle as JsonObject

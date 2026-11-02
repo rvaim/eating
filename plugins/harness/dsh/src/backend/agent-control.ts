@@ -43,6 +43,7 @@ export class DshAgentControl {
   private activity: DshAutonomy | null = null
   private rootId: () => string | null = () => null
   private runtimeReady: () => boolean = () => false
+  private contactPolicySummary: (() => JsonObject) | null = null
   private bindings: AgentBinding[] = []
   private server: Server | null = null
   private secret = ''
@@ -94,7 +95,9 @@ export class DshAgentControl {
     }
   }
 
-  setAutonomy(activity: DshAutonomy, rootId: () => string | null, runtimeReady: () => boolean): void { this.activity = activity; this.rootId = rootId; this.runtimeReady = runtimeReady }
+  setAutonomy(activity: DshAutonomy, rootId: () => string | null, runtimeReady: () => boolean, contactPolicySummary?: () => JsonObject): void {
+    this.activity = activity; this.rootId = rootId; this.runtimeReady = runtimeReady; this.contactPolicySummary = contactPolicySummary ?? null
+  }
   proactiveStatus(): JsonObject[] { return this.proactiveBindings.map(binding => ({ agentId: binding.agentId, targetId: binding.target.id, label: binding.target.label, taskId: binding.task.taskId, state: binding.task.state })) }
   private saveProactive(): void {
     const value = { schemaVersion: 1, bindings: this.proactiveBindings as unknown as JsonValue[] }
@@ -252,6 +255,7 @@ export class DshAgentControl {
           else if (operation === 'finish' && Object.keys(body).length === 4 && typeof body.cycleId === 'string' && ['completed', 'failed', 'unknown', 'cancelled'].includes(String(body.outcome))) { result = this.activity.finish(this.nonce, body.cycleId, body.outcome as 'completed', typeof body.code === 'string' ? body.code : null); this.host.wake() }
           else if (operation === 'targets' && Object.keys(body).length === 1) result = { targets: (await this.activity.listTargets()).map(target => ({ id: target.id, label: target.label, agentTypeId: target.agentTypeId, pluginId: target.pluginId, targetId: target.targetId, tools: [...target.toolNames] })) }
           else fail('CONTROL_REQUEST_INVALID', '自主运行请求形状无效。')
+          if (this.contactPolicySummary) result = { ...result, contactPolicy: this.contactPolicySummary() }
           response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result)); return
         }
         if (request.url === '/prepare-proactive') {

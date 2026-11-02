@@ -9,8 +9,8 @@ describe('native autonomous driver publication lifecycle', () => {
     try {
       const cycle = { id: 'fixture-cycle', deadline: Date.now() + 60000 }
       const activity = { mode: 'active', note: '继续未完成的创作' }
-      const limits = { minIntervalSeconds: 60, maxCyclesPerHour: 10 }
-      const tools: { name: string; description: string; parameters: unknown }[] = []
+      const limits = { minIntervalSeconds: 60, maxCyclesPerHour: 10, maxRunMinutes: 120, runRemainingMs: 7200000 }
+      const tools: { name: string; description: string; parameters: unknown; execute?: (args: unknown, exec: unknown) => Promise<unknown> }[] = []
       const sections: { name: string; order: number; interpolate: boolean; text: () => string }[] = []
       const agent = { id: 'root', status: 'idle', session: { id: 'root' }, followup: vi.fn(), cancel: () => {}, inbox: { nextTurn: [], nextStep: [], remove: () => false },
         ctx: { tools: { register: (tool: typeof tools[number]) => tools.push(tool) }, systemPrompt: { section: (section: typeof sections[number]) => sections.push(section) } } }
@@ -19,7 +19,7 @@ describe('native autonomous driver publication lifecycle', () => {
       const context = {
         process: { env: { EATING_DSH_AUTONOMY: 'true' } }, sessionId: 'root', ctx, releases, initialization, nonce: 'fixture-runtime',
         loadModule: async () => ({ createUserMessage }),
-        control: async (operation: string) => operation === 'autonomy-snapshot' ? { ready: true, configuration: { enabled: true }, state: { ownerPaused: false, errorCode: null, active: null } }
+        control: async (operation: string) => operation === 'autonomy-snapshot' ? { ready: true, configuration: { enabled: true, targets: [{ id: 'legacy-target' }] }, state: { ownerPaused: false, errorCode: null, active: null }, contactPolicy: { mode: 'all', entryCount: 1 } }
           : operation === 'autonomy-claim' ? { admitted: true, cycle, activity, limits } : {},
         record: (value: unknown) => value !== null && typeof value === 'object', opaque: () => true, runDelegation: () => {}, createHash: () => {},
       }
@@ -32,6 +32,11 @@ describe('native autonomous driver publication lifecycle', () => {
       expect(sections).toHaveLength(1)
       expect(sections[0]).toMatchObject({ name: 'eating:autonomy-policy', order: 20, interpolate: false })
       expect(sections[0]!.text()).toMatch(/^\p{Script=Han}/u)
+
+      const stateTool = tools.find(tool => tool.name === 'eating_activity_state')!
+      const modelState = await stateTool.execute!({}, { agent, callId: 'fixture-state', signal: new AbortController().signal })
+      expect(modelState).toMatchObject({ configuration: { enabled: true }, contactPolicy: { mode: 'all', entryCount: 1 } })
+      expect(JSON.stringify(modelState)).not.toContain('targets')
 
       await vi.advanceTimersByTimeAsync(1000)
       expect(createUserMessage).toHaveBeenCalledOnce()

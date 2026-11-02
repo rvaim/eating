@@ -98,7 +98,10 @@ export class DshAutonomy {
     if (['ready', 'waiting-event', 'sleeping', 'interval', 'hourly-limit'].includes(reason) && this.runtimeNonce && now - (this.observed?.at ?? this.runtimeStartedAt) > 15000) reason = 'status-unavailable'
     else if (reason === 'ready' && this.observed && now - this.observed.at < 5000 && this.observed.phase !== 'idle') reason = this.observed.phase
     const nextWakeAt = reason === 'hourly-limit' ? state.windowAt + 3600000 : state.ownerPaused || !configuration.enabled || state.mode === 'waiting' ? null : state.wakeAt
-    return { protocolVersion: 1, revision: this.document.revision, configuration: structuredClone(configuration) as unknown as JsonObject, state: { ...structuredClone(state), cycles: reset ? 0 : state.cycles, contacts: reset ? 0 : state.contacts, reason, nextWakeAt, runtimeReady: this.runtimeReady(), observedAt: this.observed?.at ?? null } as unknown as JsonObject }
+    // Only an active segment consumes the continuous-run budget. Sleeping/waiting
+    // ends the segment; the next admitted cycle starts a new one.
+    const runRemainingMs = state.startedAt === null ? configuration.maxRunMinutes * 60000 : Math.max(0, state.startedAt + configuration.maxRunMinutes * 60000 - now)
+    return { protocolVersion: 1, revision: this.document.revision, configuration: structuredClone(configuration) as unknown as JsonObject, state: { ...structuredClone(state), cycles: reset ? 0 : state.cycles, contacts: reset ? 0 : state.contacts, reason, nextWakeAt, runtimeReady: this.runtimeReady(), observedAt: this.observed?.at ?? null, runRemainingMs } as unknown as JsonObject }
   }
   async configure(input: unknown): Promise<JsonObject> {
     if (!isJsonObject(input) || !exact(input, ['expectedRevision', 'configuration']) || input.expectedRevision !== this.document.revision) fail('AUTONOMY_CONFIGURATION_CONFLICT', 409)
@@ -125,6 +128,8 @@ export class DshAutonomy {
     const s = this.document.state
     if (s.active) { s.lastOutcome = 'unknown'; s.lastFinishedAt = this.clock(); s.errorCode = 'AUTONOMY_PREVIOUS_CYCLE_UNKNOWN'; s.active = null; s.ownerPaused = true; this.advance() }
     if (!this.document.configuration.autoResume) s.ownerPaused = true
+    // A runtime start begins a new active segment; downtime is not continuous activity.
+    s.startedAt = null
     this.runtimeNonce = nonce; this.runtimeStartedAt = this.clock(); this.observed = null
     if (this.document.configuration.enabled || s.errorCode) this.save()
   }
@@ -149,8 +154,9 @@ export class DshAutonomy {
     s.startedAt ??= now
     const cycle: Cycle = { id: randomUUID(), nonce, startedAt: now, deadline: Math.min(now + c.cycleTimeoutSeconds * 1000, s.startedAt + c.maxRunMinutes * 60000), configurationRevision: this.document.revision, activityRevision: s.revision }
     const activity = { mode: s.mode, note: s.note }
+    const runRemainingMs = Math.max(0, s.startedAt + c.maxRunMinutes * 60000 - now)
     s.active = cycle; s.cycles++; s.lastStartedAt = now; s.mode = 'active'; s.wakeAt = null; this.save()
-    return { admitted: true, cycle: { ...cycle }, activity, limits: { minIntervalSeconds: c.minIntervalSeconds, maxCyclesPerHour: c.maxCyclesPerHour } }
+    return { admitted: true, cycle: { ...cycle }, activity, limits: { minIntervalSeconds: c.minIntervalSeconds, maxCyclesPerHour: c.maxCyclesPerHour, maxRunMinutes: c.maxRunMinutes, runRemainingMs } }
   }
   validCycle(nonce: string, id: string): boolean { const { configuration: c, state: s } = this.document; return nonce === this.runtimeNonce && c.enabled && !s.ownerPaused && !s.errorCode && s.active?.id === id && s.active.nonce === nonce && s.active.configurationRevision === this.document.revision && this.clock() < s.active.deadline }
   activeCycle(): Cycle | null { return this.document.state.active ? { ...this.document.state.active } : null }
@@ -163,6 +169,9 @@ export class DshAutonomy {
     if (input.mode === 'sleeping' ? !integer(input.wakeAt, now + 1000, now + 365 * 86400000) : input.wakeAt !== null) fail()
     const s = this.document.state
     this.advance(); s.mode = input.mode as AutonomyState['mode']; s.note = input.note; s.wakeAt = input.mode === 'sleeping' ? input.wakeAt as number : input.mode === 'active' ? now + this.document.configuration.minIntervalSeconds * 1000 : null
+    // A sleep/wait boundary ends the active segment. Otherwise a long sleep
+    // would consume maxRunMinutes and pause the bot before it can wake again.
+    if (input.mode !== 'active') s.startedAt = null
     this.save(); return this.snapshot()
   }
   finish(nonce: string, cycleId: string, outcome: 'completed' | 'failed' | 'unknown' | 'cancelled', code: string | null): JsonObject {

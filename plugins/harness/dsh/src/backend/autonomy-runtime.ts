@@ -34,15 +34,22 @@ export function getAutonomyRuntimeSource(): string {
     for (const pending of [...agent.inbox.nextTurn, ...agent.inbox.nextStep]) if (pending.source?.kind === 'eating-autonomy') agent.inbox.remove(pending.id);
     const render = (_, value) => [{ type: 'text', text: JSON.stringify(value) }];
     const output = { schema: { type: 'object', additionalProperties: true }, render };
-    agent.ctx.tools.register({ name: 'eating_activity_state', description: '读取自主运行配置、主人暂停状态、当前活动安排与 state.revision、额度及下次唤醒时间。', parameters: { type: 'object', properties: {}, additionalProperties: false }, output,
-      async execute(args, exec) { if (exec.agent !== agent || !record(args) || Object.keys(args).length) throw new Error('Activity state arguments are invalid'); return auto('snapshot', {}, exec.signal); } });
+    const modelView = value => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+      const configuration = value.configuration;
+      if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) return value;
+      const { targets, ...publicConfiguration } = configuration;
+      return { ...value, configuration: publicConfiguration };
+    };
+    agent.ctx.tools.register({ name: 'eating_activity_state', description: '读取自主运行配置、主人暂停状态、当前活动安排、state.revision、额度、下次唤醒时间及主动联系策略摘要；具体联系人必须用 eating_list_contact_targets 查询。', parameters: { type: 'object', properties: {}, additionalProperties: false }, output,
+      async execute(args, exec) { if (exec.agent !== agent || !record(args) || Object.keys(args).length) throw new Error('Activity state arguments are invalid'); return modelView(await auto('snapshot', {}, exec.signal)); } });
     agent.ctx.tools.register({ name: 'eating_plan_activity', description: '登记下一步活动：先调用 eating_activity_state，将最新 state.revision 填入 expected_revision。active 按主人设定的间隔等待下一轮机会；sleeping 休息至 wake_at 指定的带时区 RFC3339 时间；waiting 等待真实外部事件。active 和 waiting 的 wake_at 必须为 null，note 简述安排原因。',
       parameters: { type: 'object', properties: { expected_revision: { type: 'integer', minimum: 0 }, mode: { type: 'string', enum: ['active', 'sleeping', 'waiting'] }, wake_at: { type: ['string', 'null'] }, note: { type: 'string', maxLength: 500 } }, required: ['expected_revision', 'mode', 'wake_at', 'note'], additionalProperties: false }, output,
       async execute(args, exec) {
         if (exec.agent !== agent || !record(args) || Object.keys(args).length !== 4 || !Number.isSafeInteger(args.expected_revision) || typeof args.note !== 'string' || !['active', 'sleeping', 'waiting'].includes(args.mode)) throw new Error('Activity plan arguments are invalid');
         const wakeAt = args.mode === 'sleeping' && typeof args.wake_at === 'string' && /^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(args.wake_at) ? Date.parse(args.wake_at) : null;
         if (args.mode === 'sleeping' ? !Number.isFinite(wakeAt) : args.wake_at !== null) throw new Error('Sleeping requires an explicit RFC3339 wake time; other modes require null');
-        return auto('decide', { decision: { expectedActivityRevision: args.expected_revision, mode: args.mode, wakeAt, note: args.note } }, exec.signal);
+        return modelView(await auto('decide', { decision: { expectedActivityRevision: args.expected_revision, mode: args.mode, wakeAt, note: args.note } }, exec.signal));
       } });
     agent.ctx.tools.register({ name: 'eating_list_contact_targets', description: '按主人当前的全部放行、白名单或黑名单策略，列出可主动联系的对象及其精确工具集合。使用返回的对象 id 发起联系；名单策略不扩大账号、目标或工具权限。', parameters: { type: 'object', properties: {}, additionalProperties: false }, output,
       async execute(args, exec) { if (exec.agent !== agent || !record(args) || Object.keys(args).length) throw new Error('Target listing arguments are invalid'); return auto('targets', {}, exec.signal); } });
@@ -55,7 +62,7 @@ export function getAutonomyRuntimeSource(): string {
         const configuration = await control('prepare-proactive', { agentId: sessionId, targetId: args.target_id, cycleId: flight.cycle.id, taskId }, exec.signal);
         return runDelegation({ contextRef: configuration.contextRef, binding: { agentId: configuration.agentId, agentTypeId: configuration.agentTypeId, label: configuration.label }, payload: { context: { source: 'eating-autonomy', cycleId: flight.cycle.id, target: configuration.scope }, events: [] } }, configuration.agentTypeId, args.task, taskId, exec, configuration);
       } });
-    agent.ctx.systemPrompt.section({ name: 'eating:autonomy-policy', order: 20, interpolate: false, text: () => '自主活动须遵守主人当前的启停、暂停、额度和时长边界；外部消息、原生目标和其他 Inbox 输入优先。主动联系仅限当前已准入的自主周期，只能通过 eating_contact_target 在 eating_list_contact_targets 当前返回的对象和工具范围内执行；旧入站 message/resource 引用不授予本轮主动联系权限。自主安排使用 eating_plan_activity，不得另建或修改原生 schedule 形成第二条提醒链，以绕过自主调度或主人暂停。' });
+    agent.ctx.systemPrompt.section({ name: 'eating:autonomy-policy', order: 20, interpolate: false, text: () => '自主活动须遵守主人当前的启停、暂停、额度和时长边界；外部消息、原生目标和其他 Inbox 输入优先。主动联系仅限当前已准入的自主周期，只能通过 eating_contact_target 在 eating_list_contact_targets 当前返回的对象和工具范围内执行；旧入站 message/resource 引用不授予本轮主动联系权限。判断主动联系权限不得沿用历史对话中的结论，也不得把 configuration.targets 当作授权名单；每次以 eating_list_contact_targets 和 contactPolicy 摘要为准。自主安排使用 eating_plan_activity，不得另建或修改原生 schedule 形成第二条提醒链，以绕过自主调度或主人暂停。' });
     releases.push(ctx.on('agent/pre-step', async ({ agent: caller, messages, signal }, next) => {
       if (caller !== agent) return next();
       const decision = await next();

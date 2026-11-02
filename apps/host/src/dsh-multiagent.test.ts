@@ -277,7 +277,7 @@ export function apply(ctx){
     const rootRequests = requests.filter(request => request.tools?.some(tool => tool.function?.name === 'eating_delegate_task'))
     for (const request of rootRequests) {
       const tools = request.tools?.map(tool => tool.function?.name) ?? []
-      expect(tools).toEqual(expect.arrayContaining(['read', 'write', 'edit', 'web_fetch', 'web_search']))
+      expect(tools.filter(name => !name?.startsWith('eating_') && !name?.startsWith('mcp__'))).toEqual([])
       expect(tools.some(name => name?.startsWith('mcp__qq__'))).toBe(false)
     }
     expect(rootRequests.every(request => request.tools?.map(tool => tool.function?.name).filter(name => name?.startsWith('eating_')).sort().join(',') === ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task'].join(','))).toBe(true)
@@ -334,7 +334,7 @@ export function apply(ctx){
     expect(plugin.isReady()).toBe(true)
     const names = model.requests.map(request => request.tools?.map(tool => tool.function?.name) ?? [])
     expect(names[0]?.filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task'])
-    expect(names[0]).toEqual(expect.arrayContaining(['read', 'write', 'edit', 'web_fetch', 'web_search']))
+    expect(names[0]?.filter(name => !name?.startsWith('eating_') && !name?.startsWith('mcp__'))).toEqual([])
     expect(names[0]?.some(name => name?.startsWith('mcp__qq__'))).toBe(false)
     expect(names[3]).toEqual(names[0])
     expect(names[6]).toEqual(names[0])

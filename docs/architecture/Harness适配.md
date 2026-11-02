@@ -34,7 +34,7 @@ DSH复用系统安装的命令与 Web 组件，使用 Eating 专属的DSH_HOME�
 
 ## 分层规则与原生委派
 
-原生能力与插件使用Eating专属Profile及正式管理入口，配置／安装与管理进程排他。[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)保新main平台全部feature、files写／编辑、web.search及Eating专属danger-full-access／approval never默认，主人可显式再配。main非reserved全局工具与所有Agent功能型native Profile MCP默认自动可用，其他子非MCP仍toolGrants精确选择；schema1可选toolAccessOverrides以同名精确指纹＋类型优先，可关main／空禁用，指纹变化不回落开放，catalog.automaticAccess说明默认，feature选择保持。Host新source默认all含未来类型／工具，custom为该source精确例外且可恢复all，accessPolicy为策略／自管null，grant为有效摘要。策略和来源拓扑一次性重挂，仅恢复原connected且同一启用实例，owner stop优先，不重放unknown；direct在途撤权可能source error需主人显式connect。通讯／资源scope保持。
+原生能力与插件使用Eating专属Profile及正式管理入口，配置／安装与管理进程排他。[ADR-0036](../decisions/ADR-0036-功能插件与Harness原生功能默认边界.md)将新Harness原生feature收窄为仅time默认开启，其他由主人按需配置；Eating专属danger-full-access／approval never默认保持，已有feature选择不重写。main非reserved全局工具与所有Agent功能型native Profile MCP默认自动可用，其他子非MCP仍toolGrants精确选择；schema1可选toolAccessOverrides以同名精确指纹＋类型优先，可关main／空禁用，指纹变化不回落开放，catalog.automaticAccess说明默认，feature选择保持。Host新source默认all含未来类型／工具，custom为该source精确例外且可恢复all，accessPolicy为策略／自管null，grant为有效摘要。策略和来源拓扑一次性重挂，仅恢复原connected且同一启用实例，owner stop优先，不重放unknown；direct在途撤权可能source error需主人显式connect。通讯／资源scope保持。
 
 | 对象 | 受信system顺序 | 工具 |
 | --- | --- | --- |

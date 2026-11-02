@@ -126,6 +126,7 @@ test.describe('DSH 原生能力与插件管理', () => {
     const row = page.locator('details.dsh-native-row').filter({ has: page.getByText('@deepseek-ai/dsh-tool-fs', { exact: true }) }).first()
     await row.locator('summary').click()
     await row.getByRole('checkbox', { name: '启用', exact: true }).check()
+    await row.getByRole('checkbox', { name: '主 Agent', exact: true }).check()
     await row.getByRole('checkbox', { name: 'QQ 群聊', exact: true }).check()
     const editor = row.getByRole('textbox', { name: '原生模块配置（JSON）', exact: true })
     await editor.fill('{\n  "tool-fs": { "read": true, "write": true }\n}')

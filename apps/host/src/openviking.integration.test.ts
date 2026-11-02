@@ -35,7 +35,7 @@ function expectMainMemoryTools(request: JsonObject) {
   const eating = ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task']
   const memory = ['memory_search', 'memory_read', 'memory_save', 'memory_scopes'].map(name => 'mcp__plugin_openviking_memory__' + name)
   expect(names.filter(name => name.startsWith('eating_') || name.startsWith('mcp__'))).toEqual([...eating, ...memory].sort())
-  expect(names).toEqual(expect.arrayContaining(['bash', 'read', 'write', 'edit', 'web_search', 'schedule_create', 'schedule_update']))
+  expect(names.filter(name => !name.startsWith('eating_') && !name.startsWith('mcp__'))).toEqual([])
   expect(names.some(name => name.startsWith('mcp__qq__'))).toBe(false)
 }
 function batch(kind: 'private' | 'group', senderId = '200'): HarnessDeliveryBatch { const conversationId = `qq:100:${kind}:200`, stamp = new Date().toISOString(); return { protocolVersion: 1, batchId: 'a'.repeat(64), conversationId, createdAt: stamp, reason: 'quiet-window', events: [{ protocolVersion: 1, eventId: 'event', pluginId: 'qq', instanceId: 'fixture', platform: 'qq', accountId: '100', conversationId, senderId, targetId: '200', receivedAt: stamp, source: { trust: 'external', kind, senderRole: 'owner' }, content: 'fixture', text: 'fixture' }] } }

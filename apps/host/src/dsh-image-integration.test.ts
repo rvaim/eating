@@ -73,7 +73,8 @@ async function imageModelFixture() {
       let text: string
       if (names.includes('eating_delegate_task')) {
         if (batch.kind !== 'root' || names.filter(name => name?.startsWith('eating_')).join(',') !== 'eating_activity_state,eating_cancel_scheduled_task,eating_contact_target,eating_delegate_task,eating_handle_conversation,eating_list_agent_types,eating_list_contact_targets,eating_plan_activity,eating_schedule_task') throw new Error('Main Agent controlled delegation tools changed')
-        if (names.some(name => name?.startsWith('mcp__qq__')) || !['read', 'write', 'edit'].every(name => names.includes(name))) throw new Error('Main Agent lacks its full native scope or inherited QQ communication')
+        expect(names.filter(name => !name.startsWith('eating_') && !name.startsWith('mcp__'))).toEqual([])
+        if (names.some(name => name.startsWith('mcp__qq__'))) throw new Error('Main Agent inherited scoped QQ communication')
         if (!roots.has(batch.contextRef)) {
           roots.add(batch.contextRef)
           call = { name: 'eating_delegate_task', arguments: { type_id: 'qq.private', context_ref: batch.contextRef, task: '仅使用获准图片工具读取本批消息的图片，回报实际图像是否可用；不要发送QQ消息。' } }

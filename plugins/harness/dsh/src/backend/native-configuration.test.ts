@@ -11,34 +11,39 @@ function fixture() { const directory = realpathSync(mkdtempSync(join(realpathSyn
 const input = (file: DshNativeConfigurationFile) => { const value = file.read(); return { expectedRevision: value.revision, features: value.features, toolGrants: value.toolGrants } }
 
 describe('native capabilities current configuration and owner grants', () => {
-  it('defaults main to all platform-native features while preserving child time scopes', () => {
+  it('defaults chat Agents to only time context while retaining native module defaults', () => {
     const file = fixture(), value = file.read()
-    expect(value.features.filter(feature => feature.enabled).map(feature => feature.id)).toEqual(['time', 'files', 'search', 'directory', process.platform === 'win32' ? 'powershell' : 'bash', 'jobs', 'web', 'skills', 'schedule', 'goal', 'todo', 'questions', 'deliverables'])
-    for (const feature of value.features) expect(feature.agentTypeIds).toEqual(!feature.enabled ? [] : feature.id === 'time' ? ['main', 'qq.private', 'qq.group'] : ['main'])
+    expect(value.features.filter(feature => feature.enabled).map(feature => feature.id)).toEqual(['time'])
+    for (const feature of value.features) expect(feature.agentTypeIds).toEqual(feature.id === 'time' ? ['main', 'qq.private', 'qq.group'] : [])
     expect(value.features.find(feature => feature.id === 'time')!.config).toEqual({ 'time-context': { timeZone: 'Asia/Shanghai', refreshIntervalMs: 600000 } })
-    expect(value.features.find(feature => feature.id === 'files')!.config).toEqual({ 'tool-fs': { read: true, readImage: true, write: true, edit: true } })
-    expect(value.features.find(feature => feature.id === 'web')!.config['tool-web']).toEqual({ search: true, fetch: true, fetchTimeoutMs: 30000, searchTimeoutMs: 60000 })
+    expect(value.features.find(feature => feature.id === 'files')!.config).toEqual({ 'tool-fs': { read: true, readImage: true, write: false, edit: false } })
+    expect(value.features.find(feature => feature.id === 'web')!.config['tool-web']).toEqual({ search: false, fetch: true, fetchTimeoutMs: 30000, searchTimeoutMs: 60000 })
     expect(value.toolGrants).toEqual([])
   })
-  it.each(['darwin', 'linux', 'win32'] as const)('enables only the supported shell by default on %s', platform => {
-    const value = defaultNativeCapabilities(['qq.private', 'qq.group'], platform)
-    expect(value.features.find(feature => feature.id === 'bash')).toMatchObject({ enabled: platform !== 'win32', agentTypeIds: platform !== 'win32' ? ['main'] : [] })
-    expect(value.features.find(feature => feature.id === 'powershell')).toMatchObject({ enabled: platform === 'win32', agentTypeIds: platform === 'win32' ? ['main'] : [] })
-    expect(value.features.filter(feature => feature.enabled)).toHaveLength(13)
+  it('deduplicates current time scopes and leaves both platform shells disabled', () => {
+    const value = defaultNativeCapabilities(['qq.private', 'main', 'qq.private', 'qq.group', 'qq.group'])
+    expect(value.features.find(feature => feature.id === 'time')!.agentTypeIds).toEqual(['main', 'qq.private', 'qq.group'])
+    for (const id of ['bash', 'powershell']) expect(value.features.find(feature => feature.id === id)).toMatchObject({ enabled: false, agentTypeIds: [] })
   })
-  it('leaves the optional automatic policy absent when reading fresh or persisted current configurations', () => {
+  it('preserves saved web scopes and absent optional policy without rewriting on read or resetting on save', () => {
     const file = fixture(), current = file.read()
     expect(Object.hasOwn(current, 'toolAccessOverrides')).toBe(false)
     expect(existsSync(file.filePath)).toBe(false)
-    const bytes = JSON.stringify({ ...current, revision: 7 }, null, 2) + '\n'
+    const persisted = { ...current, revision: 5, features: current.features.map(feature => feature.id === 'web' ? { ...feature, enabled: true, agentTypeIds: ['main', 'qq.private', 'qq.group'], config: { ...feature.config, 'tool-web': { search: true, fetch: true, fetchTimeoutMs: 30000, searchTimeoutMs: 60000 } } } : feature) }
+    const bytes = JSON.stringify(persisted, null, 2) + '\n'
     writeFileSync(file.filePath, bytes)
+    expect(file.read()).toEqual(persisted)
     expect(Object.hasOwn(file.read(), 'toolAccessOverrides')).toBe(false)
     expect(Object.hasOwn(publicNativeConfiguration(file.read()), 'toolAccessOverrides')).toBe(false)
-    expect(file.prepare(input(file))).toEqual({ ...current, revision: 7 })
+    expect(file.prepare(input(file))).toEqual(persisted)
     expect(readFileSync(file.filePath, 'utf8')).toBe(bytes)
-    const prepared = file.prepare({ ...input(file), features: current.features.map(feature => feature.id === 'todo' ? { ...feature, enabled: false } : feature) })
-    file.commit(prepared, 7)
-    expect(Object.hasOwn(file.read(), 'toolAccessOverrides')).toBe(false)
+    const prepared = file.prepare({ ...input(file), features: persisted.features.map(feature => feature.id === 'todo' ? { ...feature, enabled: true, agentTypeIds: ['main'] } : feature) })
+    file.commit(prepared, 5)
+    const saved = file.read()
+    expect(saved.revision).toBe(6)
+    expect(saved.features.find(feature => feature.id === 'web')).toEqual(persisted.features.find(feature => feature.id === 'web'))
+    expect(saved.features.filter(feature => feature.enabled).map(feature => feature.id)).toEqual(['time', 'web', 'todo'])
+    expect(Object.hasOwn(saved, 'toolAccessOverrides')).toBe(false)
   })
   it('persists exact custom main and child scopes, an empty disable, and explicit restoration while PATCH omission preserves policy', () => {
     const file = fixture(), native = { name: 'native_echo', fingerprint: 'a'.repeat(64), agentTypeIds: ['qq.private'] }, mcp = { name: 'mcp__profile__find', fingerprint: 'b'.repeat(64), agentTypeIds: ['main', 'qq.group'] }

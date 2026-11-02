@@ -47,7 +47,7 @@ function system(request: ModelFixtureRequest) { return JSON.stringify(request.me
 function toolResults(request: ModelFixtureRequest) { return JSON.stringify(request.messages?.slice(batch(request).messageIndex + 1).filter(message => message.role === 'tool')) }
 function assertRootTools(request: ModelFixtureRequest) {
   expect(tools(request).filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task'])
-  expect(tools(request)).toEqual(expect.arrayContaining(['read', 'write', 'edit', 'web_fetch', 'web_search', 'create_goal']))
+  expect(tools(request).filter(name => !name?.startsWith('eating_') && !name?.startsWith('mcp__'))).toEqual([])
   expect(tools(request).some(name => name?.startsWith('mcp__qq__'))).toBe(false)
 }
 function assertChildTools(request: ModelFixtureRequest, kind: 'private' | 'group', approved: JsonValue | undefined) {

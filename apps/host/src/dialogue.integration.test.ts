@@ -89,7 +89,8 @@ async function fixture(kind: 'chat' | 'image') {
   const model = await startStickersModel((request): FixtureModelAction => {
     const current = batch(request), turns = fixtureToolTurns(request)
     if (current.kind === 'root') {
-      expect(names(request)).toEqual(expect.arrayContaining(mainTools))
+      expect(names(request).filter(name => name.startsWith('eating_') || name.startsWith('mcp__'))).toEqual([...mainTools, ...(kind === 'image' ? imageTools : [])].sort())
+      expect(names(request).filter(name => !name.startsWith('eating_') && !name.startsWith('mcp__'))).toEqual([])
       expect(names(request).some(name => name.startsWith('mcp__qq__'))).toBe(false)
       if (turns.length === 0) return { name: 'eating_handle_conversation', arguments: { context_ref: current.contextRef } }
       expect(turns).toHaveLength(1)
@@ -98,7 +99,7 @@ async function fixture(kind: 'chat' | 'image') {
       return mainSummary
     }
     expect(current.agentTypeId).toBe('qq.private')
-    expect(names(request).filter(name => name.startsWith('mcp__qq__'))).toEqual(['mcp__qq__qq_send_private_message'])
+    expect(names(request)).toEqual(['mcp__qq__qq_send_private_message', ...(kind === 'image' ? imageTools : [])].sort())
     expect(names(request).some(name => name.startsWith('eating_'))).toBe(false)
     if (kind === 'chat') {
       if (!turns.length) {
@@ -230,7 +231,8 @@ async function expectCompletedHandoff(f: Awaited<ReturnType<typeof fixture>>) {
   expect(JSON.stringify(children[0]!.messages)).not.toContain(chatReply)
   expect(JSON.stringify(children[0]!.messages)).not.toContain(imagePrompt)
   for (const request of roots) {
-    expect(names(request)).toEqual(expect.arrayContaining(mainTools))
+    expect(names(request).filter(name => name.startsWith('eating_') || name.startsWith('mcp__'))).toEqual([...mainTools, ...(f.provider ? imageTools : [])].sort())
+    expect(names(request).filter(name => !name.startsWith('eating_') && !name.startsWith('mcp__'))).toEqual([])
     expect(names(request).some(name => name.startsWith('mcp__qq__'))).toBe(false)
     const handler = request.tools!.find(tool => tool.function?.name === 'eating_handle_conversation')!.function!
     const schema = object(handler.parameters)
@@ -242,7 +244,7 @@ async function expectCompletedHandoff(f: Awaited<ReturnType<typeof fixture>>) {
     for (const text of [childMarker, 'DIALOGUE-TYPE-SCOPE', f.originalText]) expect(prompt).not.toContain(text)
   }
   for (const request of children) {
-    expect(names(request).filter(name => name.startsWith('mcp__qq__'))).toEqual(['mcp__qq__qq_send_private_message'])
+    expect(names(request)).toEqual(['mcp__qq__qq_send_private_message', ...(f.provider ? imageTools : [])].sort())
     const prompt = system(request)
     for (const text of [commonMarker, childMarker, persona, `DIALOGUE-TYPE-SCOPE：${selfId}/private/${userId}。`, '我自己理解用户原话']) expect(prompt).toContain(text)
     expect(prompt).not.toContain(mainMarker)

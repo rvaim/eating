@@ -43,7 +43,7 @@ function names(request: ModelFixtureRequest) { return (request.tools ?? []).map(
 function expectMainTools(request: ModelFixtureRequest, mcpTools: readonly string[]) {
   const actual = names(request)
   expect(actual.filter(name => name.startsWith('eating_') || name.startsWith('mcp__'))).toEqual([...rootTools, ...mcpTools].sort())
-  expect(actual).toEqual(expect.arrayContaining(['bash', 'read', 'write', 'edit', 'web_search', 'schedule_create', 'schedule_update']))
+  expect(actual.filter(name => !name.startsWith('eating_') && !name.startsWith('mcp__'))).toEqual([])
   expect(actual.some(name => name.startsWith('mcp__qq__'))).toBe(false)
 }
 function batch(request: ModelFixtureRequest) {

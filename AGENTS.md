@@ -12,7 +12,9 @@
 
 负责人于2026-10-29进一步明确：**“原生web保持原生，不要去修改”“不要你的只读限制，保持原始dshweb即可”。** 原生Web必须使用官方界面、侧栏、主题、消息组件及正常操作；不得注入Eating客户端、CSS、Slot替换、LocaleBridge或额外reader Peer／命令白名单／只读Controller。只保留同一Eating专属DSH进程的服务接入与主人按需取得官方鉴权入口。此前[清单](docs/plans/2026-10-29-原生Web与多模态改造确认清单.md)中的自定义显示与只读部分由本次明确纠正替代，其余受控QQ代理、time-context和MCP图片能力保留。Web恢复完成后，用户进一步明确要求“修改读取图片的功能，让功能正常”，授权修改取图实现本身：删除插件自行预判公网地址的做法，改由系统网络栈解析与路由，使直连、TUN／Fake-IP、系统代理和局域网部署一致可用；仍保会话授权引用、禁重定向、不传认证头、大小／超时与格式校验，不改用户网络或代理配置。不清空资料、不改主DSH，不force push或自动发布。
 
-负责人于2026-11-02最新明确：**主 Agent 负责整体安排、轻量分流与必要协调；普通会话由绑定子 Agent 自行理解、组织回复、选择工具、执行并回报真实回执。默认功能全开放，同时保留主人显式配置能力。** 按[ADR-0035](docs/decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)，已启用且connected的capability／direct MCP新来源默认all，当前／未来工具和类型自动纳入；主人可保存custom精确类型／工具例外并恢复all。原生全局工具也保留自动／自定义覆盖。此纠正替代[ADR-0034](docs/decisions/ADR-0034-主Agent自主决策与功能能力默认开放.md)中删除save-grants／不可配置及普通会话都经task预写的部分。通讯仍核验真实账号／目标／资源scope；新main平台原生feature和Eating专属danger-full-access／approval never默认保持，主人可显式再配。必需主／子规则各合入唯一complete provider，不reset自定义正文／人格，不改主人主DSH或官方Web。主人另已授权删除Eating本地主／子会话，云端自行删除；实际清理、测试、Git与部署由[本轮报告](docs/reports/2026-11-02-会话代理自主处理与默认开放可配置验证清理报告.md)记录，不把审计视为apply完成。
+负责人于2026-11-02最新明确：**主 Agent 负责整体安排、轻量分流与必要协调；普通会话由绑定子 Agent 自行理解、组织回复、选择工具、执行并回报真实回执。默认功能全开放，同时保留主人显式配置能力。** 按[ADR-0035](docs/decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)，已启用且connected的capability／direct MCP新来源默认all，当前／未来工具和类型自动纳入；主人可保存custom精确类型／工具例外并恢复all。原生全局工具也保留自动／自定义覆盖。此纠正替代[ADR-0034](docs/decisions/ADR-0034-主Agent自主决策与功能能力默认开放.md)中删除save-grants／不可配置及普通会话都经task预写的部分。通讯仍核验真实账号／目标／资源scope；新Harness原生feature按ADR-0036仅time默认开启；Eating专属danger-full-access／approval never默认保持，主人可显式再配。必需主／子规则各合入唯一complete provider，不reset自定义正文／人格，不改主人主DSH或官方Web。主人另已授权删除Eating本地主／子会话，云端自行删除；实际清理、测试、Git与部署由[本轮报告](docs/reports/2026-11-02-会话代理自主处理与默认开放可配置验证清理报告.md)记录，不把审计视为apply完成。
+
+负责人于2026-11-03进一步明确：功能型插件默认开放，不代表Harness内置功能默认全开。按[ADR-0036](docs/decisions/ADR-0036-功能插件与Harness原生功能默认边界.md)，新Harness只开启time，其他原生feature保留配置、按需启用；既存主人选择不自动覆盖。现场revision5的time＋web由主人明确保存，部署须保持。
 
 ## 项目不变量
 
@@ -35,7 +37,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`。
 
-当前应用／Host／Web0.17.0，plugin-sdk4.7.0、ui-sdk4.2.0、plugin-core4.0.0，QQ0.13.4、DSH0.15.0、表情包0.1.1、生图0.2.0、记忆源码0.2.0（真实安装0.1.1保持）；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前应用／Host／Web0.17.1，plugin-sdk4.7.0、ui-sdk4.2.0、plugin-core4.0.0，QQ0.13.4、DSH0.15.1、表情包0.1.1、生图0.2.0、记忆源码0.2.0（真实安装0.1.1保持）；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -59,7 +61,7 @@ Eating 不建立聊天历史库；只保存有界未交接规范化信封。send
 
 人格模板只生成新增人格的可编辑草稿，不自动保存或启用，名称由主人填写；保存后是普通人格，模板更新不改已有正文。本轮AI女儿模板依据上下文与可用记忆延续经历，不指定记忆插件或预设成长阶段。提示词文档 updatedAt:null 表示跟随当前默认，非null为主人覆盖；恢复默认保留记录并递增文档/全局revision，不删除归零或自动覆盖自定义。schema2保持，普通读取不回写默认。见[ADR-0027](docs/decisions/ADR-0027-人格模板与默认提示词生命周期.md)。
 
-DSH主提供会话处理／列类型／明确任务委派、活动状态／安排、联系对象／联系委派工具。普通会话优先eating_handle_conversation，仅{context_ref}；核对真实root／当前批次及digest／owner绑定／callId后，固定中立task＋原始context/events交绑定子，main不预写完整回复或未经核对的能力结论。eating_delegate_task用于明确执行任务或用户明确逐字内容。新main默认开启平台全部原生feature，files.write/edit与web.search为true，time保主子；main非reserved全局工具、所有Agent功能型native Profile MCP默认自动可用，其他子非MCP仍精确名称／指纹选择。主人可用同名toolAccessOverrides按精确指纹＋类型覆盖默认及toolGrants，可关main、空列表禁用；指纹变化仍限制，不回落开放，reserved／来源／scope不绕过。UI逐项自动／自定义可保存，catalog.automaticAccess说明默认；tools/change更新native.restrict。Host功能MCP默认all，custom来源只按精确类型＋工具，新增项不自动获该例外source。子按真实账号／会话／目标／类型绑定独立原生会话，挂受限通讯及当前有效功能能力。deliverBatch仍唯一交接接口，scope／真实回执／撤权服务必需，不回退主人全权令牌。
+DSH主提供会话处理／列类型／明确任务委派、活动状态／安排、联系对象／联系委派工具。普通会话优先eating_handle_conversation，仅{context_ref}；核对真实root／当前批次及digest／owner绑定／callId后，固定中立task＋原始context/events交绑定子，main不预写完整回复或未经核对的能力结论。eating_delegate_task用于明确执行任务或用户明确逐字内容。新Harness仅time默认开启并供主子使用，文件、shell、网页、目标等原生feature默认关闭且可按需配置；main非reserved全局工具、所有Agent功能型native Profile MCP默认自动可用，其他子非MCP仍精确名称／指纹选择。主人可用同名toolAccessOverrides按精确指纹＋类型覆盖默认及toolGrants，可关main、空列表禁用；指纹变化仍限制，不回落开放，reserved／来源／scope不绕过。UI逐项自动／自定义可保存，catalog.automaticAccess说明默认；tools/change更新native.restrict。Host功能MCP默认all，custom来源只按精确类型＋工具，新增项不自动获该例外source。子按真实账号／会话／目标／类型绑定独立原生会话，挂受限通讯及当前有效功能能力。deliverBatch仍唯一交接接口，scope／真实回执／撤权服务必需，不回退主人全权令牌。
 
 同批允许查询→主判断→继续委派同子。内部以公开 `ToolExecutionInput.callId` 防重；不把任意 system／scope／tools 参数交模型，不用任务文本 hash 代替调用 ID。最多32调用，重复／pending／unknown拒绝，迟到回调不能覆盖新任务或撤新权限。当前正文在主 turn/end 清理，不能在第一次委派后清掉。
 

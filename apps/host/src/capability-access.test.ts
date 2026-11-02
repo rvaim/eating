@@ -5,7 +5,9 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import type { BackendPluginEntry, HarnessHostServices, AgentInvocationScope, CapabilityInvocationScope, JsonObject } from '@eating/plugin-sdk'
+import type { BackendPluginEntry, BackendPlugin, HarnessHostServices, AgentInvocationScope, CapabilityInvocationScope, JsonObject } from '@eating/plugin-sdk'
+import { CapabilityAccess } from './capability-access'
+import { DirectMcpConnections } from './mcp-connections'
 import { EatingHost } from './app'
 import stickersEntry from '../../../plugins/capabilities/stickers/src/server'
 import qqEntry from '../../../plugins/communication/qq/src/server'
@@ -133,5 +135,24 @@ describe('capability MCP and cross-plugin sticker resources', () => {
     await f.host.close()
     const db = await readFile(join(f.home, 'host/Eating.sqlite'))
     expect(db.includes(Buffer.from(image))).toBe(false)
+  })
+  it('does not fail an unrelated task when a granted capability is disconnected', async () => {
+    const home = await realpath(await mkdtemp(join(tmpdir(), 'eating-capability-offline-')))
+    stops.push(async () => { if (await realpath(home) !== home || dirname(home) !== await realpath(tmpdir()) || !basename(home).startsWith('eating-capability-offline-')) throw new Error('Unsafe offline fixture cleanup'); await rm(home, { recursive: true }) })
+    const plugin: BackendPlugin = {
+      id: 'memory', kind: 'capability', name: 'Memory fixture', version: '1.0.0', capabilities: [],
+      tools: [{ name: 'memory_search', title: 'Search memory', description: 'Fixture memory search', inputSchema: { type: 'object', properties: {}, additionalProperties: false }, readOnly: true, destructive: false, resultFormat: 'json' }],
+      getStatus: () => ({ state: 'disconnected', accountId: null, accountName: null, lastError: null, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 }),
+      getPublicConfiguration: () => ({ autoConnect: false }), updateConfiguration: async () => ({}), connect: async () => {}, disconnect: async () => {}, invoke: async () => null,
+      invokeCapability: async () => null, dispose: async () => {},
+    }
+    const direct = new DirectMcpConnections(home)
+    const grants = { schemaVersion: 1, revision: 0, grants: { 'plugin.memory': { agentTypeIds: ['qq.private'], toolNames: ['memory_search'] } } }
+    const access = new CapabilityAccess({
+      direct, plugins: () => [plugin], enabled: () => true,
+      getSetting: key => key === 'host:capability-grants' ? JSON.stringify(grants) : null, setSetting: () => {},
+      executeIdempotent: async () => { throw new Error('unused fixture action') },
+    })
+    expect(access.connections('fixture-harness', { agentId: 'fixture-agent', agentTypeId: 'qq.private' }, 'http://127.0.0.1:1')).toEqual([])
   })
 })

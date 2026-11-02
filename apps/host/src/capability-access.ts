@@ -141,7 +141,11 @@ export class CapabilityAccess {
     const result: HarnessCapabilityConnection[] = []
     for (const source of this.sources()) {
       const selected = source.enabled && source.configuration.permissionsManagedByPlugin !== true && source.grant.agentTypeIds.includes(scope.agentTypeId) && source.grant.toolNames.length > 0
-      if (selected && source.state !== 'connected') throw new PlatformError('MCP_SERVICE_NOT_READY', `已授权的 MCP 服务“${source.name}”尚未连接，请先在 MCP 页面连接。`, 409, 'not-sent')
+      // A capability is optional at the task boundary: an unavailable memory
+      // or image service must not block another capability or the communication
+      // MCP that the same subagent needs. Its disconnected state stays visible
+      // in the MCP directory for the owner to repair.
+      if (selected && source.state !== 'connected') continue
       if (selected && source.grant.toolNames.some(name => !source.tools.some(tool => tool.name === name))) throw new PlatformError('MCP_GRANTED_TOOL_MISSING', `MCP 服务“${source.name}”的工具目录已变化，请重新核对授权。`, 409, 'not-sent')
       const tools = source.tools.filter(tool => this.allowed(scope, source.id, tool.name)).map(tool => tool.name)
       if (!tools.length) continue

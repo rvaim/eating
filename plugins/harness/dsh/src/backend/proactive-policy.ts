@@ -35,6 +35,8 @@ export class DshProactivePolicy {
     try { this.document = stored === null ? structuredClone(EMPTY_CONTACT_POLICY) : parseContactPolicy(stored) } catch { fail('PROACTIVE_POLICY_CORRUPTED', 500) }
   }
   snapshot(): ProactiveContactPolicy { return structuredClone(this.document) }
+  /** Model-visible authorization summary; the actual target directory stays behind eating_list_contact_targets. */
+  summary(): JsonObject { return { schemaVersion: 1, revision: this.document.revision, mode: this.document.mode, entryCount: this.document.entries.length } }
   prepare(input: unknown): ProactiveContactPolicy {
     if (!isJsonObject(input) || !exact(input, ['expectedRevision', 'mode', 'entries']) || input.expectedRevision !== this.document.revision) fail('PROACTIVE_POLICY_CONFLICT', 409)
     if (this.document.revision >= Number.MAX_SAFE_INTEGER) fail('PROACTIVE_POLICY_EXHAUSTED', 409)

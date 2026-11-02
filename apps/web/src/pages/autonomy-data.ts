@@ -4,7 +4,7 @@ import { HostApiError } from '@eating/ui-sdk'
 
 export interface ActivityState {
   revision: number; ownerPaused: boolean; mode: 'active' | 'sleeping' | 'waiting'; note: string; reason: string; nextWakeAt: number | null; runtimeReady: boolean
-  active: { id: string; startedAt: number; deadline: number } | null; cycles: number; contacts: number; failures: number; lastStartedAt: number | null; lastFinishedAt: number | null; lastOutcome: string | null; errorCode: string | null
+  active: { id: string; startedAt: number; deadline: number } | null; cycles: number; contacts: number; failures: number; lastStartedAt: number | null; lastFinishedAt: number | null; lastOutcome: string | null; errorCode: string | null; runRemainingMs?: number
   history: { cycleId: string; startedAt: number; finishedAt: number; outcome: string; code: string | null }[]
 }
 export interface Snapshot { contactPolicy?: ProactiveContactPolicy; protocolVersion: 1; revision: number; configuration: AutonomyConfiguration; state: ActivityState; contactTasks: { agentId: string; targetId: string; label: string; taskId: string; state: string }[] }

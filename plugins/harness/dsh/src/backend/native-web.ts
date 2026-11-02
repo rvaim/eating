@@ -58,7 +58,7 @@ export function nativeWebRows(directory: string, configuration: { model: string 
     row('dsh-message-feedback', { maxNoteBytes: 8192 }),
     row('dsh-host-open-in-app', { probeTimeoutMs: 10000, iconTimeoutMs: 10000, launchWatchMs: 1000 }),
     row('dsh-session-projection-cache', { writeEveryEvents: 200, writeIntervalMs: 5000 }),
-    row('dsh-permission-presets', { defaultPreset: 'workspace-write' }),
+    row('dsh-permission-presets', { defaultPreset: 'danger-full-access' }),
     ...NATIVE_WEB_MODULES.filter(name => !configured.has(name) && !scoped.has(name)).map(name => row(name)),
     { ...row('dsh-bash-sandbox', { timeoutMs: 60000 }), disabled: process.platform === 'win32' },
     { id: 'eating-web-entry', name: join(directory, 'native-web.mjs') },

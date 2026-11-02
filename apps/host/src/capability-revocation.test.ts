@@ -79,18 +79,14 @@ async function fixture() {
   await api('/plugins/qq/configuration', { endpoint: onebot.endpoint, autoConnect: false }); await api('/plugins/qq/connect', {})
   const configuration = qqPlugin.getPublicConfiguration()
   const scope: AgentInvocationScope = { agentId: 'revocation-child', agentTypeId: 'qq.private', pluginId: 'qq', instanceId: String(configuration.instanceId), accountId: '10001', conversationId: 'qq:10001:private:20002', kind: 'private', targetId: '20002', messageIds: ['900'], resourceIds: ['fixture-received-image'] }
-  const grant = async (tools: string[]) => {
-    const directory = await api('/mcp'), revision = directory.revision
-    if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) throw new Error('Expected a valid MCP directory revision')
-    await api('/mcp', { operation: 'save-grants', input: { id: 'plugin.stickers', expectedRevision: revision, agentTypeIds: ['qq.private'], toolNames: tools } })
-  }
+  await api('/mcp', { operation: 'connect', input: { id: 'plugin.stickers' } })
   const client = async (connection: Pick<HarnessCapabilityConnection, 'url' | 'headers'>) => {
     const client = new Client({ name: 'revocation-fixture', version: '1.0.0' })
     await client.connect(new StreamableHTTPClientTransport(new URL(connection.url), { requestInit: { headers: { ...connection.headers } } })); stops.push(() => client.close())
     return client
   }
   const addOwnerSticker = async () => object(await stickerPlugin.manage!('add', { ...image, description: 'Fixture sticker', tags: ['fixture'] })).item
-  return { api, onebot, services, scope, image, qqSettled, stickerSettled, grant, client, addOwnerSticker, stickerPlugin,
+  return { api, onebot, services, scope, image, qqSettled, stickerSettled, client, addOwnerSticker, stickerPlugin,
     get observedSignal() { return observedSignal },
     deferAsset() { const value = assetGate = gate(); stops.push(() => value.release.resolve()); return value },
     deferReceived() { const value = receivedGate = gate(); stops.push(() => value.release.resolve()); return value },
@@ -102,7 +98,6 @@ async function fixture() {
 describe('capability resource lifetime revocation', () => {
   it('does not send a QQ asset after its Agent lease is revoked while the resource is awaited', async () => {
     const f = await fixture(), item = object(await f.addOwnerSticker())
-    await f.grant(['sticker_get'])
     f.services.getCapabilityMcpConnections({ agentId: f.scope.agentId, agentTypeId: f.scope.agentTypeId, source: f.scope })
     const client = await f.client(f.services.getMcpConnection('qq', f.scope)), pendingAsset = f.deferAsset()
     const pending = client.callTool({ name: 'qq_send_private_message', arguments: { user_id: f.scope.targetId, message: { type: 'image', data: { file: `eating-asset://stickers/${String(item.assetId)}` } }, request_id: 'revoke-asset-send-001' } }).catch(error => error)
@@ -116,16 +111,17 @@ describe('capability resource lifetime revocation', () => {
     expect(f.onebot.requests.filter(request => request.action === 'send_private_msg')).toHaveLength(0)
   })
 
-  it('does not save a received sticker after its capability lease is revoked during image retrieval', async () => {
+  it.each(['agent', 'disconnect', 'disable'] as const)('does not save a received sticker after %s revokes it during image retrieval', async revocation => {
     const f = await fixture()
-    await f.grant(['sticker_add'])
     const connection = f.services.getCapabilityMcpConnections({ agentId: f.scope.agentId, agentTypeId: f.scope.agentTypeId, source: f.scope })[0]!
     const client = await f.client(connection), pendingImage = f.deferReceived()
     const before = object(await f.stickerPlugin.manage!('list', {}))
     const pending = client.callTool({ name: 'sticker_add', arguments: { source: { messageId: '900', imageId: 'fixture-received-image' }, description: 'Must never be committed', tags: ['revoked'], request_id: 'revoke-sticker-add-001' } }).catch(error => error)
     await Promise.race([pendingImage.entered.promise, pending.then(result => { throw new Error(`Sticker call ended before the deferred resource: ${JSON.stringify(result)} ${String(result)}`) })])
     expect(f.observedSignal?.aborted).toBe(false)
-    f.services.revokeAgentAccess(f.scope.agentId)
+    if (revocation === 'agent') f.services.revokeAgentAccess(f.scope.agentId)
+    else if (revocation === 'disconnect') await f.api('/mcp', { operation: 'disconnect', input: { id: 'plugin.stickers' } })
+    else await f.api('/plugins/stickers/disable', {})
     expect(f.observedSignal?.aborted).toBe(true)
     pendingImage.release.resolve()
     await expect(f.stickerSettled.promise).resolves.toMatchObject({ outcome: 'not-sent' })

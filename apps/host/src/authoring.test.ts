@@ -7,6 +7,7 @@ import type { HarnessEvent, RegisteredAgentInstructions, RegisteredAgentType, Te
 import { AUTHORING_SETTING_KEY, AuthoringService } from './authoring'
 import { defaultPromptBodies } from './authoring-defaults'
 import { HostStore } from './store'
+import { createDefaultAgentPolicy, qqAgentInstructions, qqAgentTypes } from '../../../plugins/communication/qq/src/backend/agent-policy'
 
 const cleanups: Array<() => void> = []
 afterEach(() => { vi.restoreAllMocks(); for (const cleanup of cleanups.splice(0).reverse()) cleanup() })
@@ -87,6 +88,49 @@ describe('AuthoringService defaults and document persistence', () => {
     failure(() => service.getPersona('missing'), 'PERSONA_NOT_FOUND', 404)
     expect(store.getSetting(AUTHORING_SETTING_KEY)).toBeNull()
     expect(write).not.toHaveBeenCalled()
+  })
+
+  it('composes current and cross-target delegation guidance with the production QQ defaults while preserving owner overrides', () => {
+    const store = fixture().open()
+    const policy = createDefaultAgentPolicy()
+    const plugin = { pluginId: 'qq', pluginName: 'QQ', enabled: true }
+    const service = new AuthoringService(store, () => ({
+      agentTypes: qqAgentTypes(policy).map(type => ({ ...type, ...plugin, identity: { owners: [], administrators: [] } })),
+      pluginInstructions: qqAgentInstructions.map(instruction => ({ ...instruction, ...plugin })),
+    }))
+    const owner = service.readOwnerConfiguration()
+    const main = composeAgentPrompt(owner, null, { 当前时间: 'now' })
+    expect(main.layers.map(layer => layer.id)).toEqual(['common', 'main', 'plugin:qq.instructions', 'persona'])
+    expect(main.systemPrompt).toContain('先判断实际执行目标')
+    expect(main.systemPrompt).toContain('入站来源不限制行动目的地')
+    expect(main.systemPrompt).toContain('当前 context_ref 和绑定的代理类型')
+    expect(main.systemPrompt).toContain('eating_list_contact_targets')
+    expect(main.systemPrompt).toContain('eating_contact_target')
+    expect(main.systemPrompt).toContain('把对象的 id 填入 target_id')
+    expect(main.systemPrompt).toContain('无需对方先发私聊')
+    expect(main.systemPrompt).toContain('暂停定时机会不改变普通有输入轮次的联系权限')
+    expect(main.systemPrompt).toContain('功能型 MCP 默认向所有 Agent 开放')
+    expect(main.systemPrompt).not.toContain('根据 Eating 提供的真实批次来源选择')
+    for (const id of ['qq.private', 'qq.group']) {
+      const child = composeAgentPrompt(owner, id, { 当前时间: 'now', 平台: 'qq', 机器人账号: '100', 会话编号: 'fixture-conversation', 会话类型: id === 'qq.private' ? 'private' : 'group', 目标编号: '200' })
+      expect(child.systemPrompt).toContain('QQ 账号、目标和消息／资源范围保持当前绑定')
+      expect(child.systemPrompt).toContain('向主 Agent 报告未完成部分')
+      expect(child.systemPrompt).toContain('不能据此断言整个系统无法联系')
+      expect(child.systemPrompt).toContain('功能型 MCP 默认向所有 Agent 开放')
+    }
+    service.updatePrompt('main', 'OWNER-MAIN-OVERRIDE', 0)
+    service.updatePrompt('plugin:qq.instructions', 'OWNER-QQ-OVERRIDE', 0)
+    const persona = service.createPersona('保留人格', 'OWNER-PERSONA')
+    service.setPersonaEnabled(persona.persona.id, true, persona.snapshot.revision)
+    const before = stored(store)
+    const write = vi.spyOn(store, 'setSetting')
+    const custom = service.readOwnerConfiguration()
+    expect(custom.prompts.find(prompt => prompt.id === 'main')).toMatchObject({ body: 'OWNER-MAIN-OVERRIDE', updatedAt: expect.any(String) })
+    expect(custom.prompts.find(prompt => prompt.id === 'plugin:qq.instructions')).toMatchObject({ body: 'OWNER-QQ-OVERRIDE', updatedAt: expect.any(String) })
+    const composed = composeAgentPrompt(custom, null, { 当前时间: 'now' })
+    expect(composed.layers.filter(layer => layer.id !== 'common').map(layer => layer.body)).toEqual(['OWNER-MAIN-OVERRIDE', 'OWNER-QQ-OVERRIDE', 'OWNER-PERSONA'])
+    expect(write).not.toHaveBeenCalled()
+    expect(stored(store)).toBe(before)
   })
 
   it('creates trimmed owner personas without activation, exposes body only in detail, and persists schema after reopening', () => {

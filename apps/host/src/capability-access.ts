@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js'
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
-import type { AgentActionReceipt, BackendPlugin, CapabilityInvocationScope, HarnessCapabilityConnection, JsonObject, JsonValue, McpDirectorySnapshot, McpGrant, McpServiceSummary, PluginToolDefinition } from '@eating/plugin-sdk'
+import type { AgentActionReceipt, BackendPlugin, CapabilityInvocationScope, HarnessCapabilityConnection, JsonObject, JsonValue, McpDirectorySnapshot, McpServiceSummary, PluginToolDefinition } from '@eating/plugin-sdk'
 import { DirectMcpConnections } from './mcp-connections'
 import { secret, sameSecret } from './security'
 import { toolResult } from './tool-results'
@@ -15,8 +15,6 @@ interface Options {
   readonly plugins: () => Iterable<BackendPlugin>
   readonly enabled: (id: string) => boolean
   readonly memoryContext?: (harnessId: string, agentId: string) => import('@eating/plugin-sdk').MemoryContext | undefined
-  readonly getSetting: (key: string) => string | null
-  readonly setSetting: (key: string, value: string) => void
   readonly executeIdempotent: (pluginId: string, action: string, params: JsonObject, requestId: string, execute: () => Promise<JsonValue>) => Promise<JsonValue>
 }
 interface Lease {
@@ -26,19 +24,9 @@ interface Lease {
   readonly token: string
   readonly abort: AbortController
 }
-const settingKey = 'host:capability-grants'
 const identifier = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 160 && !/[\u0000-\u001f\u007f]/.test(value)
 const requestId = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$/.test(value)
-const deny = (): never => { throw new PlatformError('CAPABILITY_ACCESS_DENIED', '此代理未获准使用该 MCP 服务或工具。', 403, 'not-sent') }
-function grant(value: unknown): McpGrant {
-  if (!isJsonObject(value) || Object.keys(value).some(key => !['agentTypeIds', 'toolNames'].includes(key))
-    || !Array.isArray(value.agentTypeIds) || !Array.isArray(value.toolNames) || value.agentTypeIds.length > 256 || value.toolNames.length > 256
-    || !value.agentTypeIds.every(identifier) || !value.toolNames.every(identifier)
-    || new Set(value.agentTypeIds).size !== value.agentTypeIds.length || new Set(value.toolNames).size !== value.toolNames.length) {
-    throw new PlatformError('INVALID_MCP_GRANT', '请提供不重复的代理类型和工具授权。', 400, 'not-sent')
-  }
-  return { agentTypeIds: [...value.agentTypeIds], toolNames: [...value.toolNames] }
-}
+const deny = (): never => { throw new PlatformError('CAPABILITY_ACCESS_DENIED', '此 MCP 服务、工具或代理连接当前不可用。', 403, 'not-sent') }
 function failure(error: unknown): CallToolResult {
   const value = error instanceof PlatformError ? { code: error.code, message: error.message, outcome: error.outcome }
     : { code: 'CAPABILITY_TOOL_FAILED', message: 'MCP 工具调用未完成，请核对结果后再继续。', outcome: 'unknown' }
@@ -57,48 +45,33 @@ function proxyTool(tool: PluginToolDefinition, direct: boolean): Tool {
 
 /** One authorization directory for direct services and plugin-owned capabilities. */
 export class CapabilityAccess {
-  private revisionValue = 0
-  private readonly grants = new Map<string, McpGrant>()
   private readonly leases = new Map<string, Lease>()
   private readonly active = new Map<Lease, Set<() => Promise<void>>>()
   private readonly receipts = new Map<string, Map<string, AgentActionReceipt>>()
   private closed = false
 
-  constructor(private readonly options: Options) {
-    const stored = options.getSetting(settingKey)
-    if (stored !== null) {
-      let value: unknown
-      try { value = JSON.parse(stored) } catch { throw new PlatformError('INVALID_MCP_GRANTS', 'MCP 授权配置损坏，未覆盖原配置。', 500) }
-      if (!isJsonObject(value) || value.schemaVersion !== 1 || !Number.isSafeInteger(value.revision) || Number(value.revision) < 0 || !isJsonObject(value.grants)
-        || Object.keys(value).some(key => !['schemaVersion', 'revision', 'grants'].includes(key))) throw new PlatformError('INVALID_MCP_GRANTS', 'MCP 授权配置格式无效，未覆盖原配置。', 500)
-      this.revisionValue = Number(value.revision)
-      for (const [id, permissions] of Object.entries(value.grants)) {
-        if (!/^plugin\.[a-z][a-z0-9-]{0,63}$/.test(id)) throw new PlatformError('INVALID_MCP_GRANTS', 'MCP 授权来源无效。', 500)
-        this.grants.set(id, grant(permissions))
-      }
-    }
-  }
-  get revision(): number { return this.revisionValue + this.options.direct.revision }
+  constructor(private readonly options: Options) {}
+  get revision(): number { return this.options.direct.revision }
   private plugin(id: string): BackendPlugin | undefined { return [...this.options.plugins()].find(plugin => plugin.id === id) }
-  private sources(): McpServiceSummary[] {
+  private sources(agentTypeIds = ['main', ...[...this.options.plugins()].flatMap(plugin => (plugin.agentTypes ?? []).map(type => type.id))]): McpServiceSummary[] {
     const plugins = [...this.options.plugins()].filter(plugin => plugin.tools.length > 0).map(plugin => {
       const id = 'plugin.' + plugin.id, enabled = this.options.enabled(plugin.id), status = plugin.getStatus()
       const permissionsManagedByPlugin = plugin.kind !== 'capability'
       const registered = permissionsManagedByPlugin ? enabled : enabled && status.state === 'connected' && Boolean(plugin.invokeCapability)
-      const ownGrant = this.grants.get(id) ?? { agentTypeIds: [], toolNames: [] }
       return {
         id, name: plugin.name, source: { kind: 'plugin' as const, pluginId: plugin.id, pluginName: plugin.name }, transport: 'plugin' as const,
         enabled, autoConnect: plugin.getPublicConfiguration().autoConnect === true,
         state: registered ? 'connected' as const : status.state === 'error' ? 'error' as const : 'disconnected' as const,
         lastError: status.lastError, tools: plugin.tools,
-        grant: permissionsManagedByPlugin ? { agentTypeIds: (plugin.agentTypes ?? []).map(type => type.id), toolNames: [...new Set((plugin.agentTypes ?? []).flatMap(type => [...type.enabledTools]))] } : ownGrant,
+        grant: permissionsManagedByPlugin ? { agentTypeIds: (plugin.agentTypes ?? []).map(type => type.id), toolNames: [...new Set((plugin.agentTypes ?? []).flatMap(type => [...type.enabledTools]))] } : { agentTypeIds: [...new Set(agentTypeIds)], toolNames: plugin.tools.map(tool => tool.name) },
         configuration: { pluginKind: plugin.kind, permissionsManagedByPlugin },
       }
     })
-    return [...plugins, ...this.options.direct.list()]
+    return [...plugins, ...this.options.direct.list(agentTypeIds)]
   }
   snapshot(agentTypes: readonly { id: string; title: string }[]): McpDirectorySnapshot {
-    return { protocolVersion: 1, revision: this.revision, services: this.sources(), agentTypes: [{ id: 'main', title: '主 Agent / Harness 会话' }, ...agentTypes.map(type => ({ id: type.id, title: type.title }))] }
+    const types = [{ id: 'main', title: '主 Agent / Harness 会话' }, ...agentTypes.filter(type => type.id !== 'main').map(type => ({ id: type.id, title: type.title }))]
+    return { protocolVersion: 1, revision: this.revision, services: this.sources(types.map(type => type.id)), agentTypes: types, harnessRemounts: [] }
   }
   source(id: string): McpServiceSummary {
     const source = this.sources().find(source => source.id === id)
@@ -108,26 +81,11 @@ export class CapabilityAccess {
   requireRevision(expected: unknown): void {
     if (!Number.isSafeInteger(expected) || expected !== this.revision) throw new PlatformError('MCP_CONFIGURATION_CONFLICT', 'MCP 配置已变更，请保留草稿并刷新后重试。', 409, 'not-sent')
   }
-  savePluginGrant(input: unknown, knownAgentTypes: readonly string[]): void {
-    if (!isJsonObject(input) || typeof input.id !== 'string' || Object.keys(input).some(key => !['id', 'expectedRevision', 'agentTypeIds', 'toolNames'].includes(key))) throw new PlatformError('INVALID_MCP_GRANT', 'MCP 授权参数无效。')
-    this.requireRevision(input.expectedRevision)
-    const source = this.source(input.id)
-    if (source.source.kind !== 'plugin' || source.configuration.permissionsManagedByPlugin === true) throw new PlatformError('MCP_GRANT_MANAGED_BY_PLUGIN', '此服务的权限由来源插件管理，请打开该插件面板。', 409, 'not-sent')
-    const next = grant({ agentTypeIds: input.agentTypeIds ?? [], toolNames: input.toolNames ?? [] })
-    if (next.agentTypeIds.some(id => !['main', ...knownAgentTypes].includes(id)) || next.toolNames.some(name => !source.tools.some(tool => tool.name === name))) throw new PlatformError('INVALID_MCP_GRANT', '授权中包含不存在的代理类型或工具。')
-    const grants = new Map(this.grants); grants.set(input.id, next)
-    const revision = this.revisionValue + 1
-    this.options.setSetting(settingKey, JSON.stringify({ schemaVersion: 1, revision, grants: Object.fromEntries(grants) }))
-    this.grants.clear(); for (const [id, value] of grants) this.grants.set(id, value)
-    this.revisionValue = revision
-    this.revokeSource(input.id)
-  }
   allowed(scope: CapabilityInvocationScope, sourceId: string, toolName: string): boolean {
-    if (this.closed) return false
+    if (this.closed || scope.signal?.aborted || scope.source?.signal?.aborted || !identifier(scope.agentId) || !identifier(scope.agentTypeId)) return false
     let source: McpServiceSummary
     try { source = this.source(sourceId) } catch { return false }
-    return source.enabled && source.state === 'connected' && source.configuration.permissionsManagedByPlugin !== true
-      && source.grant.agentTypeIds.includes(scope.agentTypeId) && source.grant.toolNames.includes(toolName) && source.tools.some(tool => tool.name === toolName)
+    return source.enabled && source.state === 'connected' && source.configuration.permissionsManagedByPlugin !== true && source.tools.some(tool => tool.name === toolName)
   }
   activeService(scope: CapabilityInvocationScope, sourceId: string): boolean {
     return this.source(sourceId).tools.some(tool => this.activePermission(scope, sourceId, tool.name))
@@ -140,13 +98,8 @@ export class CapabilityAccess {
     if (scope.source && (scope.source.agentId !== scope.agentId || scope.source.agentTypeId !== scope.agentTypeId)) return deny()
     const result: HarnessCapabilityConnection[] = []
     for (const source of this.sources()) {
-      const selected = source.enabled && source.configuration.permissionsManagedByPlugin !== true && source.grant.agentTypeIds.includes(scope.agentTypeId) && source.grant.toolNames.length > 0
-      // A capability is optional at the task boundary: an unavailable memory
-      // or image service must not block another capability or the communication
-      // MCP that the same subagent needs. Its disconnected state stays visible
-      // in the MCP directory for the owner to repair.
-      if (selected && source.state !== 'connected') continue
-      if (selected && source.grant.toolNames.some(name => !source.tools.some(tool => tool.name === name))) throw new PlatformError('MCP_GRANTED_TOOL_MISSING', `MCP 服务“${source.name}”的工具目录已变化，请重新核对授权。`, 409, 'not-sent')
+      // Disconnected optional services never block a task's communication MCP.
+      // All tools from each connected capability/direct source are included.
       const tools = source.tools.filter(tool => this.allowed(scope, source.id, tool.name)).map(tool => tool.name)
       if (!tools.length) continue
       for (const lease of this.leases.values()) if (lease.harnessId === harnessId && lease.scope.agentId === scope.agentId && lease.sourceId === source.id) this.retire(lease)
@@ -205,6 +158,7 @@ export class CapabilityAccess {
         const args = params.arguments ?? {}
         if (!isJsonObject(args)) throw new PlatformError('INVALID_MCP_ARGUMENTS', '工具参数必须是对象。')
         const result = await this.invoke(lease, params.name, args)
+        this.requireLease(token, id)
         if (!this.allowed(lease.scope, id, params.name)) return deny()
         const tool = this.source(id).tools.find(tool => tool.name === params.name)
         if (tool && !tool.readOnly && requestId(args.request_id)) this.remember(lease, { requestId: args.request_id, tool: 'mcp__' + id.replace(/[^a-zA-Z0-9_]/g, '_') + '__' + params.name, outcome: result.isError ? 'unknown' : 'succeeded' })

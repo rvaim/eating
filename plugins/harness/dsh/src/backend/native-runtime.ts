@@ -1,4 +1,4 @@
-import { NATIVE_FEATURES, protectedNativeModule } from '../native-capabilities'
+import { NATIVE_FEATURES, nativeGlobalToolAccess, protectedNativeModule } from '../native-capabilities'
 
 /** Executed by the installed DSH, using its own public plugin and management services. */
 export function getNativeCapabilitiesRuntimeSource(): string {
@@ -12,6 +12,7 @@ export const name = 'eating-native-capabilities';
 export const inject = ['tools', 'agents', 'agentPresets', 'pluginManager', 'configEditor'];
 const definitions = ${JSON.stringify(NATIVE_FEATURES)};
 const protectedModule = ${protectedNativeModule.toString()};
+const globalToolAccess = ${nativeGlobalToolAccess.toString()};
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const canonical = value => Array.isArray(value) ? value.map(canonical) : record(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const digest = value => createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
@@ -39,7 +40,42 @@ export function apply(ctx) {
   let server;
   let mutation = false;
   const results = new Map();
-  const nativeToolNames = type => configuration.toolGrants.filter(grant => grant.agentTypeIds.includes(type) && ctx.tools.schemas().some(schema => schema.name === grant.name && digest(schema) === grant.fingerprint)).map(grant => grant.name);
+  const restrictions = new Map();
+  const scopedNativeTools = new WeakMap();
+  const approvedLocalTools = new WeakMap();
+  const nativeToolNames = type => ctx.tools.schemas().filter(schema => {
+    const access = globalToolAccess(schema.name);
+    return access !== 'reserved' && (type === 'main' || access === 'all' || configuration.toolGrants.some(grant => grant.name === schema.name && grant.agentTypeIds.includes(type) && digest(schema) === grant.fingerprint));
+  }).map(schema => schema.name);
+  function releaseRestriction(agent, entry) {
+    if (restrictions.get(agent) !== entry) return;
+    restrictions.delete(agent);
+    entry.release?.();
+  }
+  function refreshRestriction(agent, entry) {
+    const current = ctx.agents.get(agent.id);
+    if (current && current !== agent) { releaseRestriction(agent, entry); return; }
+    const names = nativeToolNames(entry.type).sort(), signature = JSON.stringify(names);
+    if (entry.signature === signature) return;
+    // Publish before restrict emits tools/change, so our own registration cannot recurse.
+    entry.signature = signature;
+    const previous = entry.release;
+    entry.release = agent.ctx.tools.restrict({ allow: names });
+    previous?.();
+  }
+  ctx.on('tools/change', () => { for (const [agent, entry] of restrictions) refreshRestriction(agent, entry); });
+  ctx.on('agent/disposed', ({ agent }) => { const entry = restrictions.get(agent); if (entry) releaseRestriction(agent, entry); approvedLocalTools.delete(agent); scopedNativeTools.delete(agent); });
+  function restrict(agent, type) {
+    const previous = restrictions.get(agent);
+    if (previous && previous.type !== type) invalid('NATIVE_AGENT_TYPE_CHANGED');
+    if (previous) { refreshRestriction(agent, previous); return; }
+    const entry = { type, signature: null, release: null };
+    restrictions.set(agent, entry);
+    try {
+      refreshRestriction(agent, entry);
+      agent.ctx.effect(() => () => releaseRestriction(agent, entry), 'eating-native.global-restriction');
+    } catch (error) { releaseRestriction(agent, entry); throw error; }
+  }
   async function moduleAvailability(module) {
     try { runtimeRequire.resolve(module.name); return { id: module.id, name: module.name, available: true }; }
     catch { return { id: module.id, name: module.name, available: false }; }
@@ -74,32 +110,51 @@ export function apply(ctx) {
     }
     const schemas = ctx.tools.schemas();
     for (const grant of next.toolGrants) {
-      if (grant.agentTypeIds.length && !schemas.some(schema => schema.name === grant.name && digest(schema) === grant.fingerprint)) invalid('NATIVE_TOOL_CHANGED');
+      if (grant.agentTypeIds.some(type => type !== 'main') && !schemas.some(schema => globalToolAccess(schema.name) === 'main' && schema.name === grant.name && digest(schema) === grant.fingerprint)) invalid('NATIVE_TOOL_CHANGED');
     }
     return { valid: true };
   }
   async function mount(agent, type) {
     const selections = configuration.features.filter(feature => feature.enabled && feature.agentTypeIds.includes(type));
     const names = new Set(nativeToolNames(type));
+    const scoped = new Map();
+    scopedNativeTools.set(agent, scoped);
     for (const selection of selections) {
       const definition = definitions.find(feature => feature.id === selection.id);
-      const before = new Set(agent.ctx.tools.schemas(agent).map(schema => schema.name));
+      const before = new Map(agent.ctx.tools.schemas(agent).map(schema => [schema.name, ctx.tools.get(schema.name, agent)]));
       for (const module of definition.modules) {
         const fiber = agent.ctx.plugin(plugin(await load(module.name)), selection.config[module.id]);
         await fiber.await();
         if (fiber.state !== 2) invalid('NATIVE_DEPENDENCY_UNAVAILABLE');
       }
-      for (const schema of agent.ctx.tools.schemas(agent)) if (!before.has(schema.name)) names.add(schema.name);
+      for (const schema of agent.ctx.tools.schemas(agent)) {
+        const tool = ctx.tools.get(schema.name, agent);
+        if (before.get(schema.name) !== tool) { names.add(schema.name); scoped.set(schema.name, tool); }
+      }
       mounted.set(agent.id + '/' + selection.id, { agentId: agent.id, agentTypeId: type, featureId: selection.id, state: 'mounted' });
       if (mounted.size > 4096) mounted.delete(mounted.keys().next().value);
     }
     return [...names];
   }
-  ctx.provide('eatingNativeCapabilities', { mount, allowedGlobal: nativeToolNames,
-    reportTools(agent, type, names) { agentTools.set(agent.id, { agentTypeId: type, nativeTools: names.filter(name => !name.startsWith('mcp__') && !name.startsWith('eating_')), mcpTools: names.filter(name => name.startsWith('mcp__')) }); if (agentTools.size > 512) agentTools.delete(agentTools.keys().next().value); },
+  const toolReport = (type, names) => ({ agentTypeId: type, nativeTools: names.filter(name => !name.startsWith('mcp__') && !name.startsWith('eating_')), mcpTools: names.filter(name => name.startsWith('mcp__')) });
+  ctx.provide('eatingNativeCapabilities', { mount, restrict, allowedGlobal: nativeToolNames,
+    reportTools(agent, type, names) {
+      const local = new Map();
+      for (const name of names) {
+        const actual = ctx.tools.get(name, agent), global = ctx.tools.get(name);
+        // A matching name never authorizes an inherited shadow of a global tool.
+        if (actual && actual !== global && (!global || scopedNativeTools.get(agent)?.get(name) === actual)) local.set(name, actual);
+      }
+      approvedLocalTools.set(agent, local);
+      agentTools.set(agent.id, toolReport(type, names));
+      if (agentTools.size > 512) agentTools.delete(agentTools.keys().next().value);
+    },
     authorize(exec, agent, type, allowed) {
-      if (exec.agent !== agent || !allowed.includes(exec.name)) return 'This Agent may only use its approved tools.';
-      if (ctx.tools.get(exec.name, agent) === ctx.tools.get(exec.name) && !nativeToolNames(type).includes(exec.name)) return 'The native plugin tool changed and requires renewed authorization.';
+      if (exec.agent !== agent) return 'This Agent may only use its approved tools.';
+      const actual = ctx.tools.get(exec.name, agent), global = ctx.tools.get(exec.name);
+      if (!actual) return 'The tool is no longer available.';
+      if (actual === global) return nativeToolNames(type).includes(exec.name) ? undefined : 'The native plugin tool changed or is not authorized for this Agent.';
+      if (!allowed.includes(exec.name) || approvedLocalTools.get(agent)?.get(exec.name) !== actual) return 'The scoped tool changed or is not authorized for this Agent.';
     },
     async ready() { await initialized; if (readyError) invalid(readyError); await validate({ ...configuration, toolGrants: [] }); }, revision: configuration.revision });
   const initialized = Promise.resolve().then(async () => {
@@ -114,7 +169,11 @@ export function apply(ctx) {
     const [plugins, bundles] = await Promise.all([ctx.pluginManager.listPlugins(), ctx.pluginManager.listBundles()]);
     const configs = configuredRows();
     for (const [id, row] of mounted) if (!ctx.agents.get(row.agentId)) mounted.delete(id);
-    for (const id of agentTools.keys()) if (!ctx.agents.get(id)) agentTools.delete(id);
+    for (const [id, row] of agentTools) {
+      const agent = ctx.agents.get(id);
+      if (!agent) agentTools.delete(id);
+      else agentTools.set(id, toolReport(row.agentTypeId, ctx.tools.schemas(agent).map(schema => schema.name)));
+    }
     const features = await Promise.all(definitions.map(async definition => {
       const modules = await Promise.all([...(definition.services || []), ...definition.modules].map(moduleAvailability));
       const platformAvailable = !(definition.platform === 'win32' && process.platform !== 'win32' || definition.platform === 'posix' && process.platform === 'win32');
@@ -123,7 +182,7 @@ export function apply(ctx) {
     return {
       schemaVersion: 1, runtime: { running: !managementOnly, appliedRevision: managementOnly ? null : configuration.revision, errorCode: readyError, mounted: managementOnly ? [] : [...mounted.values()].map(({ agentId, ...row }) => row), agents: managementOnly ? [] : [...agentTools.values()] },
       features,
-      tools: ctx.tools.schemas().filter(schema => !/^(?:eating_|mcp__)/.test(schema.name)).map(schema => ({ name: schema.name, description: safe(schema.description), fingerprint: digest(schema) })),
+      tools: ctx.tools.schemas().filter(schema => globalToolAccess(schema.name) !== 'reserved').map(schema => ({ name: schema.name, description: safe(schema.description), fingerprint: digest(schema), automaticAccess: globalToolAccess(schema.name) })),
       plugins: plugins.map(row => ({ entryId: row.entryId, moduleName: row.moduleName, enabled: row.enabled, phase: managementOnly ? null : row.fiberPhase, observedPhase: row.fiberPhase,
         protected: protectedModule(row.moduleName), manageable: Boolean(row.patchId) && !protectedModule(row.moduleName),
         configured: configs.some(config => config.id === row.patchId && Object.keys(config.config).length > 0),
@@ -219,6 +278,9 @@ export function apply(ctx) {
   });
   ctx.on('dispose', async () => {
     disposed = true;
+    const activeRestrictions = [...restrictions.values()];
+    restrictions.clear();
+    for (const entry of activeRestrictions) entry.release?.();
     try { const value = JSON.parse(readFileSync(join(directory, 'native-control.json'), 'utf8')); if (value.nonce === nonce) unlinkSync(join(directory, 'native-control.json')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     server.closeAllConnections(); await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   });

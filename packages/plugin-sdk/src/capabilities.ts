@@ -31,6 +31,7 @@ export interface PluginMediaProvider {
   readAsset(assetId: string): Promise<ImageResource>
 }
 
+/** Read-only current directory summary; capability/direct access is derived, never saved per Agent or tool. */
 export interface McpGrant {
   readonly agentTypeIds: readonly string[]
   readonly toolNames: readonly string[]
@@ -49,7 +50,6 @@ export type DirectMcpConfiguration = McpTransportConfiguration & {
   readonly id: string
   readonly name: string
   readonly autoConnect: boolean
-  readonly grant: McpGrant
 }
 export interface McpServiceSummary {
   readonly id: string
@@ -61,11 +61,23 @@ export interface McpServiceSummary {
   readonly state: 'disconnected' | 'connecting' | 'connected' | 'error'
   readonly lastError: string | null
   readonly tools: readonly PluginToolDefinition[]
+  /** Current known Agent types and tools; capability/direct sources automatically include future types and tools. */
   readonly grant: McpGrant
   /** Owner-facing connection details omit saved secret values. */
   readonly configuration: JsonObject
 }
-export interface McpDirectorySnapshot {
+/** One attempt to restore an already connected Harness after a capability topology change. */
+export interface HarnessRemount {
+  readonly id: string
+  readonly status: 'reconnected' | 'failed' | 'cancelled'
+  readonly code?: string
+}
+export interface HarnessRemountReport {
+  /** Present for a management transaction; a directory read may omit it. */
+  readonly harnessStopped?: boolean
+  readonly harnessRemounts: readonly HarnessRemount[]
+}
+export interface McpDirectorySnapshot extends HarnessRemountReport {
   readonly protocolVersion: 1
   readonly revision: number
   readonly services: readonly McpServiceSummary[]

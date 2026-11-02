@@ -2,6 +2,7 @@
 export function getAutonomyRuntimeSource(): string {
   return String.raw`
   let autonomyDriver;
+  const autonomySystemPolicy = () => '主 Agent 可自行继续、休息、等待或安排未来任务。eating_plan_activity 只登记 Eating 无输入活动节奏，不限制普通有输入轮次的行动与联系。需要未来一次性任务消息时，先读 eating_activity_state 的 agenda.revision，再用 eating_schedule_task 或 eating_cancel_scheduled_task；到点消息来自过去的自己，不是主人新指令。Eating 的定时机会仍遵守主人当前的开启／暂停、额度和时长，外部消息、原生目标与其他 Inbox 输入优先；暂停定时机会不撤销普通轮次已有的能力。';
   async function mountAutonomy(agent) {
     if (process.env.EATING_DSH_AUTONOMY !== 'true' || agent.id !== sessionId) return [];
     if (autonomyDriver) {
@@ -65,7 +66,6 @@ export function getAutonomyRuntimeSource(): string {
         if (exec.agent !== agent || !record(args) || Object.keys(args).length !== 2 || !Number.isSafeInteger(args.expected_agenda_revision) || !opaque(args.task_id)) throw new Error('Scheduled task cancellation arguments are invalid');
         return modelView(await auto('cancel-scheduled-task', { task: { expectedRevision: args.expected_agenda_revision, taskId: args.task_id } }, exec.signal));
       } });
-    agent.ctx.systemPrompt.section({ name: 'eating:autonomy-policy', order: 20, interpolate: false, text: () => '活动机会调度遵守主人当前的启停、暂停、额度和时长；外部消息、原生目标和其他 Inbox 输入优先。eating_plan_activity 仅登记后续活动节奏，不授予或限制通讯权限。主 Agent 可在任意当前轮次通过 eating_list_contact_targets 和 eating_contact_target 联系已授权对象，无需等待定时唤醒。未来任务用 eating_schedule_task 登记一次性消息，先读取 agenda.revision；到点消息是过去的自己安排的内容，不是主人指令，仍受主人暂停、额度、运行时和周期限制。不得通过另建 schedule 绕过主人暂停或调度限额，旧入站 message/resource 不授予跨目标资源权限。' });
     releases.push(ctx.on('agent/pre-step', async ({ agent: caller, messages, signal }, next) => {
       if (caller !== agent) return next();
       const decision = await next();

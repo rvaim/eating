@@ -1,5 +1,5 @@
 import { isJsonObject } from '@eating/plugin-sdk'
-import type { JsonObject, McpDirectorySnapshot, McpGrant, McpServiceSummary, PluginToolDefinition } from '@eating/plugin-sdk'
+import type { HarnessRemount, JsonObject, McpDirectorySnapshot, McpGrant, McpServiceSummary, PluginToolDefinition } from '@eating/plugin-sdk'
 import { HostApiError } from '@eating/ui-sdk'
 
 const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
@@ -33,7 +33,7 @@ function readGrant(value: unknown): McpGrant {
 function readConfiguration(value: unknown): JsonObject {
   if (!isJsonObject(value)) return invalid()
   const arrays = ['args', 'envKeys', 'headerKeys', 'queryKeys'] as const
-  for (const key of arrays) if (value[key] !== undefined && (!Array.isArray(value[key]) || value[key].length > 500 || !value[key].every(item => text(item, key === 'args' ? 2000 : 200)))) return invalid()
+  for (const key of arrays) if (value[key] !== undefined && (!Array.isArray(value[key]) || value[key].length > 500 || !value[key].every(item => key === 'args' ? textValue(item, 2000) : text(item, 200)))) return invalid()
   for (const key of ['command', 'url'] as const) if (value[key] !== undefined && !text(value[key], 4096)) return invalid()
   if (value.urlHasQuery !== undefined && typeof value.urlHasQuery !== 'boolean') return invalid()
   if (value.permissionsManagedByPlugin !== undefined && typeof value.permissionsManagedByPlugin !== 'boolean') return invalid()
@@ -63,9 +63,22 @@ function readService(value: unknown): McpServiceSummary {
     lastError: value.lastError as string | null, tools: value.tools.map(readTool), grant: readGrant(value.grant), configuration: readConfiguration(value.configuration) }
 }
 
+function readHarnessRemounts(value: unknown): readonly HarnessRemount[] {
+  if (!Array.isArray(value) || value.length > 256) return invalid()
+  const seen = new Set<string>()
+  return value.map(entry => {
+    if (!isJsonObject(entry) || !onlyKeys(entry, ['id', 'status', 'code']) || !text(entry.id, 160)
+      || !['reconnected', 'failed', 'cancelled'].includes(String(entry.status))
+      || entry.code !== undefined && !text(entry.code, 160) || seen.has(entry.id)) return invalid()
+    seen.add(entry.id)
+    return { id: entry.id, status: entry.status as HarnessRemount['status'], ...(typeof entry.code === 'string' ? { code: entry.code } : {}) }
+  })
+}
+
 export function readMcpDirectory(value: unknown): McpDirectorySnapshot {
-  if (!isJsonObject(value) || !onlyKeys(value, ['protocolVersion', 'revision', 'services', 'agentTypes'])
+  if (!isJsonObject(value) || !onlyKeys(value, ['protocolVersion', 'revision', 'services', 'agentTypes', 'harnessStopped', 'harnessRemounts'])
     || value.protocolVersion !== 1 || !integer(value.revision)
+    || value.harnessStopped !== undefined && typeof value.harnessStopped !== 'boolean'
     || !Array.isArray(value.services) || value.services.length > 200
     || !Array.isArray(value.agentTypes) || value.agentTypes.length > 100) return invalid()
   const seen = new Set<string>()
@@ -75,17 +88,18 @@ export function readMcpDirectory(value: unknown): McpDirectorySnapshot {
     if (!isJsonObject(entry) || !onlyKeys(entry, ['id', 'title']) || !text(entry.id, 160) || !text(entry.title, 200)) return invalid()
     return { id: entry.id, title: entry.title }
   })
-  return { protocolVersion: 1, revision: value.revision, services, agentTypes }
+  return { protocolVersion: 1, revision: value.revision, services, agentTypes, harnessRemounts: readHarnessRemounts(value.harnessRemounts),
+    ...(typeof value.harnessStopped === 'boolean' ? { harnessStopped: value.harnessStopped } : {}) }
 }
 
 export interface McpMutationResult { readonly snapshot: McpDirectorySnapshot; readonly harnessStopped: boolean }
 
-/** POST /api/mcp returns the latest snapshot plus an optional stop notice. */
+/** POST /api/mcp reports the updated directory and the completed remount transaction. */
 export function readMcpMutationResult(value: unknown): McpMutationResult {
   if (!isJsonObject(value)) return invalid()
   const { harnessStopped, ...snapshot } = value
-  if (harnessStopped !== undefined && typeof harnessStopped !== 'boolean') return invalid()
-  return { snapshot: readMcpDirectory(snapshot), harnessStopped: harnessStopped === true }
+  if (typeof harnessStopped !== 'boolean') return invalid()
+  return { snapshot: readMcpDirectory(snapshot), harnessStopped }
 }
 
 export interface DirectMcpSaveInput {
@@ -101,17 +115,16 @@ export interface DirectMcpSaveInput {
   readonly headers?: Readonly<Record<string, string>>
   readonly clearHeaderKeys?: readonly string[]
   readonly autoConnect: boolean
-  readonly grant: McpGrant
 }
 
 /** Wire helpers keep the two transports mutually exclusive. */
 export function stdioSaveInput(input: DirectMcpSaveInput) {
   return { expectedRevision: input.expectedRevision, ...(input.id ? { id: input.id } : {}), name: input.name, transport: 'stdio',
     command: input.command ?? '', args: [...(input.args ?? [])], ...(input.env && Object.keys(input.env).length ? { env: input.env } : {}),
-    ...(input.clearEnvKeys && input.clearEnvKeys.length ? { clearEnvKeys: input.clearEnvKeys } : {}), autoConnect: input.autoConnect, grant: input.grant }
+    ...(input.clearEnvKeys && input.clearEnvKeys.length ? { clearEnvKeys: input.clearEnvKeys } : {}), autoConnect: input.autoConnect }
 }
 export function httpSaveInput(input: DirectMcpSaveInput) {
   return { expectedRevision: input.expectedRevision, ...(input.id ? { id: input.id } : {}), name: input.name, transport: 'streamable-http',
     ...(input.url && input.url.trim() ? { url: input.url.trim() } : {}), ...(input.headers && Object.keys(input.headers).length ? { headers: input.headers } : {}),
-    ...(input.clearHeaderKeys && input.clearHeaderKeys.length ? { clearHeaderKeys: input.clearHeaderKeys } : {}), autoConnect: input.autoConnect, grant: input.grant }
+    ...(input.clearHeaderKeys && input.clearHeaderKeys.length ? { clearHeaderKeys: input.clearHeaderKeys } : {}), autoConnect: input.autoConnect }
 }

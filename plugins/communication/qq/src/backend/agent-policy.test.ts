@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { analyzeTemplate } from '@eating/plugin-sdk'
 import type { AgentInvocationScope, JsonObject, JsonValue } from '@eating/plugin-sdk'
-import { assertQQAgentInvocation, createDefaultAgentPolicy, defaultAgentTools, parseQQAgentPolicy, parseQQAgentPolicySave, parseQQAgentTools, parseQQIdentityList, qqAgentToolPolicy, qqAgentTypes, qqMessageResourceIds, qqSenderRole } from './agent-policy'
+import { assertQQAgentInvocation, createDefaultAgentPolicy, defaultAgentTools, parseQQAgentPolicy, parseQQAgentPolicySave, parseQQAgentTools, parseQQIdentityList, qqAgentInstructions, qqAgentToolPolicy, qqAgentTypes, qqMessageResourceIds, qqSenderRole } from './agent-policy'
 import { qqTools } from './operations'
 import { qqViewReceivedImageTool } from './media'
 
@@ -44,6 +44,13 @@ describe('QQ agent identity and permission policy', () => {
       expect(role.defaultPrompt).not.toContain('{{当前时间}}')
       expect(role.defaultPrompt).not.toMatch(/\{\{(?:消息列表|消息内容|发送者列表)\}\}/)
     }
+    const instructions = qqAgentInstructions.map(instruction => instruction.body).join('\n')
+    expect(analyzeTemplate(instructions, 'plugin').valid).toBe(true)
+    expect(instructions).toContain('先决定实际执行目标')
+    expect(instructions).toContain('eating_list_contact_targets')
+    expect(instructions).toContain('eating_contact_target')
+    expect(instructions).not.toContain('根据 Eating 提供的真实批次来源选择')
+    expect(qqAgentToolPolicy['qq.group'].availableTools).not.toContain('qq_send_private_message')
     expect(qqAgentToolPolicy['qq.group'].availableTools).not.toContain('qq_get_stranger_info')
     expect(qqAgentToolPolicy['qq.group'].defaultTools).not.toContain('qq_set_group_kick')
     expect(qqAgentToolPolicy['qq.private'].availableTools).not.toContain('qq_send_group_message')
@@ -106,6 +113,8 @@ describe('QQ agent runtime scope enforcement', () => {
     expect(() => assertQQAgentInvocation('qq_get_group_member_info', { group_id: 777777, user_id: 888888 }, group, policy, active)).not.toThrow()
     expect(() => assertQQAgentInvocation('qq_get_group_member_info', { group_id: 999999, user_id: 888888 }, group, policy, active)).toThrowError(violation)
     expect(() => assertQQAgentInvocation('qq_get_stranger_info', { user_id: 888888 }, group, policy, active)).toThrowError(violation)
+    expect(() => assertQQAgentInvocation('qq_send_private_message', { user_id: 234567, message: 'another target' }, group, policy, active)).toThrowError(violation)
+    expect(() => assertQQAgentInvocation('qq_send_group_message', { group_id: 777777, message: 'another target' }, scope, policy, active)).toThrowError(violation)
     const enabled = { ...policy, agentTools: { ...policy.agentTools, 'qq.group': ['qq_set_group_kick'] } }
     expect(() => assertQQAgentInvocation('qq_set_group_kick', { group_id: 777777, user_id: 888888 }, group, enabled, active)).not.toThrow()
     expect(() => assertQQAgentInvocation('qq_set_group_kick', { group_id: 999999, user_id: 888888 }, group, enabled, active)).toThrowError(violation)

@@ -29,10 +29,19 @@ async function configureMemory(api: Awaited<ReturnType<typeof ownerApi>>, servic
   await api('/plugins/openviking-memory/configuration', { expectedRevision: 0, endpoint: service.endpoint, account: service.account, user: service.user, apiKey: service.apiKey, autoConnect: false, timeoutMs: 10000, settings: { ...DEFAULT_SETTINGS } as unknown as JsonObject })
   await api('/plugins/openviking-memory/connect', {})
 }
+function expectMainMemoryTools(request: JsonObject) {
+  if (!Array.isArray(request.tools)) throw new Error('Expected current main tools')
+  const names = request.tools.map(tool => String(object(object(tool).function).name)).sort()
+  const eating = ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task']
+  const memory = ['memory_search', 'memory_read', 'memory_save', 'memory_scopes'].map(name => 'mcp__plugin_openviking_memory__' + name)
+  expect(names.filter(name => name.startsWith('eating_') || name.startsWith('mcp__'))).toEqual([...eating, ...memory].sort())
+  expect(names).toEqual(expect.arrayContaining(['bash', 'read', 'write', 'edit', 'web_search', 'schedule_create', 'schedule_update']))
+  expect(names.some(name => name.startsWith('mcp__qq__'))).toBe(false)
+}
 function batch(kind: 'private' | 'group', senderId = '200'): HarnessDeliveryBatch { const conversationId = `qq:100:${kind}:200`, stamp = new Date().toISOString(); return { protocolVersion: 1, batchId: 'a'.repeat(64), conversationId, createdAt: stamp, reason: 'quiet-window', events: [{ protocolVersion: 1, eventId: 'event', pluginId: 'qq', instanceId: 'fixture', platform: 'qq', accountId: '100', conversationId, senderId, targetId: '200', receivedAt: stamp, source: { trust: 'external', kind, senderRole: 'owner' }, content: 'fixture', text: 'fixture' }] } }
 
-describe('real Host grants and scoped OpenViking MCP', () => {
-  it('binds manual tools to the current main turn, isolates group reads and keeps writes behind explicit grants', async () => {
+describe('real Host default access and scoped OpenViking MCP', () => {
+  it('opens current tools by default, binds them to the current main turn and isolates group reads', async () => {
     const directory = await home(), service = await startOpenVikingFixture(); stops.push(() => service.close())
     let harness!: HarnessHostServices
     const harnessEntry: BackendPluginEntry = { id: 'fixture', kind: 'harness', storageDirectory: 'fixture', create(context) { harness = context.harness!; return { id: 'fixture', name: 'Fixture', kind: 'harness', version: '1.0.0', tools: [], capabilities: [], getStatus: () => ({ state: 'disconnected', accountId: null, accountName: null, lastError: null, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 }), getPublicConfiguration: () => ({}), updateConfiguration: async () => ({}), connect: async () => {}, disconnect: async () => {}, invoke: async () => null, dispose: async () => {} } } }
@@ -41,9 +50,7 @@ describe('real Host grants and scoped OpenViking MCP', () => {
     const qq = await api('/plugins/qq/configuration')
     await api('/plugins/qq/manage', { operation: 'save-agent-policy', input: { owners: ['200'], administrators: [], agentTools: qq.agentTools!, expectedRevision: qq.policyRevision! } })
     await configureMemory(api, service)
-    expect(harness.getCapabilityMcpConnections({ agentId: 'root', agentTypeId: 'main' })).toEqual([])
-    const grant = await api('/mcp')
-    await api('/mcp', { operation: 'save-grants', input: { id: 'plugin.openviking-memory', expectedRevision: grant.revision!, agentTypeIds: ['main'], toolNames: ['memory_search', 'memory_read', 'memory_save', 'memory_scopes'] } })
+    expect(harness.getCapabilityMcpConnections({ agentId: 'root', agentTypeId: 'main' })[0]!.tools).toEqual(['memory_search', 'memory_read', 'memory_save', 'memory_scopes'])
     const connection = harness.getCapabilityMcpConnections({ agentId: 'root', agentTypeId: 'main' })[0]!
     const client = new Client({ name: 'memory-main-fixture', version: '1' }); stops.push(() => client.close())
     await client.connect(new StreamableHTTPClientTransport(new URL(connection.url), { requestInit: { headers: { ...connection.headers } } }))
@@ -72,13 +79,13 @@ describe('real Host grants and scoped OpenViking MCP', () => {
     expect(service.errors).toEqual([])
   })
 
-  it('automatically records ordinary QQ turns and action receipts without granting any memory tools', async () => {
+  it('automatically records ordinary QQ turns and action receipts without invoking memory tools', async () => {
     const directory = await home(), service = await startOpenVikingFixture(); stops.push(service.close)
     let harness!: HarnessHostServices
     const harnessEntry: BackendPluginEntry = { id: 'fixture', kind: 'harness', storageDirectory: 'fixture', create(context) { harness = context.harness!; return { id: 'fixture', name: 'Fixture', kind: 'harness', version: '1.0.0', tools: [], capabilities: [], getStatus: () => ({ state: 'disconnected', accountId: null, accountName: null, lastError: null, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 }), getPublicConfiguration: () => ({}), updateConfiguration: async () => ({}), connect: async () => {}, disconnect: async () => {}, invoke: async () => null, dispose: async () => {} } } }
     const host = new EatingHost({ dataDirectory: directory, entries: [qqEntry, memoryEntry, harnessEntry], port: 0, allowedUiOrigins: [] }); stops.push(() => host.close())
     const api = await ownerApi(host); await configureMemory(api, service)
-    expect(harness.getCapabilityMcpConnections({ agentId: 'root', agentTypeId: 'main' })).toEqual([])
+    expect(harness.getCapabilityMcpConnections({ agentId: 'root', agentTypeId: 'main' })[0]!.tools).toEqual(['memory_search', 'memory_read', 'memory_save', 'memory_scopes'])
     const root = `viking://user/${service.user}`
     service.memories.set(root + '/memories/preferences/global.md', 'fixture GLOBAL-RECALLED-VALUE')
     service.memories.set(root + '/peers/qq-100-private-200/memories/preferences/current.md', 'fixture LOCAL-RECALLED-VALUE')
@@ -105,7 +112,7 @@ describe('real Host grants and scoped OpenViking MCP', () => {
 })
 
 describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('system DSH automatic OpenViking memory end to end', () => {
-  it('recalls only global and current peer, captures normal QQ replies without memory tools, and keeps a live session without archives', async () => {
+  it('recalls only global and current peer, captures normal QQ replies without invoking memory tools, and keeps a live session without archives', async () => {
     const directory = await home(), service = await startOpenVikingFixture(); stops.push(() => service.close())
     const onebot = await startOneBotFixture({ login: { user_id: 100000101, nickname: 'Memory fixture account' } }); stops.push(() => onebot.close())
     const requests: JsonObject[] = [], reply = 'Automatic memory captured this visible reply'
@@ -129,7 +136,7 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('system DSH auto
     expect(requests).toHaveLength(1)
     const wire = JSON.stringify(requests[0]!.messages)
     expect(wire).toContain('GLOBAL-RECALLED-VALUE'); expect(wire).toContain('LOCAL-RECALLED-VALUE'); expect(wire).not.toContain('OTHER-PRIVATE-MEMORY')
-    expect(JSON.stringify(requests[0]!.tools)).not.toContain('memory_save')
+    expectMainMemoryTools(requests[0]!)
     const submitted = service.requests.find(request => request.method === 'POST' && request.path.endsWith('/incremental-memory'))!
     expect(JSON.stringify(submitted.body)).toContain(reply)
     for (const recalled of ['GLOBAL-RECALLED-VALUE', 'LOCAL-RECALLED-VALUE', 'OTHER-PRIVATE-MEMORY']) expect(JSON.stringify(submitted.body)).not.toContain(recalled)
@@ -154,7 +161,7 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('system DSH auto
     expect(requests).toHaveLength(2); expect(service.sessions.size).toBe(1); expect(service.submissions.map(item => item.expectedSequence)).toEqual([0, 2])
     expect(remote.messages).toHaveLength(4); expect(service.extractions.map(item => item.messages.length)).toEqual([2, 2]); expect(service.archives.size).toBe(0)
     expect(service.requests.filter(request => request.method === 'POST' && request.path.endsWith('/sessions'))).toHaveLength(1)
-    for (const request of requests) expect(JSON.stringify(request.tools)).not.toContain('memory_save')
+    for (const request of requests) expectMainMemoryTools(request)
     await host.close()
     const sqlite = await readFile(join(directory, 'host/Eating.sqlite'))
     expect(sqlite.includes(Buffer.from(reply))).toBe(false)

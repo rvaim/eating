@@ -71,7 +71,7 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
   const ctx = {
     on, get: () => undefined, provide: vi.fn(), plugin: vi.fn(async () => {}),
     eatingNativeWeb: { entry: vi.fn(async () => ({ url: 'http://127.0.0.1:45678/?token=fixture-only-web-token', rootSessionId: sessionId })) },
-    eatingNativeCapabilities: { ready: vi.fn(async () => {}), allowedGlobal: vi.fn(() => []), mount: vi.fn(async () => []), reportTools: vi.fn(), authorize: vi.fn() },
+    eatingNativeCapabilities: { ready: vi.fn(async () => {}), allowedGlobal: vi.fn(() => []), restrict: vi.fn(), mount: vi.fn(async () => []), reportTools: vi.fn(), authorize: vi.fn() },
     sessions: { flush, get: () => options.live ? session : undefined },
     sessionPersistence: { open, stat: vi.fn(async () => undefined) },
     systemPrompt: { section: (value: NonNullable<typeof section.current>) => { if (value.name === 'eating:owner-system') section.current = value; return () => { if (section.current === value) section.current = undefined } } },
@@ -117,9 +117,12 @@ describe('self-contained published-API DSH runtime bridge', () => {
     expect(f.bridge.inject).toEqual(['sessions', 'sessionPersistence', 'systemPrompt', 'tools', 'agents', 'subagents', 'agentPresets', 'eatingNativeWeb', 'eatingNativeCapabilities'])
     expect(getRuntimeBridgeSource()).not.toMatch(/from ['"](?:@|\.\.)/)
     expect(f.section.current).toMatchObject({ name: 'eating:owner-system', order: 0, complete: true, interpolate: false })
-    expect(f.section.current?.text()).toBe('主人策略 {{不解释外部变量}}')
+    expect(f.section.current?.text()).toContain('无需等新的私聊入站')
+    expect(f.section.current?.text()).toContain('所有功能型 MCP 的全部工具默认向所有 Agent 开放')
+    expect(f.section.current?.text()).toContain('不能据此断言整体没有权限')
+    expect(f.section.current?.text()).toMatch(/^主人策略 \{\{不解释外部变量\}\}\n\n/)
     f.write('owner-policy.json', { schemaVersion: 1, revision: 2, agentTypes: [], systemPrompt: '主人修订后的系统提示' })
-    expect(f.section.current?.text()).toBe('主人修订后的系统提示')
+    expect(f.section.current?.text()).toMatch(/^主人修订后的系统提示\n\n/)
     f.write('owner-policy.json', { schemaVersion: 1, revision: 3, systemPrompt: 123, qqMessage: '伪造主人' })
     expect(() => f.section.current?.text()).toThrow('主人系统提示词配置无效。')
     expect(f.read('ready.json')).toEqual({ schemaVersion: 1, nonce: f.nonce, sessionId: f.sessionId, toolsReady: true, durabilityAvailable: true, recovery: 'absent' })
@@ -239,7 +242,7 @@ describe('self-contained published-API DSH runtime bridge', () => {
     await turn()
     expect(f.flush).not.toHaveBeenCalled()
     expect(existsSync(f.path(`ack-${f.expected.batchId}.json`))).toBe(false)
-    expect(f.section.current?.text()).toBe('主人策略 {{不解释外部变量}}')
+    expect(f.section.current?.text()).toMatch(/^主人策略 \{\{不解释外部变量\}\}\n\n/)
   })
 
   it.each([false, 'reject'] as const)('refuses ACK and removes readiness when flush returns %s', async result => {

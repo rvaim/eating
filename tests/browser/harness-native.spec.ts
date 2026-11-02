@@ -15,9 +15,10 @@ const staticDirectory = fileURLToPath(new URL('../../dist/', import.meta.url))
 const captures = fileURLToPath(new URL('../../.impeccable/review/dsh-native/', import.meta.url))
 const json = (route: Route, value: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) })
 function snapshotFixture(): NativeSnapshot {
-  return { configuration: defaultNativeCapabilities(['qq.private', 'qq.group']), agentTypes: [{ id: 'main', title: 'main', enabled: true }, { id: 'qq.private', title: 'QQ 私聊', enabled: true }, { id: 'qq.group', title: 'QQ 群聊', enabled: true }], catalog: {
+  const defaults = defaultNativeCapabilities(['qq.private', 'qq.group'])
+  return { configuration: { ...defaults, features: defaults.features.map(feature => feature.id === 'todo' ? { ...feature, enabled: false } : feature) }, agentTypes: [{ id: 'main', title: 'main', enabled: true }, { id: 'qq.private', title: 'QQ 私聊', enabled: true }, { id: 'qq.group', title: 'QQ 群聊', enabled: true }], catalog: {
     schemaVersion: 1, features: NATIVE_FEATURES.map(feature => ({ id: feature.id, available: feature.id !== 'powershell', platformAvailable: feature.id !== 'powershell', modules: feature.modules.map(module => ({ id: module.id, name: module.name, available: true })) })),
-    tools: [{ name: 'fixture_echo', description: 'Fixture plugin tool for exact per-Agent grants.', fingerprint: 'a'.repeat(64) }],
+    tools: [{ name: 'fixture_echo', description: 'Fixture native tool with selectable child grants.', fingerprint: 'a'.repeat(64), automaticAccess: 'main' }, { name: 'mcp__profile__find', description: 'Native Profile functional MCP.', fingerprint: 'd'.repeat(64), automaticAccess: 'all' }],
     plugins: [{ entryId: 'fixture-module', moduleName: '@fixture/native-plugin', enabled: true, phase: null, observedPhase: 'active', protected: false, manageable: true, configured: true, fingerprint: 'b'.repeat(64) }],
     bundles: [{ name: '@fixture/native-plugin', version: '1.0.0', enabled: false, installed: true, availability: 'profile', official: false, optional: false, removable: true, protected: false, fingerprint: 'c'.repeat(64), rows: [{ id: 'fixture-module', name: '@fixture/native-plugin' }], overrides: [], errorCode: null }],
     runtime: { running: false, appliedRevision: null, errorCode: null, mounted: [], agents: [] },
@@ -150,6 +151,32 @@ test.describe('DSH 原生能力与插件管理', () => {
     await tool.locator('summary').scrollIntoViewIfNeeded()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     await page.screenshot({ path: join(captures, 'tools-light-mobile.png'), animations: 'disabled' })
+  })
+
+  test('原生全局工具自动供主代理使用，功能MCP向所有代理只读开放且新增目录不需授权保存', async ({ page }, info) => {
+    const snapshot = snapshotFixture(); let writes = 0
+    await mock(page, snapshot, async operation => { if (operation !== 'list') writes++; return false })
+    await open(page); await page.getByRole('button', { name: '插件工具授权', exact: true }).click()
+    const native = page.locator('details.dsh-native-row').filter({ hasText: 'fixture_echo' }).first()
+    await native.locator('summary').click()
+    await expect(native.getByText('主 Agent 自动可用', { exact: true })).toBeVisible()
+    await expect(native.getByRole('checkbox', { name: '主 Agent', exact: true })).toHaveCount(0)
+    await expect(native.getByRole('checkbox', { name: 'QQ 私聊', exact: true })).toBeVisible()
+    const mcp = page.locator('details.dsh-native-row').filter({ hasText: 'mcp__profile__find' }).first()
+    await mcp.locator('summary').click()
+    await expect(mcp.getByText('所有 Agent 自动可用', { exact: true })).toBeVisible()
+    await expect(mcp.getByRole('checkbox')).toHaveCount(0)
+    snapshot.catalog.tools.push({ name: 'mcp__profile__new_tool', description: 'New native MCP tool', fingerprint: 'e'.repeat(64), automaticAccess: 'all' })
+    snapshot.agentTypes.push({ id: 'future.type', title: '新执行类型', enabled: true })
+    await page.getByRole('button', { name: '读取当前目录', exact: true }).click()
+    const added = page.locator('details.dsh-native-row').filter({ hasText: 'mcp__profile__new_tool' }).first(); await added.locator('summary').click()
+    await expect(added.getByText('所有 Agent 自动可用', { exact: true })).toBeVisible()
+    await expect(added.getByRole('checkbox')).toHaveCount(0)
+    expect(snapshot.configuration.toolGrants).toEqual([]); expect(writes).toBe(0)
+    await expect(page.getByRole('button', { name: '保存原生能力与授权', exact: true })).toBeDisabled()
+    await page.setViewportSize({ width: 390, height: 844 }); await added.scrollIntoViewIfNeeded()
+    await page.screenshot({ path: info.outputPath('native-automatic-access-mobile.png'), animations: 'disabled' })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   })
 
   test('安装需要来源检查和信任选择，插件配置不回显，隐藏清理秘密并停止读取', async ({ page }) => {

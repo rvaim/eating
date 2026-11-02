@@ -26,7 +26,6 @@ const tools: Tool[] = [
   { name: 'fixture_image', inputSchema: { type: 'object' } },
   { name: 'fixture_hang', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false, destructiveHint: true } },
 ]
-const emptyGrant = { agentTypeIds: [], toolNames: [] }
 function deferred<T = void>() { let complete!: (value: T) => void; const promise = new Promise<T>(resolvePromise => { complete = resolvePromise }); return { promise, resolve: complete } }
 
 function directory() {
@@ -38,16 +37,16 @@ function directory() {
   })
   return root
 }
-function manager(root = directory()) {
-  const service = new DirectMcpConnections(root)
+function manager(root = directory(), onTopologyChange?: (sourceId: string, refresh: () => Promise<void>) => Promise<void>) {
+  const service = new DirectMcpConnections(root, onTopologyChange)
   cleanups.push(() => service.close())
   return { service, root, file: join(root, 'connections.json') }
 }
 function saveHttp(service: DirectMcpConnections, url: string, extra: JsonObject = {}) {
-  return service.save({ expectedRevision: service.revision, name: 'Remote fixture', transport: 'streamable-http', url, headers: { Authorization: `Bearer ${fixtureSecret}` }, autoConnect: false, grant: emptyGrant, ...extra })
+  return service.save({ expectedRevision: service.revision, name: 'Remote fixture', transport: 'streamable-http', url, headers: { Authorization: `Bearer ${fixtureSecret}` }, autoConnect: false, ...extra })
 }
 function saveStdio(service: DirectMcpConnections, marker: string, extra: JsonObject = {}) {
-  return service.save({ expectedRevision: service.revision, name: 'Stdio fixture', transport: 'stdio', command: process.execPath, args: [fixtureScript, marker], env: { EATING_DIRECT_MCP_FIXTURE_SECRET: fixtureSecret }, autoConnect: false, grant: emptyGrant, ...extra })
+  return service.save({ expectedRevision: service.revision, name: 'Stdio fixture', transport: 'stdio', command: process.execPath, args: [fixtureScript, marker], env: { EATING_DIRECT_MCP_FIXTURE_SECRET: fixtureSecret }, autoConnect: false, ...extra })
 }
 async function failed(promise: Promise<unknown>, code: string, outcome?: string) {
   const error = await promise.then(() => { throw new Error('Unexpected fixture success') }, (reason: unknown) => reason)
@@ -79,7 +78,7 @@ async function endpoint(options: { tools?: Tool[]; pages?: boolean; loopCursor?:
       if (!entry && request.method === 'POST' && isInitializeRequest(body)) {
         initialized.resolve()
         if (options.stall) return
-        const server = new Server({ name: 'direct-http-fixture', version: '1.0.0' }, { capabilities: { tools: {} } })
+        const server = new Server({ name: 'direct-http-fixture', version: '1.0.0' }, { capabilities: { tools: { listChanged: true } } })
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => `fixture-session-${++creations}`, enableJsonResponse: true, onsessioninitialized: id => { servers.set(id, { server, transport }) } })
         server.setRequestHandler(ListToolsRequestSchema, async input => {
           const selected = options.tools ?? tools
@@ -108,7 +107,9 @@ async function endpoint(options: { tools?: Tool[]; pages?: boolean; loopCursor?:
     http.closeAllConnections()
     await new Promise<void>((accept, reject) => http.close(error => error ? reject(error) : accept()))
   })
-  return { url: `http://127.0.0.1:${address.port}/custom/mcp?api_key=${fixtureSecret}&mode=fixture`, received, initialized: initialized.promise, called: called.promise, creations: () => creations }
+  return { url: `http://127.0.0.1:${address.port}/custom/mcp?api_key=${fixtureSecret}&mode=fixture`, received, initialized: initialized.promise, called: called.promise, creations: () => creations,
+    async changeTools(next: Tool[]) { options.tools = next; await Promise.all([...servers.values()].map(entry => entry.server.sendToolListChanged())) },
+  }
 }
 
 function rpcCalls(received: { body: unknown }[], method: string) { return received.filter(item => item.body !== null && typeof item.body === 'object' && 'method' in item.body && item.body.method === method) }
@@ -122,13 +123,13 @@ describe('direct MCP configuration and CAS persistence', () => {
   it('saves current schema privately without executing stdio or auto-connecting', async () => {
     const { service, root, file } = manager()
     const marker = join(root, 'not-started.pid')
-    const item = saveStdio(service, marker, { autoConnect: true, grant: { agentTypeIds: ['qq.private'], toolNames: ['fixture_echo'] } })
-    expect(item).toMatchObject({ id: expect.stringMatching(/^direct\.[0-9a-f-]{36}$/), source: { kind: 'direct' }, state: 'disconnected', enabled: true, autoConnect: true, tools: [], grant: { agentTypeIds: ['qq.private'], toolNames: ['fixture_echo'] } })
+    const item = saveStdio(service, marker, { autoConnect: true })
+    expect(item).toMatchObject({ id: expect.stringMatching(/^direct\.[0-9a-f-]{36}$/), source: { kind: 'direct' }, state: 'disconnected', enabled: true, autoConnect: true, tools: [], grant: { agentTypeIds: ['main'], toolNames: [] } })
     expect(item.configuration).toEqual({ command: process.execPath, args: [fixtureScript, marker], envKeys: ['EATING_DIRECT_MCP_FIXTURE_SECRET'] })
     expect(JSON.stringify(item)).not.toContain(fixtureSecret)
     expect(existsSync(marker)).toBe(false)
     const disk = JSON.parse(readFileSync(file, 'utf8'))
-    expect(disk).toMatchObject({ schemaVersion: 1, revision: 1, connections: [{ id: item.id, env: { EATING_DIRECT_MCP_FIXTURE_SECRET: fixtureSecret } }] })
+    expect(disk).toMatchObject({ schemaVersion: 2, revision: 1, connections: [{ id: item.id, env: { EATING_DIRECT_MCP_FIXTURE_SECRET: fixtureSecret } }] })
     if (process.platform !== 'win32') { expect(statSync(root).mode & 0o777).toBe(0o700); expect(statSync(file).mode & 0o777).toBe(0o600) }
     const reopened = new DirectMcpConnections(root); cleanups.push(() => reopened.close())
     expect(reopened.revision).toBe(1); expect(reopened.list()).toEqual(service.list())
@@ -143,7 +144,7 @@ describe('direct MCP configuration and CAS persistence', () => {
     const { service, file } = manager()
     const item = saveHttp(service, upstream.url, { headers: { Authorization: `Bearer ${fixtureSecret}`, 'X-Other': 'saved-other' } })
     expect(item.configuration).toEqual({ url: upstream.url.split('?')[0], urlHasQuery: true, queryKeys: ['api_key', 'mode'], headerKeys: ['authorization', 'x-other'] })
-    const update = { id: item.id, expectedRevision: service.revision, name: 'Renamed', transport: 'streamable-http', autoConnect: false, grant: emptyGrant }
+    const update = { id: item.id, expectedRevision: service.revision, name: 'Renamed', transport: 'streamable-http', autoConnect: false }
     service.save(update)
     await service.connect(item.id)
     expect(upstream.received[0]).toMatchObject({ authorization: `Bearer ${fixtureSecret}`, url: '/custom/mcp?api_key=direct-fixture-private-value&mode=fixture' })
@@ -158,7 +159,7 @@ describe('direct MCP configuration and CAS persistence', () => {
   it('patches env values without clearing omitted keys and rejects wildcard grants or mixed transports', () => {
     const { service, root, file } = manager()
     const saved = saveStdio(service, join(root, 'fixture.pid'), { env: { KEY_ONE: fixtureSecret, KEY_TWO: 'retained' } })
-    const update = { id: saved.id, expectedRevision: service.revision, name: 'Env fixture', transport: 'stdio', command: process.execPath, args: [fixtureScript, '', 'duplicate', 'duplicate'], autoConnect: false, grant: emptyGrant }
+    const update = { id: saved.id, expectedRevision: service.revision, name: 'Env fixture', transport: 'stdio', command: process.execPath, args: [fixtureScript, '', 'duplicate', 'duplicate'], autoConnect: false }
     service.save({ ...update, env: { KEY_THREE: 'new' }, clearEnvKeys: ['KEY_ONE'] })
     expect(JSON.parse(readFileSync(file, 'utf8')).connections[0].env).toEqual({ KEY_TWO: 'retained', KEY_THREE: 'new' })
     for (const bad of [{ ...update, expectedRevision: service.revision, grant: { agentTypeIds: [], toolNames: ['*'] } }, { ...update, expectedRevision: service.revision, headers: {} }, { ...update, expectedRevision: service.revision, url: 'http://127.0.0.1/' }, { ...update, expectedRevision: service.revision, env: { 'INVALID=ENV': 'bad' } }]) expect(() => service.save(bad)).toThrowError(expect.objectContaining({ code: 'MCP_CONFIGURATION_INVALID' }))
@@ -204,7 +205,7 @@ describe('direct MCP configuration and CAS persistence', () => {
     expect(service.get(first.id).state).toBe('disconnected')
   })
 
-  it.each(['{"schemaVersion":0,"revision":0,"connections":[]}', '{"schemaVersion":1,"connections":[]}', '{"schemaVersion":1,"revision":0,"connections":[],"legacy":true}', '{broken'])('rejects unsupported/damaged storage without replacing it: %s', bytes => {
+  it.each(['{"schemaVersion":1,"revision":0,"connections":[]}', '{"schemaVersion":0,"revision":0,"connections":[]}', '{"schemaVersion":2,"connections":[]}', '{"schemaVersion":2,"revision":0,"connections":[],"legacy":true}', '{broken'])('rejects unsupported/damaged storage without replacing it: %s', bytes => {
     const root = directory(); const file = join(root, 'connections.json'); writeFileSync(file, bytes)
     expect(() => new DirectMcpConnections(root)).toThrowError(expect.objectContaining({ code: 'MCP_STORAGE_INVALID' }))
     expect(readFileSync(file, 'utf8')).toBe(bytes)
@@ -222,7 +223,7 @@ describe('direct MCP configuration and CAS persistence', () => {
   it('rejects URL credentials/fragments and missing create URLs without returning their content', () => {
     const { service } = manager()
     for (const url of ['https://user:fixture@fixture.invalid/mcp', 'https://fixture.invalid/mcp#secret', 'file:///tmp/fixture']) expect(() => saveHttp(service, url)).toThrowError(expect.objectContaining({ code: 'MCP_CONFIGURATION_INVALID' }))
-    expect(() => service.save({ name: 'Missing', transport: 'streamable-http', expectedRevision: 0, autoConnect: false, grant: emptyGrant })).toThrow()
+    expect(() => service.save({ name: 'Missing', transport: 'streamable-http', expectedRevision: 0, autoConnect: false })).toThrow()
   })
 })
 
@@ -251,25 +252,22 @@ describe('direct MCP real Streamable HTTP lifecycle', () => {
     const upstream = await endpoint(); const { service } = manager(); const saved = saveHttp(service, upstream.url)
     const first = service.connect(saved.id); const second = service.connect(saved.id)
     expect(second).toBe(first)
-    expect(() => service.save({ expectedRevision: 1, id: saved.id, name: 'Busy', transport: 'streamable-http', autoConnect: false, grant: emptyGrant })).toThrowError(expect.objectContaining({ code: 'MCP_CONNECTION_BUSY' }))
+    expect(() => service.save({ expectedRevision: 1, id: saved.id, name: 'Busy', transport: 'streamable-http', autoConnect: false })).toThrowError(expect.objectContaining({ code: 'MCP_CONNECTION_BUSY' }))
     await Promise.all([first, second]); expect(upstream.creations()).toBe(1)
     await service.connect(saved.id); expect(upstream.creations()).toBe(1)
     await Promise.all([service.disconnect(saved.id), service.disconnect(saved.id)])
     await service.connect(saved.id); expect(upstream.creations()).toBe(2)
   })
 
-  it('updates grants under CAS while connected without restarting the MCP client or changing secrets', async () => {
+  it('derives every current tool and new Agent type without rewriting configuration or secret bytes', async () => {
     const upstream = await endpoint(); const { service, file } = manager(); const saved = saveHttp(service, upstream.url)
+    const bytes = readFileSync(file, 'utf8')
     await service.connect(saved.id)
-    const updated = service.setGrant(saved.id, { agentTypeIds: ['qq.private'], toolNames: ['fixture_echo'] }, 1)
-    expect(updated).toMatchObject({ state: 'connected', grant: { agentTypeIds: ['qq.private'], toolNames: ['fixture_echo'] } })
-    expect(updated.tools).toHaveLength(4); expect(service.revision).toBe(2)
-    expect(upstream.creations()).toBe(1)
-    expect(() => service.setGrant(saved.id, emptyGrant, 1)).toThrowError(expect.objectContaining({ code: 'MCP_REVISION_CONFLICT' }))
-    expect(() => service.setGrant(saved.id, { agentTypeIds: [], toolNames: ['*'] }, 2)).toThrowError(expect.objectContaining({ code: 'MCP_CONFIGURATION_INVALID' }))
-    const disk = JSON.parse(readFileSync(file, 'utf8')).connections[0]
-    expect(disk.url).toBe(upstream.url); expect(disk.headers).toEqual({ authorization: `Bearer ${fixtureSecret}` })
-    expect(disk.grant).toEqual(updated.grant)
+    const updated = service.get(saved.id, ['main', 'future.agent-type'])
+    expect(updated).toMatchObject({ state: 'connected', grant: { agentTypeIds: ['main', 'future.agent-type'], toolNames: tools.map(tool => tool.name) } })
+    expect(service.revision).toBe(1)
+    expect(readFileSync(file, 'utf8')).toBe(bytes)
+    expect(JSON.parse(bytes).connections[0]).not.toHaveProperty('grant')
     await service.call(saved.id, 'fixture_echo', { value: 'still connected' })
     expect(upstream.creations()).toBe(1)
     expect(upstream.received.filter(item => item.method === 'DELETE')).toHaveLength(0)
@@ -280,7 +278,7 @@ describe('direct MCP real Streamable HTTP lifecycle', () => {
     const { service } = manager(); const saved = saveHttp(service, upstream.url)
     await service.connect(saved.id)
     expect(await service.call(saved.id, 'fixture_write', {})).toEqual({ content: [{ type: 'text', text: 'tool rejected' }], isError: true, structuredContent: { reason: 'fixture' } })
-    expect(service.get(saved.id).grant).toEqual(emptyGrant)
+    expect(service.get(saved.id).grant).toEqual({ agentTypeIds: ['main'], toolNames: tools.map(tool => tool.name) })
     await failed(service.call(saved.id, 'missing', {}), 'MCP_TOOL_NOT_FOUND', 'not-sent')
     expect(rpcCalls(upstream.received, 'tools/call')).toHaveLength(1)
   })
@@ -309,6 +307,44 @@ describe('direct MCP real Streamable HTTP lifecycle', () => {
       await failed(service.connect(saved.id), 'MCP_TOOLS_INVALID')
       expect(service.get(saved.id).tools).toEqual([])
     }
+  })
+
+  it('revokes an old topology, cancels an in-flight action, and discovers new tools once without rewriting configuration', async () => {
+    const held = deferred<CallToolResult>(), changed = vi.fn(async (_id: string, refresh: () => Promise<void>) => refresh())
+    const upstream = await endpoint({ call: async () => held.promise })
+    const { service, file } = manager(directory(), changed), saved = saveHttp(service, upstream.url)
+    await service.connect(saved.id)
+    const bytes = readFileSync(file, 'utf8')
+    const pending = failed(service.call(saved.id, 'fixture_write', {}), 'MCP_CALL_INTERRUPTED', 'unknown')
+    await upstream.called
+    const next = [tools[0]!, { name: 'new_tool', inputSchema: { type: 'object' as const }, annotations: { readOnlyHint: true } }]
+    await upstream.changeTools(next)
+    await pending
+    await vi.waitFor(() => expect(service.get(saved.id)).toMatchObject({ state: 'connected', grant: { agentTypeIds: ['main'], toolNames: ['fixture_echo', 'new_tool'] } }))
+    expect(changed).toHaveBeenCalledExactlyOnceWith(saved.id, expect.any(Function))
+    expect(service.get(saved.id, ['new.agent-type']).grant.agentTypeIds).toEqual(['new.agent-type'])
+    expect(upstream.creations()).toBe(2)
+    expect(rpcCalls(upstream.received, 'tools/call')).toHaveLength(1)
+    expect(readFileSync(file, 'utf8')).toBe(bytes)
+    expect(service.revision).toBe(1)
+    held.resolve({ content: [{ type: 'text', text: 'late success' }] })
+    expect(await service.call(saved.id, 'new_tool', {})).toEqual({ content: [{ type: 'text', text: 'late success' }] })
+    expect(rpcCalls(upstream.received, 'tools/call')).toHaveLength(2)
+  })
+
+  it('keeps a manual disconnect effective while a topology change waits for Harness revocation', async () => {
+    const entered = deferred(), release = deferred()
+    const upstream = await endpoint()
+    const { service } = manager(directory(), async (_id, refresh) => { entered.resolve(); await release.promise; await refresh() })
+    const saved = saveHttp(service, upstream.url)
+    await service.connect(saved.id)
+    await upstream.changeTools([tools[0]!])
+    await entered.promise
+    await service.disconnect(saved.id)
+    release.resolve()
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(service.get(saved.id)).toMatchObject({ state: 'disconnected', tools: [] })
+    expect(upstream.creations()).toBe(1)
   })
 
   it('cancels connection initialization and rejects its late result after disconnect', async () => {

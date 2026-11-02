@@ -4,11 +4,11 @@ import { dirname, join, resolve } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import { CallToolResultSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
+import { CallToolResultSchema, ErrorCode, McpError, ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker-provider.js'
 import { PlatformError } from '@eating/plugin-sdk'
-import type { DirectMcpConfiguration, JsonObject, JsonValue, McpGrant, McpServiceSummary, PluginToolDefinition } from '@eating/plugin-sdk'
+import type { DirectMcpConfiguration, JsonObject, JsonValue, McpServiceSummary, PluginToolDefinition } from '@eating/plugin-sdk'
 
 const MAX_FILE_BYTES = 1024 * 1024
 const MAX_MESSAGE_BYTES = 10 * 1024 * 1024
@@ -24,7 +24,7 @@ const text = (value: unknown, max: number): value is string => typeof value === 
 const ownKeys = (value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []) => required.every(key => Object.hasOwn(value, key)) && Object.keys(value).every(key => required.includes(key) || optional.includes(key))
 
 function failure(code: string, message: string, status = 409, outcome: 'not-sent' | 'failed' | 'unknown' = 'not-sent'): PlatformError { return new PlatformError(code, message, status, outcome) }
-function invalid(): never { throw failure('MCP_CONFIGURATION_INVALID', 'MCP 连接配置无效，请检查名称、传输参数和授权。', 400) }
+function invalid(): never { throw failure('MCP_CONFIGURATION_INVALID', 'MCP 连接配置无效，请检查名称、传输参数和连接选项。', 400) }
 function storageError(): PlatformError { return failure('MCP_STORAGE_INVALID', 'MCP 配置文件损坏或格式不匹配，原数据未被覆盖。', 500) }
 function busy(): PlatformError { return failure('MCP_CONNECTION_BUSY', 'MCP 连接正在使用或清理，请先断开连接再修改。') }
 function closed(): PlatformError { return failure('MCP_MANAGER_CLOSED', 'MCP 连接管理已关闭。', 503) }
@@ -32,10 +32,6 @@ function closed(): PlatformError { return failure('MCP_MANAGER_CLOSED', 'MCP 连
 function stringList(value: unknown, max: number, valid: (item: string) => boolean, unique = true): string[] {
   if (!Array.isArray(value) || value.length > max || value.some(item => typeof item !== 'string' || !valid(item)) || unique && new Set(value).size !== value.length) return invalid()
   return [...value] as string[]
-}
-function grant(value: unknown): McpGrant {
-  if (!object(value) || !ownKeys(value, ['agentTypeIds', 'toolNames'])) return invalid()
-  return { agentTypeIds: stringList(value.agentTypeIds, 200, item => /^[a-z][a-z0-9]*(?:[.:-][a-z0-9-]+)*$/.test(item) && item.length <= 160), toolNames: stringList(value.toolNames, MAX_TOOLS, item => toolPattern.test(item)) }
 }
 function secretMap(value: unknown, previous: Readonly<Record<string, string>>, clear: unknown, headers: boolean): Record<string, string> {
   const validKey = (key: string) => !['__proto__', 'constructor', 'prototype'].includes(key.toLowerCase()) && (headers ? /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$/.test(key) && !['host', 'content-length', 'connection', 'transfer-encoding', 'accept', 'content-type', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id'].includes(key.toLowerCase()) : /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key))
@@ -60,9 +56,9 @@ function secretMap(value: unknown, previous: Readonly<Record<string, string>>, c
 }
 function parseConfiguration(value: unknown, id: string, previous?: DirectMcpConfiguration, stored = false): DirectMcpConfiguration {
   if (!object(value) || !text(value.name, 80) || !value.name.trim() || typeof value.autoConnect !== 'boolean' || !['stdio', 'streamable-http'].includes(String(value.transport))) return invalid()
-  const common = stored ? ['id', 'name', 'transport', 'autoConnect', 'grant'] : ['expectedRevision', 'name', 'transport', 'autoConnect', 'grant']
+  const common = stored ? ['id', 'name', 'transport', 'autoConnect'] : ['expectedRevision', 'name', 'transport', 'autoConnect']
   const optional = stored ? [] : ['id']
-  const base = { id, name: value.name.trim(), autoConnect: value.autoConnect, grant: grant(value.grant) }
+  const base = { id, name: value.name.trim(), autoConnect: value.autoConnect }
   if (value.transport === 'stdio') {
     if (!ownKeys(value, [...common, 'command', 'args', ...(stored ? ['env'] : [])], [...optional, ...(!stored ? ['env', 'clearEnvKeys'] : [])]) || !text(value.command, 2048) || !value.command.trim()) return invalid()
     const args = stringList(value.args, 128, item => item.length <= 8192 && !item.includes('\0'), false)
@@ -78,7 +74,7 @@ function parseConfiguration(value: unknown, id: string, previous?: DirectMcpConf
   return { ...base, transport: 'streamable-http', url: url.href, headers: secretMap(value.headers, previous?.transport === 'streamable-http' ? previous.headers ?? {} : {}, value.clearHeaderKeys, true) }
 }
 
-interface Snapshot { readonly schemaVersion: 1; readonly revision: number; readonly connections: readonly DirectMcpConfiguration[] }
+interface Snapshot { readonly schemaVersion: 2; readonly revision: number; readonly connections: readonly DirectMcpConfiguration[] }
 interface LiveConnection {
   readonly client: Client
   readonly transport: StdioClientTransport | StreamableHTTPClientTransport
@@ -95,6 +91,7 @@ interface Entry {
   connecting?: Promise<void>
   stopping?: Promise<void>
   removing?: boolean
+  generation?: number
 }
 
 function json(value: unknown): value is JsonValue {
@@ -129,7 +126,7 @@ export class DirectMcpConnections {
   private ended = false
   private closing?: Promise<void>
 
-  constructor(dataDirectory: string) {
+  constructor(dataDirectory: string, private readonly onTopologyChange: (sourceId: string, refresh: () => Promise<void>) => Promise<void> = async (_id, refresh) => refresh()) {
     this.directory = resolve(dataDirectory)
     try {
       let existing: ReturnType<typeof lstatSync> | undefined
@@ -144,8 +141,8 @@ export class DirectMcpConnections {
   }
 
   get revision(): number { return this.currentRevision }
-  list(): readonly McpServiceSummary[] { return [...this.entries.keys()].map(id => this.get(id)) }
-  get(id: string): McpServiceSummary {
+  list(agentTypeIds: readonly string[] = ['main']): readonly McpServiceSummary[] { return [...this.entries.keys()].map(id => this.get(id, agentTypeIds)) }
+  get(id: string, agentTypeIds: readonly string[] = ['main']): McpServiceSummary {
     const entry = this.require(id)
     const config = entry.configuration
     const url = config.transport === 'streamable-http' ? new URL(config.url) : null
@@ -153,7 +150,7 @@ export class DirectMcpConnections {
       ? { command: config.command, args: [...config.args], envKeys: Object.keys(config.env ?? {}) }
       : { url: `${url!.origin}${url!.pathname}`, urlHasQuery: Boolean(url!.search), queryKeys: [...new Set(url!.searchParams.keys())], headerKeys: Object.keys(config.headers ?? {}) }
     return structuredClone({ id: config.id, name: config.name, source: { kind: 'direct' as const }, transport: config.transport, enabled: true, autoConnect: config.autoConnect,
-      state: entry.state, lastError: entry.lastError, tools: entry.tools, grant: config.grant, configuration })
+      state: entry.state, lastError: entry.lastError, tools: entry.tools, grant: { agentTypeIds: [...new Set(agentTypeIds)], toolNames: entry.tools.map(tool => tool.name) }, configuration })
   }
 
   save(input: unknown): McpServiceSummary {
@@ -170,17 +167,6 @@ export class DirectMcpConnections {
     if (!previous) connections.push(configuration)
     this.persist(connections, input.expectedRevision)
     this.entries.set(id, { configuration, state: 'disconnected', lastError: null, tools: [] })
-    return this.get(id)
-  }
-
-  setGrant(id: string, next: McpGrant, expectedRevision: number): McpServiceSummary {
-    if (this.ended) throw closed()
-    this.checkRevision(expectedRevision)
-    const entry = this.require(id)
-    if (entry.removing) throw busy()
-    const configuration = { ...entry.configuration, grant: grant(next) }
-    this.persist([...this.entries.values()].map(item => item === entry ? configuration : item.configuration), expectedRevision)
-    entry.configuration = configuration
     return this.get(id)
   }
 
@@ -214,6 +200,7 @@ export class DirectMcpConnections {
   disconnect(id: string): Promise<void> {
     const entry = this.require(id)
     const connection = entry.connection
+    entry.generation = (entry.generation ?? 0) + 1
     entry.connection = undefined; entry.state = 'disconnected'; entry.tools = []; entry.lastError = null
     if (entry.stopping) return entry.stopping
     if (!connection) return Promise.resolve()
@@ -272,7 +259,7 @@ export class DirectMcpConnections {
     try {
       const directory = lstatSync(this.directory)
       if (!directory.isDirectory() || directory.isSymbolicLink()) throw storageError()
-      try { lstatSync(this.file) } catch (error) { if (object(error) && error.code === 'ENOENT') return { schemaVersion: 1, revision: 0, connections: [] }; throw error }
+      try { lstatSync(this.file) } catch (error) { if (object(error) && error.code === 'ENOENT') return { schemaVersion: 2, revision: 0, connections: [] }; throw error }
       const info = lstatSync(this.file)
       if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_FILE_BYTES) throw storageError()
       descriptor = openSync(this.file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
@@ -281,7 +268,7 @@ export class DirectMcpConnections {
       const size = readSync(descriptor, bytes, 0, bytes.length, 0)
       if (size > MAX_FILE_BYTES) throw storageError()
       const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, size)))
-      if (!object(value) || !ownKeys(value, ['schemaVersion', 'revision', 'connections']) || value.schemaVersion !== 1 || !revision(value.revision) || !Array.isArray(value.connections) || value.connections.length > MAX_SERVICES) throw storageError()
+      if (!object(value) || !ownKeys(value, ['schemaVersion', 'revision', 'connections']) || value.schemaVersion !== 2 || !revision(value.revision) || !Array.isArray(value.connections) || value.connections.length > MAX_SERVICES) throw storageError()
       const ids = new Set<string>()
       const connections = value.connections.map(item => {
         if (!object(item) || typeof item.id !== 'string' || !idPattern.test(item.id) || ids.has(item.id)) throw storageError()
@@ -289,7 +276,7 @@ export class DirectMcpConnections {
         return parseConfiguration(item, item.id, undefined, true)
       })
       chmodSync(this.file, 0o600)
-      return { schemaVersion: 1, revision: value.revision, connections }
+      return { schemaVersion: 2, revision: value.revision, connections }
     } catch { throw storageError() }
     finally { if (descriptor !== undefined) closeSync(descriptor) }
   }
@@ -298,7 +285,7 @@ export class DirectMcpConnections {
     this.checkRevision(expected)
     if (this.readSnapshot().revision !== expected) throw failure('MCP_REVISION_CONFLICT', 'MCP 配置已改变，请刷新后重试。')
     if (expected === Number.MAX_SAFE_INTEGER) throw failure('MCP_REVISION_EXHAUSTED', 'MCP 配置版本已达到上限。', 500)
-    const bytes = JSON.stringify({ schemaVersion: 1, revision: expected + 1, connections } satisfies Snapshot) + '\n'
+    const bytes = JSON.stringify({ schemaVersion: 2, revision: expected + 1, connections } satisfies Snapshot) + '\n'
     if (Buffer.byteLength(bytes) > MAX_FILE_BYTES) throw failure('MCP_CONFIGURATION_TOO_LARGE', 'MCP 配置超出大小限制，未保存修改。', 400)
     const temporary = join(this.directory, `.${randomUUID()}.tmp`)
     let descriptor: number | undefined
@@ -345,6 +332,18 @@ export class DirectMcpConnections {
     entry.connection = connection
     client.onclose = () => this.lose(entry, connection)
     client.onerror = () => this.lose(entry, connection)
+    client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+      if (entry.connection !== connection) return
+      // One notification invalidates all old calls before discovery. Reconnecting
+      // only refreshes the directory; actions and Harness tasks are never replayed.
+      const stopping = this.disconnect(config.id)
+      const generation = entry.generation
+      void stopping.catch(() => {})
+      await this.onTopologyChange(config.id, async () => {
+        await stopping
+        if (!this.ended && !entry.removing && entry.generation === generation && this.entries.get(config.id) === entry) await this.connect(config.id)
+      })
+    })
     const timeout = new AbortController()
     const combined = AbortSignal.any([lifetime.signal, timeout.signal])
     const timer = setTimeout(() => timeout.abort(), CONNECT_MS); timer.unref()

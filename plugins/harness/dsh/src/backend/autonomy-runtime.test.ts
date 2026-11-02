@@ -31,9 +31,7 @@ describe('native autonomous driver publication lifecycle', () => {
       expect(tools.map(tool => tool.name)).toEqual(names)
       for (const tool of tools) expect(tool.description).toMatch(/^\p{Script=Han}/u)
       expect(tools[1]!.parameters).toMatchObject({ properties: { mode: { enum: ['active', 'sleeping', 'waiting'] } }, required: ['expected_revision', 'mode', 'wake_at', 'note'], additionalProperties: false })
-      expect(sections).toHaveLength(1)
-      expect(sections[0]).toMatchObject({ name: 'eating:autonomy-policy', order: 20, interpolate: false })
-      expect(sections[0]!.text()).toMatch(/^\p{Script=Han}/u)
+      expect(sections).toHaveLength(0)
 
       const stateTool = tools.find(tool => tool.name === 'eating_activity_state')!
       const modelState = await stateTool.execute!({}, { agent, callId: 'fixture-state', signal: new AbortController().signal })

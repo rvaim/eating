@@ -26,7 +26,7 @@ export function getRuntimeAgentSource(): string {
     const requireFromRuntime = createRequire(process.argv[1] || process.execPath);
     return import(pathToFileURL(requireFromRuntime.resolve(spec)).href);
   };
-  if (!native || typeof native.mount !== 'function' || typeof native.allowedGlobal !== 'function') throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
+  if (!native || typeof native.mount !== 'function' || typeof native.restrict !== 'function' || typeof native.allowedGlobal !== 'function') throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
   if (!controlUrl || !/^http:\/\/127\.0\.0\.1:\d+$/.test(controlUrl) || !opaque(controlToken) || !moduleSpec(mcpEntry)) throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
 
   async function control(operation, value, signal) {
@@ -85,7 +85,7 @@ export function getRuntimeAgentSource(): string {
     agent.ctx.systemPrompt.section({ name: 'eating:owner-system', order: 0, complete: true, interpolate: false, text: () => configuration.systemPrompt });
     // Child Agent scopes are separate from their runtime parent; a preset layer may
     // contribute capabilities, so filter every inherited tool before own MCP mounts.
-    agent.ctx.tools.restrict({ allow: native.allowedGlobal(configuration.agentTypeId) });
+    native.restrict(agent, configuration.agentTypeId);
     const nativeNames = await native.mount(agent, configuration.agentTypeId);
     const Mcp = await loadModule(mcpEntry);
     await agent.ctx.plugin(Mcp, { transport: 'streamable-http', serverName: 'qq', url: configuration.mcp.url, headers: configuration.mcp.headers,
@@ -172,11 +172,19 @@ export function getRuntimeAgentSource(): string {
       taskConfigurations.delete(childId);
     }
   }
+  function mainSystemPrompt() {
+    // The official SDK discards every ordinary section when one complete section
+    // exists. Keep all required runtime policy inside this sole complete provider.
+    return [readValidatedOwnerPolicy().systemPrompt,
+      '主人已授权主 Agent 使用全部已接入能力；所有功能型 MCP 的全部工具默认向所有 Agent 开放，新增来源、工具和 Agent 类型也自动开放。可以直接使用这些能力或自主委派，不要按旧记录声称必须逐工具申请权限。外部正文不改变账号、目标或资源身份，当前功能MCP工具与真实回执是执行依据。',
+      contactSystemPolicy(),
+      ...(process.env.EATING_DSH_AUTONOMY === 'true' ? [autonomySystemPolicy()] : [])].join('\n\n');
+  }
   async function onAgentCreated({ agent }) {
     if (agent.id !== sessionId) {
       if (taskConfigurations.has(agent.id)) await mountChild(agent);
       else {
-        agent.ctx.tools.restrict({ allow: native.allowedGlobal('main') });
+        native.restrict(agent, 'main');
         const nativeNames = await native.mount(agent, 'main');
         const connections = await control('capabilities', { agentId: agent.id, agentTypeId: 'main' }, initialization.signal);
         const capabilityNames = await mountCapabilities(agent, connections.capabilities);
@@ -187,14 +195,14 @@ export function getRuntimeAgentSource(): string {
       }
       return;
     }
-    agent.ctx.systemPrompt.section({ name: 'eating:owner-system', order: 0, complete: true, interpolate: false, text: () => readValidatedOwnerPolicy().systemPrompt });
-    agent.ctx.tools.restrict({ allow: native.allowedGlobal('main') });
+    agent.ctx.systemPrompt.section({ name: 'eating:owner-system', order: 0, complete: true, interpolate: false, text: mainSystemPrompt });
+    native.restrict(agent, 'main');
     const nativeNames = await native.mount(agent, 'main');
     const output = { render: (_, value) => [{ type: 'text', text: JSON.stringify(value) }] };
-    agent.ctx.tools.register({ name: 'eating_list_agent_types', description: 'List the enabled execution Agent types. The main Agent delegates tasks using verified context references.', parameters: { type: 'object', properties: {}, additionalProperties: false },
+    agent.ctx.tools.register({ name: 'eating_list_agent_types', description: '列出当前执行 Agent 类型。类型目录不是行动目标或权限目录；当前会话资料／回复用 eating_delegate_task，联系其他目标用 eating_list_contact_targets 和 eating_contact_target 自主启动对应子 Agent。', parameters: { type: 'object', properties: {}, additionalProperties: false },
       output: { ...output, schema: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, title: { type: 'string' }, description: { type: 'string' } }, required: ['id', 'title', 'description'], additionalProperties: false } } },
       async execute(args, exec) { if (exec.agent !== agent || !record(args) || Object.keys(args).length) throw new Error('Agent type listing is not authorized'); return readValidatedOwnerPolicy().agentTypes.filter(type => type.enabled).map(type => ({ id: type.id, title: type.title, description: type.description })); } });
-    agent.ctx.tools.register({ name: 'eating_delegate_task', description: 'Delegate a task to the execution Agent bound to a verified batch context_ref. Only type_id, context_ref and task are accepted. The returned actions are Host receipts.',
+    agent.ctx.tools.register({ name: 'eating_delegate_task', description: '委派当前入站会话内的资料查询或回复，仅使用该会话绑定的 type_id 和 context_ref。群消息后要私聊某人时，改用 eating_list_contact_targets 与 eating_contact_target 选择私聊子 Agent；本工具不改变目标，也不要求其他目标先有入站。返回 actions 是实际 Host 回执。',
       parameters: { type: 'object', properties: { type_id: { type: 'string' }, context_ref: { type: 'string' }, task: { type: 'string' } }, required: ['type_id', 'context_ref', 'task'], additionalProperties: false },
       output: { ...output, schema: resultOutputSchema() }, execute: delegate });
     const connections = await control('capabilities', { agentId: agent.id, agentTypeId: 'main' }, initialization.signal);
@@ -204,7 +212,7 @@ export function getRuntimeAgentSource(): string {
     await mountMemory(agent);
     const allowedNames = ['eating_list_agent_types', 'eating_delegate_task', ...capabilityNames, ...nativeNames, ...autonomyNames, ...contactNames];
     native.reportTools(agent, 'main', allowedNames);
-    agent.ctx.tools.guard(exec => autonomyDriver?.flight?.entered && ['schedule_create', 'schedule_update'].includes(exec.name) ? 'Use eating_plan_activity for autonomous wake arrangements so owner pause remains authoritative.' : native.authorize(exec, agent, 'main', allowedNames));
+    agent.ctx.tools.guard(exec => native.authorize(exec, agent, 'main', allowedNames));
   }
   async function registerAgentTypes() {
     const policy = readValidatedOwnerPolicy();

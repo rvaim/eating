@@ -31,13 +31,13 @@ async function ownerApi(host: EatingHost) {
     const value = await response.json(); if (!response.ok) throw new Error(JSON.stringify(value)); return object(value)
   }
 }
-const grants = ['image_generate', 'image_job_get', 'image_get', 'image_list']
+const grants = ['image_generate', 'image_job_get', 'image_jobs', 'image_get', 'image_list']
 async function configure(api: Awaited<ReturnType<typeof ownerApi>>, provider: Awaited<ReturnType<typeof startImagesProviderFixture>>) {
   const current = await api('/plugins/image-generation/configuration')
   const configured = await api('/plugins/image-generation/configuration', { expectedRevision: current.revision, baseUrl: provider.baseUrl, model: 'fixture-images-model', apiKey: provider.apiKey, timeoutMs: 5000, size: '', quality: '', responseFormat: '' })
   expect(configured).toMatchObject({ apiKeyConfigured: true, ready: true }); expect(JSON.stringify(configured)).not.toContain(provider.apiKey)
   const directory = await api('/mcp')
-  await api('/mcp', { operation: 'save-grants', input: { id: 'plugin.image-generation', expectedRevision: directory.revision, agentTypeIds: ['main'], toolNames: grants } })
+  expect(directory.services).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'plugin.image-generation', grant: { agentTypeIds: expect.arrayContaining(['main']), toolNames: expect.arrayContaining(grants) } })]))
 }
 
 describe('OpenAI Images through actual Host capability MCP', () => {
@@ -154,7 +154,10 @@ describe.skipIf(!process.env.EATING_DSH_TEST_SYSTEM_BIN)('system DSH uses OpenAI
     const onebot = await startOneBotFixture(); stops.push(() => onebot.close())
     const prefix = 'mcp__plugin_image_generation__'
     const model = await startStickersModel((request): FixtureModelAction => {
-      expect((request.tools ?? []).map(tool => tool.function?.name).sort()).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', ...grants.map(name => prefix + name)].sort())
+      const names = (request.tools ?? []).map(tool => tool.function?.name ?? '').sort()
+      expect(names.filter(name => name.startsWith('eating_') || name.startsWith('mcp__'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', ...grants.map(name => prefix + name)].sort())
+      expect(names).toEqual(expect.arrayContaining(['bash', 'read', 'write', 'edit', 'web_search', 'schedule_create', 'schedule_update']))
+      expect(names.some(name => name.startsWith('mcp__qq__'))).toBe(false)
       const turns = fixtureToolTurns(request)
       if (!turns.length) return { name: prefix + 'image_generate', arguments: { prompt: 'NATIVE-IMAGES-FIXTURE', request_id: 'native-images-stable-0001' } }
       const last = turns.at(-1)!, value = object(JSON.parse(last.text.split('\n')[0]!))

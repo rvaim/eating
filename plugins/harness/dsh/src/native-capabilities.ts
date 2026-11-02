@@ -49,8 +49,22 @@ export interface NativeCapabilitiesConfiguration {
   readonly toolGrants: readonly NativeToolGrant[]
 }
 export const nativeDefaultConfig = (definition: NativeFeatureDefinition): JsonObject => Object.fromEntries([...(definition.services ?? []), ...definition.modules].map(module => [module.id, { ...module.config }]))
-export function defaultNativeCapabilities(agentTypeIds: readonly string[]): NativeCapabilitiesConfiguration {
-  return { schemaVersion: 1, revision: 0, features: NATIVE_FEATURES.map(definition => ({ id: definition.id, enabled: definition.id === 'time', agentTypeIds: definition.id === 'time' ? [...new Set(['main', ...agentTypeIds])] : [], config: nativeDefaultConfig(definition) })), toolGrants: [] }
+/** New main scopes receive native features; the native permission and OS policies still apply. */
+export function defaultNativeCapabilities(agentTypeIds: readonly string[], platform = process.platform): NativeCapabilitiesConfiguration {
+  const features = NATIVE_FEATURES.map(definition => {
+    const enabled = definition.platform === 'win32' ? platform === 'win32' : definition.platform === 'posix' ? platform !== 'win32' : true
+    const config = nativeDefaultConfig(definition)
+    if (definition.id === 'files') config['tool-fs'] = { ...(config['tool-fs'] as JsonObject), write: true, edit: true }
+    if (definition.id === 'web') config['tool-web'] = { ...(config['tool-web'] as JsonObject), search: true }
+    return { id: definition.id, enabled, agentTypeIds: !enabled ? [] : definition.id === 'time' ? [...new Set(['main', ...agentTypeIds])] : ['main'], config }
+  })
+  return { schemaVersion: 1, revision: 0, features, toolGrants: [] }
+}
+
+/** Global communication names remain reserved for Eating's scoped task mounts. */
+export function nativeGlobalToolAccess(name: string): 'reserved' | 'all' | 'main' {
+  if (/^(?:eating_|qq_|mcp__qq__)/.test(name)) return 'reserved'
+  return name.startsWith('mcp__') ? 'all' : 'main'
 }
 
 /** The required transport/kernel is not an optional capability and cannot be removed by its own manager. */

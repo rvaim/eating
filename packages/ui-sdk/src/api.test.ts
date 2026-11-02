@@ -37,6 +37,22 @@ describe('公开UI SDK临时日志订阅', () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/bootstrap')
   })
 
+  it('来源变更失败仍保留原错误与各Harness重挂结果，不丢失部分成功状态', async () => {
+    const reports = [{ id: 'dsh', status: 'reconnected' }, { id: 'other', status: 'failed', code: 'RUNTIME_START_FAILED' }, { id: 'stopped', status: 'cancelled' }]
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ csrfToken: 'test' }))).mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'MCP_CONNECTION_FAILED', message: '连接未完成', outcome: 'not-sent' }, harnessStopped: true, harnessRemounts: reports }), { status: 502 })))
+    const { hostRequest, HostApiError } = await import('./api')
+    const error = await hostRequest('/mcp', { method: 'POST', body: { operation: 'connect', input: { id: 'direct.fixture' } } }).catch(value => value)
+    expect(error).toBeInstanceOf(HostApiError)
+    expect(error).toMatchObject({ code: 'MCP_CONNECTION_FAILED', message: '连接未完成', outcome: 'not-sent', harnessStopped: true, harnessRemounts: reports })
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('拒绝畸形重挂结果而不把未知结果伪造为恢复成功', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ csrfToken: 'test' }))).mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'MCP_CONNECTION_FAILED' }, harnessRemounts: [{ id: 'dsh', status: 'success' }] }), { status: 502 })))
+    const { hostRequest } = await import('./api')
+    await expect(hostRequest('/mcp')).rejects.toMatchObject({ code: 'INVALID_HOST_RESPONSE', outcome: 'unknown' })
+  })
+
   it('退订后迟到的初始化不会创建连接', async () => {
     let resolve!: (response: Response) => void
     vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise<Response>(finish => { resolve = finish })))

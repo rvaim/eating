@@ -53,7 +53,7 @@ POST回执丢失后只GET原request_id，不换ID重发。回执不依赖官方T
 
 ## 工具与容量
 
-保留memory_search/read/save/scopes，MCP页按代理类型/精确工具单独授权；连接/自动采集不自动授予工具。memory_save走同一增量入口，接收不等于提取完成。模型无Session删除工具；主人管理页只可确认删除精确记忆文件URI。
+保留memory_search/read/save/scopes；已启用且connected时，全部功能MCP工具默认供main、现有及后续Agent类型使用，无逐类型／工具授权勾选。真实Peer、群成员过滤和主人显式跨会话范围保持，自动采集开关独立；当前功能规则见[ADR-0034](../decisions/ADR-0034-主Agent自主决策与功能能力默认开放.md)。memory_save走同一增量入口，接收不等于提取完成。模型无Session删除工具；主人管理页只可确认删除精确记忆文件URI。
 
 Eating只保存有界任务/幂等/范围元数据；未接受正文只在RAM，崩溃可能丢失并明确报告。没有每日/每小时提取上限，2MiB暂存、512KiB单批、2个传输槽只是机械容量。服务端也有待处理和回执容量，满时拒绝，不静默丢弃原文。
 

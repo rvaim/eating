@@ -29,6 +29,7 @@ describe('Eating private native Web profile', () => {
     expect(first).toContain('printUrl: false')
     expect(first).toContain('openBrowser: false')
     expect(first).toContain('port: 0')
+    expect(first).toContain('defaultPreset: danger-full-access')
     expect(first).not.toContain('readOnly')
     prepareNativeWebProfile(f.bridge, { model: 'fixture-model' }, write)
     expect(readFileSync(f.patch, 'utf8')).toBe(first)
@@ -44,6 +45,14 @@ describe('Eating private native Web profile', () => {
     expect(after).toContain('preference: dark')
     expect(after).toContain("!!js process.platform === 'win32'")
     expect(after.indexOf('id: web-runtime')).toBeLessThan(after.indexOf('id: ui-theme'))
+  })
+  it('preserves an existing Web profile permission choice byte for byte', () => {
+    const f = fixture()
+    mkdirSync(dirname(f.patch), { recursive: true })
+    const original = '# owner permission choice\n- insert:\n    - id: web-runtime\n      name: "@deepseek-ai/dsh-web-app"\n    - id: permission-presets\n      name: "@deepseek-ai/dsh-permission-presets"\n      config:\n        defaultPreset: workspace-write\n'
+    write(f.patch, original)
+    prepareNativeWebProfile(f.bridge, { model: 'fixture-model' }, write)
+    expect(readFileSync(f.patch, 'utf8')).toBe(original)
   })
   it('rejects malformed profile configuration without overwriting it', () => {
     const f = fixture()

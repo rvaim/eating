@@ -1,5 +1,5 @@
 import { HostApiError } from '@eating/ui-sdk'
-import { NATIVE_FEATURES } from '../native-capabilities'
+import { NATIVE_FEATURES, nativeGlobalToolAccess } from '../native-capabilities'
 import type { NativeCapabilitiesConfiguration } from '../native-capabilities'
 
 export type LocalizedText = string | Readonly<Record<string, string>>
@@ -9,7 +9,7 @@ export interface NativeBundleRow { name: string; version: string | null; enabled
 export interface NativeSnapshot {
   configuration: NativeCapabilitiesConfiguration
   agentTypes: { id: string; title: string; enabled: boolean }[]
-  catalog: { schemaVersion: 1; features: NativeFeatureStatus[]; tools: { name: string; description: string; fingerprint: string }[]; plugins: NativePluginRow[]; bundles: NativeBundleRow[];
+  catalog: { schemaVersion: 1; features: NativeFeatureStatus[]; tools: { name: string; description: string; fingerprint: string; automaticAccess: 'main' | 'all' }[]; plugins: NativePluginRow[]; bundles: NativeBundleRow[];
     runtime: { running: boolean; appliedRevision: number | null; errorCode: string | null; mounted: { agentTypeId: string; featureId: string; state: string }[]; agents: { agentTypeId: string; nativeTools: string[]; mcpTools: string[] }[] } }
 }
 export const nativeObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -34,7 +34,7 @@ export function readNativeSnapshot(value: unknown): NativeSnapshot {
   if (catalog.schemaVersion !== 1 || !nativeObject(catalog.runtime) || typeof catalog.runtime.running !== 'boolean' || catalog.runtime.appliedRevision !== null && (!Number.isSafeInteger(catalog.runtime.appliedRevision) || Number(catalog.runtime.appliedRevision) < 0) || !Array.isArray(catalog.runtime.mounted) || !Array.isArray(catalog.runtime.agents)) invalid()
   for (const key of ['features', 'tools', 'plugins', 'bundles']) if (!Array.isArray(catalog[key]) || catalog[key].length > 2048) invalid()
   for (const row of catalog.features as unknown[]) if (!nativeObject(row) || !text(row.id) || typeof row.available !== 'boolean' || typeof row.platformAvailable !== 'boolean' || !Array.isArray(row.modules) || row.modules.some(module => !nativeObject(module) || !text(module.id) || !text(module.name) || typeof module.available !== 'boolean')) invalid()
-  for (const row of catalog.tools as unknown[]) if (!nativeObject(row) || !text(row.name) || !text(row.description) || !fingerprint(row.fingerprint)) invalid()
+  for (const row of catalog.tools as unknown[]) if (!nativeObject(row) || !text(row.name) || !text(row.description) || !fingerprint(row.fingerprint) || nativeGlobalToolAccess(row.name) === 'reserved' || row.automaticAccess !== nativeGlobalToolAccess(row.name)) invalid()
   for (const row of catalog.plugins as unknown[]) if (!nativeObject(row) || !text(row.entryId) || !text(row.moduleName) || !fingerprint(row.fingerprint) || ['enabled', 'protected', 'manageable', 'configured'].some(key => typeof row[key] !== 'boolean')) invalid()
   for (const row of catalog.bundles as unknown[]) if (!nativeObject(row) || !text(row.name) || !fingerprint(row.fingerprint) || !Array.isArray(row.rows) || !texts(row.overrides) || ['enabled', 'installed', 'official', 'optional', 'removable', 'protected'].some(key => typeof row[key] !== 'boolean')) invalid()
   for (const row of catalog.runtime.agents) if (!nativeObject(row) || !text(row.agentTypeId) || !texts(row.nativeTools) || !texts(row.mcpTools)) invalid()

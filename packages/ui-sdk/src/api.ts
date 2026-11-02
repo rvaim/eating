@@ -1,9 +1,19 @@
 import { isJsonObject } from '@eating/plugin-sdk'
-import type { PluginLogEntry } from '@eating/plugin-sdk'
+import type { HarnessRemount, PluginLogEntry } from '@eating/plugin-sdk'
 import { translate } from './i18n.js'
 
 export class HostApiError extends Error {
-  constructor(readonly code: string, message: string, readonly outcome: string = 'failed') { super(message); this.name = 'HostApiError' }
+  constructor(readonly code: string, message: string, readonly outcome: string = 'failed', readonly harnessRemounts?: readonly HarnessRemount[], readonly harnessStopped?: boolean) { super(message); this.name = 'HostApiError' }
+}
+
+function remountReport(value: unknown): readonly HarnessRemount[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > 256) throw new HostApiError('INVALID_HOST_RESPONSE', translate('common', 'errors.INVALID_HOST_RESPONSE'), 'unknown')
+  return value.map(row => {
+    if (!isJsonObject(row) || Object.keys(row).some(key => !['id', 'status', 'code'].includes(key)) || typeof row.id !== 'string' || !row.id || row.id.length > 160
+      || !['reconnected', 'failed', 'cancelled'].includes(String(row.status)) || row.code !== undefined && (typeof row.code !== 'string' || !row.code || row.code.length > 160)) throw new HostApiError('INVALID_HOST_RESPONSE', translate('common', 'errors.INVALID_HOST_RESPONSE'), 'unknown')
+    return { id: row.id, status: row.status as HarnessRemount['status'], ...(typeof row.code === 'string' ? { code: row.code } : {}) }
+  })
 }
 
 let initialization: Promise<string> | null = null
@@ -30,10 +40,12 @@ export async function hostRequest<T>(path: string, options: { method?: 'GET' | '
     const response = await fetch(`/api${path}`, { method: options.method ?? 'GET', credentials: 'same-origin', cache: 'no-store',
       headers: { 'Content-Type': 'application/json', 'X-Eating-Csrf': csrfToken },
       ...(options.method === 'POST' ? { body: JSON.stringify(options.body ?? {}) } : {}), signal: controller.signal })
-    const result = await response.json() as { error?: { code?: string; message?: string; outcome?: string } }
+    const result = await response.json() as { error?: { code?: string; message?: string; outcome?: string }; harnessRemounts?: unknown; harnessStopped?: unknown }
     if (!response.ok) {
       if (response.status === 401 || result.error?.code === 'INVALID_CSRF_TOKEN') initialization = null
-      throw new HostApiError(result.error?.code ?? 'HOST_ERROR', result.error?.message ?? translate('common', 'errors.HOST_ERROR'), result.error?.outcome)
+      const remounts = remountReport(result.harnessRemounts)
+      if (result.harnessStopped !== undefined && typeof result.harnessStopped !== 'boolean') throw new HostApiError('INVALID_HOST_RESPONSE', translate('common', 'errors.INVALID_HOST_RESPONSE'), 'unknown')
+      throw new HostApiError(result.error?.code ?? 'HOST_ERROR', result.error?.message ?? translate('common', 'errors.HOST_ERROR'), result.error?.outcome, remounts, result.harnessStopped)
     }
     return result as T
   } catch (error) {

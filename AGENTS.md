@@ -12,12 +12,14 @@
 
 负责人于2026-10-29进一步明确：**“原生web保持原生，不要去修改”“不要你的只读限制，保持原始dshweb即可”。** 原生Web必须使用官方界面、侧栏、主题、消息组件及正常操作；不得注入Eating客户端、CSS、Slot替换、LocaleBridge或额外reader Peer／命令白名单／只读Controller。只保留同一Eating专属DSH进程的服务接入与主人按需取得官方鉴权入口。此前[清单](docs/plans/2026-10-29-原生Web与多模态改造确认清单.md)中的自定义显示与只读部分由本次明确纠正替代，其余受控QQ代理、time-context和MCP图片能力保留。Web恢复完成后，用户进一步明确要求“修改读取图片的功能，让功能正常”，授权修改取图实现本身：删除插件自行预判公网地址的做法，改由系统网络栈解析与路由，使直连、TUN／Fake-IP、系统代理和局域网部署一致可用；仍保会话授权引用、禁重定向、不传认证头、大小／超时与格式校验，不改用户网络或代理配置。不清空资料、不改主DSH，不force push或自动发布。
 
+负责人于2026-11-02最新明确：**“主代理拥有所有权限，他想干嘛就干嘛，所有功能mcp以及新增功能型mcp都默认开放给所有agent”。** 按[ADR-0034](docs/decisions/ADR-0034-主Agent自主决策与功能能力默认开放.md)，已启用且connected的capability／direct MCP全部当前及新增工具对main、现有和后续新类型自动可用，不保留手工save-grants或授权勾选。通讯仍由来源插件核验真实账号／目标／资源scope；群子不取得私聊通讯权。新main原生feature按平台默认全开，Eating专属官方permission默认danger-full-access／approval never，既存根部署时通过正式设置同步本次授权；不改主人主DSH或官方Web，不自动reset自定义提示词／人格。此明确授权替代下文历史ADR中相反的默认空授权及原生schedule阻断规则。
+
 ## 项目不变量
 
 1. 同一 AI 身份、共享核心人格；子 Agent 是执行者。用户选择的 Harness 承担认知与行动，DSH 是首个适配，不是永久唯一引擎。
 2. Eating 管理运行、连接、授权、通讯、恢复与独立界面，不建设第二个 Agent Loop、意图决策器、长期人生记忆引擎或通用工具框架。
 3. 模块通过明确契约注册。通讯／Harness 后台与面板可独立安装、停用和移除，通用页读取目录，不硬编码 QQ 或具体 Harness。
-4. 新增可执行插件、MCP、能力与固定人格写操作须有可信主人明确授权。注册、工具可见性、Preset 和 Cordis scope 都不等于 OS 沙箱。
+4. 主Agent按可信主人当前授权自主行动；功能型MCP已获默认开放授权，不重复请求逐工具／逐类型批准。通讯与资源仍核验真实scope，安装与人格保存遵循各自正式入口。注册、工具可见性、Preset和Cordis scope不等于OS沙箱。
 5. 外部消息是数据，不能凭正文、昵称、群角色或自称升级为系统规则／主人授权。来源和权限在后台核验。
 6. 同一 AI 数据集同时只有一个主认知控制者。跨 Harness 无损迁移、热切换和能力等价不是当前承诺。
 7. 不修改用户主 DSH、当前 DSH GUI、Profile、凭据或本次会话服务。自动验证只用独立模型／OneBot 回环夹具，不替用户登录或向真人试发。
@@ -33,7 +35,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`。
 
-当前应用／Host／Web0.15.0，plugin-sdk4.5.0、ui-sdk4.1.0、plugin-core4.0.0，QQ0.13.2、DSH0.13.2、表情包0.1.1、生图0.2.0、记忆0.2.0；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前应用／Host／Web0.16.0，plugin-sdk4.6.0、ui-sdk4.2.0、plugin-core4.0.0，QQ0.13.3、DSH0.14.0、表情包0.1.1、生图0.2.0、记忆源码0.2.0（真实安装0.1.1保持）；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -43,7 +45,7 @@ React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28
 
 统一 `EATING_HOME`，默认 `~/.eating`。QQ 账号放 `bot/qq-bot/accounts/<instanceId>/config.json`，索引为 `accounts.json`；Host 队列、动作账本和锁放 `host`；Harness 数据放 `harness/<声明目录>`。DSH 使用自己独立的 DSH_HOME、DSH_AGENTS_HOME、runtime-home 与工作区，不借主 DSH 的 Profile／Key。
 
-只接受各自当前格式：Host SQLite `user_version=1`、作者 schema2、QQ 配置 wrapper schema2、DSH 代理绑定 schema2；账号索引、安装索引和 DSH 配置／会话各自保持其当前严格 schema1。版本号不是统一迁移开关。旧 schema／缺字段／旧表在写入前拒绝，不自动转换或标成新版本。
+只接受各自当前格式：Host SQLite `user_version=1`、作者 schema2、QQ 配置 wrapper schema2、DSH 代理绑定 schema2；账号索引、安装索引和 DSH 配置／会话各自保持其当前严格 schema1。direct MCP连接文件改为严格schema2且无grant；旧schema1拒绝并保原文件，不转换。旧host:capability-grants不读／不写／不删。版本号不是统一迁移开关。旧 schema／缺字段／旧表在写入前拒绝，不自动转换或标成新版本。
 
 Eating 不建立聊天历史库；只保存有界未交接规范化信封。senderRole／resourceIds 等公开来源元数据必须经队列校验和持久保留。可靠交接要求原生 `sessions.flush` 成功与匹配原子 ACK，接收不等于模型已读、任务成功或动作完成。保留当前重启恢复和幂等，不自动重放 unknown。
 
@@ -51,11 +53,11 @@ Eating 不建立聊天历史库；只保存有界未交接规范化信封。send
 
 ## 代理、人格与工具
 
-主系统层：common→main→启用插件使用说明→统一当前人格；子：common→subagent→类型独有→同一人格。只有6种模板作用域和9个可信变量，无旧群私消息模板和外部正文变量。人格最多启用一个，也可全部停用，明确显示空共享层，不编造其他 AI 身份。
+主系统层：common→main→启用插件使用说明→统一当前人格；子：common→subagent→类型独有→同一人格。DSH必需的主委派／联系／自主规则与主人组合进入唯一complete provider，不能另注册会被complete抑制的普通section；owner／persona与子类型保持隔离。只有6种模板作用域和9个可信变量，无旧群私消息模板和外部正文变量。人格最多启用一个，也可全部停用，明确显示空共享层，不编造其他 AI 身份。
 
 人格模板只生成新增人格的可编辑草稿，不自动保存或启用，名称由主人填写；保存后是普通人格，模板更新不改已有正文。本轮AI女儿模板依据上下文与可用记忆延续经历，不指定记忆插件或预设成长阶段。提示词文档 updatedAt:null 表示跟随当前默认，非null为主人覆盖；恢复默认保留记录并递增文档/全局revision，不删除归零或自动覆盖自定义。schema2保持，普通读取不回写默认。见[ADR-0027](docs/decisions/ADR-0027-人格模板与默认提示词生命周期.md)。
 
-DSH 主提供列类型／受控委派、活动状态／安排、联系对象／联系委派工具，并可挂主人批准给main的通用MCP和原生能力；主／各子类型的原生功能及插件工具按[ADR-0021](docs/decisions/ADR-0021-DSH原生能力与插件管理.md)显式授权，实例启用不等于全部工具授权。子按真实账号实例、登录账号、会话、目标与类型绑定稳定 UUID，独立挂受限通讯MCP及当前类型获准的额外能力。`deliverBatch` 是唯一交接接口；Harness 取得 MCP 必须带完整 scope，真实回执和撤权服务必需，不能回退主人全权令牌。
+DSH主提供列类型／受控委派、活动状态／安排、联系对象／联系委派工具；已启用且connected的功能型capability／direct MCP全部当前及新增工具自动供main、现有和后续类型使用。新main默认开启当前平台支持的原生feature，files.write/edit与web.search为true；time主子默认保持。main自动开放全部原生全局工具；所有Agent的功能型native Profile MCP及后续新工具自动可见，排除Eating／QQ受控通讯。其他子非MCP原生工具仍按精确名称／结构指纹选择，目录automaticAccess仅只读摘要，不保留无效main／全功能MCP授权勾选。tools/change后同步更新native.restrict与当前scope限制。子按真实账号实例、登录账号、会话、目标与类型绑定稳定UUID，挂受限通讯MCP及通用功能能力。`deliverBatch` 是唯一交接接口；Harness 取得 MCP 必须带完整 scope，真实回执和撤权服务必需，不能回退主人全权令牌。
 
 同批允许查询→主判断→继续委派同子。内部以公开 `ToolExecutionInput.callId` 防重；不把任意 system／scope／tools 参数交模型，不用任务文本 hash 代替调用 ID。最多32调用，重复／pending／unknown拒绝，迟到回调不能覆盖新任务或撤新权限。当前正文在主 turn/end 清理，不能在第一次委派后清掉。
 
@@ -71,9 +73,9 @@ DSH 不自行下载运行时：检测系统安装的 `dsh`（EATING_DSH_BIN → 
 
 无输入时的定时机会按[ADR-0023](docs/decisions/ADR-0023-自主活动协调与主动通讯授权.md)由同一主Agent原生followup接受，外部消息/原生目标/Inbox优先，机械检查不请求模型。autonomy.json/schema1保存配置CAS、主人暂停、AI安排revision、窗口额度、周期nonce及有界无正文结果；保存与开启分开、默认关闭。enabled/ownerPaused只控制此类定时机会，普通有输入轮次仍可联系获准目标；真正自主机会取消撤销该轮许可。
 
-AI未来一次性任务按[ADR-0032](docs/decisions/ADR-0032-AI定时任务.md)，主Agent在自主运行开启且未暂停时用eating_schedule_task/eating_cancel_scheduled_task按agenda revision创建／取消，eating_activity_state返回agenda。autonomy-agenda.json/schema1独立保存最多50条、128KiB、每条最多2000字符、未来1秒至365天的任务。到期每轮最多10条合并为同一eating-autonomy机会，可打断sleeping/waiting，仍受主人暂停、额度、runtime及周期限制；cycle持久登记后移出agenda，投递与读取间中断按unknown处理，不重放已进入会话的任务。主人概览可见可取消，取消不撤回已进入会话的机会；当前无重复规则，自主周期仍拒绝原生DSH schedule_create/schedule_update。
+AI未来一次性任务按[ADR-0032](docs/decisions/ADR-0032-AI定时任务.md)，主Agent在自主运行开启且未暂停时用eating_schedule_task/eating_cancel_scheduled_task按agenda revision创建／取消，eating_activity_state返回agenda。autonomy-agenda.json/schema1独立保存最多50条、128KiB、每条最多2000字符、未来1秒至365天的任务。到期每轮最多10条合并为同一eating-autonomy机会，可打断sleeping/waiting，仍受主人暂停、额度、runtime及周期限制；cycle持久登记后移出agenda，投递与读取间中断按unknown处理，不重放已进入会话的任务。主人概览可见可取消，取消不撤回已进入会话的机会；当前agenda无重复规则。按ADR-0034移除自主周期对原生DSH schedule_create/schedule_update的人工阻断，原生Schedule保官方语义；Eating暂停不冻结main其他能力，也不承诺暂停所有原生提醒／目标。
 
-联系权限按[ADR-0033](docs/decisions/ADR-0033-主Agent当前轮次联系权限.md)绑定真实主Agent当前原生turn；QQ群/私聊、原生主输入、目标续行、定时唤醒均可自主调用eating_list_contact_targets/eating_contact_target委派受限子代理，无需目标先发私聊。普通eating_delegate_task仍只用当前批次context_ref及资源scope，群context不能冒充私聊，跨目标走联系策略。逐次核对账号/对象/工具，所有联系任务计入maxContactsPerHour；策略保存、turn结束/abort/销毁/运行时停止撤旧许可，资源取得后及发送前复查。proactive-bindings.json保持schema1，cycleId保留为内部轮次引用，不迁移或恢复旧许可，新runtime把pending转unknown。每目标当前轮次32个callId上限防遗忘，重复/pending/unknown拒绝，迟到回调不改unknown；核对后解除任务阻塞不删动作账本。普通入站保持deliverBatch，内部活动有独立受信来源，不伪装external或主人指令。
+联系权限按[ADR-0033](docs/decisions/ADR-0033-主Agent当前轮次联系权限.md)绑定真实主Agent当前原生turn；QQ群/私聊、原生主输入、目标续行、定时唤醒均可自主调用eating_list_contact_targets/eating_contact_target委派受限子代理，无需目标先发私聊。先选实际行动目标：当前会话查询／回复才用eating_delegate_task及真实context_ref；跨私聊／群聊先list当前对象再contact，工具自动启动／恢复对应受限子，不要求新入站。群context不能冒充私聊；某子scope不足不等于主无能力，群回复成功不等于私聊成功。逐次核对账号/对象/工具，所有联系任务计入maxContactsPerHour；策略保存、turn结束/abort/销毁/运行时停止撤旧许可，资源取得后及发送前复查。proactive-bindings.json保持schema1，cycleId保留为内部轮次引用，不迁移或恢复旧许可，新runtime把pending转unknown。每目标当前轮次32个callId上限防遗忘，重复/pending/unknown拒绝，迟到回调不改unknown；核对后解除任务阻塞不删动作账本。普通入站保持deliverBatch，内部活动有独立受信来源，不伪装external或主人指令。
 
 ## UI 与文档
 
@@ -106,13 +108,13 @@ README 用中文作为标准入口；其他文档标题／文件名中文，技�
 
 前端至少完整构建和严格类型、相关单元／集成与浏览器验证，并实际读图。原生 SDK 测试须显式设置独立 `EATING_DSH_TEST_RUNTIME`，系统 DSH／Web 集成通过 `EATING_DSH_TEST_SYSTEM_BIN` 选择系统命令并使用临时数据，默认跳过不能冒充实跑；没有旧版本迁移测试要求。真实数据未经授权不部署、不重置。
 
-最终用简洁结果说明代码、文档、验证、提交／push及剩余限制；详细证据放本轮报告，未运行不得写已验证。
+最终用简洁结果说明代码、文档、验证、提交／push及剩余限制；详细证据放本轮报告，未运行不得写已验证。实际本地模型request.system含规则是必需证据；工具可见和强制脚本回环不能证明真实LLM一定自主选择相同链路。
 
 ## MCP 与能力插件（2026-10-30）
 
-侧栏的“插件”统一管理communication／harness／capability，机器人和Harness是业务视图；每个插件自带独立面板，通用页面不能硬编码表情库实现。MCP支持直接stdio／StreamableHTTP和插件来源两种，复用官方SDK，不建第二套Agent Loop。连接／授权／Harness挂载分开；默认无授权，按代理类型及精确工具名开放，通讯插件的QQ scope权限不可通过MCP页绕过。
+侧栏的“插件”统一管理communication／harness／capability，机器人和Harness是业务视图；每个插件自带独立面板，通用页面不能硬编码表情库实现。MCP支持直接stdio／StreamableHTTP和插件来源两种，复用官方SDK，不建第二套Agent Loop。启用／连接／Harness挂载分别报告；功能型capability／direct MCP全部当前和新增工具默认对所有现有及后续Agent类型开放，不维护save-grants或授权勾选。McpServiceSummary.grant仅动态只读摘要；通讯来源继续permissionsManagedByPlugin，QQ scope不可通过MCP页绕过。
 
-直接MCP保存不执行命令，stdio不经shell，私有env/headers/URLquery不回显；秘密编辑省略保持，明确clear才删除。工具拓扑变更撤销lease并停止受影响Harness，再启动按新目录挂载；断开/停用/卸载即时拒绝旧调用。在途图片和写操作使用内存AbortSignal，资源返回及真实send/落库前复查；仅关闭HTTP响应不能算撤权完成。
+直接MCP保存不执行命令，stdio不经shell，私有env/headers/URLquery不回显；秘密编辑省略保持，明确clear才删除。新增、连接、断开、工具目录变化及能力插件生命周期变更使用一次性重挂事务：先撤lease并停受影响Harness，await来源／目录变更完成后，仅对变更前connected、仍为同一实例且启用的Harness恢复一次。原stopped／error不自动启动，主人stop／disable优先；失败不重试、不重放unknown，返回harnessRemounts的reconnected／failed／cancelled结果。断开/停用/卸载即时拒绝旧调用。在途图片和写操作使用内存AbortSignal，资源返回及真实send/落库前复查；仅关闭HTTP响应不能算撤权完成。
 
 插件安装先验证封存snapshot，确认同份bytes再运行；Host内事务校验本PID工作区锁且持索引锁。启用、连接、卸载、删数据独立，不清除插件资料或共享依赖。旧API3仅在停机部署时替换代码包，新运行路径不保留读取分支。当前Host SQLite与QQ/DSH数据schema保持。
 
@@ -122,10 +124,10 @@ README 用中文作为标准入口；其他文档标题／文件名中文，技�
 
 ## 外部记忆插件（OpenViking）
 
-openviking-memory@0.2.0按[ADR-0030](docs/decisions/ADR-0030-增量记忆提取与历史分段解耦.md)逐轮及时同步并增量提取，服务端扩展精确依赖OpenViking0.5.2.1，复用官方提取/合并/隔离框架。Eating只负责可信来源、范围、传输与回执，不建另一记忆引擎。Session固定eating-live-<peer>，全局关闭固定-local策略根；不调用commit或deleteSession，提取与归档解耦，成功处理原文达到archiveMaxMiB才分段且不重复提取。原始记录保留。POST结果未知只查原request_id持久回执；应用窗口不确定不盲目重放，证明未进入应用的失败才允许主人显式重试。缺协议1扩展明确不支持，不回退旧提交；配置/状态严格schema2，旧文件拒绝而保留，不自动迁移。用户最新要求只写代码供审查，不再远端访问或部署、不替换现有安装。无每日/小时提取额度；MCP授权、群成员过滤、主人显式跨会话和原生DSH Web约束保持。
+openviking-memory@0.2.0按[ADR-0030](docs/decisions/ADR-0030-增量记忆提取与历史分段解耦.md)逐轮及时同步并增量提取，服务端扩展精确依赖OpenViking0.5.2.1，复用官方提取/合并/隔离框架。Eating只负责可信来源、范围、传输与回执，不建另一记忆引擎。Session固定eating-live-<peer>，全局关闭固定-local策略根；不调用commit或deleteSession，提取与归档解耦，成功处理原文达到archiveMaxMiB才分段且不重复提取。原始记录保留。POST结果未知只查原request_id持久回执；应用窗口不确定不盲目重放，证明未进入应用的失败才允许主人显式重试。缺协议1扩展明确不支持，不回退旧提交；配置/状态严格schema2，旧文件拒绝而保留，不自动迁移。用户最新要求只写代码供审查，不再远端访问或部署、不替换现有安装。无每日/小时提取额度；功能MCP默认开放，群成员过滤、主人显式跨会话和原生DSH Web约束保持。
 
 ## 生图插件（OpenAI Images）
 
-独立image-generation@0.2.0、API4；不改OneBot路径或发送。配置Base URL/Key/model，可选size/quality/responseFormat；无参考图追加/images/generations，有参考图走OpenAI Images /images/edits，固定n1，无聊天/Responses回退，不猜模型支持。保存/connect只本地检查，不真实试生成；只有明确可能计费操作或主人授予MCP后才请求。
+独立image-generation@0.2.0、API4；不改OneBot路径或发送。配置Base URL/Key/model，可选size/quality/responseFormat；无参考图追加/images/generations，有参考图走OpenAI Images /images/edits，固定n1，无聊天/Responses回退，不猜模型支持。保存/connect只本地检查，不真实试生成；真实请求由主人明确生成或已获默认功能MCP授权的Agent发起，仍报告可能计费及真实结果。
 
 异步image_generate返回jobId，image_job_get查询最终状态，image_jobs/image_list分页元数据，image_get才实际图。生成提交回执不是生成成功，稳定request_id防重复计费，queued/running重启转unknown不重发。单图编辑只接受三种来源：主人面板本机上传、当前会话已授权消息的{messageId,imageId}、本插件已有assetId；不接受任意路径/URL或其它插件私有图片，来源哈希计入幂等。提交前检查调用signal；已接受后台任务由插件持有，普通Agent结束不丢已付费结果，停用/dispose取消为unknown，后续读取仍须当前授权。owner离页只停UI轮询；隐藏清Key、参考图和Blob，locale不请求。私有配置和资源schema1，500任务/500图/256MiB及公开单图5MiB保持，满在请求前拒绝。错误不回显提供商原body、Key、签名URL，URL结果不传认证下载。无真实Key时不声称付费服务验证。见[ADR-0020](docs/decisions/ADR-0020-独立OpenAI生图能力.md)与[ADR-0026](docs/decisions/ADR-0026-生图单图编辑与受控图片来源.md)。

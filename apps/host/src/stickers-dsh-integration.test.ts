@@ -35,11 +35,17 @@ afterEach(async () => {
 })
 const selfId = 123456789, userId = 987654321
 const stickerPrefix = 'mcp__plugin_stickers__'
-const granted = ['sticker_add', 'sticker_get', 'sticker_list', 'sticker_list_tags']
 const rootTools = ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task']
-const childTools = [...granted.map(name => stickerPrefix + name), 'mcp__qq__qq_send_private_message', 'mcp__qq__qq_view_received_image'].sort()
+const capabilityTools = ['sticker_add', 'sticker_get', 'sticker_list', 'sticker_list_tags', 'sticker_update', 'sticker_delete'].map(name => stickerPrefix + name).sort()
+const childTools = [...capabilityTools, 'mcp__qq__qq_send_private_message', 'mcp__qq__qq_view_received_image'].sort()
 function object(value: unknown): JsonObject { if (!isJsonObject(value)) throw new Error('Expected actual structured integration result'); return value }
 function names(request: ModelFixtureRequest) { return (request.tools ?? []).map(tool => tool.function?.name ?? '').sort() }
+function expectMainTools(request: ModelFixtureRequest, mcpTools: readonly string[]) {
+  const actual = names(request)
+  expect(actual.filter(name => name.startsWith('eating_') || name.startsWith('mcp__'))).toEqual([...rootTools, ...mcpTools].sort())
+  expect(actual).toEqual(expect.arrayContaining(['bash', 'read', 'write', 'edit', 'web_search', 'schedule_create', 'schedule_update']))
+  expect(actual.some(name => name.startsWith('mcp__qq__'))).toBe(false)
+}
 function batch(request: ModelFixtureRequest) {
   const value = readModelFixtureBatch(request)
   if (!value || !Array.isArray(value.payload.events) || value.payload.events.length !== 1) throw new Error('Expected exactly one actual Eating event')
@@ -138,7 +144,7 @@ describe.runIf(enabled)('系统DSH → 能力MCP → 表情库与QQ真实链', (
     const model = await startStickersModel(request => {
       const current = batch(request), turns = fixtureToolTurns(request)
       if (current.kind === 'root') {
-        expect(names(request)).toEqual(rootTools)
+        expectMainTools(request, capabilityTools)
         if (turns.length === 0) return { name: 'eating_delegate_task', arguments: { type_id: current.agentTypeId, context_ref: current.contextRef, task: current.event.messageId === '99601' ? '先分页查询招呼表情，读取真实sendable后在本私聊发送，重用请求ID核对幂等；不要复述普通输出冒充发送。' : '收藏当前消息的授权图片，附描述和标签；重复原请求ID核对收藏结果，不发送QQ消息。' } }
         expect(turns).toHaveLength(1)
         const delegated = result(turns[0]!)
@@ -202,8 +208,7 @@ describe.runIf(enabled)('系统DSH → 能力MCP → 表情库与QQ真实链', (
     const qq = await api('/plugins/qq/configuration', { endpoint: onebot.endpoint, timeoutMs: 1000, forwardToHarness: true, receiveGroups: true, autoConnect: false })
     await api('/plugins/qq/manage', { operation: 'save-agent-policy', input: { expectedRevision: qq.policyRevision!, owners: [], administrators: [], agentTools: { 'qq.private': ['qq_send_private_message', 'qq_view_received_image'], 'qq.group': [] } } })
     const directory = await api('/mcp')
-    const saved = await api('/mcp', { operation: 'save-grants', input: { id: 'plugin.stickers', expectedRevision: directory.revision!, agentTypeIds: ['qq.private'], toolNames: granted } })
-    expect(saved.services).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'plugin.stickers', grant: { agentTypeIds: ['qq.private'], toolNames: granted } })]))
+    expect(directory.services).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'plugin.stickers', grant: { agentTypeIds: ['main', 'qq.private', 'qq.group'], toolNames: expect.arrayContaining(capabilityTools.map(name => name.slice(stickerPrefix.length))) } })]))
     await api('/plugins/qq/connect', {})
     await api('/plugins/dsh/configuration', { endpoint: model.endpoint, model: 'fixture-stickers-model', apiKey: model.apiKey, timeoutMs: 15000, maxTokens: 1024, autoConnect: false })
     await api('/plugins/dsh/manage', { operation: 'save-model-capabilities', input: { expectedRevision: 0, imageInput: true } })
@@ -239,7 +244,8 @@ describe.runIf(enabled)('系统DSH → 能力MCP → 表情库与QQ真实链', (
     expect(object((await readTestAgentBindings(home))[0]!.scope).agentId).toBe(childId)
     for (const request of model.requests) {
       const current = batch(request)
-      expect(names(request)).toEqual(current.kind === 'root' ? rootTools : childTools)
+      if (current.kind === 'root') expectMainTools(request, capabilityTools)
+      else expect(names(request)).toEqual(childTools)
       expect(JSON.stringify(request.messages?.filter(message => message.role === 'system'))).not.toContain('UNTRUSTED-STICKER-REQUEST')
       if (current.kind === 'root') noImageData(request, images)
     }
@@ -257,7 +263,7 @@ describe.runIf(enabled)('系统DSH → 能力MCP → 表情库与QQ真实链', (
     expect(await readFile(join(home, 'capabilities/stickers/library.json'))).toEqual(libraryBytes)
     expect(await api('/plugins/stickers/manage', { operation: 'get', input: { assetId: receivedId } })).toMatchObject({ revision: 3, item: { description: 'AI收藏原图', tags: ['收藏', '回环'] }, image: { mimeType: 'image/png', data: received.toString('base64') } })
     const reopenedDirectory = await api('/mcp')
-    expect(reopenedDirectory.services).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'plugin.stickers', grant: { agentTypeIds: ['qq.private'], toolNames: granted } })]))
+    expect(reopenedDirectory.services).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'plugin.stickers', grant: { agentTypeIds: ['main', 'qq.private', 'qq.group'], toolNames: expect.arrayContaining(capabilityTools.map(name => name.slice(stickerPrefix.length))) } })]))
     await api('/plugins/qq/connect', {}); await api('/plugins/dsh/connect', {})
     expect(runtime().sessionId).toBe(rootId)
     const web = await connectNativeWeb(await plugin.manage('open-native-web', {}), rootId)
@@ -287,7 +293,7 @@ describe.runIf(enabled)('系统DSH → 能力MCP → 表情库与QQ真实链', (
           const server = new Server({ name: 'direct-main-echo', version: '1.0.0' }, { capabilities: { tools: {} } })
           server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [
             { name: 'echo', description: 'Echo exact fixture value', inputSchema: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'], additionalProperties: false }, annotations: { readOnlyHint: true } },
-            { name: 'ungranted_write', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false, destructiveHint: true } },
+            { name: 'available_write', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false, destructiveHint: true } },
           ] }))
           server.setRequestHandler(CallToolRequestSchema, ({ params }) => {
             if (params.name !== 'echo') throw new Error('Unapproved direct tool reached upstream')
@@ -306,10 +312,10 @@ describe.runIf(enabled)('系统DSH → 能力MCP → 表情库与QQ真实链', (
     stops.push(async () => { for (const connection of sessions.values()) { await connection.server.close(); await connection.transport.close() }; const closed = new Promise<void>((accept, reject) => upstream.close(error => error ? reject(error) : accept())); upstream.closeAllConnections(); await closed })
     const address = upstream.address(); if (!address || typeof address === 'string') throw new Error('Direct fixture did not bind')
     const onebot = await startOneBotFixture(); stops.push(() => onebot.close())
-    let directName = ''
+    let directName = '', directWriteName = ''
     const model = await startStickersModel(request => {
       expect(batch(request).kind).toBe('root')
-      expect(names(request)).toEqual([...rootTools, directName].sort())
+      expectMainTools(request, [directName, directWriteName])
       const turns = fixtureToolTurns(request)
       if (turns.length === 0) return { name: directName, arguments: { value: 'ACTUAL-DIRECT-MAIN-ECHO' } }
       expect(turns).toHaveLength(1)
@@ -333,13 +339,14 @@ describe.runIf(enabled)('系统DSH → 能力MCP → 表情库与QQ真实链', (
     const host = new EatingHost({ dataDirectory: home, entries: [qqEntry, entry], port: 0, allowedUiOrigins: [] }); stops.push(() => host.close())
     const api = await ownerApi(host)
     const directory = await api('/mcp')
-    const saved = await api('/mcp', { operation: 'save', input: { expectedRevision: directory.revision!, name: 'Direct main Echo', transport: 'streamable-http', url: `http://127.0.0.1:${address.port}/mcp`, autoConnect: false, grant: { agentTypeIds: ['main'], toolNames: ['echo'] } } })
+    const saved = await api('/mcp', { operation: 'save', input: { expectedRevision: directory.revision!, name: 'Direct main Echo', transport: 'streamable-http', url: `http://127.0.0.1:${address.port}/mcp`, autoConnect: false } })
     if (!Array.isArray(saved.services)) throw new Error('No saved direct directory')
     const service = saved.services.map(object).find(item => isJsonObject(item.source) && item.source.kind === 'direct')
     if (!service || typeof service.id !== 'string') throw new Error('No direct service id')
     const normalized = service.id.replace(/[^a-zA-Z0-9_]/g, '_')
     const serverName = normalized.length <= 32 ? normalized : 'service_' + createHash('sha256').update(service.id).digest('hex').slice(0, 16)
     directName = 'mcp__' + serverName + '__echo'
+    directWriteName = 'mcp__' + serverName + '__available_write'
     await api('/mcp', { operation: 'connect', input: { id: service.id } })
     await api('/plugins/qq/configuration', { endpoint: onebot.endpoint, timeoutMs: 1000, forwardToHarness: true, autoConnect: false })
     await api('/plugins/qq/connect', {})
@@ -353,7 +360,7 @@ describe.runIf(enabled)('系统DSH → 能力MCP → 表情库与QQ真实链', (
     expect(model.errors).toEqual([])
     expect(onebot.requests.filter(request => request.action.startsWith('send_'))).toEqual([])
     const current = await api('/mcp')
-    expect(current.services).toEqual(expect.arrayContaining([expect.objectContaining({ id: service.id, state: 'connected', grant: { agentTypeIds: ['main'], toolNames: ['echo'] } })]))
+    expect(current.services).toEqual(expect.arrayContaining([expect.objectContaining({ id: service.id, state: 'connected', grant: { agentTypeIds: ['main', 'qq.private', 'qq.group'], toolNames: ['echo', 'available_write'] } })]))
     await host.close()
   }, 60000)
 })

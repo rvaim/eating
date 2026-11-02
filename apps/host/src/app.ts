@@ -3,7 +3,7 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { createHash, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve, extname, sep } from 'node:path'
-import type { BackendPlugin, BackendPluginEntry, HarnessHostServices, HarnessMessageSink, HostPluginContext, JsonObject, PluginResourceServices, CapabilityInvocationScope } from '@eating/plugin-sdk'
+import type { BackendPlugin, BackendPluginEntry, HarnessHostServices, HarnessMessageSink, HarnessRemount, HarnessRemountReport, HostPluginContext, JsonObject, PluginResourceServices, CapabilityInvocationScope } from '@eating/plugin-sdk'
 import { PlatformError, checkedImageResource, composeAgentPrompt, isJsonObject, validateDeliverySettings } from '@eating/plugin-sdk'
 import { AgentAccessRegistry, collectAgentContributions } from './agent-access'
 import { CapabilityAccess } from './capability-access'
@@ -42,6 +42,15 @@ export interface HostOptions {
   readonly autoConnectOnStartup?: boolean
 }
 
+type TopologyReport = HarnessRemountReport & { readonly harnessStopped: boolean }
+class TopologyOperationError extends PlatformError {
+  constructor(cause: unknown, readonly report: TopologyReport) {
+    const error = safeError(cause)
+    super(error.code, error.message, error.statusCode, error.outcome)
+    this.cause = cause
+  }
+}
+
 export class EatingHost {
   readonly store: HostStore
   readonly harness: HarnessGateway
@@ -67,6 +76,10 @@ export class EatingHost {
   private mcpMutation = false
   private packageMutation = false
   private readonly activationPreferences = new Map<string, boolean>()
+  private readonly harnessGenerations = new Map<string, number>()
+  private readonly automaticHarnessOperations = new Map<string, Promise<unknown>>()
+  private topologyTail: Promise<void> = Promise.resolve()
+  private lastHarnessRemounts: readonly HarnessRemount[] = []
   private url = ''
   private closed = false
 
@@ -79,10 +92,12 @@ export class EatingHost {
       this.agentAccess = new AgentAccessRegistry(id => this.requirePlugin(id, true), id => !this.closed && this.enabled.has(id))
       this.authoring = new AuthoringService(this.store, () => collectAgentContributions(this.plugins.values(), this.enabled))
       const enabledIds = persistedEnabledIds(this.store.getSetting('platforms.enabled'), options.entries.map(entry => entry.id))
-      this.directMcp = new DirectMcpConnections(resolve(options.dataDirectory, 'host', 'mcp'))
+      this.directMcp = new DirectMcpConnections(resolve(options.dataDirectory, 'host', 'mcp'), async (sourceId, refresh) => {
+        this.capabilityAccess.revokeSource(sourceId)
+        await this.changeCapabilityTopology(refresh)
+      })
       this.memoryAccess = new MemoryAccess({ plugins: () => this.plugins.values(), enabled: id => !this.closed && this.enabled.has(id) })
       this.capabilityAccess = new CapabilityAccess({ direct: this.directMcp, plugins: () => this.plugins.values(), enabled: id => !this.closed && this.enabled.has(id),
-        getSetting: key => this.store.getSetting(key), setSetting: (key, value) => this.store.setSetting(key, value),
         memoryContext: (harnessId, agentId) => this.memoryAccess.context(harnessId, agentId),
         executeIdempotent: (pluginId, action, params, requestId, execute) => this.store.executeIdempotent(pluginId, action, params, requestId, execute) })
       this.packageManager = new PluginPackageManager(options.dataDirectory, { deactivate: id => this.deactivateInstalled(id), activate: installed => this.activateInstalled(installed) })
@@ -156,7 +171,6 @@ export class EatingHost {
     const plugin = this.plugins.get(id)
     if (!plugin) return
     if (!this.activationPreferences.has(id)) this.activationPreferences.set(id, this.enabled.has(id))
-    await this.stopAffectedHarnesses('plugin.' + id)
     this.agentAccess.revokePlugin(id); this.capabilityAccess.revokeSource('plugin.' + id); this.revokeHarnessSinks(id)
     for (const stop of this.logStreams.get(id) ?? []) stop()
     this.logStreams.delete(id)
@@ -182,44 +196,90 @@ export class EatingHost {
     }
     return stopped
   }
+  private automaticHarnessOperation<T>(plugin: BackendPlugin, operation: 'connect' | 'disconnect', run: () => Promise<T>): Promise<T> {
+    const task = this.mutatePlugin(plugin.id, operation, run)
+    this.automaticHarnessOperations.set(plugin.id, task)
+    void task.finally(() => { if (this.automaticHarnessOperations.get(plugin.id) === task) this.automaticHarnessOperations.delete(plugin.id) }).catch(() => {})
+    return task
+  }
+  private changeCapabilityTopology<T>(run: () => Promise<T>): Promise<{ value: T } & TopologyReport> {
+    const task = this.topologyTail.then(async () => {
+      if (this.closed) throw new PlatformError('HOST_STOPPED', 'Host 正在停止。', 503, 'not-sent')
+      const targets = [...this.plugins.values()].filter(plugin => plugin.kind === 'harness' && this.enabled.has(plugin.id) && plugin.getStatus().state === 'connected')
+        .map(plugin => ({ plugin, generation: this.harnessGenerations.get(plugin.id) ?? 0, stopped: false, error: undefined as string | undefined }))
+      const current = (target: typeof targets[number]) => !this.closed && this.plugins.get(target.plugin.id) === target.plugin && this.enabled.has(target.plugin.id) && (this.harnessGenerations.get(target.plugin.id) ?? 0) === target.generation
+      const code = (error: unknown) => error instanceof PlatformError && /^[A-Z][A-Z0-9_]{0,79}$/.test(error.code) ? error.code : 'HARNESS_REMOUNT_FAILED'
+      // Revoke every captured lifetime before awaiting any individual teardown.
+      for (const { plugin } of targets) this.revokeHarnessSinks(plugin.id)
+      for (const target of targets) {
+        if (!current(target)) continue
+        try {
+          await this.automaticHarnessOperation(target.plugin, 'disconnect', () => target.plugin.disconnect())
+          target.stopped = true
+        } catch (error) { target.error = code(error) }
+      }
+      let value!: T, failed = false, sourceError: unknown
+      try { value = await run() } catch (error) { failed = true; sourceError = error }
+      const harnessRemounts: HarnessRemount[] = []
+      for (const target of targets) {
+        const { plugin } = target
+        if (!current(target)) { harnessRemounts.push({ id: plugin.id, status: 'cancelled', code: 'HARNESS_REMOUNT_CANCELLED' }); continue }
+        if (target.error) { harnessRemounts.push({ id: plugin.id, status: 'failed', code: target.error }); continue }
+        if (!target.stopped || plugin.getStatus().state !== 'disconnected') { harnessRemounts.push({ id: plugin.id, status: 'cancelled', code: 'HARNESS_STATE_CHANGED' }); continue }
+        try {
+          const status = await this.automaticHarnessOperation(plugin, 'connect', async () => {
+            if (!current(target)) return 'cancelled' as const
+            await plugin.connect()
+            if (!current(target)) { this.revokeHarnessSinks(plugin.id); await plugin.disconnect(); return 'cancelled' as const }
+            if (plugin.getStatus().state !== 'connected') throw new PlatformError('HARNESS_REMOUNT_NOT_CONNECTED', 'Harness 未恢复已连接状态。', 502, 'failed')
+            return 'reconnected' as const
+          })
+          harnessRemounts.push({ id: plugin.id, status, ...(status === 'cancelled' ? { code: 'HARNESS_REMOUNT_CANCELLED' } : {}) })
+        } catch (error) {
+          this.revokeHarnessSinks(plugin.id)
+          harnessRemounts.push({ id: plugin.id, status: 'failed', code: code(error) })
+        }
+      }
+      const report: TopologyReport = { harnessStopped: targets.some(target => target.stopped), harnessRemounts }
+      this.lastHarnessRemounts = harnessRemounts
+      if (failed) throw new TopologyOperationError(sourceError, report)
+      return { value, ...report }
+    })
+    this.topologyTail = task.then(() => {}, () => {})
+    return task
+  }
   private async mcpManagement(operation: string, input: unknown): Promise<JsonObject> {
     if (this.mcpMutation || this.packageMutation) throw new PlatformError('MCP_BUSY', 'MCP 或插件管理正在执行，请稍后重试。', 409, 'not-sent')
     if (!isJsonObject(input)) throw new PlatformError('INVALID_MCP_CONFIGURATION', '请提供 MCP 操作参数。')
     this.mcpMutation = true
     try {
       const types = this.authoring.readOwnerConfiguration().agentTypes.map(type => ({ id: type.id, title: type.title }))
-      const validTypes = ['main', ...types.map(type => type.id)]
       const id = typeof input.id === 'string' ? input.id : ''
-      let wasAssigned = false
-      if (id) { try { wasAssigned = this.capabilityAccess.source(id).grant.agentTypeIds.length > 0 } catch { /* New IDs are validated by save. */ } }
+      let report: TopologyReport = { harnessStopped: false, harnessRemounts: [] }
       if (operation === 'save') {
         this.capabilityAccess.requireRevision(input.expectedRevision)
-        if (!isJsonObject(input.grant) || !Array.isArray(input.grant.agentTypeIds) || input.grant.agentTypeIds.some(type => typeof type !== 'string' || !validTypes.includes(type))) throw new PlatformError('INVALID_MCP_GRANT', '请指定已有代理类型。')
         this.directMcp.save({ ...input, expectedRevision: this.directMcp.revision })
-      } else if (operation === 'save-grants') {
-        this.capabilityAccess.requireRevision(input.expectedRevision)
-        if (id.startsWith('plugin.')) this.capabilityAccess.savePluginGrant(input, types.map(type => type.id))
-        else {
-          const source = this.directMcp.get(id)
-          if (!Array.isArray(input.agentTypeIds) || input.agentTypeIds.some(type => typeof type !== 'string' || !validTypes.includes(type)) || !Array.isArray(input.toolNames) || input.toolNames.some(name => !source.tools.some(tool => tool.name === name))) throw new PlatformError('INVALID_MCP_GRANT', '代理类型或工具授权无效。')
-          this.directMcp.setGrant(id, { agentTypeIds: input.agentTypeIds as string[], toolNames: input.toolNames as string[] }, this.directMcp.revision)
-        }
       } else if (operation === 'connect' || operation === 'disconnect') {
         const source = this.capabilityAccess.source(id)
         if (Object.keys(input).some(key => key !== 'id')) throw new PlatformError('INVALID_MCP_CONFIGURATION', '连接操作只接受服务 ID。')
-        if (source.source.kind === 'direct') await this.directMcp[operation](id)
-        else {
-          if (source.source.kind !== 'plugin' || source.configuration.permissionsManagedByPlugin === true) throw new PlatformError('MCP_MANAGED_BY_PLUGIN', '此 MCP 的连接由来源插件管理。', 409, 'not-sent')
-          await this.mutatePlugin(source.source.pluginId, operation, () => this.requirePlugin(source.source.kind === 'plugin' ? source.source.pluginId : '', true)[operation]())
-        }
+        if (source.source.kind === 'plugin' && source.configuration.permissionsManagedByPlugin === true) throw new PlatformError('MCP_MANAGED_BY_PLUGIN', '此 MCP 的连接由来源插件管理。', 409, 'not-sent')
+        this.capabilityAccess.revokeSource(id)
+        // A removal supersedes a pending notification refresh immediately.
+        const stopping = source.source.kind === 'direct' && operation === 'disconnect' ? this.directMcp.disconnect(id) : undefined
+        void stopping?.catch(() => {})
+        report = await this.changeCapabilityTopology(async () => {
+          if (source.source.kind === 'direct') await (stopping ?? this.directMcp[operation](id))
+          else await this.mutatePlugin(source.source.pluginId, operation, () => this.requirePlugin(source.source.kind === 'plugin' ? source.source.pluginId : '', true)[operation]())
+        })
       } else if (operation === 'delete') {
         this.capabilityAccess.requireRevision(input.expectedRevision)
         if (!id.startsWith('direct.')) throw new PlatformError('MCP_MANAGED_BY_PLUGIN', '插件提供的 MCP 不能单独删除。', 409, 'not-sent')
-        await this.directMcp.remove(id, this.directMcp.revision)
+        this.capabilityAccess.revokeSource(id)
+        const stopping = this.directMcp.disconnect(id)
+        void stopping.catch(() => {})
+        report = await this.changeCapabilityTopology(async () => { await stopping; await this.directMcp.remove(id, this.directMcp.revision) })
       } else throw new PlatformError('MCP_OPERATION_NOT_FOUND', '此 MCP 管理操作不存在。', 404, 'not-sent')
-      if (id) this.capabilityAccess.revokeSource(id)
-      const harnessStopped = await this.stopAffectedHarnesses(id, wasAssigned || operation === 'save-grants')
-      return { ...this.capabilityAccess.snapshot(types), harnessStopped } as unknown as JsonObject
+      return { ...this.capabilityAccess.snapshot(types), harnessStopped: report.harnessStopped, harnessRemounts: report.harnessRemounts } as unknown as JsonObject
     } finally { this.mcpMutation = false }
   }
 
@@ -290,7 +350,7 @@ export class EatingHost {
         if (request.method !== 'GET' && !sameSecret(typeof request.headers['x-eating-csrf'] === 'string' ? request.headers['x-eating-csrf'] : undefined, this.csrf)) throw new PlatformError('INVALID_CSRF_TOKEN', '管理请求校验失败，请刷新页面。', 403)
         if (pathname === '/api/workspace' && request.method === 'GET') { json(response, 200, this.getWorkspace()); return }
         if (pathname === '/api/mcp') {
-          if (request.method === 'GET') { json(response, 200, this.capabilityAccess.snapshot(this.authoring.readOwnerConfiguration().agentTypes)); return }
+          if (request.method === 'GET') { json(response, 200, { ...this.capabilityAccess.snapshot(this.authoring.readOwnerConfiguration().agentTypes), harnessRemounts: this.lastHarnessRemounts }); return }
           if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', 'MCP 管理仅支持 GET 或 POST。', 405)
           const body = await readJson(request)
           if (!isJsonObject(body) || typeof body.operation !== 'string' || Object.keys(body).some(key => !['operation', 'input'].includes(key))) throw new PlatformError('INVALID_MCP_CONFIGURATION', 'MCP 管理参数无效。')
@@ -311,8 +371,16 @@ export class EatingHost {
           try {
             if (body.operation === 'preview' && typeof body.input.sourceDirectory === 'string') { json(response, 200, await this.packageManager.preview(body.input.sourceDirectory)); return }
             if (body.input.confirmed !== true) throw new PlatformError('PLUGIN_CONFIRMATION_REQUIRED', '请确认受信任插件及此操作。', 409, 'not-sent')
-            if (body.operation === 'install' && typeof body.input.planId === 'string') { const installed = await this.packageManager.install(body.input.planId); json(response, 200, { id: installed.manifest.id, version: installed.manifest.version, installed: true }); return }
-            if (body.operation === 'uninstall' && typeof body.input.id === 'string') { await this.packageManager.uninstall(body.input.id); json(response, 200, { removed: true }); return }
+            if (body.operation === 'install' && typeof body.input.planId === 'string') {
+              const planId = body.input.planId
+              const { value: installed, ...report } = await this.changeCapabilityTopology(() => this.packageManager.install(planId))
+              json(response, 200, { id: installed.manifest.id, version: installed.manifest.version, installed: true, ...report }); return
+            }
+            if (body.operation === 'uninstall' && typeof body.input.id === 'string') {
+              const id = body.input.id
+              const { value: _value, ...report } = await this.changeCapabilityTopology(() => this.packageManager.uninstall(id))
+              json(response, 200, { removed: true, ...report }); return
+            }
             throw new PlatformError('INVALID_PLUGIN_OPERATION', '插件管理操作无效。')
           } finally { this.packageMutation = false }
         }
@@ -419,8 +487,24 @@ export class EatingHost {
         const plugin = this.requirePlugin(id, !['enable', 'disable', 'configuration'].includes(operation))
         if (request.method === 'GET' && operation === 'configuration') { json(response, 200, plugin.getPublicConfiguration()); return }
         if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '此接口需使用 POST。', 405)
-        if (this.packageMutation) throw new PlatformError('PLUGIN_BUSY', '插件安装或卸载正在执行，请稍后重试。', 409, 'not-sent')
+        if (plugin.kind === 'harness' && (operation === 'disconnect' || operation === 'disable')) {
+          this.harnessGenerations.set(id, (this.harnessGenerations.get(id) ?? 0) + 1)
+          this.revokeHarnessSinks(id)
+          // A deliberate owner stop wins even if an automatic connect is awaiting
+          // the runtime. That connect checks the generation and tears itself down.
+          await this.automaticHarnessOperations.get(id)?.catch(() => {})
+        }
+        if (this.packageMutation && !(plugin.kind === 'harness' && (operation === 'disconnect' || operation === 'disable'))) throw new PlatformError('PLUGIN_BUSY', '插件安装或卸载正在执行，请稍后重试。', 409, 'not-sent')
         const body = await readJson(request, operation === 'invoke' ? 1024 * 1024 : operation === 'manage' ? 8 * 1024 * 1024 : undefined)
+        if (plugin.kind === 'capability' && ['connect', 'disconnect', 'enable', 'disable'].includes(operation)) {
+          this.capabilityAccess.revokeSource('plugin.' + id)
+          const { value, ...report } = await this.changeCapabilityTopology(() => this.mutatePlugin(id, operation, async () => {
+            if (operation === 'enable' || operation === 'disable') { await this.setEnabled(id, operation === 'enable'); return { ok: true } }
+            await plugin[operation as 'connect' | 'disconnect']()
+            return plugin.getStatus()
+          }))
+          json(response, 200, { ...value, ...report }); return
+        }
         if (operation === 'invoke') {
           if (!isJsonObject(body) || typeof body.name !== 'string' || !isJsonObject(body.arguments) || typeof body.requestId !== 'string') throw new PlatformError('INVALID_INPUT', '工具调用参数不完整。')
           const tool = plugin.tools.find(entry => entry.name === body.name)
@@ -456,7 +540,7 @@ export class EatingHost {
     } catch (error) {
       if (response.headersSent || response.destroyed) { if (!response.writableEnded) response.end(); return }
       const failure = safeError(error)
-      json(response, failure.statusCode, { ok: false, error: { code: failure.code, message: failure.message, outcome: failure.outcome } })
+      json(response, failure.statusCode, { ok: false, error: { code: failure.code, message: failure.message, outcome: failure.outcome }, ...(error instanceof TopologyOperationError ? error.report : {}) })
     }
   }
 
@@ -573,12 +657,12 @@ export class EatingHost {
     if (enabled) {
       const plugin = this.plugins.get(id)!
       if (plugin.kind === 'capability') await plugin.connect()
-      await this.stopAffectedHarnesses('plugin.' + id)
+      else await this.stopAffectedHarnesses('plugin.' + id)
     }
     if (!enabled) {
       this.agentAccess.revokePlugin(id)
       this.capabilityAccess.revokeSource('plugin.' + id)
-      await this.stopAffectedHarnesses('plugin.' + id)
+      if (this.plugins.get(id)?.kind !== 'capability') await this.stopAffectedHarnesses('plugin.' + id)
       for (const stop of this.logStreams.get(id) ?? []) stop()
       this.logStreams.delete(id)
       this.revokeHarnessSinks(id)
@@ -632,6 +716,7 @@ export class EatingHost {
     this.packageManager.close()
     await this.capabilityAccess.close()
     await this.directMcp.close()
+    await this.topologyTail
     for (const streams of this.logStreams.values()) for (const stop of streams) stop()
     this.logStreams.clear()
     for (const id of this.sinkRegistrations.keys()) this.revokeHarnessSinks(id)

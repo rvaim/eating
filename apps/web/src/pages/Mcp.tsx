@@ -1,9 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { AlertCircle, Cable, ChevronDown, LoaderCircle, Plus, RefreshCw, Trash2, X } from 'lucide-react'
-import type { McpDirectorySnapshot, McpGrant, McpServiceSummary, PluginToolDefinition } from '@eating/plugin-sdk'
-import { ActionButton, getErrorMessage, hostRequest, useI18n } from '@eating/ui-sdk'
-import type { HostApiError } from '@eating/ui-sdk'
+import type { HarnessRemount, McpDirectorySnapshot, McpServiceSummary } from '@eating/plugin-sdk'
+import { ActionButton, getErrorMessage, HostApiError, hostRequest, useI18n } from '@eating/ui-sdk'
 import { httpSaveInput, readMcpDirectory, readMcpMutationResult, stdioSaveInput } from '../state/mcp'
 import type { DirectMcpSaveInput } from '../state/mcp'
 import '../i18n/app'
@@ -21,20 +20,17 @@ interface Draft {
   readonly savedUrl: string
   readonly savedQueryKeys: readonly string[]
   readonly autoConnect: boolean
-  readonly grant: McpGrant
   readonly env: readonly KvRow[]
   readonly headers: readonly KvRow[]
 }
-const emptyGrant = (): McpGrant => ({ agentTypeIds: [], toolNames: [] })
 const emptyDraft = (revision: number): Draft => ({ revision, id: null, name: '', transport: 'stdio', command: '', args: '', url: '', savedUrl: '', savedQueryKeys: [], autoConnect: false,
-  grant: emptyGrant(), env: [], headers: [] })
+  env: [], headers: [] })
 const stringArray = (value: unknown): readonly string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 const stringValue = (value: unknown): string => typeof value === 'string' ? value : ''
 function draftFrom(service: McpServiceSummary, revision: number): Draft {
   const configuration = service.configuration
   return { revision, id: service.id, name: service.name, transport: service.transport === 'stdio' ? 'stdio' : 'streamable-http',
     command: stringValue(configuration.command), args: stringArray(configuration.args).join('\n'), url: '', savedUrl: stringValue(configuration.url), savedQueryKeys: stringArray(configuration.queryKeys), autoConnect: service.autoConnect,
-    grant: { agentTypeIds: [...service.grant.agentTypeIds], toolNames: [...service.grant.toolNames] },
     env: stringArray(configuration.envKeys).map(key => ({ key, value: '', saved: true, clear: false })),
     headers: stringArray(configuration.headerKeys).map(key => ({ key, value: '', saved: true, clear: false })) }
 }
@@ -44,7 +40,8 @@ export function McpPage({ onFeedback }: { readonly onFeedback: (message: string)
   const [snapshot, setSnapshot] = useState<McpDirectorySnapshot | null>(null)
   const [loading, setLoading] = useState(true)
   const [failure, setFailure] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [remounts, setRemounts] = useState<readonly HarnessRemount[]>([])
+  const [noRemount, setNoRemount] = useState(false)
   const [stale, setStale] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [editor, setEditor] = useState<Draft | null>(null)
@@ -58,8 +55,15 @@ export function McpPage({ onFeedback }: { readonly onFeedback: (message: string)
   const feedback = useRef(onFeedback)
   feedback.current = onFeedback
 
-  async function refresh(duringMutation = false) {
-    if (!mounted.current || !duringMutation && lock.current) return
+  function applyErrorReport(error: unknown) {
+    if (error instanceof HostApiError && error.harnessRemounts !== undefined) {
+      setRemounts(error.harnessRemounts)
+      setNoRemount(error.harnessStopped === false && error.harnessRemounts.length === 0)
+    }
+  }
+
+  async function refresh() {
+    if (!mounted.current || lock.current) return
     const ticket = ++generation.current
     readController.current?.abort()
     const controller = new AbortController()
@@ -68,9 +72,12 @@ export function McpPage({ onFeedback }: { readonly onFeedback: (message: string)
     try {
       const value = readMcpDirectory(await hostRequest<unknown>('/mcp', { signal: controller.signal }))
       if (!mounted.current || controller.signal.aborted || ticket !== generation.current) return
-      setSnapshot(value); setFailure(null); setStale(false)
+      setSnapshot(value); setRemounts(value.harnessRemounts); setNoRemount(false); setFailure(null); setStale(false)
     } catch (error) {
-      if (mounted.current && !controller.signal.aborted && ticket === generation.current) setFailure(getErrorMessage(error, t('mcp.loadError')))
+      if (mounted.current && !controller.signal.aborted && ticket === generation.current) {
+        applyErrorReport(error)
+        setFailure(getErrorMessage(error, t('mcp.loadError')))
+      }
     } finally {
       if (mounted.current && ticket === generation.current) setLoading(false)
       if (readController.current === controller) readController.current = null
@@ -93,29 +100,29 @@ export function McpPage({ onFeedback }: { readonly onFeedback: (message: string)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function mutate(key: string, operation: 'save' | 'connect' | 'disconnect' | 'delete' | 'save-grants', input: unknown, success: string): Promise<boolean> {
+  async function mutate(key: string, operation: 'save' | 'connect' | 'disconnect' | 'delete', input: unknown, success: string): Promise<boolean> {
     if (lock.current || !mounted.current) return false
-    lock.current = true; setBusy(key); setFailure(null); setNotice(null)
+    lock.current = true; setBusy(key); setFailure(null); setRemounts([]); setNoRemount(false)
     const controller = new AbortController()
     actionController.current = controller
     try {
       const value = await hostRequest<unknown>('/mcp', { method: 'POST', body: { operation, input }, signal: controller.signal })
       if (!mounted.current || controller.signal.aborted) return false
-      try {
-        const result = readMcpMutationResult(value)
-        setSnapshot(result.snapshot); setStale(false)
-        if (operation === 'save' && typeof input === 'object' && input !== null) {
-          const saved = input as { id?: string; name?: string }, ids = new Set(snapshot?.services.map(service => service.id) ?? [])
-          const selected = saved.id ?? result.snapshot.services.find(service => !ids.has(service.id))?.id
-          if (selected) setSelectedService(selected)
-        }
-        if (result.harnessStopped) setNotice(t('mcp.harnessStopped'))
-      } catch { await refresh(true) }
+      const result = readMcpMutationResult(value)
+      setSnapshot(result.snapshot); setStale(false)
+      setRemounts(result.snapshot.harnessRemounts)
+      setNoRemount(!result.harnessStopped && result.snapshot.harnessRemounts.length === 0)
+      if (operation === 'save' && typeof input === 'object' && input !== null) {
+        const saved = input as { id?: string; name?: string }, ids = new Set(snapshot?.services.map(service => service.id) ?? [])
+        const selected = saved.id ?? result.snapshot.services.find(service => !ids.has(service.id))?.id
+        if (selected) setSelectedService(selected)
+      }
       if (!mounted.current) return false
       feedback.current(success)
       return true
     } catch (error) {
       if (!mounted.current || controller.signal.aborted) return false
+      applyErrorReport(error)
       const code = (error as HostApiError).code ?? ''
       const conflict = code.includes('CONFLICT') || code.includes('REVISION')
       if (conflict) setStale(true)
@@ -147,7 +154,7 @@ export function McpPage({ onFeedback }: { readonly onFeedback: (message: string)
     }
     const base: DirectMcpSaveInput = { expectedRevision: draft.revision, ...(draft.id ? { id: draft.id } : {}), name: draft.name.trim(),
       transport: draft.transport, command: draft.command.trim(), args: draft.args === '' ? [] : draft.args.split(/\r?\n/),
-      env, clearEnvKeys, url: draft.url.trim(), headers, clearHeaderKeys, autoConnect: draft.autoConnect, grant: draft.grant }
+      env, clearEnvKeys, url: draft.url.trim(), headers, clearHeaderKeys, autoConnect: draft.autoConnect }
     const ok = await mutate('save', 'save', draft.transport === 'stdio' ? stdioSaveInput(base) : httpSaveInput(base), t('mcp.savedFeedback'))
     if (ok) setEditor(null)
     return ok
@@ -167,24 +174,33 @@ export function McpPage({ onFeedback }: { readonly onFeedback: (message: string)
       </div>
     </div>
     {failure && <div className="mcp-alert" role="alert"><AlertCircle size={17} aria-hidden="true" /><div><p>{failure}</p><p className="mcp-alert-action"><ActionButton reason={t('ui.reason.busy')} type="button" className="text-button" onClick={() => void refresh()}>{t('mcp.retry')}</ActionButton></p></div></div>}
-    {notice && <div className="mcp-notice" role="status"><AlertCircle size={17} aria-hidden="true" /><p>{notice}</p></div>}
+    <HarnessRemountNotice reports={remounts} unchanged={noRemount} />
     {editor && (selectedId === 'new' || editor.id === selectedId) && <McpEditor draft={editor} onChange={setEditor} onCancel={() => setEditor(null)} onSave={saveDraft} saving={busy === 'save'} />}
     {!snapshot && loading && <p className="mcp-loading" role="status"><LoaderCircle size={16} aria-hidden="true" />{t('mcp.loading')}</p>}
     {snapshot && services.length === 0 && <div className="empty-state mcp-empty"><Cable size={30} aria-hidden="true" /><h3>{t('mcp.emptyTitle')}</h3><p>{t('mcp.emptyDescription')}</p><ActionButton reason={t('ui.reason.read')} type="button" className="button button-primary" disabled={stale} onClick={addService}><Plus size={16} aria-hidden="true" />{t('mcp.addDirect')}</ActionButton></div>}
     <div className="mcp-service-list" aria-busy={loading}>
-      {services.map(service => <div key={service.id} hidden={service.id !== selectedId} className="mcp-service-slot"><ServiceCard service={service} agentTypes={agentTypes} busy={busy} stale={stale} revision={revision}
+      {services.map(service => <div key={service.id} hidden={service.id !== selectedId} className="mcp-service-slot"><ServiceCard service={service} agentTypes={agentTypes} busy={busy} stale={stale}
         onEdit={() => setEditor(draftFrom(service, revision))}
         onConnect={() => void mutate('connect', 'connect', { id: service.id }, t('mcp.connectedFeedback'))}
         onDisconnect={() => void mutate('disconnect', 'disconnect', { id: service.id }, t('mcp.disconnectedFeedback'))}
-        onDelete={() => void mutate('delete', 'delete', { id: service.id, expectedRevision: revision }, t('mcp.deletedFeedback'))}
-        onSaveGrants={(grant, expectedRevision) => mutate('save-grants', 'save-grants', { id: service.id, expectedRevision, agentTypeIds: grant.agentTypeIds, toolNames: grant.toolNames }, t('mcp.grantSavedFeedback'))} /></div>)}
+        onDelete={() => void mutate('delete', 'delete', { id: service.id, expectedRevision: revision }, t('mcp.deletedFeedback'))} /></div>)}
     </div>
   </main></div>
 }
 
-function ServiceCard({ service, agentTypes, busy, stale, revision, onEdit, onConnect, onDisconnect, onDelete, onSaveGrants }: {
+function HarnessRemountNotice({ reports, unchanged }: { readonly reports: readonly HarnessRemount[]; readonly unchanged: boolean }) {
+  const { t } = useI18n('app')
+  if (reports.length === 0 && !unchanged) return null
+  return <div className="mcp-notice mcp-remount-notice" role="status" aria-label={t('mcp.remount.title')}>
+    <RefreshCw size={17} aria-hidden="true" />
+    <div><strong>{t('mcp.remount.title')}</strong>
+      {reports.length ? <><ul className="mcp-remount-results">{reports.map(report => <li key={report.id}><strong>{report.id}</strong><span>{t(`mcp.remount.${report.status}`)}</span>{report.code && <code>{report.code}</code>}</li>)}</ul><p>{t('mcp.remount.policy')}</p></> : <p>{t('mcp.remount.unchanged')}</p>}
+    </div>
+  </div>
+}
+
+function ServiceCard({ service, agentTypes, busy, stale, onEdit, onConnect, onDisconnect, onDelete }: {
   readonly service: McpServiceSummary
-  readonly revision: number
   readonly agentTypes: McpDirectorySnapshot['agentTypes']
   readonly busy: string | null
   readonly stale: boolean
@@ -192,16 +208,11 @@ function ServiceCard({ service, agentTypes, busy, stale, revision, onEdit, onCon
   readonly onConnect: () => void
   readonly onDisconnect: () => void
   readonly onDelete: () => void
-  readonly onSaveGrants: (grant: McpGrant, revision: number) => Promise<boolean>
 }) {
   const { t, formatNumber } = useI18n('app')
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [editingGrant, setEditingGrant] = useState(false)
-  const [grantRevision, setGrantRevision] = useState(revision)
   const [toolQuery, setToolQuery] = useState('')
   const visibleTools = service.tools.filter(tool => `${tool.title} ${tool.name} ${tool.description}`.toLocaleLowerCase().includes(toolQuery.trim().toLocaleLowerCase()))
-  const [grant, setGrant] = useState<McpGrant>({ agentTypeIds: [...service.grant.agentTypeIds], toolNames: [...service.grant.toolNames] })
-  const [grantSaving, setGrantSaving] = useState(false)
   const direct = service.source.kind === 'direct'
   const configuration = service.configuration
   const command = stringValue(configuration.command)
@@ -211,17 +222,11 @@ function ServiceCard({ service, agentTypes, busy, stale, revision, onEdit, onCon
   const envKeys = stringArray(configuration.envKeys)
   const headerKeys = stringArray(configuration.headerKeys)
   const pluginKind = stringValue(configuration.pluginKind)
-  const permissionsManaged = service.source.kind === 'plugin' && (configuration.permissionsManagedByPlugin === true || pluginKind === 'communication')
+  const permissionsManaged = configuration.permissionsManagedByPlugin === true
   const transport = service.transport === 'stdio' ? t('mcp.transport.stdio') : service.transport === 'streamable-http' ? t('mcp.transport.http') : t('mcp.transport.plugin')
   const partner = (id: string) => agentTypes.find(type => type.id === id)?.title ?? id
   const disabled = busy !== null || stale
   const disabledReason = t(stale ? 'ui.reason.read' : 'ui.reason.busy')
-
-  async function saveGrants() {
-    if (grantSaving) return
-    setGrantSaving(true)
-    try { if (await onSaveGrants(grant, grantRevision)) setEditingGrant(false) } finally { setGrantSaving(false) }
-  }
 
   return <section className="mcp-service" aria-labelledby={`mcp-${service.id}`}>
     <header className="mcp-service-head">
@@ -252,21 +257,14 @@ function ServiceCard({ service, agentTypes, busy, stale, revision, onEdit, onCon
         <p className={`mcp-readiness mcp-readiness-${service.state}`}>{t(`mcp.state.${service.state}`)}</p>
         {direct && <p className="mcp-muted">{t('mcp.readyHint')}</p>}
       </section>
-      <section className="mcp-block mcp-block-grants" aria-labelledby={`mcp-grant-${service.id}`}>
-        <h3 id={`mcp-grant-${service.id}`}>{t('mcp.grant.title')}</h3>
-        {permissionsManaged ? <>
-          <p className="mcp-grant-summary">{t('mcp.tools.title', { count: service.tools.length, value: formatNumber(service.tools.length) })}</p>
-          <p className="mcp-hint">{t('mcp.grant.managedByPlugin', { name: service.source.kind === 'plugin' ? service.source.pluginName : '' })}</p>
-        </> : !editingGrant ? <>
-          <p className="mcp-grant-summary">{service.grant.agentTypeIds.length ? service.grant.agentTypeIds.map(partner).join('、') : t('mcp.grant.none')}</p>
-          <details className="mcp-granted-tools"><summary>{t('mcp.grant.selectedTools', { count: service.grant.toolNames.length, value: formatNumber(service.grant.toolNames.length) })}</summary><ul>{service.grant.toolNames.map(name => <li key={name}>{service.tools.find(tool => tool.name === name)?.title ?? name}</li>)}</ul></details>
-          <p className="mcp-hint">{t('mcp.grant.note')}</p>
-          <ActionButton reason={disabledReason} type="button" className="text-button" disabled={disabled} onClick={() => { setGrant({ agentTypeIds: [...service.grant.agentTypeIds], toolNames: [...service.grant.toolNames] }); setGrantRevision(revision); setEditingGrant(true) }}>{t('mcp.grant.edit')}</ActionButton>
-        </> : <>
-          {grantRevision !== revision && <div className="mcp-notice" role="alert"><div><p>{t('mcp.grant.changed')}</p><details><summary>{t('mcp.grant.latest')}</summary><p>{service.grant.agentTypeIds.map(partner).join(', ') || t('mcp.grant.none')}</p><p>{service.grant.toolNames.join(', ')}</p></details><ActionButton type="button" className="text-button" reasonCode="busy" disabled={disabled || grantSaving} onClick={() => setGrantRevision(revision)}>{t('mcp.grant.rebase')}</ActionButton></div></div>}
-          <GrantPicker agentTypes={agentTypes} tools={service.tools} value={grant} onChange={setGrant} disabled={grantSaving} />
-          <p className="mcp-hint">{t('mcp.grant.note')}</p>
-          <div className="mcp-inline-actions"><ActionButton reason={t(!grantSaving && (stale || grantRevision !== revision) ? 'ui.reason.read' : 'ui.reason.busy')} type="button" className="button button-primary" disabled={grantSaving || stale || grantRevision !== revision} onClick={() => void saveGrants()}>{grantSaving ? t('mcp.grant.saving') : t('mcp.grant.save')}</ActionButton><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-secondary" disabled={grantSaving} onClick={() => setEditingGrant(false)}>{t('mcp.grant.close')}</ActionButton></div>
+      <section className="mcp-block mcp-block-access" aria-labelledby={`mcp-access-${service.id}`}>
+        <h3 id={`mcp-access-${service.id}`}>{t('mcp.access.title')}</h3>
+        {permissionsManaged ? <p className="mcp-hint">{t('mcp.access.managedByPlugin', { name: service.source.kind === 'plugin' ? service.source.pluginName : '' })}</p> : <>
+          <p className="mcp-access-summary">{t('mcp.access.default')}</p>
+          <p className="mcp-access-summary">{t('mcp.access.agentTypes', { names: service.grant.agentTypeIds.map(partner).join(' / ') })}</p>
+          <p className="mcp-access-summary">{t('mcp.access.tools', { value: formatNumber(service.grant.toolNames.length) })}</p>
+          <p className="mcp-hint">{t('mcp.access.automatic')}</p>
+          <p className="mcp-hint">{t(service.enabled && service.state === 'connected' ? 'mcp.access.ready' : 'mcp.access.unavailable')}</p>
         </>}
       </section>
     </div>
@@ -278,21 +276,6 @@ function ServiceCard({ service, agentTypes, busy, stale, revision, onEdit, onCon
       {!confirmDelete ? <ActionButton reason={disabledReason} type="button" className="text-button mcp-danger-trigger" disabled={disabled} onClick={() => setConfirmDelete(true)}><Trash2 size={14} aria-hidden="true" />{t('mcp.delete')}</ActionButton> : <div className="mcp-confirm" role="alertdialog" aria-label={t('mcp.deleteConfirmTitle', { name: service.name })}><div><strong>{t('mcp.deleteConfirmTitle', { name: service.name })}</strong><p>{t('mcp.deleteConfirmDescription')}</p></div><div className="mcp-inline-actions"><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-secondary" disabled={busy !== null} onClick={() => setConfirmDelete(false)}>{t('mcp.cancel')}</ActionButton><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-danger" disabled={disabled || busy !== null} onClick={onDelete}>{busy === 'delete' ? t('mcp.deleting') : t('mcp.deleteConfirm')}</ActionButton></div></div>}
     </div>}
   </section>
-}
-
-function GrantPicker({ agentTypes, tools, value, onChange, disabled }: {
-  readonly agentTypes: McpDirectorySnapshot['agentTypes']
-  readonly tools: readonly PluginToolDefinition[]
-  readonly value: McpGrant
-  readonly onChange: (value: McpGrant) => void
-  readonly disabled: boolean
-}) {
-  const { t } = useI18n('app')
-  const toggle = (list: readonly string[], id: string) => list.includes(id) ? list.filter(item => item !== id) : [...list, id]
-  return <div className="mcp-grant-picker">
-    <fieldset disabled={disabled}><legend>{t('mcp.grant.agentTypes')}</legend><div className="mcp-grant-actions"><ActionButton type="button" className="text-button" reason={t(disabled ? 'ui.reason.busy' : 'mcp.grant.none')} disabled={disabled || agentTypes.length === 0} onClick={() => onChange({ ...value, agentTypeIds: agentTypes.map(type => type.id) })}>{t('ui.selectAll')}</ActionButton><ActionButton type="button" className="text-button" reason={t(disabled ? 'ui.reason.busy' : 'ui.reason.empty')} disabled={disabled || value.agentTypeIds.length === 0} onClick={() => onChange({ ...value, agentTypeIds: [] })}>{t('ui.clearAll')}</ActionButton></div>{agentTypes.length === 0 ? <p className="mcp-muted">{t('mcp.grant.none')}</p> : agentTypes.map(type => <label className="mcp-check" key={type.id}><input type="checkbox" checked={value.agentTypeIds.includes(type.id)} onChange={() => onChange({ ...value, agentTypeIds: toggle(value.agentTypeIds, type.id) })} /><span>{type.title}</span></label>)}</fieldset>
-    <fieldset disabled={disabled}><legend>{t('mcp.grant.toolNames')}</legend><p className="mcp-hint">{t('ui.allowList')}</p><div className="mcp-grant-actions"><ActionButton type="button" className="text-button" reason={t(disabled ? 'ui.reason.busy' : 'ui.reason.noTools')} disabled={disabled || tools.length === 0} onClick={() => onChange({ ...value, toolNames: tools.map(tool => tool.name) })}>{t('ui.allowAll')}</ActionButton><ActionButton type="button" className="text-button" reason={t(disabled ? 'ui.reason.busy' : 'ui.reason.empty')} disabled={disabled || value.toolNames.length === 0} onClick={() => onChange({ ...value, toolNames: [] })}>{t('ui.clearAll')}</ActionButton></div><div className="mcp-grant-options">{tools.length === 0 ? <p className="mcp-muted">{t('mcp.tools.empty')}</p> : tools.map(tool => <label className="mcp-check" key={tool.name}><input type="checkbox" checked={value.toolNames.includes(tool.name)} onChange={() => onChange({ ...value, toolNames: toggle(value.toolNames, tool.name) })} /><span>{tool.title}<code>{tool.name}</code></span></label>)}</div></fieldset>
-  </div>
 }
 
 function McpEditor({ draft, onChange, onCancel, onSave, saving }: {

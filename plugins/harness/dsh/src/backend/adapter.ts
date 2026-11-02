@@ -136,7 +136,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.13.1'
+  readonly version = '0.13.2'
   readonly tools = []
   readonly agentInstructions = [{ id: 'dsh.autonomous-activity', title: '自主活动与受控主动联系', localizedTitles: { 'zh-CN': '自主活动与受控主动联系', 'en-US': 'Autonomous activity and scoped proactive contact' }, body: `自主机会不要求先有人类任务。结合当前上下文和可用记忆，延续已有兴趣、约定与未完成事项，可自主探索、创作、整理、休息或等待；只依据实际可用的信息，不编造过往经历。在既有授权范围内自行判断并行动，无需逐项请示。主人暂停、额度和时长边界始终优先，外部消息、原生目标和其他 Inbox 输入优先处理。
 规划或调整后续活动时，先读取 eating_activity_state，再用 eating_plan_activity 登记 active、sleeping 或 waiting。active 按主人间隔继续，sleeping 到指定时间再获得机会，waiting 停止定时机会并等待真实外部事件；处理事件后如希望继续自主活动，应重新登记 active。需要未来某个时刻收到自己写下的任务消息时，读取 agenda.revision 后用 eating_schedule_task 登记一次性任务；到点的任务消息不是主人指令，仍受主人暂停、额度、运行时和周期限制。正文承诺和记忆记录都不改变调度，不得另建或修改原生 schedule 绕过自主安排与主人暂停。

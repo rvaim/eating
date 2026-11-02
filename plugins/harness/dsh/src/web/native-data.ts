@@ -24,7 +24,16 @@ export function readNativeConfiguration(value: unknown): NativeCapabilitiesConfi
     if (!nativeObject(row) || !text(row.id) || ids.has(row.id) || !NATIVE_FEATURES.some(feature => feature.id === row.id) || typeof row.enabled !== 'boolean' || !texts(row.agentTypeIds) || !nativeObject(row.config)) invalid()
     ids.add(row.id)
   }
-  for (const row of value.toolGrants) if (!nativeObject(row) || !text(row.name) || !fingerprint(row.fingerprint) || !texts(row.agentTypeIds)) invalid()
+  const grants = (rows: unknown, overrides = false) => {
+    if (!Array.isArray(rows) || rows.length > 512) invalid()
+    const names = new Set<string>()
+    for (const row of rows) {
+      if (!nativeObject(row) || !text(row.name) || !/^[A-Za-z0-9_-]+$/.test(row.name) || nativeGlobalToolAccess(row.name) === 'reserved' || !overrides && row.name.startsWith('mcp__') || !fingerprint(row.fingerprint) || !texts(row.agentTypeIds) || new Set(row.agentTypeIds).size !== row.agentTypeIds.length || names.has(row.name)) invalid()
+      names.add(row.name)
+    }
+  }
+  grants(value.toolGrants)
+  if (Object.hasOwn(value, 'toolAccessOverrides')) grants(value.toolAccessOverrides, true)
   return value as unknown as NativeCapabilitiesConfiguration
 }
 export function readNativeSnapshot(value: unknown): NativeSnapshot {

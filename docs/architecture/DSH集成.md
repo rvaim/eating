@@ -1,6 +1,6 @@
 # Eating DSH 集成设计
 
-状态：DSH适配已实现；当前源码0.14.0，主Agent自主、功能默认开放及唯一complete系统组合按[ADR-0034](../decisions/ADR-0034-主Agent自主决策与功能能力默认开放.md)。本文SDK／Profile／Preset／Inbox结论只适用于DSH，不能写成通用Host契约。通用边界见[Harness 适配](Harness适配.md)和[插槽设计](插槽式扩展.md)，固定版本证据见[源码核对](../research/DSH源码核对.md)。
+状态：DSH适配已实现，源码0.15.0；会话子代理自主处理、可配置默认及主／子唯一complete组合按[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)。本文SDK／Profile／Preset／Inbox结论只适用于DSH，不能当作通用Host契约；通用边界见[Harness适配](Harness适配.md)，源码背景见[研究](../research/DSH源码核对.md)。
 
 DSH 适配模块通过 Eating 注册表暴露运行时能力和自己的配置/诊断面板；通用 UI、通讯模块和队列不直接导入 DSH 类型。停用时核对在途动作并撤销本模块贡献，不误删其他运行时数据。DSH 内部插件/Context 与 Eating 后台底座不默认共用或兼容。
 
@@ -14,7 +14,7 @@ DSH 适配模块通过 Eating 注册表暴露运行时能力和自己的配置/�
 
 SDK 启动会选择 Profile（默认 sdk）和 patch。**SDK Server 的 Agent 创建/恢复路径明确不做 Agent Preset composition，也不自动 join roster。** 因此“配置好 Preset 后 SDK Agent 自动继承”不是成立的设计。
 
-当前适配用公开Agent创建钩子与Preset装配主子scope，主人组合与主委派／联系／自主规则进入唯一complete provider，不使用虚构的AgentOptions人格字段。实际request.system必须含完整规则；编辑器预览和工具目录不能代替请求证据。
+当前适配用公开Agent创建钩子与Preset装配主子scope，主人组合与主分流／委派／联系／自主规则合入主唯一complete provider，子会话自主规则合入子唯一complete provider，不使用虚构的AgentOptions人格字段。实际request.system必须含完整规则；编辑器预览和工具目录不能代替请求证据。
 
 系统rc.5已确认complete=true片段成为sole；Eating owner-system complete会抑制普通contact／autonomy section，因此必需规则须合入同一provider。owner／persona与子类型隔离，自定义提示词不自动reset，外部正文保持数据。prefix／suffix和includeRuntimeContext只控制组合，不构成OS安全边界。
 
@@ -34,4 +34,4 @@ prompt 的 messageId 是受理标识，不是磁盘确认、模型消费或动�
 
 ## 当前验证与限制
 
-本轮验证、实际request.system和部署结果见[报告](../reports/2026-11-02-主Agent自主与默认能力验证部署报告.md)。脚本模型按预设顺序调用两入口只证明协议、scope和回执，不能证明真实LLM必定自主选该路径。Eating暂停只管其无输入机会，main原生Schedule保官方语义，不冻结全部能力；缺provider／Key报告真实未配置。OS隔离、发行包差异和更多故障窗口仍按证据核验。见[主会话模型](主会话模型.md)、[Phase 1](../plans/路线图与PoC计划.md)和[待确认问题](../待确认问题.md)。
+本轮验证、实际request.system、清理和部署结果见[报告](../reports/2026-11-02-会话代理自主处理与默认开放可配置验证清理报告.md)。脚本模型按预设顺序调用两入口只证明协议、scope和回执，不能证明真实LLM必定自主选该路径。Eating暂停只管其无输入机会，main原生Schedule保官方语义，不冻结全部能力；缺provider／Key报告真实未配置。OS隔离、发行包差异和更多故障窗口仍按证据核验。见[主会话模型](主会话模型.md)、[Phase 1](../plans/路线图与PoC计划.md)和[待确认问题](../待确认问题.md)。

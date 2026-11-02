@@ -97,7 +97,7 @@ export class EatingHost {
         await this.changeCapabilityTopology(refresh)
       })
       this.memoryAccess = new MemoryAccess({ plugins: () => this.plugins.values(), enabled: id => !this.closed && this.enabled.has(id) })
-      this.capabilityAccess = new CapabilityAccess({ direct: this.directMcp, plugins: () => this.plugins.values(), enabled: id => !this.closed && this.enabled.has(id),
+      this.capabilityAccess = new CapabilityAccess({ store: this.store, direct: this.directMcp, plugins: () => this.plugins.values(), enabled: id => !this.closed && this.enabled.has(id),
         memoryContext: (harnessId, agentId) => this.memoryAccess.context(harnessId, agentId),
         executeIdempotent: (pluginId, action, params, requestId, execute) => this.store.executeIdempotent(pluginId, action, params, requestId, execute) })
       this.packageManager = new PluginPackageManager(options.dataDirectory, { deactivate: id => this.deactivateInstalled(id), activate: installed => this.activateInstalled(installed) })
@@ -259,6 +259,10 @@ export class EatingHost {
       if (operation === 'save') {
         this.capabilityAccess.requireRevision(input.expectedRevision)
         this.directMcp.save({ ...input, expectedRevision: this.directMcp.revision })
+      } else if (operation === 'save-grants') {
+        const change = this.capabilityAccess.validatePolicyChange(input)
+        this.capabilityAccess.revokeSource(change.id)
+        report = await this.changeCapabilityTopology(async () => { this.capabilityAccess.savePolicy(input) })
       } else if (operation === 'connect' || operation === 'disconnect') {
         const source = this.capabilityAccess.source(id)
         if (Object.keys(input).some(key => key !== 'id')) throw new PlatformError('INVALID_MCP_CONFIGURATION', '连接操作只接受服务 ID。')
@@ -272,12 +276,18 @@ export class EatingHost {
           else await this.mutatePlugin(source.source.pluginId, operation, () => this.requirePlugin(source.source.kind === 'plugin' ? source.source.pluginId : '', true)[operation]())
         })
       } else if (operation === 'delete') {
-        this.capabilityAccess.requireRevision(input.expectedRevision)
+        if (Object.keys(input).length !== 2 || !Object.hasOwn(input, 'id') || !Object.hasOwn(input, 'expectedRevision')) throw new PlatformError('INVALID_MCP_CONFIGURATION', '删除操作只接受服务 ID 和配置版本。')
+        this.capabilityAccess.requireRevision(input.expectedRevision, this.capabilityAccess.hasPolicy(id) ? 2 : 1)
         if (!id.startsWith('direct.')) throw new PlatformError('MCP_MANAGED_BY_PLUGIN', '插件提供的 MCP 不能单独删除。', 409, 'not-sent')
         this.capabilityAccess.revokeSource(id)
         const stopping = this.directMcp.disconnect(id)
         void stopping.catch(() => {})
-        report = await this.changeCapabilityTopology(async () => { await stopping; await this.directMcp.remove(id, this.directMcp.revision) })
+        report = await this.changeCapabilityTopology(async () => {
+          await stopping
+          this.capabilityAccess.requireRevision(input.expectedRevision, this.capabilityAccess.hasPolicy(id) ? 2 : 1)
+          await this.directMcp.remove(id, this.directMcp.revision)
+          this.capabilityAccess.removePolicy(id)
+        })
       } else throw new PlatformError('MCP_OPERATION_NOT_FOUND', '此 MCP 管理操作不存在。', 404, 'not-sent')
       return { ...this.capabilityAccess.snapshot(types), harnessStopped: report.harnessStopped, harnessRemounts: report.harnessRemounts } as unknown as JsonObject
     } finally { this.mcpMutation = false }
@@ -378,7 +388,10 @@ export class EatingHost {
             }
             if (body.operation === 'uninstall' && typeof body.input.id === 'string') {
               const id = body.input.id
-              const { value: _value, ...report } = await this.changeCapabilityTopology(() => this.packageManager.uninstall(id))
+              const { value: _value, ...report } = await this.changeCapabilityTopology(async () => {
+                await this.packageManager.uninstall(id)
+                this.capabilityAccess.removePolicy('plugin.' + id)
+              })
               json(response, 200, { removed: true, ...report }); return
             }
             throw new PlatformError('INVALID_PLUGIN_OPERATION', '插件管理操作无效。')

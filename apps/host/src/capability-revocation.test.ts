@@ -111,7 +111,7 @@ describe('capability resource lifetime revocation', () => {
     expect(f.onebot.requests.filter(request => request.action === 'send_private_msg')).toHaveLength(0)
   })
 
-  it.each(['agent', 'disconnect', 'disable'] as const)('does not save a received sticker after %s revokes it during image retrieval', async revocation => {
+  it.each(['agent', 'disconnect', 'disable', 'policy'] as const)('does not save a received sticker after %s revokes it during image retrieval', async revocation => {
     const f = await fixture()
     const connection = f.services.getCapabilityMcpConnections({ agentId: f.scope.agentId, agentTypeId: f.scope.agentTypeId, source: f.scope })[0]!
     const client = await f.client(connection), pendingImage = f.deferReceived()
@@ -121,7 +121,12 @@ describe('capability resource lifetime revocation', () => {
     expect(f.observedSignal?.aborted).toBe(false)
     if (revocation === 'agent') f.services.revokeAgentAccess(f.scope.agentId)
     else if (revocation === 'disconnect') await f.api('/mcp', { operation: 'disconnect', input: { id: 'plugin.stickers' } })
-    else await f.api('/plugins/stickers/disable', {})
+    else if (revocation === 'disable') await f.api('/plugins/stickers/disable', {})
+    else {
+      const directory = await f.api('/mcp')
+      await f.api('/mcp', { operation: 'save-grants', input: { id: 'plugin.stickers', expectedRevision: Number(directory.revision), mode: 'custom', agentTypeIds: [], toolNames: [] } })
+      expect(f.services.getCapabilityMcpConnections({ agentId: f.scope.agentId, agentTypeId: f.scope.agentTypeId, source: f.scope })).toEqual([])
+    }
     expect(f.observedSignal?.aborted).toBe(true)
     pendingImage.release.resolve()
     await expect(f.stickerSettled.promise).resolves.toMatchObject({ outcome: 'not-sent' })

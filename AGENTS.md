@@ -12,14 +12,14 @@
 
 负责人于2026-10-29进一步明确：**“原生web保持原生，不要去修改”“不要你的只读限制，保持原始dshweb即可”。** 原生Web必须使用官方界面、侧栏、主题、消息组件及正常操作；不得注入Eating客户端、CSS、Slot替换、LocaleBridge或额外reader Peer／命令白名单／只读Controller。只保留同一Eating专属DSH进程的服务接入与主人按需取得官方鉴权入口。此前[清单](docs/plans/2026-10-29-原生Web与多模态改造确认清单.md)中的自定义显示与只读部分由本次明确纠正替代，其余受控QQ代理、time-context和MCP图片能力保留。Web恢复完成后，用户进一步明确要求“修改读取图片的功能，让功能正常”，授权修改取图实现本身：删除插件自行预判公网地址的做法，改由系统网络栈解析与路由，使直连、TUN／Fake-IP、系统代理和局域网部署一致可用；仍保会话授权引用、禁重定向、不传认证头、大小／超时与格式校验，不改用户网络或代理配置。不清空资料、不改主DSH，不force push或自动发布。
 
-负责人于2026-11-02最新明确：**“主代理拥有所有权限，他想干嘛就干嘛，所有功能mcp以及新增功能型mcp都默认开放给所有agent”。** 按[ADR-0034](docs/decisions/ADR-0034-主Agent自主决策与功能能力默认开放.md)，已启用且connected的capability／direct MCP全部当前及新增工具对main、现有和后续新类型自动可用，不保留手工save-grants或授权勾选。通讯仍由来源插件核验真实账号／目标／资源scope；群子不取得私聊通讯权。新main原生feature按平台默认全开，Eating专属官方permission默认danger-full-access／approval never，既存根部署时通过正式设置同步本次授权；不改主人主DSH或官方Web，不自动reset自定义提示词／人格。此明确授权替代下文历史ADR中相反的默认空授权及原生schedule阻断规则。
+负责人于2026-11-02最新明确：**主 Agent 负责整体安排、轻量分流与必要协调；普通会话由绑定子 Agent 自行理解、组织回复、选择工具、执行并回报真实回执。默认功能全开放，同时保留主人显式配置能力。** 按[ADR-0035](docs/decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)，已启用且connected的capability／direct MCP新来源默认all，当前／未来工具和类型自动纳入；主人可保存custom精确类型／工具例外并恢复all。原生全局工具也保留自动／自定义覆盖。此纠正替代[ADR-0034](docs/decisions/ADR-0034-主Agent自主决策与功能能力默认开放.md)中删除save-grants／不可配置及普通会话都经task预写的部分。通讯仍核验真实账号／目标／资源scope；新main平台原生feature和Eating专属danger-full-access／approval never默认保持，主人可显式再配。必需主／子规则各合入唯一complete provider，不reset自定义正文／人格，不改主人主DSH或官方Web。主人另已授权删除Eating本地主／子会话，云端自行删除；实际清理、测试、Git与部署由[本轮报告](docs/reports/2026-11-02-会话代理自主处理与默认开放可配置验证清理报告.md)记录，不把审计视为apply完成。
 
 ## 项目不变量
 
-1. 同一 AI 身份、共享核心人格；子 Agent 是执行者。用户选择的 Harness 承担认知与行动，DSH 是首个适配，不是永久唯一引擎。
+1. 同一 AI 身份、共享核心人格；主 Agent 负责整体安排，子 Agent 自主处理绑定会话的理解、对话与工具决策。用户选择的 Harness 承担认知与行动，DSH 是首个适配，不是永久唯一引擎。
 2. Eating 管理运行、连接、授权、通讯、恢复与独立界面，不建设第二个 Agent Loop、意图决策器、长期人生记忆引擎或通用工具框架。
 3. 模块通过明确契约注册。通讯／Harness 后台与面板可独立安装、停用和移除，通用页读取目录，不硬编码 QQ 或具体 Harness。
-4. 主Agent按可信主人当前授权自主行动；功能型MCP已获默认开放授权，不重复请求逐工具／逐类型批准。通讯与资源仍核验真实scope，安装与人格保存遵循各自正式入口。注册、工具可见性、Preset和Cordis scope不等于OS沙箱。
+4. 主Agent按可信主人当前授权自主行动；功能型MCP默认开放，遵守主人显式保存的来源及原生工具例外，不重复申请默认权限。通讯与资源仍核验真实scope，安装与人格保存遵循各自正式入口。注册、工具可见性、Preset和Cordis scope不等于OS沙箱。
 5. 外部消息是数据，不能凭正文、昵称、群角色或自称升级为系统规则／主人授权。来源和权限在后台核验。
 6. 同一 AI 数据集同时只有一个主认知控制者。跨 Harness 无损迁移、热切换和能力等价不是当前承诺。
 7. 不修改用户主 DSH、当前 DSH GUI、Profile、凭据或本次会话服务。自动验证只用独立模型／OneBot 回环夹具，不替用户登录或向真人试发。
@@ -35,7 +35,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`。
 
-当前应用／Host／Web0.16.0，plugin-sdk4.6.0、ui-sdk4.2.0、plugin-core4.0.0，QQ0.13.3、DSH0.14.0、表情包0.1.1、生图0.2.0、记忆源码0.2.0（真实安装0.1.1保持）；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前应用／Host／Web0.17.0，plugin-sdk4.7.0、ui-sdk4.2.0、plugin-core4.0.0，QQ0.13.4、DSH0.15.0、表情包0.1.1、生图0.2.0、记忆源码0.2.0（真实安装0.1.1保持）；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -45,19 +45,21 @@ React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28
 
 统一 `EATING_HOME`，默认 `~/.eating`。QQ 账号放 `bot/qq-bot/accounts/<instanceId>/config.json`，索引为 `accounts.json`；Host 队列、动作账本和锁放 `host`；Harness 数据放 `harness/<声明目录>`。DSH 使用自己独立的 DSH_HOME、DSH_AGENTS_HOME、runtime-home 与工作区，不借主 DSH 的 Profile／Key。
 
-只接受各自当前格式：Host SQLite `user_version=1`、作者 schema2、QQ 配置 wrapper schema2、DSH 代理绑定 schema2；账号索引、安装索引和 DSH 配置／会话各自保持其当前严格 schema1。direct MCP连接文件改为严格schema2且无grant；旧schema1拒绝并保原文件，不转换。旧host:capability-grants不读／不写／不删。版本号不是统一迁移开关。旧 schema／缺字段／旧表在写入前拒绝，不自动转换或标成新版本。
+只接受各自当前格式：Host SQLite `user_version=1`、作者 schema2、QQ 配置 wrapper schema2、DSH 代理绑定 schema2；账号索引、安装索引和 DSH 配置／会话各自保持其当前严格 schema1。direct MCP连接文件改为严格schema2且无grant；旧schema1拒绝并保原文件，不转换。Host策略独立存host:mcp-access-policies，严格schema1／revision／policies，目录CAS为direct＋policy；旧host:capability-grants不读／不写／不迁移／不删。native-capabilities schema1允许可选toolAccessOverrides，缺省不补写，保存省略保持、[]恢复自动。版本号不是统一迁移开关。旧 schema／缺字段／旧表在写入前拒绝，不自动转换或标成新版本。
 
 Eating 不建立聊天历史库；只保存有界未交接规范化信封。senderRole／resourceIds 等公开来源元数据必须经队列校验和持久保留。可靠交接要求原生 `sessions.flush` 成功与匹配原子 ACK，接收不等于模型已读、任务成功或动作完成。保留当前重启恢复和幂等，不自动重放 unknown。
 
 内存队列退出丢失未交接消息；持久队列可恢复。容量、聚合和冷却必须真实生效。清空／缩容有明确确认，不删除账号配置和发送账本。实时日志仅可见页签订阅，浏览器内存有界，隐藏／离开停止并清空，不落盘、不后台缓存、不补历史。
 
+本轮主人已授权删除Eating本地主／子会话；执行者须先停所有目标Eating端口和worker，再按审计精确白名单清原生日志／派生缓存／附件及相关备份，混合文件只清会话／任务字段，旧备份queue单独清，保config／凭据／persona／资源／actions／dedup／settings。记忆0.1.1正文仅RAM，停机后清本地及备份state任务元数据；不生成含正文新backup。审计不等于apply；清理后QQ／DSH／记忆保持关闭，云端主人自删。助手主DSH／60182绝不动；localStorage草稿和OS快照未覆盖，不声称全机forensic抹除。
+
 ## 代理、人格与工具
 
-主系统层：common→main→启用插件使用说明→统一当前人格；子：common→subagent→类型独有→同一人格。DSH必需的主委派／联系／自主规则与主人组合进入唯一complete provider，不能另注册会被complete抑制的普通section；owner／persona与子类型保持隔离。只有6种模板作用域和9个可信变量，无旧群私消息模板和外部正文变量。人格最多启用一个，也可全部停用，明确显示空共享层，不编造其他 AI 身份。
+主系统层：common→main→启用插件使用说明→统一当前人格；子：common→subagent→类型独有→同一人格。DSH必需的主分流／委派／联系／自主规则与主人组合进入主唯一complete provider，子会话自主规则合入子唯一complete provider，不能另注册会被complete抑制的普通section；owner／persona与子类型保持隔离。只有6种模板作用域和9个可信变量，无旧群私消息模板和外部正文变量。人格最多启用一个，也可全部停用，明确显示空共享层，不编造其他 AI 身份。
 
 人格模板只生成新增人格的可编辑草稿，不自动保存或启用，名称由主人填写；保存后是普通人格，模板更新不改已有正文。本轮AI女儿模板依据上下文与可用记忆延续经历，不指定记忆插件或预设成长阶段。提示词文档 updatedAt:null 表示跟随当前默认，非null为主人覆盖；恢复默认保留记录并递增文档/全局revision，不删除归零或自动覆盖自定义。schema2保持，普通读取不回写默认。见[ADR-0027](docs/decisions/ADR-0027-人格模板与默认提示词生命周期.md)。
 
-DSH主提供列类型／受控委派、活动状态／安排、联系对象／联系委派工具；已启用且connected的功能型capability／direct MCP全部当前及新增工具自动供main、现有和后续类型使用。新main默认开启当前平台支持的原生feature，files.write/edit与web.search为true；time主子默认保持。main自动开放全部原生全局工具；所有Agent的功能型native Profile MCP及后续新工具自动可见，排除Eating／QQ受控通讯。其他子非MCP原生工具仍按精确名称／结构指纹选择，目录automaticAccess仅只读摘要，不保留无效main／全功能MCP授权勾选。tools/change后同步更新native.restrict与当前scope限制。子按真实账号实例、登录账号、会话、目标与类型绑定稳定UUID，挂受限通讯MCP及通用功能能力。`deliverBatch` 是唯一交接接口；Harness 取得 MCP 必须带完整 scope，真实回执和撤权服务必需，不能回退主人全权令牌。
+DSH主提供会话处理／列类型／明确任务委派、活动状态／安排、联系对象／联系委派工具。普通会话优先eating_handle_conversation，仅{context_ref}；核对真实root／当前批次及digest／owner绑定／callId后，固定中立task＋原始context/events交绑定子，main不预写完整回复或未经核对的能力结论。eating_delegate_task用于明确执行任务或用户明确逐字内容。新main默认开启平台全部原生feature，files.write/edit与web.search为true，time保主子；main非reserved全局工具、所有Agent功能型native Profile MCP默认自动可用，其他子非MCP仍精确名称／指纹选择。主人可用同名toolAccessOverrides按精确指纹＋类型覆盖默认及toolGrants，可关main、空列表禁用；指纹变化仍限制，不回落开放，reserved／来源／scope不绕过。UI逐项自动／自定义可保存，catalog.automaticAccess说明默认；tools/change更新native.restrict。Host功能MCP默认all，custom来源只按精确类型＋工具，新增项不自动获该例外source。子按真实账号／会话／目标／类型绑定独立原生会话，挂受限通讯及当前有效功能能力。deliverBatch仍唯一交接接口，scope／真实回执／撤权服务必需，不回退主人全权令牌。
 
 同批允许查询→主判断→继续委派同子。内部以公开 `ToolExecutionInput.callId` 防重；不把任意 system／scope／tools 参数交模型，不用任务文本 hash 代替调用 ID。最多32调用，重复／pending／unknown拒绝，迟到回调不能覆盖新任务或撤新权限。当前正文在主 turn/end 清理，不能在第一次委派后清掉。
 
@@ -69,13 +71,13 @@ MCP scope、Prompt、Preset不等于远端资源或OS沙箱。标准OneBot文件
 
 DSH 不自行下载运行时：检测系统安装的 `dsh`（EATING_DSH_BIN → PATH → 常见路径 → macOS 应用包），用 `launch/dsh-system.mjs` 转交层启动，`DSH_HOME`／`DSH_AGENTS_HOME` 仍指向 `~/.eating`。找不到时明确提示用户安装，不猜路径、不静默回退到自装。CLI overlay 只列官方裸包名（从系统安装解析），我们自己的 bridge 用绝对路径。用户已要求移除插件自有会话看板，改为“打开 DSH Web”按钮。复用系统已有官方 Web 组件与 SDK 同进程、同会话运行，配置保留在 Eating Profile 自身可写层；不额外下载 Web 或运行时。公开状态仅 nativeWeb.ready，主人点击时按需取得鉴权 URL；URL 不入普通状态、模型上下文或本地存储。不保留 list-sessions／read-session 或备用看板。原生 UI 和正常操作不增加自定义只读层。详见[ADR-0018](docs/decisions/ADR-0018-系统DSH原生Web与看板移除.md)。
 
-实例名含真实绑定账号，不改UUID，不从旧label猜账号。默认系统层去实时时间；原生time-context在主、子对应scope各挂一次，上海时区、600000ms，不另加调度或时钟工具。当前9变量仍可手写使用，含动态变量的自定义正文对缓存的影响应如实报告。
+实例名含真实绑定账号，正常恢复复用稳定UUID，不从旧label猜账号；本轮主人明确清主／子会话后，再运行创建新UUID，人格身份不变。默认系统层去实时时间；原生time-context在主、子对应scope各挂一次，上海时区、600000ms，不另加调度或时钟工具。当前9变量仍可手写使用，含动态变量的自定义正文对缓存的影响应如实报告。
 
 无输入时的定时机会按[ADR-0023](docs/decisions/ADR-0023-自主活动协调与主动通讯授权.md)由同一主Agent原生followup接受，外部消息/原生目标/Inbox优先，机械检查不请求模型。autonomy.json/schema1保存配置CAS、主人暂停、AI安排revision、窗口额度、周期nonce及有界无正文结果；保存与开启分开、默认关闭。enabled/ownerPaused只控制此类定时机会，普通有输入轮次仍可联系获准目标；真正自主机会取消撤销该轮许可。
 
 AI未来一次性任务按[ADR-0032](docs/decisions/ADR-0032-AI定时任务.md)，主Agent在自主运行开启且未暂停时用eating_schedule_task/eating_cancel_scheduled_task按agenda revision创建／取消，eating_activity_state返回agenda。autonomy-agenda.json/schema1独立保存最多50条、128KiB、每条最多2000字符、未来1秒至365天的任务。到期每轮最多10条合并为同一eating-autonomy机会，可打断sleeping/waiting，仍受主人暂停、额度、runtime及周期限制；cycle持久登记后移出agenda，投递与读取间中断按unknown处理，不重放已进入会话的任务。主人概览可见可取消，取消不撤回已进入会话的机会；当前agenda无重复规则。按ADR-0034移除自主周期对原生DSH schedule_create/schedule_update的人工阻断，原生Schedule保官方语义；Eating暂停不冻结main其他能力，也不承诺暂停所有原生提醒／目标。
 
-联系权限按[ADR-0033](docs/decisions/ADR-0033-主Agent当前轮次联系权限.md)绑定真实主Agent当前原生turn；QQ群/私聊、原生主输入、目标续行、定时唤醒均可自主调用eating_list_contact_targets/eating_contact_target委派受限子代理，无需目标先发私聊。先选实际行动目标：当前会话查询／回复才用eating_delegate_task及真实context_ref；跨私聊／群聊先list当前对象再contact，工具自动启动／恢复对应受限子，不要求新入站。群context不能冒充私聊；某子scope不足不等于主无能力，群回复成功不等于私聊成功。逐次核对账号/对象/工具，所有联系任务计入maxContactsPerHour；策略保存、turn结束/abort/销毁/运行时停止撤旧许可，资源取得后及发送前复查。proactive-bindings.json保持schema1，cycleId保留为内部轮次引用，不迁移或恢复旧许可，新runtime把pending转unknown。每目标当前轮次32个callId上限防遗忘，重复/pending/unknown拒绝，迟到回调不改unknown；核对后解除任务阻塞不删动作账本。普通入站保持deliverBatch，内部活动有独立受信来源，不伪装external或主人指令。
+联系权限按[ADR-0033](docs/decisions/ADR-0033-主Agent当前轮次联系权限.md)绑定真实主Agent当前原生turn；QQ群/私聊、原生主输入、目标续行、定时唤醒均可自主调用eating_list_contact_targets/eating_contact_target委派受限子代理，无需目标先发私聊。先选实际行动目标：当前会话普通聊天／问答／生图优先eating_handle_conversation，仅真实context_ref交绑定子自主处理；明确执行任务或用户明确逐字内容才用eating_delegate_task；跨私聊／群聊先list当前对象再contact，工具自动启动／恢复对应受限子，不要求新入站。群context不能冒充私聊；某子scope不足不等于主无能力，群回复成功不等于私聊成功。逐次核对账号/对象/工具，所有联系任务计入maxContactsPerHour；策略保存、turn结束/abort/销毁/运行时停止撤旧许可，资源取得后及发送前复查。proactive-bindings.json保持schema1，cycleId保留为内部轮次引用，不迁移或恢复旧许可，新runtime把pending转unknown。每目标当前轮次32个callId上限防遗忘，重复/pending/unknown拒绝，迟到回调不改unknown；核对后解除任务阻塞不删动作账本。普通入站保持deliverBatch，内部活动有独立受信来源，不伪装external或主人指令。
 
 ## UI 与文档
 
@@ -112,7 +114,7 @@ README 用中文作为标准入口；其他文档标题／文件名中文，技�
 
 ## MCP 与能力插件（2026-10-30）
 
-侧栏的“插件”统一管理communication／harness／capability，机器人和Harness是业务视图；每个插件自带独立面板，通用页面不能硬编码表情库实现。MCP支持直接stdio／StreamableHTTP和插件来源两种，复用官方SDK，不建第二套Agent Loop。启用／连接／Harness挂载分别报告；功能型capability／direct MCP全部当前和新增工具默认对所有现有及后续Agent类型开放，不维护save-grants或授权勾选。McpServiceSummary.grant仅动态只读摘要；通讯来源继续permissionsManagedByPlugin，QQ scope不可通过MCP页绕过。
+侧栏的“插件”统一管理communication／harness／capability，机器人和Harness是业务视图；每个插件自带独立面板，通用页面不能硬编码QQ或表情库。MCP支持直接stdio／StreamableHTTP与插件来源，复用官方SDK。新功能来源默认all，全部当前／未来工具与Agent类型可用；主人可保存custom精确名单及恢复all。McpServiceSummary.accessPolicy为当前策略，自管来源null；grant为当前有效目录摘要。save-grants严格收{id,expectedRevision,mode:all}或{id,expectedRevision,mode:custom,agentTypeIds,toolNames}，direct save仍只收连接不混grant。策略变更随来源拓扑一次性重挂，owner stop优先、unknown不重放；direct在途撤权可能中断transport并使source error，需主人显式connect。通讯仍permissionsManagedByPlugin，不通过通用页绕过QQ scope。
 
 直接MCP保存不执行命令，stdio不经shell，私有env/headers/URLquery不回显；秘密编辑省略保持，明确clear才删除。新增、连接、断开、工具目录变化及能力插件生命周期变更使用一次性重挂事务：先撤lease并停受影响Harness，await来源／目录变更完成后，仅对变更前connected、仍为同一实例且启用的Harness恢复一次。原stopped／error不自动启动，主人stop／disable优先；失败不重试、不重放unknown，返回harnessRemounts的reconnected／failed／cancelled结果。断开/停用/卸载即时拒绝旧调用。在途图片和写操作使用内存AbortSignal，资源返回及真实send/落库前复查；仅关闭HTTP响应不能算撤权完成。
 

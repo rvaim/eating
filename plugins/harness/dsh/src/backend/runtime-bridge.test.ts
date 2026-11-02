@@ -23,7 +23,7 @@ function temporaryDirectory() {
 
 const turn = () => new Promise<void>(resolve => setImmediate(resolve))
 
-async function fixture(options: { stored?: unknown[]; storedError?: Error; tools?: Json[]; live?: boolean; missingApi?: string; flush?: () => Promise<boolean> } = {}) {
+async function fixture(options: { stored?: unknown[]; storedError?: Error; tools?: Json[]; live?: boolean; missingApi?: string; flush?: () => Promise<boolean>; body?: { context: Json; events: Json[] } } = {}) {
   const directory = temporaryDirectory()
   const nonce = randomUUID()
   const sessionId = randomUUID()
@@ -33,7 +33,9 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ capabilities: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
   vi.stubEnv('EATING_DSH_CONTROL_URL', 'http://127.0.0.1:1')
   vi.stubEnv('EATING_DSH_CONTROL_TOKEN', 'fixture-only-control-token')
-  vi.stubEnv('EATING_DSH_MCP_ENTRY', '/fixture/mcp.mjs')
+  const mcpPath = join(directory, 'mcp.mjs')
+  writeFileSync(mcpPath, 'export const name = "fixture-mcp";')
+  vi.stubEnv('EATING_DSH_MCP_ENTRY', mcpPath)
   const clockPath = join(directory, 'clock.mjs')
   writeFileSync(clockPath, 'export const name = \"fixture-time-context\";')
   vi.stubEnv('EATING_DSH_TIME_CONTEXT_ENTRY', clockPath)
@@ -73,19 +75,21 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
     eatingNativeWeb: { entry: vi.fn(async () => ({ url: 'http://127.0.0.1:45678/?token=fixture-only-web-token', rootSessionId: sessionId })) },
     eatingNativeCapabilities: { ready: vi.fn(async () => {}), allowedGlobal: vi.fn(() => []), restrict: vi.fn(), mount: vi.fn(async () => []), reportTools: vi.fn(), authorize: vi.fn() },
     sessions: { flush, get: () => options.live ? session : undefined },
-    sessionPersistence: { open, stat: vi.fn(async () => undefined) },
+    sessionPersistence: { open, stat: vi.fn(async (): Promise<{ header: { parentSession: string } } | undefined> => undefined) },
     systemPrompt: { section: (value: NonNullable<typeof section.current>) => { if (value.name === 'eating:owner-system') section.current = value; return () => { if (section.current === value) section.current = undefined } } },
     tools: { schemas: () => tools, restrict: vi.fn(() => () => {}), register: vi.fn((tool: Json) => { registrations.push(tool); return () => {} }), guard: vi.fn(() => () => {}) },
-    agents: { get: vi.fn(() => undefined) }, subagents: { drainChildren: vi.fn(async () => {}), sendMessage: vi.fn(async () => {}), interrupt: vi.fn(), startActivation: vi.fn() }, agentPresets: { register: vi.fn(async () => () => {}) },
+    agents: { get: vi.fn((_id: string): unknown => undefined) }, subagents: { drainChildren: vi.fn(async () => {}), sendMessage: vi.fn(async (..._args: unknown[]) => {}), interrupt: vi.fn(), startActivation: vi.fn() }, agentPresets: { register: vi.fn(async () => () => {}) },
   }
+  const agent = { id: sessionId, session, ctx }
+  ctx.agents.get.mockImplementation(id => id === sessionId ? agent : undefined)
   if (options.missingApi) { const [service, method] = options.missingApi.split('.'); Reflect.deleteProperty(Reflect.get(ctx, service!), method!) }
   const modulePath = path('runtime-bridge.mjs')
   writeFileSync(modulePath, getRuntimeBridgeSource())
   const bridge = await import(/* @vite-ignore */ pathToFileURL(modulePath).href) as { name: string; inject: string[]; apply: (context: typeof ctx) => void }
   bridge.apply(ctx)
-  for (const listener of listeners.get('agent/created') ?? []) await listener({ agent: { id: sessionId, ctx } })
+  for (const listener of listeners.get('agent/created') ?? []) await listener({ agent })
   cleanups.push(() => emit('dispose'))
-  const body = { context: { owner: false, source: 'fixture' }, events: [{ text: 'fixture-message' }] }
+  const body = options.body ?? { context: { owner: false, source: 'fixture' }, events: [{ text: 'fixture-message' }] }
   const digest = createHash('sha256').update(JSON.stringify(body)).digest('hex')
   const batchId = 'a'.repeat(64)
   const expected = { schemaVersion: 1, nonce, sessionId, batchId, digest }
@@ -99,7 +103,56 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
     const dispatch = async (index: number): Promise<Admission> => index === hooks.length ? terminal : await hooks[index]!({ agent: { id: agentId }, messages }, () => dispatch(index + 1)) as Admission
     return dispatch(0)
   }
-  return { ctx, registrations, directory, nonce, sessionId, path, read, write, listeners, section, session, flush, close, open, readLog, emit, bridge, expected, delivery, event, admit, setTools: (value: Json[]) => { tools = value; emit('tools/change') }, setStored: (events: unknown[]) => { stored = events } }
+  return { ctx, agent, body, registrations, directory, nonce, sessionId, path, read, write, listeners, section, session, flush, close, open, readLog, emit, bridge, expected, delivery, event, admit, setTools: (value: Json[]) => { tools = value; emit('tools/change') }, setStored: (events: unknown[]) => { stored = events } }
+}
+
+async function conversationFixture(kind: 'private' | 'group' = 'private') {
+  const body = {
+    context: { source: 'fixture', accountId: '100', conversationId: `qq:100:${kind}:200`, kind, targetId: '200' },
+    events: [
+      { messageId: 'message-one', senderId: '200', senderRole: 'user', text: '你记得我喜欢的颜色吗？', resourceIds: [] },
+      { messageId: 'message-two', senderId: '200', senderRole: 'user', text: '照刚才聊的画一只小猫', resourceIds: ['received-image'], content: [{ type: 'image', data: { file: 'received-image' } }], extra: { original: '原始字段保持' } },
+    ],
+  }
+  const f = await fixture({ body })
+  await turn()
+  const binding = { agentId: randomUUID(), agentTypeId: `qq.${kind}`, label: `QQ ${kind} child` }
+  f.write('owner-policy.json', { ...f.read('owner-policy.json'), systemPrompt: 'OWNER-MAIN-OVERRIDE\nOWNER-PERSONA', contextRef: f.expected.batchId, binding,
+    agentTypes: [{ id: binding.agentTypeId, title: binding.label, description: 'Bound conversation', enabled: true }] })
+  f.write('expected.json', f.expected)
+  f.emit('session/event', f.session, f.event())
+  await turn()
+  const requests: Array<{ operation: string; body: Json }> = []
+  const actions = [{ tool: kind === 'private' ? 'qq_send_private_message' : 'qq_send_group_message', targetId: '200', outcome: 'succeeded', requestId: 'real-host-receipt' }]
+  const configuration = { agentId: binding.agentId, agentTypeId: binding.agentTypeId, systemPrompt: 'OWNER-CHILD-OVERRIDE\nOWNER-PERSONA', mcp: { url: 'http://127.0.0.1:1/mcp', headers: {} }, tools: [], capabilities: [] }
+  vi.mocked(fetch).mockImplementation(async (url, input) => {
+    const operation = String(url).split('/').at(-1)!
+    requests.push({ operation, body: JSON.parse(String(input?.body)) as Json })
+    const value = operation === 'prepare-task' ? configuration : operation === 'actions' ? { actions } : operation === 'finish-task' ? { ok: true } : undefined
+    if (!value) throw new Error(`Unexpected fixture control operation: ${operation}`)
+    return new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  })
+  let childAvailable = false
+  const childSection: { current?: { name: string; complete: boolean; text: () => string } } = {}
+  const child = { id: binding.agentId, session: { id: binding.agentId }, ctx: {
+    systemPrompt: { section: (value: NonNullable<typeof childSection.current>) => { childSection.current = value } },
+    plugin: vi.fn(async () => {}), tools: { schemas: () => [], guard: vi.fn() },
+  } }
+  f.ctx.agents.get.mockImplementation(id => id === f.sessionId ? f.agent : childAvailable && id === binding.agentId ? child : undefined)
+  const mount = async () => {
+    childAvailable = true
+    for (const listener of f.listeners.get('agent/created') ?? []) await listener({ agent: child })
+  }
+  const terminal = { stopReason: 'completed', output: [{ type: 'text', text: 'CHILD-INDEPENDENT-REPLY：已根据会话和工具结果处理。' }] }
+  const activation = { result: Promise.resolve(terminal), dispose: vi.fn(async () => {}) }
+  f.ctx.subagents.startActivation.mockImplementation(async () => { await mount(); return activation })
+  f.ctx.subagents.sendMessage.mockImplementation(async () => { await mount(); f.emit('subagent/end', { id: binding.agentId, local: true, stopReason: terminal.stopReason, lastAssistantMessage: terminal.output }) })
+  const execute = (name: string, args: unknown, callId = 'native-conversation-call', overrides: Json = {}) => {
+    const tool = f.registrations.find(tool => tool.name === name)
+    if (typeof tool?.execute !== 'function') throw new Error(`Missing fixture tool: ${name}`)
+    return tool.execute(args, { agent: f.agent, signal: new AbortController().signal, callId, ...overrides }) as Promise<Json>
+  }
+  return { ...f, binding, child, childSection, terminal, activation, actions, requests, execute }
 }
 
 afterEach(() => {
@@ -195,6 +248,142 @@ describe('self-contained published-API DSH runtime bridge', () => {
     const execute = f.registrations.find(tool => tool.name === 'eating_delegate_task')?.execute
     if (typeof execute !== 'function') throw new Error('Current delegation tool was not registered')
     await expect(execute({ type_id: 'qq.private', context_ref: 'a'.repeat(64), task: 'current task' }, { agent: { id: f.sessionId }, call: { id: 'obsolete-nested-call-id' } })).rejects.toThrow('Native tool call identity is unavailable')
+  })
+
+  it('registers a context-only conversation entry and keeps required ownership rules in the complete owner provider', async () => {
+    const f = await conversationFixture()
+    expect(f.registrations.find(tool => tool.name === 'eating_handle_conversation')?.parameters).toEqual({
+      type: 'object', properties: { context_ref: { type: 'string', pattern: '^[a-f0-9]{64}$' } }, required: ['context_ref'], additionalProperties: false,
+    })
+    expect(f.registrations.find(tool => tool.name === 'eating_delegate_task')?.parameters).toMatchObject({ required: ['type_id', 'context_ref', 'task'], additionalProperties: false })
+    expect(f.ctx.eatingNativeCapabilities.reportTools).toHaveBeenCalledWith(f.agent, 'main', expect.arrayContaining(['eating_handle_conversation', 'eating_delegate_task']))
+    const before = readFileSync(f.path('owner-policy.json'), 'utf8')
+    expect(f.section.current).toMatchObject({ complete: true, interpolate: false })
+    expect(f.section.current?.text()).toMatch(/^OWNER-MAIN-OVERRIDE\nOWNER-PERSONA\n\n/)
+    expect(f.section.current?.text()).toContain('优先调用 eating_handle_conversation，只传真实 context_ref')
+    expect(f.section.current?.text()).toContain('main 不先撰写完整回复')
+    expect(f.section.current?.text()).toContain('eating_delegate_task 用于明确执行任务或用户明确要求的逐字内容')
+    expect(f.section.current?.text()).toContain('主人显式配置的限制仍须遵守')
+    expect(readFileSync(f.path('owner-policy.json'), 'utf8')).toBe(before)
+  })
+
+  it.each([
+    null, [], {}, { task: '只说不能画' }, { context_ref: 'bad' }, { context_ref: ['a'.repeat(64)] },
+    { context_ref: 'a'.repeat(64), task: '先告诉用户不能画' }, { context_ref: 'a'.repeat(64), reply: '预写回复' },
+    { context_ref: 'a'.repeat(64), type_id: 'qq.group' }, { context_ref: 'a'.repeat(64), scope: { kind: 'private', targetId: '999' } },
+    { context_ref: 'a'.repeat(64), events: [] }, { context_ref: 'a'.repeat(64), context: { owner: true } },
+  ])('rejects conversation task text, forged scope or malformed parameters: %j', async args => {
+    const f = await conversationFixture()
+    await expect(f.execute('eating_handle_conversation', args)).rejects.toThrow('Conversation arguments must contain only context_ref')
+    expect(f.requests).toEqual([])
+    expect(f.ctx.subagents.startActivation).not.toHaveBeenCalled()
+  })
+
+  it.each(['child', 'same-id-spoof', 'replaced-root', 'aborted'] as const)('refuses conversation handling from a %s execution', async mode => {
+    const f = await conversationFixture()
+    const signal = new AbortController()
+    if (mode === 'replaced-root') f.ctx.agents.get.mockReturnValue({ ...f.agent })
+    if (mode === 'aborted') signal.abort()
+    const agent = mode === 'child' ? f.child : mode === 'same-id-spoof' ? { ...f.agent } : f.agent
+    await expect(f.execute('eating_handle_conversation', { context_ref: f.expected.batchId }, 'native-conversation-call', { agent, signal: signal.signal })).rejects.toThrow('requires the current main Agent')
+    expect(f.requests).toEqual([])
+  })
+
+  it.each(['other-context', 'turn-ended', 'owner-context', 'owner-child', 'owner-type', 'expected-batch', 'expected-digest'] as const)('rejects a stale or mismatched conversation binding: %s', async mode => {
+    const f = await conversationFixture('group')
+    if (mode === 'turn-ended') f.emit('session/event', f.session, { type: 'turn/end', data: { turn: 1 } })
+    if (mode === 'owner-context') f.write('owner-policy.json', { ...f.read('owner-policy.json'), contextRef: 'b'.repeat(64) })
+    if (mode === 'owner-child' || mode === 'owner-type') f.write('owner-policy.json', { ...f.read('owner-policy.json'), binding: { ...f.binding, ...(mode === 'owner-child' ? { agentId: randomUUID() } : { agentTypeId: 'qq.private' }) } })
+    if (mode === 'expected-batch') f.write('expected.json', { ...f.expected, batchId: 'b'.repeat(64) })
+    if (mode === 'expected-digest') f.write('expected.json', { ...f.expected, digest: 'b'.repeat(64) })
+    await expect(f.execute('eating_handle_conversation', { context_ref: mode === 'other-context' ? 'b'.repeat(64) : f.expected.batchId })).rejects.toThrow('Only the current verified external batch and its bound conversation')
+    expect(f.requests).toEqual([])
+    expect(f.ctx.subagents.startActivation).not.toHaveBeenCalled()
+  })
+
+  it('requires a verified external context and the native call identity for conversation handling', async () => {
+    const f = await fixture()
+    await turn()
+    const tool = f.registrations.find(tool => tool.name === 'eating_handle_conversation')!
+    if (typeof tool.execute !== 'function') throw new Error('Conversation tool was not registered')
+    const args = { context_ref: f.expected.batchId }, exec = { agent: f.agent, signal: new AbortController().signal, callId: 'native-call' }
+    await expect(tool.execute(args, exec)).rejects.toThrow('Only the current verified external batch')
+    for (const invalid of [{ callId: undefined, call: { id: 'obsolete-nested-call-id' } }, { callId: '' }, { callId: 'x'.repeat(4097) }]) {
+      await expect(tool.execute(args, { ...exec, ...invalid })).rejects.toThrow('Native tool call identity is unavailable')
+    }
+  })
+
+  it.each(['private', 'group'] as const)('hands raw %s events to the bound child with a fixed neutral task and returns actual receipts', async kind => {
+    const f = await conversationFixture(kind)
+    const result = await f.execute('eating_handle_conversation', { context_ref: f.expected.batchId })
+    const start = f.ctx.subagents.startActivation.mock.calls[0]![0] as { childId: string; request: { parent: unknown; agentPreset: string; prompt: Array<{ type: string; text: string }> } }
+    expect(start).toMatchObject({ childId: f.binding.agentId, request: { parent: f.agent, agentPreset: f.binding.agentTypeId, maxDepth: 1 }, delivery: 'caller' })
+    const payload = JSON.parse(start.request.prompt[0]!.text) as Json
+    expect(Object.keys(payload).sort()).toEqual(['context', 'eating', 'events', 'task'])
+    expect(payload).toMatchObject({ eating: { protocolVersion: 1, contextRef: f.expected.batchId, agentTypeId: f.binding.agentTypeId }, context: f.body.context, events: f.body.events })
+    expect(payload.events).toEqual(f.body.events)
+    expect(payload.task).toContain('独立理解原始 events 中的用户原话')
+    expect(payload.task).toContain('需要生图等功能时自主检查和使用实际挂载的功能型 MCP')
+    expect(payload.task).not.toMatch(/不能画|无法生成|只说|照刚才聊的画一只小猫/)
+    expect(f.childSection.current).toMatchObject({ name: 'eating:owner-system', complete: true })
+    expect(f.childSection.current?.text()).toMatch(/^OWNER-CHILD-OVERRIDE\nOWNER-PERSONA\n\n/)
+    expect(f.childSection.current?.text()).toContain('自主决定是否回复、怎样回复、必要工具并执行发送')
+    expect(f.childSection.current?.text()).not.toContain('OWNER-MAIN-OVERRIDE')
+    expect(result).toEqual({ childId: f.binding.agentId, status: 'completed', summary: f.terminal.output[0]!.text, actions: f.actions })
+    const taskId = createHash('sha256').update(f.sessionId + '\0native-conversation-call').digest('hex')
+    expect(f.requests).toEqual([
+      { operation: 'prepare-task', body: { agentId: f.binding.agentId, agentTypeId: f.binding.agentTypeId, contextRef: f.expected.batchId, taskId } },
+      { operation: 'actions', body: { agentId: f.binding.agentId, contextRef: f.expected.batchId, taskId } },
+      { operation: 'finish-task', body: { agentId: f.binding.agentId, contextRef: f.expected.batchId, taskId, status: 'completed' } },
+    ])
+    // The same verified context remains available for an independent explicit task.
+    const task = '用户明确要求逐字发送：谢谢，已收到。'
+    await f.execute('eating_delegate_task', { type_id: f.binding.agentTypeId, context_ref: f.expected.batchId, task }, 'separate-explicit-task')
+    const explicit = f.ctx.subagents.startActivation.mock.calls[1]![0] as typeof start
+    expect(JSON.parse(explicit.request.prompt[0]!.text)).toEqual({ ...payload, task })
+  })
+
+  it('resumes the persisted bound conversation without replacing its native history', async () => {
+    const f = await conversationFixture()
+    f.ctx.sessionPersistence.stat.mockResolvedValue({ header: { parentSession: f.sessionId } })
+    const result = await f.execute('eating_handle_conversation', { context_ref: f.expected.batchId })
+    expect(f.ctx.subagents.startActivation).not.toHaveBeenCalled()
+    expect(f.ctx.subagents.sendMessage).toHaveBeenCalledWith(f.agent, f.binding.agentId, expect.any(Array), expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    const prompt = f.ctx.subagents.sendMessage.mock.calls[0]![2] as Array<{ text: string }>
+    expect(JSON.parse(prompt[0]!.text)).toMatchObject({ context: f.body.context, events: f.body.events })
+    expect(result.actions).toEqual(f.actions)
+  })
+
+  it('refuses a persisted conversation owned by another parent and closes the prepared task as unknown', async () => {
+    const f = await conversationFixture()
+    f.ctx.sessionPersistence.stat.mockResolvedValue({ header: { parentSession: randomUUID() } })
+    await expect(f.execute('eating_handle_conversation', { context_ref: f.expected.batchId })).rejects.toThrow('Persisted child does not belong to this parent')
+    expect(f.ctx.subagents.startActivation).not.toHaveBeenCalled()
+    expect(f.ctx.subagents.sendMessage).not.toHaveBeenCalled()
+    expect(f.requests.at(-1)).toMatchObject({ operation: 'finish-task', body: { status: 'unknown' } })
+  })
+
+  it('keeps native callId correlation and unknown settlement when conversation handling is interrupted', async () => {
+    const f = await conversationFixture()
+    let finish!: (value: typeof f.terminal) => void
+    const pending = new Promise<typeof f.terminal>(resolve => { finish = resolve })
+    f.activation.result = pending
+    const controller = new AbortController()
+    const outcome = f.execute('eating_handle_conversation', { context_ref: f.expected.batchId }, 'interrupted-call', { signal: controller.signal })
+    const rejected = expect(outcome).rejects.toThrow()
+    await turn()
+    expect(f.ctx.subagents.startActivation).toHaveBeenCalledOnce()
+    controller.abort()
+    await rejected
+    const taskId = createHash('sha256').update(f.sessionId + '\0interrupted-call').digest('hex')
+    expect(f.requests).toEqual([
+      { operation: 'prepare-task', body: { agentId: f.binding.agentId, agentTypeId: f.binding.agentTypeId, contextRef: f.expected.batchId, taskId } },
+      { operation: 'finish-task', body: { agentId: f.binding.agentId, contextRef: f.expected.batchId, taskId, status: 'unknown' } },
+    ])
+    finish(f.terminal)
+    await turn()
+    expect(f.requests).toHaveLength(2)
+    expect(f.ctx.subagents.startActivation).toHaveBeenCalledOnce()
   })
 
   it('yields one microtask and waits for a successful durability barrier before atomic ACK', async () => {

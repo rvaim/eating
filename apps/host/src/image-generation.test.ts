@@ -155,7 +155,7 @@ describe.skipIf(!process.env.EATING_DSH_TEST_SYSTEM_BIN)('system DSH uses OpenAI
     const prefix = 'mcp__plugin_image_generation__'
     const model = await startStickersModel((request): FixtureModelAction => {
       const names = (request.tools ?? []).map(tool => tool.function?.name ?? '').sort()
-      expect(names.filter(name => name.startsWith('eating_') || name.startsWith('mcp__'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', ...grants.map(name => prefix + name)].sort())
+      expect(names.filter(name => name.startsWith('eating_') || name.startsWith('mcp__'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', ...grants.map(name => prefix + name)].sort())
       expect(names).toEqual(expect.arrayContaining(['bash', 'read', 'write', 'edit', 'web_search', 'schedule_create', 'schedule_update']))
       expect(names.some(name => name.startsWith('mcp__qq__'))).toBe(false)
       const turns = fixtureToolTurns(request)

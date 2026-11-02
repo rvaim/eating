@@ -1,6 +1,6 @@
 # Eating QQ 配置与功能测试
 
-Eating 使用 QQ OneBot v11 插件，需要已登录 QQ 并开启 OneBot 的协议端；Eating 不实现 QQ 登录协议。当前主应用／Host／Web0.10.0，三个共享包均3.0.0、QQ0.10.0、DSH0.5.1，插件仅接受apiVersion3。主人手动功能测试保留官方38公开API与1框架quick操作共39项标准目录，另有qq_view_received_image受控查看图片扩展，总计40项；子代理只开放各类型实际允许且主人勾选的工具。标准工具保持JSON语义，图片扩展返回真实MCP image内容。未实现空间／评论／反向连接占位已删除，实际可用性仍取决于协议端实现及QQ权限。标准目录见[OneBot覆盖清单](../technical/OneBot标准功能覆盖.md)，时间与图片能力见[ADR-0016](../decisions/ADR-0016-原生只读Web与多模态会话.md)，原样接入官方Web见[ADR-0017](../decisions/ADR-0017-原样接入DSH原生Web.md)。
+Eating 使用 QQ OneBot v11 插件，需要已登录QQ并开启OneBot的协议端，不实现QQ登录。当前应用／Host／Web0.17.0、SDK4.7.0、UI4.2.0、core4.0.0、QQ0.13.4、DSH0.15.0，仅API4。保留38公开API＋1框架quick共39项标准工具，另有qq_view_received_image受控扩展，共40项；子通讯只用当前类型可范围化已选集合。普通会话自主处理和功能默认开放可配置见[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)，标准目录见[OneBot覆盖清单](../technical/OneBot标准功能覆盖.md)，官方Web与图片操作遵循当前架构。
 
 ## 构建、安装与启动
 
@@ -11,7 +11,7 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-首次安装可为EATING_HOME选择尚未使用的新目录；默认不兼容旧版，不自动迁移或重置旧资料。已有实例按本次明确批准的范围更新时，先停机、核对并备份目标资料，保连接配置、人格、原生UUID和Key，不清空重建。下面示例仅用于新目录，安装前停止使用该目标目录的Host：
+首次安装可为EATING_HOME选择尚未使用的新目录；默认不兼容旧版，不自动迁移或重置旧资料。已有实例按本次明确批准的范围更新时，先停机、核对并备份目标资料，正常恢复保连接配置、人格、原生UUID和Key；本轮另经主人明确授权清主／子会话，之后新UUID不改变人格身份。下面示例仅用于新目录，安装前停止使用该目标目录的Host：
 
 ```bash
 export EATING_HOME="$HOME/.eating-current"
@@ -38,7 +38,7 @@ Host同源提供Web、API／MCP与插件资源，端口由EATING_HOST_PORT指定
 
 ## 升级与卸载
 
-本轮DSH补丁为0.5.1，应用／Host／Web与QQ0.10.0、共享包3.0.0及API3保持；完整栈构建与实际更新结果以本轮新报告为准。更新产物先完整`pnpm build`，停Host后核对备份、安装所用QQ／DSH新产物再启动，不能只替换界面。API3清单必须有assets数组，QQ与DSH均为空，不再交付Eating原生客户端资源，安装器仍验证全部声明路径与SHA。之后仅改QQ且已有当前SDK产物时，可用`pnpm build:plugin`。版本代码位于`plugins/<pluginId>/versions/<version>`，由`plugins/installed.json`激活；不支持运行中热更新或零中断升级。
+当前栈只接受API4。先完整pnpm build；运行中Host可通过管理页的封存预览／确认安装事务更新，CLI安装则先停止Host，执行后再启动。QQ清单assets=[]，DSH仅含launch/dsh-system.mjs，安装器验证完整声明路径／树／SHA。产物由plugins/<pluginId>/versions/<version>及installed索引激活，不直接读取仓库源码，不声称零中断。实际安装结果见[本轮报告](../reports/2026-11-02-会话代理自主处理与默认开放可配置验证清理报告.md)。
 
 只接受当前数据库和配置格式。旧版本、旧表、缺字段或不支持的插件API会明确拒绝，不执行转换、补齐、压缩迁移或自动删旧。若需要处理旧资料，须另有用户明确指令；默认按README使用全新EATING_HOME。当前同版正常重启和故障恢复仍支持，见[数据规范](../technical/数据目录与账号实例.md)。
 
@@ -69,9 +69,9 @@ pnpm plugin list
 
 QQ 注册 `qq.private` 和 `qq.group` 两类执行者。可勾选工具只来自各类型真实 availableTools，默认是适用的只读工具加本类型明确发送。凭据查询、无关全局工具，以及难以固定目标的通用 send_msg 和 quick 操作不提供给子代理；主人“功能测试”的 39 项标准目录保持。
 
-主Agent先选实际行动目标：当前会话查询／回复才用eating_delegate_task与真实context_ref；跨私／群先list当前联系对象再contact，工具自动启动／恢复对应受限子，不要求新入站。QQ群／私聊、原生主输入、目标续行和定时当前轮次均可联系，无需目标先发私聊；群context不能冒充私聊或旧资源授权。enabled/ownerPaused只控制无输入定时机会，小时联系任务额度作用所有来源。
+主Agent先选实际行动目标：当前普通会话优先eating_handle_conversation仅context_ref交绑定子理解原话／历史／人格、自行回复与工具执行；明确任务或用户明确逐字用途用eating_delegate_task；跨私／群先list当前联系对象再contact，工具自动启动／恢复对应受限子，不要求新入站。QQ群／私聊、原生主输入、目标续行和定时当前轮次均可联系，无需目标先发私聊；群context不能冒充私聊或旧资源授权。enabled/ownerPaused只控制无输入定时机会，小时联系任务额度作用所有来源。
 
-某子scope不足须报告具体未完成动作，由主选择其他执行者，不能声称主无能力；群发送成功不能当作私聊成功。功能型MCP当前及新增工具默认对所有Agent开放，但不扩大子通讯scope。平台动作仍由子代理执行，不能自行换账号、对象、工具或引用。保存联系策略、当前turn结束/abort/销毁/运行时停止撤旧许可，真正自主机会取消撤该轮许可；调用、资源取得后和发送前复查。子结果包含Host真实回执，普通文本或委派接纳不等于QQ已发送；未知先核对，不换request_id重发。见[ADR-0033](../decisions/ADR-0033-主Agent当前轮次联系权限.md)。
+某子scope不足须报告具体未完成动作，由主选择其他执行者，不能声称主无能力；群发送成功不能当作私聊成功。功能型MCP新来源默认all，当前／未来工具和类型自动开放；主人custom例外及原生同名指纹覆盖保持，不扩大子通讯scope。平台动作仍由子代理执行，不能自行换账号、对象、工具或引用。保存联系策略、当前turn结束/abort/销毁/运行时停止撤旧许可，真正自主机会取消撤该轮许可；调用、资源取得后和发送前复查。子结果包含Host真实回执，普通文本或委派接纳不等于QQ已发送；未知先核对，不换request_id重发。见[ADR-0033](../decisions/ADR-0033-主Agent当前轮次联系权限.md)。
 
 通用提示词和人格中的主人／管理员变量由本地受信配置生成，支持多个号码。所有代理共用同一启用人格，也可全部停用显示空层。当前只有6种作用域和9个可信变量，没有旧群私消息模板或外部正文模板变量，见[Harness设计](../architecture/Harness适配.md)。
 

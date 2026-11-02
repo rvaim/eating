@@ -28,11 +28,13 @@ async function temporaryHome(prefix = 'eating-capabilities-') {
   stops.push(async () => { if (await realpath(home) !== home || dirname(home) !== parent || !basename(home).startsWith(prefix)) throw new Error('Unsafe fixture path'); await rm(home, { recursive: true }) })
   return home
 }
-async function fixture(options: { storedGrants?: string; extraEntries?: BackendPluginEntry[]; harnessState?: ConnectionStatus['state']; harnessConnect?: () => Promise<void>; harnessDisconnect?: () => Promise<void> } = {}) {
-  const home = await temporaryHome()
-  if (options.storedGrants !== undefined) {
+async function fixture(options: { home?: string; storedGrants?: string; storedPolicies?: string; extraEntries?: BackendPluginEntry[]; harnessState?: ConnectionStatus['state']; harnessConnect?: () => Promise<void>; harnessDisconnect?: () => Promise<void> } = {}) {
+  const home = options.home ?? await temporaryHome()
+  if (options.storedGrants !== undefined || options.storedPolicies !== undefined) {
     const store = new HostStore(join(home, 'host/Eating.sqlite'))
-    store.setSetting('host:capability-grants', options.storedGrants); store.close()
+    if (options.storedGrants !== undefined) store.setSetting('host:capability-grants', options.storedGrants)
+    if (options.storedPolicies !== undefined) store.setSetting('host:mcp-access-policies', options.storedPolicies)
+    store.close()
   }
   let services!: HarnessHostServices, stoppedHarness = 0, connectedHarness = 0
   const harnessMounts: Array<readonly HarnessCapabilityConnection[]> = []
@@ -98,6 +100,7 @@ async function installableFixture(home: string, id = 'installed-source', kind: '
 
 async function changingDirectFixture() {
   const sessions = new Map<string, { server: Server; transport: StreamableHTTPServerTransport }>()
+  const closed = new WeakSet<Server>()
   let tools = [{ name: 'write', inputSchema: { type: 'object' as const }, annotations: { readOnlyHint: false } }]
   const calls: string[] = []
   let entered!: () => void, release!: () => void
@@ -109,6 +112,7 @@ async function changingDirectFixture() {
     let session = typeof sessionId === 'string' ? sessions.get(sessionId) : undefined
     if (!session && request.method === 'POST' && isInitializeRequest(body)) {
       const server = new Server({ name: 'changing-direct-fixture', version: '1' }, { capabilities: { tools: { listChanged: true } } })
+      server.onclose = () => { closed.add(server) }
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: randomUUID, enableJsonResponse: true, onsessioninitialized: id => { sessions.set(id, { server, transport }) } })
       server.setRequestHandler(ListToolsRequestSchema, () => ({ tools }))
       server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
@@ -125,7 +129,7 @@ async function changingDirectFixture() {
   const address = http.address(); if (!address || typeof address === 'string') throw new Error('Fixture did not bind')
   stops.push(async () => { release(); await Promise.all([...sessions.values()].map(async item => { await item.server.close(); await item.transport.close() })); http.closeAllConnections(); await new Promise<void>((resolve, reject) => http.close(error => error ? reject(error) : resolve())) })
   return { url: `http://127.0.0.1:${address.port}/mcp`, called, calls, release, creations: () => sessions.size,
-    async addTool() { tools = [...tools, { name: 'added_read', inputSchema: { type: 'object' as const }, annotations: { readOnlyHint: true } }]; await Promise.all([...sessions.values()].map(item => item.server.sendToolListChanged())) },
+    async addTool(name = 'added_read') { tools = [...tools, { name, inputSchema: { type: 'object' as const }, annotations: { readOnlyHint: true } }]; await Promise.all([...sessions.values()].filter(item => !closed.has(item.server)).map(item => item.server.sendToolListChanged())) },
   }
 }
 
@@ -141,6 +145,8 @@ describe('capability MCP and cross-plugin sticker resources', () => {
     const sticker = directory.services.find((service: JsonObject) => service.id === 'plugin.stickers')
     expect(directory.agentTypes).toHaveLength(3)
     for (const type of directory.agentTypes) expect(Object.keys(type).sort()).toEqual(['id', 'title'])
+    expect(sticker.accessPolicy).toEqual({ mode: 'all' })
+    expect(f.host.store.getSetting('host:mcp-access-policies')).toBeNull()
     expect(sticker.grant).toEqual({ agentTypeIds: directory.agentTypes.map((type: { id: string }) => type.id), toolNames: sticker.tools.map((tool: { name: string }) => tool.name) })
     const client = await f.client(scope)
     expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(sticker.grant.toolNames)
@@ -160,11 +166,140 @@ describe('capability MCP and cross-plugin sticker resources', () => {
     try { expect(store.getSetting('host:capability-grants')).toBe(storedGrants ?? null) } finally { store.close() }
   })
 
-  it('rejects removed grant-management operations and direct save grant fields without changing the directory', async () => {
-    const f = await fixture(), before = await f.api('/mcp')
-    await expect(f.api('/mcp', { operation: 'save-grants', input: { id: 'plugin.stickers', expectedRevision: before.revision, agentTypeIds: [], toolNames: [] } })).rejects.toThrow('MCP_OPERATION_NOT_FOUND')
+  it('rejects malformed policy mutations and direct save grant fields before changing leases or configuration', async () => {
+    const f = await fixture(), before = await f.api('/mcp'), client = await f.client(scope)
+    const base = { id: 'plugin.stickers', expectedRevision: before.revision }
+    const invalid: JsonObject[] = [
+      { agentTypeIds: [], toolNames: [] }, { mode: 'unknown' }, { mode: 'all', toolNames: [] },
+      { mode: 'custom', agentTypeIds: [] }, { mode: 'custom', agentTypeIds: ['main', 'main'], toolNames: [] },
+      { mode: 'custom', agentTypeIds: ['main'], toolNames: ['sticker_list', 'sticker_list'] },
+      { mode: 'custom', agentTypeIds: ['*'], toolNames: [] }, { mode: 'custom', agentTypeIds: ['main'], toolNames: ['*'] },
+      { mode: 'custom', agentTypeIds: 'main', toolNames: [] }, { mode: 'all', extra: true },
+    ]
+    for (const fields of invalid) await expect(f.api('/mcp', { operation: 'save-grants', input: { ...base, ...fields } })).rejects.toThrow('MCP_ACCESS_POLICY_INVALID')
     await expect(f.api('/mcp', { operation: 'save', input: { expectedRevision: before.revision, name: 'Rejected grant', transport: 'stdio', command: process.execPath, args: stdioArgs, autoConnect: false, grant: { agentTypeIds: [], toolNames: [] } } })).rejects.toThrow('MCP_CONFIGURATION_INVALID')
     expect(await f.api('/mcp')).toEqual(before)
+    expect((await client.listTools()).tools.length).toBeGreaterThan(0)
+    expect(f.connectedHarness).toBe(0)
+    expect(f.stoppedHarness).toBe(0)
+    expect(f.host.store.getSetting('host:mcp-access-policies')).toBeNull()
+  })
+
+  it('saves custom type/tool choices, revokes old leases, excludes main when selected, and preserves policy on restart', async () => {
+    const f = await fixture({ storedGrants: 'legacy grant bytes remain untouched' }), before = await f.api('/mcp')
+    const old = await f.client(scope)
+    const first = await f.api('/mcp', { operation: 'save-grants', input: { id: 'plugin.stickers', expectedRevision: before.revision, mode: 'custom', agentTypeIds: ['main', 'qq.private'], toolNames: ['sticker_list', 'future_tool'] } })
+    const source = first.services.find((item: JsonObject) => item.id === 'plugin.stickers')
+    expect(source.accessPolicy).toEqual({ mode: 'custom', agentTypeIds: ['main', 'qq.private'], toolNames: ['sticker_list', 'future_tool'] })
+    expect(source.grant).toEqual({ agentTypeIds: ['main', 'qq.private'], toolNames: ['sticker_list'] })
+    expect(first).toMatchObject({ revision: before.revision + 1, harnessStopped: true, harnessRemounts: [{ id: 'fixture', status: 'reconnected' }] })
+    expect(f.connectedHarness).toBe(1); expect(f.stoppedHarness).toBe(1)
+    await expect(old.listTools()).rejects.toThrow()
+    const main = await f.client({ agentId: 'custom-main', agentTypeId: 'main' }), privateAgent = await f.client({ agentId: 'custom-private', agentTypeId: 'qq.private' })
+    for (const client of [main, privateAgent]) {
+      expect((await client.listTools()).tools.map(tool => tool.name)).toEqual(['sticker_list'])
+      expect(await client.callTool({ name: 'sticker_get', arguments: { assetId: 'absent' } })).toMatchObject({ isError: true, structuredContent: { code: 'CAPABILITY_ACCESS_DENIED' } })
+    }
+    expect(f.services.getCapabilityMcpConnections({ agentId: 'custom-group', agentTypeId: 'qq.group' })).toEqual([])
+    const policy = { mode: 'custom', agentTypeIds: ['qq.group'], toolNames: ['sticker_list'] }
+    const next = await f.api('/mcp', { operation: 'save-grants', input: { id: 'plugin.stickers', expectedRevision: first.revision, ...policy } })
+    expect(f.services.getCapabilityMcpConnections({ agentId: 'main-denied', agentTypeId: 'main' })).toEqual([])
+    expect((await (await f.client({ agentId: 'group-allowed', agentTypeId: 'qq.group' })).listTools()).tools.map(tool => tool.name)).toEqual(['sticker_list'])
+    const bytes = f.host.store.getSetting('host:mcp-access-policies')!
+    expect(JSON.parse(bytes)).toEqual({ schemaVersion: 1, revision: 2, policies: { 'plugin.stickers': policy } })
+    await f.host.close()
+    const reopened = await fixture({ home: f.home, harnessState: 'disconnected' })
+    const snapshot = await reopened.api('/mcp')
+    expect(snapshot.revision).toBe(next.revision)
+    expect(snapshot.services.find((item: JsonObject) => item.id === 'plugin.stickers').accessPolicy).toEqual(policy)
+    expect(reopened.host.store.getSetting('host:mcp-access-policies')).toBe(bytes)
+    expect(reopened.host.store.getSetting('host:capability-grants')).toBe('legacy grant bytes remain untouched')
+    expect(reopened.services.getCapabilityMcpConnections({ agentId: 'restarted-main', agentTypeId: 'main' })).toEqual([])
+    expect((await (await reopened.client({ agentId: 'restarted-group', agentTypeId: 'qq.group' })).listTools()).tools.map(tool => tool.name)).toEqual(['sticker_list'])
+  })
+
+  it('keeps an offline source policy writable without executing or granting unavailable tools', async () => {
+    let connections = 0
+    const f = await fixture({ harnessState: 'disconnected', extraEntries: [extraCapability(async () => { connections++ })] }), before = await f.api('/mcp')
+    const policy = { mode: 'custom', agentTypeIds: ['qq.group', 'future.agent-type'], toolNames: ['new_source_read', 'future_source_tool'] }
+    const saved = await f.api('/mcp', { operation: 'save-grants', input: { id: 'plugin.new-source', expectedRevision: before.revision, ...policy } })
+    expect(saved.services.find((item: JsonObject) => item.id === 'plugin.new-source')).toMatchObject({ state: 'disconnected', accessPolicy: policy, grant: { agentTypeIds: ['qq.group'], toolNames: ['new_source_read'] } })
+    expect(connections).toBe(0)
+    expect(saved.harnessRemounts).toEqual([])
+    expect(f.services.getCapabilityMcpConnections({ agentId: 'offline', agentTypeId: 'qq.group' }).some(item => item.id === 'plugin.new-source')).toBe(false)
+    await f.api('/mcp', { operation: 'connect', input: { id: 'plugin.new-source' } })
+    expect(connections).toBe(1)
+    expect(f.services.getCapabilityMcpConnections(scope).some(item => item.id === 'plugin.new-source')).toBe(false)
+    const client = await f.client({ agentId: 'offline-then-connected', agentTypeId: 'future.agent-type' }, 'plugin.new-source')
+    expect(await client.callTool({ name: 'new_source_read', arguments: {} })).toMatchObject({ isError: false, structuredContent: { result: { agentTypeId: 'future.agent-type' } } })
+    expect(await client.callTool({ name: 'future_source_tool', arguments: {} })).toMatchObject({ isError: true, structuredContent: { code: 'CAPABILITY_ACCESS_DENIED' } })
+  })
+
+  it('uses combined policy/direct CAS, keeps connection secrets separate, and removes only the deleted source policy', async () => {
+    const f = await fixture({ storedGrants: 'legacy untouched' }), before = await f.api('/mcp')
+    const secret = 'private-direct-policy-fixture'
+    const saved = await f.api('/mcp', { operation: 'save', input: { expectedRevision: before.revision, name: 'Private direct source', transport: 'streamable-http', url: 'https://fixture.invalid/mcp?token=' + secret, headers: { Authorization: 'Bearer ' + secret }, autoConnect: false } })
+    const id = saved.services.find((item: JsonObject) => item.transport === 'streamable-http').id
+    const connectionsBefore = await readFile(join(f.home, 'host/mcp/connections.json'), 'utf8')
+    const policy = { mode: 'custom', agentTypeIds: ['qq.private'], toolNames: ['fixture_echo'] }
+    const changed = await f.api('/mcp', { operation: 'save-grants', input: { id, expectedRevision: saved.revision, ...policy } })
+    const snapshot = JSON.stringify(changed)
+    expect(snapshot).not.toContain(secret)
+    expect(changed.revision).toBe(saved.revision + 1)
+    expect(await readFile(join(f.home, 'host/mcp/connections.json'), 'utf8')).toBe(connectionsBefore)
+    const stopped = f.stoppedHarness, connected = f.connectedHarness
+    await expect(f.api('/mcp', { operation: 'save-grants', input: { id, expectedRevision: saved.revision, mode: 'all' } })).rejects.toThrow('MCP_CONFIGURATION_CONFLICT')
+    await expect(f.api('/mcp', { operation: 'save', input: { id, expectedRevision: saved.revision, name: 'Stale overwrite', transport: 'streamable-http', autoConnect: false } })).rejects.toThrow('MCP_CONFIGURATION_CONFLICT')
+    await expect(f.api('/mcp', { operation: 'delete', input: { id, expectedRevision: saved.revision } })).rejects.toThrow('MCP_CONFIGURATION_CONFLICT')
+    expect(f.stoppedHarness).toBe(stopped); expect(f.connectedHarness).toBe(connected)
+    const renamed = await f.api('/mcp', { operation: 'save', input: { id, expectedRevision: changed.revision, name: 'Connection only', transport: 'streamable-http', autoConnect: false } })
+    const connection = JSON.parse(await readFile(join(f.home, 'host/mcp/connections.json'), 'utf8'))
+    expect(connection).toMatchObject({ schemaVersion: 2, revision: 2, connections: [{ id, url: 'https://fixture.invalid/mcp?token=' + secret, headers: { authorization: 'Bearer ' + secret } }] })
+    expect(connection.connections[0].grant).toBeUndefined()
+    expect(connection.connections[0].accessPolicy).toBeUndefined()
+    expect(renamed.revision).toBe(changed.revision + 1)
+    expect(renamed.services.find((item: JsonObject) => item.id === id).accessPolicy).toEqual(policy)
+    await expect(f.api('/mcp', { operation: 'save-grants', input: { id, expectedRevision: changed.revision, mode: 'all' } })).rejects.toThrow('MCP_CONFIGURATION_CONFLICT')
+    const preserved = await f.api('/mcp', { operation: 'save-grants', input: { id: 'plugin.stickers', expectedRevision: renamed.revision, mode: 'custom', agentTypeIds: [], toolNames: [] } })
+    await f.host.close()
+    const reopened = await fixture({ home: f.home, harnessState: 'disconnected' }), restarted = await reopened.api('/mcp')
+    expect(restarted.services.find((item: JsonObject) => item.id === id).accessPolicy).toEqual(policy)
+    expect(restarted.revision).toBe(preserved.revision)
+    const removed = await reopened.api('/mcp', { operation: 'delete', input: { id, expectedRevision: restarted.revision } })
+    expect(removed.services.some((item: JsonObject) => item.id === id)).toBe(false)
+    const stored = JSON.parse(reopened.host.store.getSetting('host:mcp-access-policies')!)
+    expect(stored.policies).toEqual({ 'plugin.stickers': { mode: 'custom', agentTypeIds: [], toolNames: [] } })
+    expect(JSON.stringify(removed) + JSON.stringify(stored)).not.toContain(secret)
+    expect(await readFile(join(f.home, 'host/mcp/connections.json'), 'utf8')).not.toContain(secret)
+    expect(reopened.host.store.getSetting('host:capability-grants')).toBe('legacy untouched')
+    const created = await reopened.api('/mcp', { operation: 'save', input: { expectedRevision: removed.revision, name: 'New default', transport: 'stdio', command: process.execPath, args: stdioArgs, autoConnect: false } })
+    expect(created.services.find((item: JsonObject) => item.transport === 'stdio').accessPolicy).toEqual({ mode: 'all' })
+  })
+
+  it('rejects exhausted combined revisions before saving connection bytes, policy, or lease changes', async () => {
+    const storedPolicies = JSON.stringify({ schemaVersion: 1, revision: Number.MAX_SAFE_INTEGER, policies: {} })
+    const f = await fixture({ storedPolicies }), before = await f.api('/mcp')
+    await expect(f.api('/mcp', { operation: 'save', input: { expectedRevision: before.revision, name: 'Exhausted direct revision', transport: 'stdio', command: process.execPath, args: stdioArgs, autoConnect: false } })).rejects.toThrow('MCP_REVISION_EXHAUSTED')
+    await expect(f.api('/mcp', { operation: 'save-grants', input: { id: 'plugin.stickers', expectedRevision: before.revision, mode: 'custom', agentTypeIds: [], toolNames: [] } })).rejects.toThrow('MCP_REVISION_EXHAUSTED')
+    expect(f.host.store.getSetting('host:mcp-access-policies')).toBe(storedPolicies)
+    await expect(readFile(join(f.home, 'host/mcp/connections.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(f.stoppedHarness).toBe(0); expect(f.connectedHarness).toBe(0)
+    expect(await f.api('/mcp')).toEqual(before)
+  })
+
+  it.each([
+    '{broken', JSON.stringify({ schemaVersion: 0, revision: 0, policies: {} }),
+    JSON.stringify({ schemaVersion: 1, policies: {} }),
+    JSON.stringify({ schemaVersion: 1, revision: 0, policies: {}, extra: true }),
+    JSON.stringify({ schemaVersion: 1, revision: 0, policies: { 'plugin.stickers': { mode: 'all', toolNames: [] } } }),
+    JSON.stringify({ schemaVersion: 1, revision: 0, policies: { 'plugin.stickers': { mode: 'custom', agentTypeIds: ['main'], toolNames: ['*'] } } }),
+    JSON.stringify({ schemaVersion: 1, revision: 0, policies: { 'plugin.stickers': { mode: 'custom', agentTypeIds: [], toolNames: ['duplicate', 'duplicate'] } } }),
+  ])('rejects invalid current policy storage without overwriting it or falling back to all: %s', async storedPolicies => {
+    const home = await temporaryHome(), store = new HostStore(join(home, 'host/Eating.sqlite'))
+    store.setSetting('host:mcp-access-policies', storedPolicies); store.close()
+    expect(() => new EatingHost({ dataDirectory: home, entries: [], port: 0, autoConnectOnStartup: false })).toThrowError(expect.objectContaining({ code: 'MCP_ACCESS_POLICY_STORAGE_INVALID' }))
+    const checked = new HostStore(join(home, 'host/Eating.sqlite'))
+    try { expect(checked.getSetting('host:mcp-access-policies')).toBe(storedPolicies) } finally { checked.close() }
   })
 
   it('saves without execution or grants, exposes every direct tool to main and future types, and records success/unknown without replay', async () => {
@@ -249,6 +384,41 @@ describe('capability MCP and cross-plugin sticker resources', () => {
     expect((f.host.getWorkspace().plugins as JsonObject[]).find(plugin => plugin.id === 'fixture')!.status).toMatchObject({ state: 'disconnected' })
   })
 
+  it.each(['disconnect', 'disable'] as const)('honors owner %s during a policy remount without restoring revoked leases', async operation => {
+    const startup = gate()
+    const f = await fixture({ harnessConnect: async () => { startup.enter(); await startup.ready } }), before = await f.api('/mcp')
+    const old = await f.client(scope)
+    const pending = f.api('/mcp', { operation: 'save-grants', input: { id: 'plugin.stickers', expectedRevision: before.revision, mode: 'custom', agentTypeIds: ['qq.private'], toolNames: ['sticker_list'] } })
+    await startup.entered
+    const sentinel = await f.client({ agentId: 'policy-stop-sentinel', agentTypeId: 'qq.private' })
+    const stopped = f.api('/plugins/fixture/' + operation, {})
+    await expect.poll(async () => sentinel.listTools().then(() => false, () => true)).toBe(true)
+    startup.release()
+    expect(await pending).toMatchObject({ harnessStopped: true, harnessRemounts: [{ id: 'fixture', status: 'cancelled', code: 'HARNESS_REMOUNT_CANCELLED' }] })
+    await stopped
+    await expect(old.listTools()).rejects.toThrow()
+    expect(f.connectedHarness).toBe(1)
+    const plugin = (f.host.getWorkspace().plugins as JsonObject[]).find(item => item.id === 'fixture')!
+    expect(plugin.status).toMatchObject({ state: 'disconnected' })
+    expect(plugin.enabled).toBe(operation !== 'disable')
+    expect((await f.api('/mcp')).services.find((item: JsonObject) => item.id === 'plugin.stickers').accessPolicy).toEqual({ mode: 'custom', agentTypeIds: ['qq.private'], toolNames: ['sticker_list'] })
+  })
+
+  it('rechecks policy CAS after asynchronous Harness teardown and preserves a newer saved selection', async () => {
+    const stopping = gate()
+    const f = await fixture({ harnessDisconnect: async () => { stopping.enter(); await stopping.ready } }), before = await f.api('/mcp')
+    const pending = f.api('/mcp', { operation: 'save-grants', input: { id: 'plugin.stickers', expectedRevision: before.revision, mode: 'custom', agentTypeIds: [], toolNames: [] } }).catch(error => JSON.parse(error.message))
+    await stopping.entered
+    const newer = JSON.stringify({ schemaVersion: 1, revision: 1, policies: { 'plugin.stickers': { mode: 'custom', agentTypeIds: ['qq.private'], toolNames: ['sticker_list'] } } })
+    f.host.store.setSetting('host:mcp-access-policies', newer)
+    stopping.release()
+    expect(await pending).toMatchObject({ ok: false, error: { code: 'MCP_CONFIGURATION_CONFLICT', outcome: 'not-sent' }, harnessStopped: true, harnessRemounts: [{ id: 'fixture', status: 'reconnected' }] })
+    expect(f.host.store.getSetting('host:mcp-access-policies')).toBe(newer)
+    expect(f.connectedHarness).toBe(1)
+    expect(f.services.getCapabilityMcpConnections(scope)).toEqual([])
+    expect((await (await f.client({ agentId: 'newer-selection', agentTypeId: 'qq.private' })).listTools()).tools.map(tool => tool.name)).toEqual(['sticker_list'])
+  })
+
   it('reports a failed Harness remount once while preserving the successfully connected source', async () => {
     const f = await fixture({ harnessConnect: async () => { throw new PlatformError('FIXTURE_HARNESS_FAILED', 'Synthetic runtime failure', 502, 'failed') }, extraEntries: [extraCapability()] })
     const result = await f.api('/mcp', { operation: 'connect', input: { id: 'plugin.new-source' } })
@@ -298,6 +468,69 @@ describe('capability MCP and cross-plugin sticker resources', () => {
     await f.host.close()
   })
 
+  it('keeps custom exact tools across a direct directory refresh and includes future tools again after restoring all', async () => {
+    const f = await fixture(), upstream = await changingDirectFixture(), before = await f.api('/mcp')
+    const saved = await f.api('/mcp', { operation: 'save', input: { expectedRevision: before.revision, name: 'Policy topology fixture', transport: 'streamable-http', url: upstream.url, autoConnect: false } })
+    const id = saved.services.find((item: JsonObject) => item.transport === 'streamable-http').id
+    await f.api('/mcp', { operation: 'connect', input: { id } })
+    const custom = await f.api('/mcp', { operation: 'save-grants', input: { id, expectedRevision: saved.revision, mode: 'custom', agentTypeIds: ['main', 'qq.private'], toolNames: ['write'] } })
+    const customBytes = f.host.store.getSetting('host:mcp-access-policies'), connectionsBytes = await readFile(join(f.home, 'host/mcp/connections.json'), 'utf8')
+    const stopped = f.stoppedHarness, connected = f.connectedHarness
+    await upstream.addTool()
+    await expect.poll(async () => (await f.api('/mcp')).harnessRemounts).toEqual([{ id: 'fixture', status: 'reconnected' }])
+    await expect.poll(() => f.connectedHarness).toBe(connected + 1)
+    expect(f.stoppedHarness).toBe(stopped + 1)
+    const directory = await f.api('/mcp'), source = directory.services.find((item: JsonObject) => item.id === id)
+    expect(directory.revision).toBe(custom.revision)
+    expect(source.grant).toEqual({ agentTypeIds: ['main', 'qq.private'], toolNames: ['write'] })
+    expect(source.tools.map((tool: { name: string }) => tool.name)).toEqual(['write', 'added_read'])
+    expect(f.host.store.getSetting('host:mcp-access-policies')).toBe(customBytes)
+    expect(await readFile(join(f.home, 'host/mcp/connections.json'), 'utf8')).toBe(connectionsBytes)
+    expect(f.services.getCapabilityMcpConnections({ agentId: 'not-selected', agentTypeId: 'qq.group' }).some(item => item.id === id)).toBe(false)
+    const restricted = await f.client({ agentId: 'restricted-direct', agentTypeId: 'qq.private' }, id)
+    expect((await restricted.listTools()).tools.map(tool => tool.name)).toEqual(['write'])
+    expect(await restricted.callTool({ name: 'added_read', arguments: {} })).toMatchObject({ isError: true, structuredContent: { code: 'CAPABILITY_ACCESS_DENIED' } })
+    expect(upstream.calls).toEqual([])
+    const restored = await f.api('/mcp', { operation: 'save-grants', input: { id, expectedRevision: custom.revision, mode: 'all' } })
+    expect(restored.services.find((item: JsonObject) => item.id === id).accessPolicy).toEqual({ mode: 'all' })
+    const connectsBeforeNewTool = f.connectedHarness
+    await upstream.addTool('after_all_read')
+    await expect.poll(() => f.connectedHarness).toBe(connectsBeforeNewTool + 1)
+    expect(f.harnessMounts.at(-1)!.find(item => item.id === id)!.tools).toEqual(['write', 'added_read', 'after_all_read'])
+    const future = await f.client({ agentId: 'restored-all-future', agentTypeId: 'future.agent-type' }, id)
+    expect(await future.callTool({ name: 'after_all_read', arguments: {} })).toMatchObject({ isError: false, content: [{ type: 'text', text: 'after_all_read' }] })
+    expect(upstream.calls).toEqual(['after_all_read'])
+    await f.host.close()
+  })
+
+  it('rejects an in-flight direct write and new leases after a policy disable, preserves other sources, and never replays unknown after reallowing', async () => {
+    const f = await fixture(), upstream = await changingDirectFixture(), before = await f.api('/mcp')
+    const saved = await f.api('/mcp', { operation: 'save', input: { expectedRevision: before.revision, name: 'Revoked write fixture', transport: 'streamable-http', url: upstream.url, autoConnect: false } })
+    const id = saved.services.find((item: JsonObject) => item.transport === 'streamable-http').id
+    await f.api('/mcp', { operation: 'connect', input: { id } })
+    const client = await f.client(scope, id), write = { arguments: {}, request_id: 'policy-interrupted-write-0001' }
+    const pending = client.callTool({ name: 'write', arguments: write }).catch(error => error)
+    await upstream.called
+    const stopped = f.stoppedHarness, connected = f.connectedHarness
+    const disabled = await f.api('/mcp', { operation: 'save-grants', input: { id, expectedRevision: saved.revision, mode: 'custom', agentTypeIds: [], toolNames: [] } })
+    await pending
+    expect(disabled).toMatchObject({ harnessStopped: true, harnessRemounts: [{ id: 'fixture', status: 'reconnected' }] })
+    expect(f.stoppedHarness).toBe(stopped + 1); expect(f.connectedHarness).toBe(connected + 1)
+    await expect(client.listTools()).rejects.toThrow()
+    expect(f.services.getCapabilityMcpConnections({ agentId: 'denied-main', agentTypeId: 'main' }).some(item => item.id === id)).toBe(false)
+    const other = await f.client({ agentId: 'other-source', agentTypeId: 'qq.group' })
+    expect(await other.callTool({ name: 'sticker_list', arguments: {} })).toMatchObject({ isError: false })
+    expect((await f.api('/mcp')).services.find((item: JsonObject) => item.id === 'plugin.stickers').accessPolicy).toEqual({ mode: 'all' })
+    await f.api('/mcp', { operation: 'connect', input: { id } })
+    expect(f.services.getCapabilityMcpConnections({ agentId: 'denied-connected', agentTypeId: 'main' }).some(item => item.id === id)).toBe(false)
+    await f.api('/mcp', { operation: 'save-grants', input: { id, expectedRevision: disabled.revision, mode: 'all' } })
+    const next = await f.client(scope, id)
+    expect(await next.callTool({ name: 'write', arguments: write })).toMatchObject({ isError: true, structuredContent: { code: 'ACTION_OUTCOME_UNKNOWN', outcome: 'unknown' } })
+    expect(upstream.calls).toEqual(['write'])
+    upstream.release()
+    await f.host.close()
+  })
+
   it('keeps a source deleted during notification teardown absent and does not reconnect its old transport', async () => {
     const stopping = gate(); let hold = false
     const f = await fixture({ harnessDisconnect: async () => { if (hold) { stopping.enter(); await stopping.ready } } })
@@ -324,15 +557,19 @@ describe('capability MCP and cross-plugin sticker resources', () => {
     const installed = await f.api('/plugin-packages', { operation: 'install', input: { planId: plan.planId, confirmed: true } })
     expect(installed.harnessRemounts).toEqual([{ id: 'fixture', status: 'reconnected' }])
     expect(f.harnessMounts.at(-1)!.find(item => item.id === 'plugin.installed-source')!.tools).toEqual(['installed_read'])
+    const directory = await f.api('/mcp')
+    await f.api('/mcp', { operation: 'save-grants', input: { id: 'plugin.installed-source', expectedRevision: directory.revision, mode: 'custom', agentTypeIds: ['main'], toolNames: ['installed_read'] } })
     const disabled = await f.api('/plugins/installed-source/disable', {})
     expect(disabled.harnessRemounts).toEqual([{ id: 'fixture', status: 'reconnected' }])
     expect(f.harnessMounts.at(-1)!.some(item => item.id === 'plugin.installed-source')).toBe(false)
     const enabled = await f.api('/plugins/installed-source/enable', {})
     expect(enabled.harnessRemounts).toEqual([{ id: 'fixture', status: 'reconnected' }])
     expect(f.harnessMounts.at(-1)!.find(item => item.id === 'plugin.installed-source')!.tools).toEqual(['installed_read'])
+    expect((await f.api('/mcp')).services.find((item: JsonObject) => item.id === 'plugin.installed-source').accessPolicy).toEqual({ mode: 'custom', agentTypeIds: ['main'], toolNames: ['installed_read'] })
     const removed = await f.api('/plugin-packages', { operation: 'uninstall', input: { id: 'installed-source', confirmed: true } })
     expect(removed.harnessRemounts).toEqual([{ id: 'fixture', status: 'reconnected' }])
     expect(f.harnessMounts.at(-1)!.some(item => item.id === 'plugin.installed-source')).toBe(false)
+    expect(JSON.parse(f.host.store.getSetting('host:mcp-access-policies')!).policies).not.toHaveProperty('plugin.installed-source')
     const originalConnects = f.connectedHarness
     const replacement = await installableFixture(f.home, 'fixture', 'harness')
     const nextPlan = await f.api('/plugin-packages', { operation: 'preview', input: { sourceDirectory: replacement } })
@@ -353,6 +590,8 @@ describe('capability MCP and cross-plugin sticker resources', () => {
     await expect(f.api('/mcp', { operation: 'connect', input: { id: 'plugin.qq' } })).rejects.toThrow('MCP_MANAGED_BY_PLUGIN')
     const communication = directory.services.find((service: JsonObject) => service.id === 'plugin.qq')
     expect(communication.configuration.permissionsManagedByPlugin).toBe(true)
+    expect(communication.accessPolicy).toBeNull()
+    await expect(f.api('/mcp', { operation: 'save-grants', input: { id: 'plugin.qq', expectedRevision: directory.revision, mode: 'all' } })).rejects.toThrow('MCP_MANAGED_BY_PLUGIN')
     expect(communication.grant.agentTypeIds).not.toContain('main')
   })
 
@@ -400,7 +639,8 @@ describe('capability MCP and cross-plugin sticker resources', () => {
       getPublicConfiguration: () => ({ autoConnect: false }), updateConfiguration: async () => ({}), connect: async () => {}, disconnect: async () => {}, invoke: async () => null,
       invokeCapability: async () => null, dispose: async () => {}, }
     const plugins = [plugin]
-    const access = new CapabilityAccess({ direct, plugins: () => plugins, enabled: id => id === 'fixture-harness' || enabled, executeIdempotent: async () => { throw new Error('unused fixture action') } }); stops.push(() => access.close())
+    const store = new HostStore(join(home, 'fixture.sqlite')); stops.push(() => store.close())
+    const access = new CapabilityAccess({ store, direct, plugins: () => plugins, enabled: id => id === 'fixture-harness' || enabled, executeIdempotent: async () => { throw new Error('unused fixture action') } }); stops.push(() => access.close())
     const future = { agentId: 'fixture-agent', agentTypeId: 'future.agent-type' }
     expect(access.connections('fixture-harness', future, 'http://127.0.0.1:1').map(item => item.tools)).toEqual([['memory_search']])
     ;(plugin.tools as PluginToolDefinition[]).push(tool('memory_new_tool'))
@@ -409,13 +649,28 @@ describe('capability MCP and cross-plugin sticker resources', () => {
     expect(connections.map(item => item.tools)).toEqual([['memory_search', 'memory_new_tool'], ['new_source_tool']])
     expect(access.snapshot([{ id: future.agentTypeId, title: 'Future type' }]).services[0]!.grant).toEqual({ agentTypeIds: ['main', 'future.agent-type'], toolNames: ['memory_search', 'memory_new_tool'] })
     expect(access.activePermission(future, 'plugin.memory', 'memory_new_tool')).toBe(true)
+    access.savePolicy({ id: 'plugin.memory', expectedRevision: access.revision, mode: 'custom', agentTypeIds: [future.agentTypeId], toolNames: ['memory_search'] })
+    expect(access.activePermission(future, 'plugin.memory', 'memory_search')).toBe(false)
+    expect(access.connections('fixture-harness', future, 'http://127.0.0.1:1').map(item => item.tools)).toEqual([['memory_search'], ['new_source_tool']])
+    ;(plugin.tools as PluginToolDefinition[]).push(tool('memory_later_tool'))
+    expect(access.allowed(future, 'plugin.memory', 'memory_later_tool')).toBe(false)
+    expect(access.allowed({ agentId: 'new-type', agentTypeId: 'unselected.type' }, 'plugin.memory', 'memory_search')).toBe(false)
+    access.savePolicy({ id: 'plugin.memory', expectedRevision: access.revision, mode: 'all' })
+    ;(plugin.tools as PluginToolDefinition[]).push(tool('memory_after_all'))
+    expect(access.allowed({ agentId: 'new-type', agentTypeId: 'unselected.type' }, 'plugin.memory', 'memory_after_all')).toBe(true)
+    expect(access.connections('fixture-harness', future, 'http://127.0.0.1:1').map(item => item.tools)).toEqual([['memory_search', 'memory_new_tool', 'memory_later_tool', 'memory_after_all'], ['new_source_tool']])
     state = 'disconnected'
     expect(access.allowed(future, 'plugin.memory', 'memory_search')).toBe(false)
     expect(access.connections('fixture-harness', future, 'http://127.0.0.1:1')).toEqual([])
     state = 'connected'; enabled = false
     expect(access.allowed(future, 'plugin.memory', 'memory_search')).toBe(false)
     expect(access.connections('fixture-harness', future, 'http://127.0.0.1:1')).toEqual([])
-    enabled = true; plugins.splice(0)
+    enabled = true
+    plugins.push({ ...plugin, id: 'managed-harness', kind: 'harness', tools: [tool('managed_tool')] })
+    expect(access.source('plugin.managed-harness').accessPolicy).toBeNull()
+    expect(access.allowed(future, 'plugin.managed-harness', 'managed_tool')).toBe(false)
+    expect(() => access.savePolicy({ id: 'plugin.managed-harness', expectedRevision: access.revision, mode: 'all' })).toThrowError(expect.objectContaining({ code: 'MCP_MANAGED_BY_PLUGIN' }))
+    plugins.splice(0)
     expect(access.allowed(future, 'plugin.memory', 'memory_search')).toBe(false)
     expect(access.connections('fixture-harness', future, 'http://127.0.0.1:1')).toEqual([])
   })

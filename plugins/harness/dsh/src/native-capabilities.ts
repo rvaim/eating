@@ -47,6 +47,8 @@ export interface NativeCapabilitiesConfiguration {
   readonly revision: number
   readonly features: readonly NativeFeatureSelection[]
   readonly toolGrants: readonly NativeToolGrant[]
+  /** A named override replaces automatic access; an empty type list disables the tool. */
+  readonly toolAccessOverrides?: readonly NativeToolGrant[]
 }
 export const nativeDefaultConfig = (definition: NativeFeatureDefinition): JsonObject => Object.fromEntries([...(definition.services ?? []), ...definition.modules].map(module => [module.id, { ...module.config }]))
 /** New main scopes receive native features; the native permission and OS policies still apply. */

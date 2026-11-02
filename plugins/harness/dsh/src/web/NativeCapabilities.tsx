@@ -126,13 +126,18 @@ export function NativeCapabilitiesSettings({ active, enabled, runtimeActive, bus
     if (!draft) return
     markDirty(); setDraft({ ...draft, features: draft.features.map(feature => feature.id === id ? { ...feature, ...change } : feature) })
   }
+  function updateToolOverride(tool: NativeSnapshot['catalog']['tools'][number], agentTypeIds: readonly string[] | null) {
+    if (!draft) return
+    markDirty()
+    setDraft({ ...draft, toolAccessOverrides: [...(draft.toolAccessOverrides ?? []).filter(row => row.name !== tool.name), ...(agentTypeIds === null ? [] : [{ name: tool.name, fingerprint: tool.fingerprint, agentTypeIds }])] })
+  }
   async function save() {
     if (!draft || !snapshot) return
     let features: NativeFeatureSelection[]
     try {
       features = draft.features.map(feature => { const config: unknown = JSON.parse(configurationTexts[feature.id] ?? ''); if (!nativeObject(config) || feature.enabled && feature.agentTypeIds.length === 0) throw new Error('config'); return { ...feature, config: config as JsonObject } })
     } catch { setFailure({ key: 'error.invalid' }); return }
-    await perform('save', { expectedRevision: baseRevision.current!, features: features as unknown as JsonObject[], toolGrants: draft.toolGrants as unknown as JsonObject[] }, value => {
+    await perform('save', { expectedRevision: baseRevision.current!, features: features as unknown as JsonObject[], toolGrants: draft.toolGrants as unknown as JsonObject[], ...(draft.toolAccessOverrides ? { toolAccessOverrides: draft.toolAccessOverrides as unknown as JsonObject[] } : {}) }, value => {
       const configuration = readNativeConfiguration(value.configuration)
       setDraft(configuration); setSnapshot(current => current ? { ...current, configuration } : current); setConfigurationTexts(configTexts(configuration)); baseRevision.current = configuration.revision
       dirtyRef.current = false; setDirty(false); setNeedsRead(false); setNotice({ key: 'saved' })
@@ -183,13 +188,24 @@ export function NativeCapabilitiesSettings({ active, enabled, runtimeActive, bus
       <div hidden={tab !== 'tools'}><p className="dsh-help">{t('toolHelp')}</p>
         {tools.map(tool => {
           const grant = draft.toolGrants.find(row => row.name === tool.name), children = grant?.agentTypeIds.filter(id => id !== 'main') ?? []
-          const changed = tool.automaticAccess === 'main' && children.length > 0 && grant?.fingerprint !== tool.fingerprint
+          const override = draft.toolAccessOverrides?.find(row => row.name === tool.name)
+          const changed = override ? override.fingerprint !== tool.fingerprint : tool.automaticAccess === 'main' && children.length > 0 && grant?.fingerprint !== tool.fingerprint
+          const automaticTypes = tool.automaticAccess === 'all' ? snapshot.agentTypes.map(type => type.id) : ['main', ...(grant?.fingerprint === tool.fingerprint ? children : [])]
           return <details className="dsh-native-row" key={tool.name}>
-            <summary><ChevronDown size={16} aria-hidden="true" /><span><strong><code>{tool.name}</code></strong><small>{tool.description}</small></span><span className="dsh-native-state">{t(tool.automaticAccess === 'all' ? 'automaticAll' : 'automaticMain')}</span>{changed && <span className="dsh-native-state">{t('changed')}</span>}</summary>
-            <div className="dsh-native-row-body"><p className="dsh-help">{t(tool.automaticAccess === 'all' ? 'automaticAllHelp' : 'automaticMainHelp')}</p>{tool.automaticAccess === 'main' && scopes(changed ? [] : children, ids => { markDirty(); setDraft({ ...draft, toolGrants: [...draft.toolGrants.filter(row => row.name !== tool.name), { name: tool.name, fingerprint: tool.fingerprint, agentTypeIds: ids }] }) }, t('toolScope', { name: tool.name }), true)}</div>
+            <summary><ChevronDown size={16} aria-hidden="true" /><span><strong><code>{tool.name}</code></strong><small>{tool.description}</small></span><span className="dsh-native-state">{t(override ? override.agentTypeIds.length ? 'customAccess' : 'customDisabled' : tool.automaticAccess === 'all' ? 'automaticAll' : 'automaticMain')}</span>{changed && <span className="dsh-native-state">{t('changed')}</span>}</summary>
+            <div className="dsh-native-row-body">
+              <fieldset className="dsh-native-scopes" disabled={disabled}><legend>{t('accessMode', { name: tool.name })}</legend><label><input type="radio" name={`${prefix}-${tool.name}-access`} checked={!override} onChange={() => updateToolOverride(tool, null)} /><span>{t('automaticMode')}</span></label><label><input type="radio" name={`${prefix}-${tool.name}-access`} checked={Boolean(override)} onChange={() => updateToolOverride(tool, automaticTypes)} /><span>{t('customMode')}</span></label></fieldset>
+              <p className="dsh-help">{t(tool.automaticAccess === 'all' ? 'automaticAllHelp' : 'automaticMainHelp')}</p>
+              {override ? <>
+                <p className="dsh-help">{t('customHelp')}</p>
+                {changed && <div className="dsh-native-problem"><p>{t('changedOverrideHelp')}</p><ActionButton reason={disabledReason} type="button" className="text-button" disabled={disabled} onClick={() => updateToolOverride(tool, override.agentTypeIds)}>{t('reviewTool')}</ActionButton></div>}
+                {scopes(override.agentTypeIds, ids => updateToolOverride(tool, ids), t('customToolScope', { name: tool.name }))}
+              </> : tool.automaticAccess === 'main' && scopes(changed ? [] : children, ids => { markDirty(); setDraft({ ...draft, toolGrants: [...draft.toolGrants.filter(row => row.name !== tool.name), { name: tool.name, fingerprint: tool.fingerprint, agentTypeIds: ids }] }) }, t('toolScope', { name: tool.name }), true)}
+            </div>
           </details>
         })}
         {tools.length === 0 && <p className="dsh-help">{t(snapshot.catalog.tools.length ? 'noMatches' : 'noTools')}</p>}
+        {draft.toolAccessOverrides?.filter(override => !snapshot.catalog.tools.some(tool => tool.name === override.name)).map(override => <div className="dsh-native-row dsh-native-stale" key={override.name}><code>{override.name}</code><span>{t('missingOverrideHelp')}</span><ActionButton reason={disabledReason} type="button" className="text-button" disabled={disabled} onClick={() => { markDirty(); setDraft({ ...draft, toolAccessOverrides: draft.toolAccessOverrides?.filter(row => row.name !== override.name) }) }}>{t('restoreAutomatic')}</ActionButton></div>)}
         {draft.toolGrants.filter(grant => grant.agentTypeIds.some(id => id !== 'main') && !snapshot.catalog.tools.some(tool => tool.name === grant.name)).map(grant => <div className="dsh-native-row dsh-native-stale" key={grant.name}><code>{grant.name}</code><span>{t('changed')}</span><ActionButton reason={disabledReason} type="button" className="text-button" disabled={disabled} onClick={() => { markDirty(); setDraft({ ...draft, toolGrants: draft.toolGrants.filter(row => row.name !== grant.name) }) }}>{t('disabled')}</ActionButton></div>)}
       </div>
       <div className="dsh-native-save" hidden={tab === 'plugins'}><p className="dsh-help">{t('independent')}</p><div className="form-actions"><ActionButton reason={disabledReason || t('reason.unchanged')} type="button" className="button button-primary" disabled={disabled || !dirty} onClick={() => void save()}>{t(pending === 'save' ? 'saving' : 'save')}</ActionButton><span className="save-indicator">{t(dirty ? 'dirty' : 'clean')}</span></div>{(dirty || needsRead) && <ActionButton reason={disabledReason} type="button" className="text-button" disabled={pending !== null} onClick={() => { setDraft(snapshot.configuration); setConfigurationTexts(configTexts(snapshot.configuration)); baseRevision.current = snapshot.configuration.revision; dirtyRef.current = false; setDirty(false); setNeedsRead(false); setFailure(null) }}>{t('discard')}</ActionButton>}</div>

@@ -35,7 +35,7 @@ afterEach(async () => {
 })
 const selfId = 123456789, userId = 987654321
 const stickerPrefix = 'mcp__plugin_stickers__'
-const rootTools = ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task']
+const rootTools = ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task']
 const capabilityTools = ['sticker_add', 'sticker_get', 'sticker_list', 'sticker_list_tags', 'sticker_update', 'sticker_delete'].map(name => stickerPrefix + name).sort()
 const childTools = [...capabilityTools, 'mcp__qq__qq_send_private_message', 'mcp__qq__qq_view_received_image'].sort()
 function object(value: unknown): JsonObject { if (!isJsonObject(value)) throw new Error('Expected actual structured integration result'); return value }

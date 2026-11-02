@@ -1,5 +1,5 @@
 import { isJsonObject } from '@eating/plugin-sdk'
-import type { HarnessRemount, JsonObject, McpDirectorySnapshot, McpGrant, McpServiceSummary, PluginToolDefinition } from '@eating/plugin-sdk'
+import type { HarnessRemount, JsonObject, McpAccessPolicy, McpDirectorySnapshot, McpGrant, McpServiceSummary, PluginToolDefinition } from '@eating/plugin-sdk'
 import { HostApiError } from '@eating/ui-sdk'
 
 const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
@@ -30,6 +30,19 @@ function readGrant(value: unknown): McpGrant {
   return { agentTypeIds: stringList(value.agentTypeIds, 100, 160), toolNames: stringList(value.toolNames, 500, 200) }
 }
 
+function readAccessPolicy(value: unknown): McpAccessPolicy | null {
+  if (value === null) return null
+  if (!isJsonObject(value)) return invalid()
+  if (value.mode === 'all' && onlyKeys(value, ['mode'])) return { mode: 'all' }
+  if (value.mode === 'custom' && onlyKeys(value, ['mode', 'agentTypeIds', 'toolNames'])) {
+    const agentTypeIds = stringList(value.agentTypeIds, 1024, 160), toolNames = stringList(value.toolNames, 1000, 128)
+    if (new Set(agentTypeIds).size !== agentTypeIds.length || new Set(toolNames).size !== toolNames.length
+      || agentTypeIds.some(id => !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(id)) || toolNames.some(name => !/^[A-Za-z0-9_.-]{1,128}$/.test(name))) return invalid()
+    return { mode: 'custom', agentTypeIds, toolNames }
+  }
+  return invalid()
+}
+
 function readConfiguration(value: unknown): JsonObject {
   if (!isJsonObject(value)) return invalid()
   const arrays = ['args', 'envKeys', 'headerKeys', 'queryKeys'] as const
@@ -51,16 +64,19 @@ function readSource(value: unknown): McpServiceSummary['source'] {
 }
 
 function readService(value: unknown): McpServiceSummary {
-  if (!isJsonObject(value) || !onlyKeys(value, ['id', 'name', 'source', 'transport', 'enabled', 'autoConnect', 'state', 'lastError', 'tools', 'grant', 'configuration'])
+  if (!isJsonObject(value) || !onlyKeys(value, ['id', 'name', 'source', 'transport', 'enabled', 'autoConnect', 'state', 'lastError', 'tools', 'accessPolicy', 'grant', 'configuration'])
     || !text(value.id, 160) || !text(value.name, 200)
     || !['stdio', 'streamable-http', 'plugin'].includes(String(value.transport))
     || typeof value.enabled !== 'boolean' || typeof value.autoConnect !== 'boolean'
     || !['disconnected', 'connecting', 'connected', 'error'].includes(String(value.state))
     || value.lastError !== null && !text(value.lastError, 4000)
     || !Array.isArray(value.tools) || value.tools.length > 500) return invalid()
+  const accessPolicy = readAccessPolicy(value.accessPolicy)
+  const configuration = readConfiguration(value.configuration)
+  if ((configuration.permissionsManagedByPlugin === true) !== (accessPolicy === null)) return invalid()
   return { id: value.id, name: value.name, source: readSource(value.source), transport: value.transport as McpServiceSummary['transport'],
     enabled: value.enabled, autoConnect: value.autoConnect, state: value.state as McpServiceSummary['state'],
-    lastError: value.lastError as string | null, tools: value.tools.map(readTool), grant: readGrant(value.grant), configuration: readConfiguration(value.configuration) }
+    lastError: value.lastError as string | null, tools: value.tools.map(readTool), accessPolicy, grant: readGrant(value.grant), configuration }
 }
 
 function readHarnessRemounts(value: unknown): readonly HarnessRemount[] {

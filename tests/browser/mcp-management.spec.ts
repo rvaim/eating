@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { createInstalledHost } from '../../apps/host/src/installed-host'
 import { installPluginPackage } from '../../apps/host/src/plugin-installation'
 import type { EatingHost } from '../../apps/host/src/app'
-import type { HarnessRemount } from '@eating/plugin-sdk'
+import type { HarnessRemount, McpAccessPolicy, McpDirectorySnapshot } from '@eating/plugin-sdk'
 
 const staticDirectory = fileURLToPath(new URL('../../dist/', import.meta.url))
 const json = (route: Route, value: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) })
@@ -25,16 +25,16 @@ function makeSnapshot() {
     agentTypes: [{ id: 'main', title: '主 Agent' }, { id: 'qq.private', title: 'QQ 私聊' }, { id: 'qq.group', title: 'QQ 群聊' }],
     services: [
       { id: 'direct-stdio', name: '本地工具', source: { kind: 'direct' as const }, transport: 'stdio' as const, enabled: true, autoConnect: true, state: 'connected' as const, lastError: null,
-        tools: [tool('local_lookup', '本地查询')], grant: { agentTypeIds: ['main', 'qq.private', 'qq.group'], toolNames: ['local_lookup'] },
+        tools: [tool('local_lookup', '本地查询')], accessPolicy: { mode: 'all' as const }, grant: { agentTypeIds: ['main', 'qq.private', 'qq.group'], toolNames: ['local_lookup'] },
         configuration: { command: 'npx', args: ['-y', 'fixture-mcp'], envKeys: ['API_KEY'] } },
       { id: 'direct-http', name: '远程 HTTP', source: { kind: 'direct' as const }, transport: 'streamable-http' as const, enabled: true, autoConnect: false, state: 'disconnected' as const, lastError: null,
-        tools: [tool('remote_read', '远程读取')], grant: { agentTypeIds: ['main', 'qq.private', 'qq.group'], toolNames: ['remote_read'] },
+        tools: [tool('remote_read', '远程读取')], accessPolicy: { mode: 'all' as const }, grant: { agentTypeIds: ['main', 'qq.private', 'qq.group'], toolNames: ['remote_read'] },
         configuration: { url: 'https://mcp.example.com/server', urlHasQuery: true, queryKeys: ['token'], headerKeys: ['Authorization'] } },
       { id: 'plugin-cap', name: '图片能力 MCP', source: { kind: 'plugin' as const, pluginId: 'dsh', pluginName: 'DeepSeek Harness' }, transport: 'plugin' as const, enabled: true, autoConnect: false, state: 'connected' as const, lastError: null,
-        tools: [tool('describe_image', '描述图片')], grant: { agentTypeIds: ['main', 'qq.private', 'qq.group'], toolNames: ['describe_image'] },
+        tools: [tool('describe_image', '描述图片')], accessPolicy: { mode: 'all' as const }, grant: { agentTypeIds: ['main', 'qq.private', 'qq.group'], toolNames: ['describe_image'] },
         configuration: { pluginKind: 'capability', permissionsManagedByPlugin: false } },
       { id: 'plugin-qq', name: 'QQ 会话工具', source: { kind: 'plugin' as const, pluginId: 'qq', pluginName: 'QQ' }, transport: 'plugin' as const, enabled: true, autoConnect: false, state: 'connected' as const, lastError: null,
-        tools: [tool('qq_send', '发送 QQ 消息')], grant: { agentTypeIds: ['qq.group'], toolNames: ['qq_send'] },
+        tools: [tool('qq_send', '发送 QQ 消息')], accessPolicy: null, grant: { agentTypeIds: ['qq.group'], toolNames: ['qq_send'] },
         configuration: { pluginKind: 'communication', permissionsManagedByPlugin: true } },
     ],
   }
@@ -47,11 +47,15 @@ test.describe('MCP 服务管理页', () => {
   let lastOperation: string | null, lastInput: Record<string, unknown> | null
   let failList: boolean, failMutation: boolean, harnessStopped: boolean, errors: string[], readCount: number, writeCount: number
 
-  // The grant DTO is a catalog summary; it is always derived from the current catalog.
+  // Saved policy and the current effective catalog summary are separate contracts.
   function summarize() {
     for (const service of snapshot.services) {
       if (service.configuration.permissionsManagedByPlugin === true) continue
-      service.grant = { agentTypeIds: snapshot.agentTypes.map((entry: any) => entry.id), toolNames: service.tools.map((entry: any) => entry.name) }
+      const policy = service.accessPolicy as McpAccessPolicy
+      service.grant = {
+        agentTypeIds: snapshot.agentTypes.map((entry: any) => entry.id).filter((id: string) => policy.mode === 'all' || policy.agentTypeIds.includes(id)),
+        toolNames: service.tools.map((entry: any) => entry.name).filter((name: string) => policy.mode === 'all' || policy.toolNames.includes(name)),
+      }
     }
   }
 
@@ -75,10 +79,10 @@ test.describe('MCP 服务管理页', () => {
         await json(route, { error: { code: 'FIXTURE_MCP_OPERATION', message: 'MCP fixture operation failed', outcome: 'failed' }, harnessStopped, harnessRemounts: snapshot.harnessRemounts }, 500); return
       }
       const input = body.input
-      if (!['save', 'connect', 'disconnect', 'delete'].includes(body.operation)) {
+      if (!['save', 'save-grants', 'connect', 'disconnect', 'delete'].includes(body.operation)) {
         await json(route, { error: { code: 'INVALID_MCP_OPERATION', message: 'Unsupported MCP operation', outcome: 'failed' } }, 400); return
       }
-      if (body.operation === 'save' || body.operation === 'delete') {
+      if (body.operation === 'save' || body.operation === 'delete' || body.operation === 'save-grants') {
         if (input.expectedRevision !== snapshot.revision) {
           await json(route, { error: { code: 'MCP_REVISION_CONFLICT', message: 'Revision conflict', outcome: 'failed' } }, 409); return
         }
@@ -88,6 +92,13 @@ test.describe('MCP 服务管理页', () => {
         if (service) service.state = body.operation === 'connect' ? 'connected' : 'disconnected'
       } else if (body.operation === 'delete') {
         snapshot.services = snapshot.services.filter((entry: any) => entry.id !== input.id)
+      } else if (body.operation === 'save-grants') {
+        const service = snapshot.services.find((entry: any) => entry.id === input.id)
+        const allowed = ['id', 'expectedRevision', 'mode', ...(input.mode === 'custom' ? ['agentTypeIds', 'toolNames'] : [])]
+        if (!service || service.configuration.permissionsManagedByPlugin === true || Object.keys(input).some(key => !allowed.includes(key)) || !['all', 'custom'].includes(String(input.mode)) || input.mode === 'custom' && (!Array.isArray(input.agentTypeIds) || !Array.isArray(input.toolNames))) {
+          await json(route, { error: { code: 'INVALID_MCP_POLICY', message: 'Invalid MCP policy', outcome: 'failed' } }, 400); return
+        }
+        service.accessPolicy = input.mode === 'all' ? { mode: 'all' } : { mode: 'custom', agentTypeIds: [...input.agentTypeIds as string[]], toolNames: [...input.toolNames as string[]] }
       } else if (body.operation === 'save') {
         const allowed = ['expectedRevision', 'id', 'name', 'transport', 'autoConnect', ...(input.transport === 'stdio' ? ['command', 'args', 'env', 'clearEnvKeys'] : ['url', 'headers', 'clearHeaderKeys'])]
         if (Object.keys(input).some(key => !allowed.includes(key))) {
@@ -102,7 +113,7 @@ test.describe('MCP 服务管理页', () => {
           : { ...(typeof input.url === 'string' ? configured(input.url) : existing?.configuration ?? {}), headerKeys: keys(existing?.configuration.headerKeys ?? [], input.headers, input.clearHeaderKeys) }
         const next = { id, name: input.name as string, source: { kind: 'direct' as const }, transport: input.transport as 'stdio' | 'streamable-http',
           enabled: true, autoConnect: input.autoConnect === true, state: existing?.state ?? 'disconnected', lastError: null, tools: existing?.tools ?? [],
-          grant: { agentTypeIds: [], toolNames: [] }, configuration }
+          accessPolicy: existing ? existing.accessPolicy : { mode: 'all' }, grant: { agentTypeIds: [], toolNames: [] }, configuration }
         if (existing) Object.assign(existing, next); else snapshot.services.push(next)
       }
       snapshot.revision += 1; summarize()
@@ -126,12 +137,13 @@ test.describe('MCP 服务管理页', () => {
   }
   const select = async (page: Page, name: string) => { await page.getByRole('navigation', { name: 'MCP 服务', exact: true }).getByRole('button', { name, exact: true }).click() }
   const card = (page: Page, name: string) => page.locator('.mcp-service').filter({ has: page.getByRole('heading', { name, exact: true }) })
-  const noManualGrants = async (page: Page) => {
-    await expect(page.getByRole('button', { name: /^(编辑授权|保存授权|Edit authorization|Save authorization)$/ })).toHaveCount(0)
-    await expect(page.locator('.mcp-grant-picker')).toHaveCount(0)
-  }
+  const noGrantDraft = async (page: Page) => { await expect(page.locator('.mcp-grant-picker')).toHaveCount(0) }
+  const picker = (page: Page) => page.locator('.mcp-service-slot:not([hidden]) .mcp-grant-picker')
+  const editAccess = async (page: Page, name: string) => { await card(page, name).getByRole('button', { name: '编辑权限', exact: true }).click(); return picker(page) }
+  const customize = async (page: Page, name: string) => { const editor = await editAccess(page, name); await editor.getByRole('radio', { name: '自定义选择', exact: true }).check(); return editor }
 
-  test('默认全类型与全部工具摘要只读，功能插件和直接来源无需手工授权', async ({ page }) => {
+
+  test('功能插件和直接来源默认全开，所有当前类型工具已选且可进入自定义编辑', async ({ page }) => {
     await open(page)
     for (const name of ['本地工具', '远程 HTTP', '图片能力 MCP']) {
       await select(page, name)
@@ -140,23 +152,33 @@ test.describe('MCP 服务管理页', () => {
       await expect(service.getByText('当前 Agent 类型：主 Agent / QQ 私聊 / QQ 群聊', { exact: true })).toBeVisible()
       await expect(service.getByText('当前全部工具（1）', { exact: true })).toBeVisible()
       await expect(service.getByText('新增 Agent 类型和工具会自动纳入，无需单独授权。', { exact: true })).toBeVisible()
-      await noManualGrants(page)
-      await expect(service.getByRole('checkbox')).toHaveCount(0)
+      const editor = await editAccess(page, name)
+      await expect(editor.getByRole('radio', { name: '默认全开', exact: true })).toBeChecked()
+      const selections = editor.getByRole('checkbox'); await expect(selections).toHaveCount(4)
+      for (const selection of await selections.all()) { await expect(selection).toBeChecked(); await expect(selection).toBeDisabled() }
+      await editor.getByRole('radio', { name: '自定义选择', exact: true }).check()
+      await expect(editor.getByRole('checkbox', { name: '主 Agent', exact: true })).toBeEnabled()
+      await editor.getByRole('button', { name: '取消草稿', exact: true }).click()
+      await noGrantDraft(page)
     }
     expect(writeCount).toBe(0)
   })
 
   test('新来源、类型和动态新增工具读取后自动纳入，无授权保存请求', async ({ page }) => {
     await open(page)
+    const defaultDraft = await editAccess(page, '本地工具')
     snapshot.agentTypes.push({ id: 'research', title: '资料研究' })
     snapshot.services[0].tools.push(tool('local_new_tool', '自动加入的新工具'))
     snapshot.services.push({ id: 'plugin-new', name: '新增功能来源', source: { kind: 'plugin', pluginId: 'new-capability', pluginName: '新插件' }, transport: 'plugin', enabled: true, autoConnect: false, state: 'connected', lastError: null,
-      tools: [tool('new_capability_tool', '新来源工具')], grant: { agentTypeIds: [], toolNames: [] }, configuration: { pluginKind: 'capability', permissionsManagedByPlugin: false } })
+      tools: [tool('new_capability_tool', '新来源工具')], accessPolicy: { mode: 'all' }, grant: { agentTypeIds: [], toolNames: [] }, configuration: { pluginKind: 'capability', permissionsManagedByPlugin: false } })
     snapshot.revision++
     await page.getByRole('button', { name: '刷新服务', exact: true }).click()
     const local = card(page, '本地工具')
     await expect(local.getByText('当前 Agent 类型：主 Agent / QQ 私聊 / QQ 群聊 / 资料研究', { exact: true })).toBeVisible()
     await expect(local.getByText('当前全部工具（2）', { exact: true })).toBeVisible()
+    await expect(defaultDraft.getByRole('checkbox', { name: '资料研究', exact: true })).toBeChecked()
+    await expect(defaultDraft.getByRole('checkbox', { name: /自动加入的新工具/ })).toBeChecked()
+    await defaultDraft.getByRole('button', { name: '取消草稿', exact: true }).click()
     await local.locator('.mcp-tools > summary').click()
     await expect(local.getByText('自动加入的新工具', { exact: true })).toBeVisible()
     await select(page, '新增功能来源')
@@ -165,7 +187,176 @@ test.describe('MCP 服务管理页', () => {
     await expect(added.getByText('当前 Agent 类型：主 Agent / QQ 私聊 / QQ 群聊 / 资料研究', { exact: true })).toBeVisible()
     await added.locator('.mcp-tools > summary').click()
     await expect(added.getByText('新来源工具', { exact: true })).toBeVisible()
-    await noManualGrants(page); expect(writeCount).toBe(0)
+    await noGrantDraft(page); expect(writeCount).toBe(0)
+  })
+
+  test('custom 精确保存类型和工具，重读保选择，未来项不自动加入，恢复 all 后再自动纳入', async ({ page }) => {
+    snapshot.services[0].tools.push(tool('local_write', '本地写入'))
+    await open(page)
+    let editor = await customize(page, '本地工具')
+    await editor.getByRole('checkbox', { name: 'QQ 群聊', exact: true }).uncheck()
+    await editor.getByRole('checkbox', { name: /本地写入/ }).uncheck()
+    await editor.getByRole('button', { name: '保存权限', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    expect(lastOperation).toBe('save-grants')
+    expect(lastInput).toEqual({ id: 'direct-stdio', expectedRevision: 3, mode: 'custom', agentTypeIds: ['main', 'qq.private'], toolNames: ['local_lookup'] })
+    const local = card(page, '本地工具')
+    await expect(local.getByText('已保存自定义权限', { exact: true })).toBeVisible()
+    await expect(local.getByText('未允许的当前类型：QQ 群聊', { exact: true })).toBeVisible()
+    await local.locator('.mcp-tools > summary').click()
+    await expect(local.locator('.mcp-tools li').filter({ hasText: 'local_write' }).getByText('未允许', { exact: true })).toBeVisible()
+    await page.reload(); await expect(local).toBeVisible()
+    editor = await editAccess(page, '本地工具')
+    await expect(editor.getByRole('radio', { name: '自定义选择', exact: true })).toBeChecked()
+    await expect(editor.getByRole('checkbox', { name: 'QQ 群聊', exact: true })).not.toBeChecked()
+    await expect(editor.getByRole('checkbox', { name: /本地写入/ })).not.toBeChecked()
+    await editor.getByRole('button', { name: '取消草稿', exact: true }).click()
+    snapshot.agentTypes.push({ id: 'research', title: '资料研究' })
+    snapshot.services[0].tools.push(tool('local_future', '后续工具')); snapshot.revision++
+    await page.getByRole('button', { name: '刷新服务', exact: true }).click()
+    editor = await editAccess(page, '本地工具')
+    await expect(editor.getByRole('checkbox', { name: '资料研究', exact: true })).not.toBeChecked()
+    await expect(editor.getByRole('checkbox', { name: /后续工具/ })).not.toBeChecked()
+    await expect(editor).toContainText('后续新增项不会自动勾选')
+    expect(writeCount).toBe(1)
+    await editor.getByRole('button', { name: '恢复默认全开', exact: true }).click()
+    for (const selection of await editor.getByRole('checkbox').all()) await expect(selection).toBeChecked()
+    await editor.getByRole('button', { name: '保存权限', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    expect(lastInput).toEqual({ id: 'direct-stdio', expectedRevision: 5, mode: 'all' })
+    snapshot.agentTypes.push({ id: 'future', title: '更晚类型' }); snapshot.services[0].tools.push(tool('later_tool', '更晚工具')); snapshot.revision++
+    await page.getByRole('button', { name: '刷新服务', exact: true }).click()
+    editor = await editAccess(page, '本地工具')
+    await expect(editor.getByRole('checkbox', { name: '更晚类型', exact: true })).toBeChecked()
+    await expect(editor.getByRole('checkbox', { name: /更晚工具/ })).toBeChecked()
+    expect(writeCount).toBe(2)
+  })
+
+  test('custom 可清空并明确显示全部关闭，修改连接配置不会改权限', async ({ page }) => {
+    await open(page); await select(page, '远程 HTTP')
+    let editor = await customize(page, '远程 HTTP')
+    const types = editor.getByRole('group', { name: 'Agent 类型', exact: true }), tools = editor.getByRole('group', { name: '允许使用的工具', exact: true })
+    await types.getByRole('button', { name: '清空', exact: true }).click()
+    await tools.getByRole('button', { name: '清空', exact: true }).click()
+    await types.getByRole('button', { name: '全选', exact: true }).click()
+    await expect(types.getByRole('checkbox', { name: '主 Agent', exact: true })).toBeChecked()
+    await types.getByRole('button', { name: '清空', exact: true }).click()
+    await editor.getByRole('button', { name: '保存权限', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    expect(lastInput).toEqual({ id: 'direct-http', expectedRevision: 3, mode: 'custom', agentTypeIds: [], toolNames: [] })
+    const remote = card(page, '远程 HTTP')
+    await remote.getByRole('button', { name: '连接', exact: true }).click()
+    await expect(remote.getByText('当前未选择 Agent 类型或工具，所有 Agent 均无法调用此服务。', { exact: true })).toBeVisible()
+    await remote.getByRole('button', { name: '断开', exact: true }).click()
+    await remote.getByRole('button', { name: '编辑配置', exact: true }).click()
+    await page.locator('.mcp-editor').getByLabel('名称', { exact: true }).fill('改名保留关闭策略')
+    await page.locator('.mcp-editor').getByRole('button', { name: '保存 MCP', exact: true }).click()
+    await expect(page.locator('.mcp-editor')).toHaveCount(0)
+    expect(lastOperation).toBe('save'); expect(lastInput).not.toHaveProperty('mode'); expect(lastInput).not.toHaveProperty('accessPolicy'); expect(lastInput).not.toHaveProperty('grant')
+    expect(snapshot.services[1].accessPolicy).toEqual({ mode: 'custom', agentTypeIds: [], toolNames: [] })
+    editor = await editAccess(page, '改名保留关闭策略')
+    for (const selection of await editor.getByRole('checkbox').all()) await expect(selection).not.toBeChecked()
+  })
+
+  test('切换来源和语言保留权限草稿，取消恢复已保存选择且不请求', async ({ page }, info) => {
+    snapshot.services[0].tools.push(tool('local_write', '本地写入'))
+    await open(page)
+    let editor = await customize(page, '本地工具')
+    await editor.getByRole('checkbox', { name: 'QQ 群聊', exact: true }).uncheck()
+    await editor.getByRole('checkbox', { name: /本地写入/ }).uncheck()
+    await editor.getByRole('radio', { name: '默认全开', exact: true }).check()
+    await editor.getByRole('radio', { name: '自定义选择', exact: true }).check()
+    await expect(editor.getByRole('checkbox', { name: 'QQ 群聊', exact: true })).not.toBeChecked()
+    await expect(editor.getByRole('checkbox', { name: /本地写入/ })).not.toBeChecked()
+    await select(page, '远程 HTTP'); await customize(page, '远程 HTTP')
+    await picker(page).getByRole('group', { name: 'Agent 类型', exact: true }).getByRole('button', { name: '清空', exact: true }).click()
+    await select(page, '本地工具'); const reads = readCount
+    await chooseLanguage(page, 'en-US')
+    editor = picker(page)
+    await expect(editor.getByRole('radio', { name: 'Custom selection', exact: true })).toBeChecked()
+    await expect(editor.getByRole('checkbox', { name: 'QQ 群聊', exact: true })).not.toBeChecked()
+    await expect(editor.getByRole('checkbox', { name: /本地写入/ })).not.toBeChecked()
+    await editor.getByRole('group', { name: 'Access mode', exact: true }).scrollIntoViewIfNeeded()
+    await page.screenshot({ path: info.outputPath('mcp-editable-custom-en-wide.png'), animations: 'disabled' })
+    await page.setViewportSize({ width: 390, height: 844 })
+    await editor.getByRole('group', { name: 'Access mode', exact: true }).scrollIntoViewIfNeeded()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.screenshot({ path: info.outputPath('mcp-editable-custom-en-390.png'), animations: 'disabled' })
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await page.screenshot({ path: info.outputPath('mcp-editable-custom-en-dark-390.png'), animations: 'disabled' })
+    await editor.getByRole('button', { name: 'Save permissions', exact: true }).scrollIntoViewIfNeeded()
+    await expect(editor.getByRole('button', { name: 'Cancel draft', exact: true })).toBeVisible()
+    await page.screenshot({ path: info.outputPath('mcp-editable-custom-en-dark-actions-390.png'), animations: 'disabled' })
+    await chooseLanguage(page, 'zh-CN')
+    await editor.getByRole('button', { name: '取消草稿', exact: true }).click()
+    editor = await editAccess(page, '本地工具')
+    await expect(editor.getByRole('radio', { name: '默认全开', exact: true })).toBeChecked()
+    for (const selection of await editor.getByRole('checkbox').all()) await expect(selection).toBeChecked()
+    await select(page, '远程 HTTP')
+    for (const selection of await picker(page).getByRole('group', { name: 'Agent 类型', exact: true }).getByRole('checkbox').all()) await expect(selection).not.toBeChecked()
+    expect(readCount).toBe(reads); expect(writeCount).toBe(0)
+  })
+
+  test('过期权限 CAS 保草稿，显式刷新核对后才可用新版本保存，绝不补回取消项', async ({ page }) => {
+    await open(page)
+    const editor = await customize(page, '本地工具')
+    await editor.getByRole('checkbox', { name: 'QQ 群聊', exact: true }).uncheck()
+    snapshot.revision++; snapshot.services[0].tools.push(tool('new_after_draft', '目录新增工具'))
+    await editor.getByRole('button', { name: '保存权限', exact: true }).click()
+    await expect(page.locator('.mcp-page > [role="alert"]')).toContainText('配置已被其他操作修改，请重新读取后再试。')
+    expect(lastInput).toMatchObject({ expectedRevision: 3, mode: 'custom', agentTypeIds: ['main', 'qq.private'] })
+    await expect(editor.getByRole('checkbox', { name: 'QQ 群聊', exact: true })).not.toBeChecked()
+    await expect(editor.getByRole('button', { name: '保存权限', exact: true })).toBeDisabled()
+    await editor.getByRole('button', { name: '刷新服务', exact: true }).click()
+    await expect(editor.getByRole('checkbox', { name: /目录新增工具/ })).not.toBeChecked()
+    await expect(editor.getByRole('button', { name: '保存权限', exact: true })).toBeDisabled()
+    await editor.getByRole('button', { name: '已核对，保留草稿', exact: true }).click()
+    await editor.getByRole('button', { name: '保存权限', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    expect(lastInput).toEqual({ id: 'direct-stdio', expectedRevision: 4, mode: 'custom', agentTypeIds: ['main', 'qq.private'], toolNames: ['local_lookup'] })
+    expect(snapshot.services[0].accessPolicy.agentTypeIds).not.toContain('qq.group')
+    expect(writeCount).toBe(2)
+  })
+
+  test('权限草稿遇目录刷新不隐式推进 CAS，缺席工具选择保留但新增项不勾选', async ({ page }) => {
+    snapshot.services[0].accessPolicy = { mode: 'custom', agentTypeIds: ['main'], toolNames: ['local_lookup', 'offline_tool'] }
+    await open(page)
+    const editor = await editAccess(page, '本地工具')
+    await expect(editor.getByRole('checkbox', { name: /offline_tool/ })).toBeChecked()
+    snapshot.agentTypes.push({ id: 'future', title: '新增类型' }); snapshot.services[0].tools.push(tool('future_tool', '新增工具')); snapshot.revision++
+    await page.getByRole('button', { name: '刷新服务', exact: true }).click()
+    await expect(editor.getByRole('checkbox', { name: '新增类型', exact: true })).not.toBeChecked()
+    await expect(editor.getByRole('checkbox', { name: /新增工具/ })).not.toBeChecked()
+    await expect(editor.getByRole('button', { name: '保存权限', exact: true })).toBeDisabled()
+    expect(writeCount).toBe(0)
+    await editor.getByRole('button', { name: '已核对，保留草稿', exact: true }).click()
+    await editor.getByRole('button', { name: '保存权限', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    expect(lastInput).toEqual({ id: 'direct-stdio', expectedRevision: 4, mode: 'custom', agentTypeIds: ['main'], toolNames: ['local_lookup', 'offline_tool'] })
+  })
+
+  test('权限保存显示重挂成功和主人停止取消，错误时保草稿并报告失败不重试', async ({ page }) => {
+    const harnessRequests: string[] = []
+    page.on('request', request => { if (request.method() === 'POST' && /\/api\/plugins\/[^/]+\/(connect|disconnect|operation)/.test(request.url())) harnessRequests.push(request.url()) })
+    await open(page); harnessStopped = true
+    snapshot.harnessRemounts = [{ id: 'dsh-running', status: 'reconnected' }, { id: 'dsh-owner-stopped', status: 'cancelled', code: 'HARNESS_REMOUNT_CANCELLED' }]
+    let editor = await customize(page, '本地工具')
+    await editor.getByRole('button', { name: '保存权限', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    const report = page.getByRole('status', { name: 'Harness 挂载结果', exact: true })
+    await expect(report).toContainText('dsh-running已按新工具目录自动恢复')
+    await expect(report).toContainText('dsh-owner-stopped自动恢复已取消HARNESS_REMOUNT_CANCELLED')
+    failMutation = true; snapshot.harnessRemounts = [{ id: 'dsh-failed', status: 'failed', code: 'HARNESS_CONNECTION_FAILED' }]
+    editor = await editAccess(page, '本地工具')
+    await editor.getByRole('checkbox', { name: '主 Agent', exact: true }).uncheck()
+    await editor.getByRole('button', { name: '保存权限', exact: true }).click()
+    await expect(page.getByRole('alert')).toContainText('操作未完成，请刷新 MCP 服务后重试。')
+    await expect(report).toContainText('dsh-failed自动恢复失败，请检查 Harness 状态HARNESS_CONNECTION_FAILED')
+    await expect(editor.getByRole('checkbox', { name: '主 Agent', exact: true })).not.toBeChecked()
+    const reads = readCount
+    await chooseLanguage(page, 'en-US')
+    await expect(page.getByRole('status', { name: 'Harness mount results', exact: true })).toContainText('HARNESS_CONNECTION_FAILED')
+    expect(readCount).toBe(reads); expect(writeCount).toBe(2); expect(harnessRequests).toEqual([])
   })
 
   test('二级目录固定，切换保留连接草稿与工具搜索，长目录内部滚动', async ({ page }, info) => {
@@ -189,7 +380,7 @@ test.describe('MCP 服务管理页', () => {
     await expect(editor.getByLabel('值（留空保留）', { exact: true })).toHaveValue('Bearer fixture-draft-secret')
     await select(page, '本地工具')
     await expect(local.getByLabel('搜索当前服务工具', { exact: true })).toHaveValue('fixture_tool_49')
-    await noManualGrants(page); expect(writeCount).toBe(0)
+    await noGrantDraft(page); expect(writeCount).toBe(0)
     await page.screenshot({ path: info.outputPath('mcp-two-pane-search.png') })
   })
 
@@ -202,7 +393,7 @@ test.describe('MCP 服务管理页', () => {
     await page.keyboard.press('Escape'); await expect(page.getByRole('tooltip')).not.toBeVisible()
     await edit.locator('..').focus(); await expect(page.getByRole('tooltip')).toBeVisible()
     const accessBox = await local.locator('.mcp-block-access').boundingBox(); expect(accessBox!.width).toBeGreaterThan(box!.width * .85)
-    await noManualGrants(page)
+    await noGrantDraft(page)
     await page.screenshot({ path: info.outputPath('mcp-wide-default-access.png') })
     await page.setViewportSize({ width: 1280, height: 420 })
     await page.locator('.mcp-page').evaluate(element => { element.scrollTop = element.scrollHeight })
@@ -223,7 +414,8 @@ test.describe('MCP 服务管理页', () => {
     expect(await communication.getByRole('link', { name: '打开来源插件面板', exact: true }).getAttribute('href')).toBe('#robots/qq')
     await expect(communication.getByRole('button', { name: '连接', exact: true })).toHaveCount(0)
     await expect(communication.getByRole('button', { name: '编辑配置', exact: true })).toHaveCount(0)
-    await noManualGrants(page)
+    await expect(communication.getByRole('button', { name: '编辑权限', exact: true })).toHaveCount(0)
+    await noGrantDraft(page)
     await select(page, '图片能力 MCP')
     await expect(card(page, '图片能力 MCP').getByText('默认所有 Agent 可用', { exact: true })).toBeVisible()
     expect(await card(page, '图片能力 MCP').getByRole('link', { name: '打开来源插件面板', exact: true }).getAttribute('href')).toBe('#plugins/dsh')
@@ -276,7 +468,7 @@ test.describe('MCP 服务管理页', () => {
     await expect(card(page, 'HTTP 新工具')).toBeVisible()
     expect(lastInput).toEqual({ expectedRevision: 4, name: 'HTTP 新工具', transport: 'streamable-http', url: 'https://mcp.example.com/mcp?token=private-query', autoConnect: false })
     await expect(page.locator('body')).not.toContainText('private-query')
-    await noManualGrants(page)
+    await noGrantDraft(page)
   })
 
   test('编辑省略已保存秘密与查询地址，只有明确清除才提交删除', async ({ page }) => {
@@ -357,7 +549,11 @@ test.describe('MCP 服务管理页', () => {
     const report = page.getByRole('status', { name: 'Harness 挂载结果', exact: true })
     await expect(report).toContainText('本次没有需要重挂的运行实例；已停止的 Harness 保持停止。')
     await expect(report).not.toContainText('已按新工具目录自动恢复')
-    expect(writeCount).toBe(1); expect(harnessRequests).toEqual([])
+    const editor = await customize(page, '远程 HTTP')
+    await editor.getByRole('button', { name: '保存权限', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    await expect(report).toContainText('已停止的 Harness 保持停止。')
+    expect(lastOperation).toBe('save-grants'); expect(writeCount).toBe(2); expect(harnessRequests).toEqual([])
   })
 
   test('GET 保留最近重挂成功失败取消结果，语言切换不请求或重做任务', async ({ page }, info) => {
@@ -431,7 +627,7 @@ test.describe('MCP 服务管理页', () => {
     const remote = card(page, '远程 HTTP')
     await expect(remote.getByText('Available to all Agents by default', { exact: true })).toBeVisible()
     await expect(remote.getByText('Requires an enabled, connected service. This service is currently unavailable.', { exact: true })).toBeVisible()
-    await noManualGrants(page)
+    await noGrantDraft(page)
     await page.setViewportSize({ width: 390, height: 844 })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     await page.screenshot({ path: info.outputPath('mcp-connection-draft-en-390.png'), fullPage: true })
@@ -456,6 +652,30 @@ test.describe('MCP 服务管理页', () => {
     await expect(headerValue).toHaveValue('')
     expect(writeCount).toBe(0)
   })
+
+  test('保存策略中的缺席类型和工具可超出当前目录数量，读取后完整保留', async ({ page }) => {
+    const agentTypeIds = ['main', ...Array.from({ length: 100 }, (_, index) => `offline.type.${index}`)]
+    const toolNames = ['local_lookup', ...Array.from({ length: 500 }, (_, index) => `offline_tool_${index}`)]
+    snapshot.services[0].accessPolicy = { mode: 'custom', agentTypeIds, toolNames }
+    await open(page)
+    const editor = await editAccess(page, '本地工具')
+    await expect(editor.getByRole('checkbox', { name: /offline.type.99/ })).toBeChecked()
+    await expect(editor.getByRole('checkbox', { name: /offline_tool_499/ })).toBeChecked()
+    await editor.getByRole('button', { name: '保存权限', exact: true }).click()
+    await expect(editor).toHaveCount(0)
+    expect(lastInput).toEqual({ id: 'direct-stdio', expectedRevision: 3, mode: 'custom', agentTypeIds, toolNames })
+  })
+
+  for (const invalidPolicy of [undefined, { mode: 'all', toolNames: [] }, { mode: 'custom', agentTypeIds: [] }, { mode: 'custom', agentTypeIds: ['main', 'main'], toolNames: ['local_lookup'] }, null]) {
+    test(`功能来源严格拒绝缺失或无效策略 ${JSON.stringify(invalidPolicy)}`, async ({ page }) => {
+      snapshot.services[0].accessPolicy = invalidPolicy
+      await page.route('**/api/mcp', route => json(route, snapshot))
+      await goto(page)
+      await expect(page.getByRole('alert')).toBeVisible()
+      await expect(page.getByRole('button', { name: '编辑权限', exact: true })).toHaveCount(0)
+      expect(writeCount).toBe(0)
+    })
+  }
 
   test('空态、错误态与 390px 可用', async ({ page }, info) => {
     snapshot.services = []
@@ -490,7 +710,7 @@ test.describe('MCP 真实合同（临时 Host，无路由桩）', () => {
     if (target !== resolve(directory) || dirname(target) !== await realpath(tmpdir()) || !basename(target).startsWith('Eating_mcp_e2e_')) throw new Error('Unsafe MCP E2E cleanup')
     await rm(target, { recursive: true }); expect(errors).toEqual([])
   })
-  test('真实保存并连接 stdio 后自动获得所有当前类型和工具摘要，无授权写入', async ({ page }, info) => {
+  test('真实 stdio 默认全开，custom 保存后 Host 重启读取保持，恢复 all 后重新包含全部工具', async ({ page }, info) => {
     const writes: { operation: string; input: Record<string, unknown> }[] = []
     page.on('request', request => { if (request.url() === url + '/api/mcp' && request.method() === 'POST') writes.push(request.postDataJSON()) })
     await page.goto(url + '/#mcp')
@@ -511,15 +731,47 @@ test.describe('MCP 真实合同（临时 Host，无路由桩）', () => {
     await expect(serviceCard.getByText('服务已启用并连接，当前目录中的工具可用。', { exact: true })).toBeVisible()
     await serviceCard.locator('.mcp-tools summary').click()
     await expect(serviceCard.getByText('Echo fixture', { exact: true })).toBeVisible()
-    await expect(serviceCard.getByRole('button', { name: /^(编辑授权|保存授权)$/ })).toHaveCount(0)
-    const snapshot = await (await page.request.get(url + '/api/mcp')).json() as { agentTypes: { id: string }[]; services: { name: string; state: string; tools: { name: string }[]; grant: { agentTypeIds: string[]; toolNames: string[] } }[] }
+    const read = async () => (await (await page.request.get(url + '/api/mcp')).json()) as McpDirectorySnapshot
+    let snapshot = await read()
     const service = snapshot.services.find(entry => entry.name === 'SDK fixture')!
+    expect(service.accessPolicy).toEqual({ mode: 'all' })
     expect(service.state).toBe('connected')
     expect(service.tools.map(tool => tool.name)).toContain('fixture_echo')
     expect(service.grant.agentTypeIds).toEqual(snapshot.agentTypes.map(type => type.id))
     expect(service.grant.agentTypeIds).toContain('main')
     expect(service.grant.toolNames).toEqual(service.tools.map(tool => tool.name))
     expect(writes.map(write => write.operation)).toEqual(['save', 'connect'])
+    await serviceCard.getByRole('button', { name: '编辑权限', exact: true }).click()
+    let permissions = serviceCard.locator('.mcp-grant-picker')
+    await permissions.getByRole('radio', { name: '自定义选择', exact: true }).check()
+    await permissions.getByRole('group', { name: '允许使用的工具', exact: true }).getByRole('button', { name: '清空', exact: true }).click()
+    await permissions.getByRole('checkbox', { name: /Echo fixture/ }).check()
+    await permissions.getByRole('button', { name: '保存权限', exact: true }).click()
+    await expect(permissions).toHaveCount(0)
+    expect(writes.at(-1)).toEqual({ operation: 'save-grants', input: { id: service.id, expectedRevision: snapshot.revision, mode: 'custom', agentTypeIds: snapshot.agentTypes.map(type => type.id), toolNames: ['fixture_echo'] } })
+    const selectedPolicy = { mode: 'custom', agentTypeIds: snapshot.agentTypes.map(type => type.id), toolNames: ['fixture_echo'] }
+    expect((await read()).services[0]!.accessPolicy).toEqual(selectedPolicy)
+    await host.close()
+    host = await createInstalledHost({ dataDirectory: directory, staticDirectory, port: 0, allowedUiOrigins: [], autoConnectOnStartup: false }); url = await host.listen()
+    await page.goto(url + '/#mcp')
+    await expect(serviceCard).toBeVisible()
+    await expect(serviceCard.getByText('已保存自定义权限', { exact: true })).toBeVisible()
+    snapshot = await read()
+    expect(snapshot.services[0]!.accessPolicy).toEqual(selectedPolicy)
+    await serviceCard.getByRole('button', { name: '连接', exact: true }).click()
+    await expect(serviceCard.getByText('已连接', { exact: true }).first()).toBeVisible({ timeout: 20_000 })
+    expect((await read()).services[0]!.grant.toolNames).toEqual(['fixture_echo'])
+    await serviceCard.getByRole('button', { name: '编辑权限', exact: true }).click()
+    permissions = serviceCard.locator('.mcp-grant-picker')
+    await expect(permissions.getByRole('checkbox', { name: /Echo fixture/ })).toBeChecked()
+    await expect(permissions.getByRole('checkbox', { name: /fixture_image/ })).not.toBeChecked()
+    await permissions.getByRole('button', { name: '恢复默认全开', exact: true }).click()
+    await permissions.getByRole('button', { name: '保存权限', exact: true }).click()
+    await expect(permissions).toHaveCount(0)
+    snapshot = await read()
+    expect(snapshot.services[0]!.accessPolicy).toEqual({ mode: 'all' })
+    expect(snapshot.services[0]!.grant.toolNames).toEqual(snapshot.services[0]!.tools.map(tool => tool.name))
+    expect(writes.at(-1)?.input).toEqual({ id: service.id, expectedRevision: snapshot.revision - 1, mode: 'all' })
     await page.screenshot({ path: info.outputPath('mcp-real-stdio.png'), fullPage: true })
     await serviceCard.getByRole('button', { name: '断开', exact: true }).click()
   })

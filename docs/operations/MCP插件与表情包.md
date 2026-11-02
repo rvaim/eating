@@ -1,6 +1,6 @@
 # MCP、插件与表情包使用说明
 
-适用：Eating0.16.0／plugin-sdk4.6.0，插件API4；默认能力以[ADR-0034](../decisions/ADR-0034-主Agent自主决策与功能能力默认开放.md)为准。
+适用：Eating0.17.0／plugin-sdk4.7.0，插件API4；默认开放与主人例外以[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)为准。
 
 ## 插件管理
 
@@ -17,13 +17,13 @@
 - 本地 stdio：填写命令，每行填写一个参数；参数按原样传递，不经 shell。需要的环境变量逐项填写。保存只保存配置，点击连接才会启动进程。
 - 远程 Streamable HTTP：填写完整服务地址及需要的请求头。认证建议放请求头；已保存的环境变量、请求头值和URL查询值不回显，编辑留空保留，明确删除才移除。
 
-连接成功后显示服务发现的真实工具。已启用且connected的功能型capability／direct MCP全部当前及后续新工具默认对main、所有现有及后续Agent类型开放，不再选择类型／工具或保存授权。目录grant仅为当前已知类型与工具的只读摘要，不能用旧空名单限制新类型。
+连接成功后显示服务发现的真实工具。新功能来源默认“全部开放”（all），已启用且connected时全部当前及未来工具／Agent类型自动可用。主人可编辑为“自定义”（custom），选择精确代理类型与工具并保存；新增工具／类型不会自动取得该例外source的权限，任一空名单关闭访问。恢复“全部开放”后重新跟随目录；其他新source仍默认all。accessPolicy显示当前策略，grant为当前目录的有效摘要。
 
 直接服务和插件来源都显示在同一目录。QQ等通讯插件已有专门会话权限，需在来源插件面板设置，不能通过MCP页获取不受范围约束的QQ工具。插件提供的MCP不能单独删除，应到插件页停用或卸载来源插件。
 
-来源新增／连接／断开、工具目录变化及能力插件生命周期变更使用一次性重挂事务：撤lease并停受影响Harness，await来源／目录变更完成，仅对原connected、同一实例且仍启用的Harness恢复一次。原stopped／error不启动，owner stop／disable优先，失败不重试、不重放unknown；harnessRemounts返回reconnected／failed／cancelled。连接成功不代表所有工具业务动作已经验证，手机ADB／浏览器的具体服务、设备和权限由用户自己配置，Eating不会自动安装或连接未指定的第三方服务。
+策略保存、来源新增／连接／断开、工具目录变化及能力插件生命周期变更使用一次性重挂事务：撤lease并停受影响Harness，await来源／目录变更完成，仅对原connected、同一实例且仍启用的Harness恢复一次。原stopped／error不启动，owner stop／disable优先，失败不重试、不重放unknown；harnessRemounts返回reconnected／failed／cancelled。连接成功不代表所有工具业务动作已经验证，手机ADB／浏览器的具体服务、设备和权限由用户自己配置，Eating不会自动安装或连接未指定的第三方服务。
 
-直接连接保存不接受grant，配置文件为严格schema2；旧schema1会明确拒绝且保留原文件，不自动转换。旧host:capability-grants不读／不写／不删。已有旧格式时须由主人明确选择数据处置，不能通过读取自动补字段。
+直接连接保存只收连接与秘密，不接受grant／policy；文件保持严格schema2，旧schema1拒绝且保留。权限单独用严格save-grants保存{id,expectedRevision,mode:all}或{id,expectedRevision,mode:custom,agentTypeIds,toolNames}，目录CAS为direct＋policy revision。策略在host:mcp-access-policies严格schema1／revision／policies保存，旧host:capability-grants不读／写／迁移／删。目录变化／版本冲突先保草稿再重读核对，不隐式推进CAS。direct在途撤权可能失去transport并使source error，需主人显式connect；不自动重放未知动作。
 
 ## 管理表情包
 
@@ -37,7 +37,7 @@
 
 ## 让 AI 使用表情包
 
-启用并连接表情包后，全部功能工具自动供main及所有Agent类型使用，无需在MCP页勾选。AI工具包括：
+启用并连接表情包后，默认all下全部功能工具自动供main及所有Agent类型使用；主人保存custom例外后按当前类型／工具名单生效，也可恢复all。AI工具包括：
 
 | 工具 | 用途 |
 | --- | --- |

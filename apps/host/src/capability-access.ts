@@ -5,12 +5,14 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js'
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
-import type { AgentActionReceipt, BackendPlugin, CapabilityInvocationScope, HarnessCapabilityConnection, JsonObject, JsonValue, McpDirectorySnapshot, McpServiceSummary, PluginToolDefinition } from '@eating/plugin-sdk'
+import type { AgentActionReceipt, BackendPlugin, CapabilityInvocationScope, HarnessCapabilityConnection, JsonObject, JsonValue, McpAccessPolicy, McpDirectorySnapshot, McpGrant, McpServiceSummary, PluginToolDefinition } from '@eating/plugin-sdk'
 import { DirectMcpConnections } from './mcp-connections'
+import type { HostStore } from './store'
 import { secret, sameSecret } from './security'
 import { toolResult } from './tool-results'
 
 interface Options {
+  readonly store: Pick<HostStore, 'getSetting' | 'setSetting'>
   readonly direct: DirectMcpConnections
   readonly plugins: () => Iterable<BackendPlugin>
   readonly enabled: (id: string) => boolean
@@ -27,6 +29,27 @@ interface Lease {
 const identifier = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 160 && !/[\u0000-\u001f\u007f]/.test(value)
 const requestId = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$/.test(value)
 const deny = (): never => { throw new PlatformError('CAPABILITY_ACCESS_DENIED', '此 MCP 服务、工具或代理连接当前不可用。', 403, 'not-sent') }
+const POLICY_KEY = 'host:mcp-access-policies'
+const MAX_POLICY_BYTES = 1024 * 1024
+interface PolicyState { readonly schemaVersion: 1; readonly revision: number; readonly policies: Readonly<Record<string, McpAccessPolicy>> }
+const exactKeys = (value: Record<string, unknown>, keys: readonly string[]) => keys.length === Object.keys(value).length && keys.every(key => Object.hasOwn(value, key))
+const validRevision = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+const sourceId = (value: unknown): value is string => typeof value === 'string' && /^(?:plugin\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*|direct\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.test(value) && value.length <= 80
+function invalidPolicy(): never { throw new PlatformError('MCP_ACCESS_POLICY_INVALID', 'MCP 权限策略无效，请明确选择全部开放或提供精确的代理类型和工具名单。', 400, 'not-sent') }
+function policyStorageError(): never { throw new PlatformError('MCP_ACCESS_POLICY_STORAGE_INVALID', 'MCP 权限策略存储损坏或格式不匹配，原数据未被覆盖。', 500, 'not-sent') }
+function policyList(value: unknown, max: number, pattern: RegExp): string[] {
+  if (!Array.isArray(value) || value.length > max || value.some(item => typeof item !== 'string' || !pattern.test(item)) || new Set(value).size !== value.length) return invalidPolicy()
+  return [...value] as string[]
+}
+function parsePolicy(value: unknown): McpAccessPolicy {
+  if (!isJsonObject(value)) return invalidPolicy()
+  if (value.mode === 'all' && exactKeys(value, ['mode'])) return { mode: 'all' }
+  if (value.mode !== 'custom' || !exactKeys(value, ['mode', 'agentTypeIds', 'toolNames'])) return invalidPolicy()
+  return { mode: 'custom', agentTypeIds: policyList(value.agentTypeIds, 1024, /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/), toolNames: policyList(value.toolNames, 1000, /^[A-Za-z0-9_.-]{1,128}$/) }
+}
+function effectiveGrant(policy: McpAccessPolicy, agentTypeIds: readonly string[], tools: readonly PluginToolDefinition[]): McpGrant {
+  return { agentTypeIds: [...new Set(agentTypeIds)].filter(id => policy.mode === 'all' || policy.agentTypeIds.includes(id)), toolNames: tools.map(tool => tool.name).filter(name => policy.mode === 'all' || policy.toolNames.includes(name)) }
+}
 function failure(error: unknown): CallToolResult {
   const value = error instanceof PlatformError ? { code: error.code, message: error.message, outcome: error.outcome }
     : { code: 'CAPABILITY_TOOL_FAILED', message: 'MCP 工具调用未完成，请核对结果后再继续。', outcome: 'unknown' }
@@ -50,24 +73,76 @@ export class CapabilityAccess {
   private readonly receipts = new Map<string, Map<string, AgentActionReceipt>>()
   private closed = false
 
-  constructor(private readonly options: Options) {}
-  get revision(): number { return this.options.direct.revision }
+  constructor(private readonly options: Options) { this.revision }
+  private readPolicies(): PolicyState {
+    const saved = this.options.store.getSetting(POLICY_KEY)
+    if (saved === null) return { schemaVersion: 1, revision: 0, policies: {} }
+    if (Buffer.byteLength(saved, 'utf8') > MAX_POLICY_BYTES) return policyStorageError()
+    try {
+      const value: unknown = JSON.parse(saved)
+      if (!isJsonObject(value) || !exactKeys(value, ['schemaVersion', 'revision', 'policies']) || value.schemaVersion !== 1 || !validRevision(value.revision) || !isJsonObject(value.policies) || Object.keys(value.policies).length > 1000) return policyStorageError()
+      const policies: Record<string, McpAccessPolicy> = {}
+      for (const [id, policy] of Object.entries(value.policies)) {
+        if (!sourceId(id)) return policyStorageError()
+        policies[id] = parsePolicy(policy)
+      }
+      return { schemaVersion: 1, revision: value.revision, policies }
+    } catch { return policyStorageError() }
+  }
+  private savePolicies(state: PolicyState, policies: Readonly<Record<string, McpAccessPolicy>>): void {
+    if (this.revision === Number.MAX_SAFE_INTEGER) throw new PlatformError('MCP_REVISION_EXHAUSTED', 'MCP 配置版本已达到上限。', 500, 'not-sent')
+    const saved = JSON.stringify({ schemaVersion: 1, revision: state.revision + 1, policies } satisfies PolicyState)
+    if (Object.keys(policies).length > 1000 || Buffer.byteLength(saved, 'utf8') > MAX_POLICY_BYTES) throw new PlatformError('MCP_ACCESS_POLICY_CAPACITY', 'MCP 权限策略超出保存容量。', 400, 'not-sent')
+    this.options.store.setSetting(POLICY_KEY, saved)
+  }
+  get revision(): number {
+    const value = this.options.direct.revision + this.readPolicies().revision
+    if (!validRevision(value)) throw new PlatformError('MCP_REVISION_EXHAUSTED', 'MCP 配置版本已达到上限。', 500, 'not-sent')
+    return value
+  }
   private plugin(id: string): BackendPlugin | undefined { return [...this.options.plugins()].find(plugin => plugin.id === id) }
   private sources(agentTypeIds = ['main', ...[...this.options.plugins()].flatMap(plugin => (plugin.agentTypes ?? []).map(type => type.id))]): McpServiceSummary[] {
+    const { policies } = this.readPolicies()
     const plugins = [...this.options.plugins()].filter(plugin => plugin.tools.length > 0).map(plugin => {
       const id = 'plugin.' + plugin.id, enabled = this.options.enabled(plugin.id), status = plugin.getStatus()
       const permissionsManagedByPlugin = plugin.kind !== 'capability'
       const registered = permissionsManagedByPlugin ? enabled : enabled && status.state === 'connected' && Boolean(plugin.invokeCapability)
+      const accessPolicy = permissionsManagedByPlugin ? null : policies[id] ?? { mode: 'all' as const }
       return {
         id, name: plugin.name, source: { kind: 'plugin' as const, pluginId: plugin.id, pluginName: plugin.name }, transport: 'plugin' as const,
         enabled, autoConnect: plugin.getPublicConfiguration().autoConnect === true,
         state: registered ? 'connected' as const : status.state === 'error' ? 'error' as const : 'disconnected' as const,
-        lastError: status.lastError, tools: plugin.tools,
-        grant: permissionsManagedByPlugin ? { agentTypeIds: (plugin.agentTypes ?? []).map(type => type.id), toolNames: [...new Set((plugin.agentTypes ?? []).flatMap(type => [...type.enabledTools]))] } : { agentTypeIds: [...new Set(agentTypeIds)], toolNames: plugin.tools.map(tool => tool.name) },
+        lastError: status.lastError, tools: plugin.tools, accessPolicy,
+        grant: accessPolicy === null ? { agentTypeIds: (plugin.agentTypes ?? []).map(type => type.id), toolNames: [...new Set((plugin.agentTypes ?? []).flatMap(type => [...type.enabledTools]))] } : effectiveGrant(accessPolicy, agentTypeIds, plugin.tools),
         configuration: { pluginKind: plugin.kind, permissionsManagedByPlugin },
       }
     })
-    return [...plugins, ...this.options.direct.list(agentTypeIds)]
+    return [...plugins, ...this.options.direct.list(agentTypeIds).map(source => {
+      const accessPolicy = policies[source.id] ?? { mode: 'all' as const }
+      return { ...source, accessPolicy, grant: effectiveGrant(accessPolicy, agentTypeIds, source.tools) }
+    })]
+  }
+  validatePolicyChange(input: unknown): { id: string; expectedRevision: number; policy: McpAccessPolicy } {
+    if (!isJsonObject(input) || !sourceId(input.id) || !validRevision(input.expectedRevision) || !['all', 'custom'].includes(String(input.mode)) || !exactKeys(input, input.mode === 'all' ? ['id', 'expectedRevision', 'mode'] : ['id', 'expectedRevision', 'mode', 'agentTypeIds', 'toolNames'])) return invalidPolicy()
+    const policy = parsePolicy(input.mode === 'all' ? { mode: input.mode } : { mode: input.mode, agentTypeIds: input.agentTypeIds!, toolNames: input.toolNames! })
+    this.requireRevision(input.expectedRevision)
+    if (this.source(input.id).accessPolicy === null) throw new PlatformError('MCP_MANAGED_BY_PLUGIN', '此 MCP 的权限由来源插件管理。', 409, 'not-sent')
+    return { id: input.id, expectedRevision: input.expectedRevision, policy }
+  }
+  savePolicy(input: unknown): void {
+    const { id, policy } = this.validatePolicyChange(input)
+    const state = this.readPolicies()
+    this.savePolicies(state, { ...state.policies, [id]: policy })
+    this.revokeSource(id)
+  }
+  hasPolicy(id: string): boolean { return Object.hasOwn(this.readPolicies().policies, id) }
+  removePolicy(id: string): void {
+    const state = this.readPolicies()
+    if (!Object.hasOwn(state.policies, id)) return
+    const policies = { ...state.policies }
+    delete policies[id]
+    this.savePolicies(state, policies)
+    this.revokeSource(id)
   }
   snapshot(agentTypes: readonly { id: string; title: string }[]): McpDirectorySnapshot {
     const types = [{ id: 'main', title: '主 Agent / Harness 会话' }, ...agentTypes.filter(type => type.id !== 'main').map(type => ({ id: type.id, title: type.title }))]
@@ -78,14 +153,17 @@ export class CapabilityAccess {
     if (!source) throw new PlatformError('MCP_SERVICE_NOT_FOUND', 'MCP 服务不存在。', 404, 'not-sent')
     return source
   }
-  requireRevision(expected: unknown): void {
-    if (!Number.isSafeInteger(expected) || expected !== this.revision) throw new PlatformError('MCP_CONFIGURATION_CONFLICT', 'MCP 配置已变更，请保留草稿并刷新后重试。', 409, 'not-sent')
+  requireRevision(expected: unknown, changes = 1): void {
+    const current = this.revision
+    if (!Number.isSafeInteger(expected) || expected !== current) throw new PlatformError('MCP_CONFIGURATION_CONFLICT', 'MCP 配置已变更，请保留草稿并刷新后重试。', 409, 'not-sent')
+    if (!validRevision(current + changes)) throw new PlatformError('MCP_REVISION_EXHAUSTED', 'MCP 配置版本已达到上限。', 500, 'not-sent')
   }
   allowed(scope: CapabilityInvocationScope, sourceId: string, toolName: string): boolean {
     if (this.closed || scope.signal?.aborted || scope.source?.signal?.aborted || !identifier(scope.agentId) || !identifier(scope.agentTypeId)) return false
     let source: McpServiceSummary
     try { source = this.source(sourceId) } catch { return false }
-    return source.enabled && source.state === 'connected' && source.configuration.permissionsManagedByPlugin !== true && source.tools.some(tool => tool.name === toolName)
+    return source.enabled && source.state === 'connected' && source.accessPolicy !== null && source.configuration.permissionsManagedByPlugin !== true && source.tools.some(tool => tool.name === toolName)
+      && (source.accessPolicy.mode === 'all' || source.accessPolicy.agentTypeIds.includes(scope.agentTypeId) && source.accessPolicy.toolNames.includes(toolName))
   }
   activeService(scope: CapabilityInvocationScope, sourceId: string): boolean {
     return this.source(sourceId).tools.some(tool => this.activePermission(scope, sourceId, tool.name))
@@ -99,7 +177,7 @@ export class CapabilityAccess {
     const result: HarnessCapabilityConnection[] = []
     for (const source of this.sources()) {
       // Disconnected optional services never block a task's communication MCP.
-      // All tools from each connected capability/direct source are included.
+      // The current policy selects exact tools; all also covers future types/tools.
       const tools = source.tools.filter(tool => this.allowed(scope, source.id, tool.name)).map(tool => tool.name)
       if (!tools.length) continue
       for (const lease of this.leases.values()) if (lease.harnessId === harnessId && lease.scope.agentId === scope.agentId && lease.sourceId === source.id) this.retire(lease)

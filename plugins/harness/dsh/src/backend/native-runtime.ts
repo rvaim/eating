@@ -31,7 +31,7 @@ export function apply(ctx) {
   const managementOnly = process.env.EATING_DSH_NATIVE_MANAGEMENT === 'true';
   if (!isAbsolute(directory || '') || !nonce || !secret || !isAbsolute(configurationPath || '')) invalid('NATIVE_IDENTITY_INVALID');
   const configuration = JSON.parse(readFileSync(configurationPath, 'utf8'));
-  if (configuration.schemaVersion !== 1 || !Array.isArray(configuration.features) || !Array.isArray(configuration.toolGrants)) invalid('NATIVE_CONFIGURATION_INVALID');
+  if (configuration.schemaVersion !== 1 || !Array.isArray(configuration.features) || !Array.isArray(configuration.toolGrants) || Object.hasOwn(configuration, 'toolAccessOverrides') && !Array.isArray(configuration.toolAccessOverrides)) invalid('NATIVE_CONFIGURATION_INVALID');
   const mounted = new Map();
   const agentTools = new Map();
   const services = new Map();
@@ -45,7 +45,11 @@ export function apply(ctx) {
   const approvedLocalTools = new WeakMap();
   const nativeToolNames = type => ctx.tools.schemas().filter(schema => {
     const access = globalToolAccess(schema.name);
-    return access !== 'reserved' && (type === 'main' || access === 'all' || configuration.toolGrants.some(grant => grant.name === schema.name && grant.agentTypeIds.includes(type) && digest(schema) === grant.fingerprint));
+    if (access === 'reserved') return false;
+    const override = configuration.toolAccessOverrides?.find(grant => grant.name === schema.name);
+    // A named owner policy remains authoritative even when the source schema changes.
+    if (override) return override.agentTypeIds.includes(type) && digest(schema) === override.fingerprint;
+    return type === 'main' || access === 'all' || configuration.toolGrants.some(grant => grant.name === schema.name && grant.agentTypeIds.includes(type) && digest(schema) === grant.fingerprint);
   }).map(schema => schema.name);
   function releaseRestriction(agent, entry) {
     if (restrictions.get(agent) !== entry) return;
@@ -95,7 +99,7 @@ export function apply(ctx) {
     }
   }
   async function validate(next) {
-    if (!record(next) || next.schemaVersion !== 1 || !Array.isArray(next.features) || !Array.isArray(next.toolGrants)) invalid();
+    if (!record(next) || next.schemaVersion !== 1 || !Array.isArray(next.features) || !Array.isArray(next.toolGrants) || Object.hasOwn(next, 'toolAccessOverrides') && !Array.isArray(next.toolAccessOverrides)) invalid();
     await ensureServices(next);
     const types = [...new Set(next.features.filter(feature => feature.enabled).flatMap(feature => feature.agentTypeIds))];
     for (const type of types) {
@@ -110,7 +114,7 @@ export function apply(ctx) {
     }
     const schemas = ctx.tools.schemas();
     for (const grant of next.toolGrants) {
-      if (grant.agentTypeIds.some(type => type !== 'main') && !schemas.some(schema => globalToolAccess(schema.name) === 'main' && schema.name === grant.name && digest(schema) === grant.fingerprint)) invalid('NATIVE_TOOL_CHANGED');
+      if (!next.toolAccessOverrides?.some(override => override.name === grant.name) && grant.agentTypeIds.some(type => type !== 'main') && !schemas.some(schema => globalToolAccess(schema.name) === 'main' && schema.name === grant.name && digest(schema) === grant.fingerprint)) invalid('NATIVE_TOOL_CHANGED');
     }
     return { valid: true };
   }

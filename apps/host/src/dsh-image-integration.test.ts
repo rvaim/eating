@@ -72,7 +72,7 @@ async function imageModelFixture() {
       let call: { name: string; arguments: JsonObject } | undefined
       let text: string
       if (names.includes('eating_delegate_task')) {
-        if (batch.kind !== 'root' || names.filter(name => name?.startsWith('eating_')).join(',') !== 'eating_activity_state,eating_cancel_scheduled_task,eating_contact_target,eating_delegate_task,eating_list_agent_types,eating_list_contact_targets,eating_plan_activity,eating_schedule_task') throw new Error('Main Agent controlled delegation tools changed')
+        if (batch.kind !== 'root' || names.filter(name => name?.startsWith('eating_')).join(',') !== 'eating_activity_state,eating_cancel_scheduled_task,eating_contact_target,eating_delegate_task,eating_handle_conversation,eating_list_agent_types,eating_list_contact_targets,eating_plan_activity,eating_schedule_task') throw new Error('Main Agent controlled delegation tools changed')
         if (names.some(name => name?.startsWith('mcp__qq__')) || !['read', 'write', 'edit'].every(name => names.includes(name))) throw new Error('Main Agent lacks its full native scope or inherited QQ communication')
         if (!roots.has(batch.contextRef)) {
           roots.add(batch.contextRef)
@@ -203,8 +203,8 @@ async function runImageScenario(imageInput: boolean) {
     expect(JSON.stringify(clocks)).toContain('Asia/Shanghai')
   }
   expect(model.requests.map(request => readModelFixtureBatch(request)?.kind)).toEqual(['root', 'child', 'child', 'root'])
-  expect(toolNames(model.requests[0]!).filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task'])
-  expect(toolNames(model.requests[3]!).filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task'])
+  expect(toolNames(model.requests[0]!).filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task'])
+  expect(toolNames(model.requests[3]!).filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task'])
   for (const request of model.requests.slice(1, 3)) expect(toolNames(request)).toEqual(['mcp__qq__qq_view_received_image'])
   expect(scopes).toHaveLength(1)
   expect(scopes[0]).toMatchObject({ pluginId: 'qq', agentTypeId: 'qq.private', instanceId: qq.instanceId, accountId: '123456789', targetId: '987654321',

@@ -31,7 +31,11 @@ export interface PluginMediaProvider {
   readAsset(assetId: string): Promise<ImageResource>
 }
 
-/** Read-only current directory summary; capability/direct access is derived, never saved per Agent or tool. */
+/** Owner-selected functional MCP access. New sources use all, including future types and tools. */
+export type McpAccessPolicy =
+  | { readonly mode: 'all' }
+  | { readonly mode: 'custom'; readonly agentTypeIds: readonly string[]; readonly toolNames: readonly string[] }
+/** Read-only effective selection intersected with the current directory. */
 export interface McpGrant {
   readonly agentTypeIds: readonly string[]
   readonly toolNames: readonly string[]
@@ -61,7 +65,9 @@ export interface McpServiceSummary {
   readonly state: 'disconnected' | 'connecting' | 'connected' | 'error'
   readonly lastError: string | null
   readonly tools: readonly PluginToolDefinition[]
-  /** Current known Agent types and tools; capability/direct sources automatically include future types and tools. */
+  /** Current owner policy; null for communication/Harness sources managed by their plugin. */
+  readonly accessPolicy: McpAccessPolicy | null
+  /** Current known Agent types and tools allowed by the policy or the source plugin. */
   readonly grant: McpGrant
   /** Owner-facing connection details omit saved secret values. */
   readonly configuration: JsonObject

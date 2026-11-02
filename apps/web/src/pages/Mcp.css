@@ -61,6 +61,24 @@
 .mcp-check input { flex-shrink: 0; width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--color-primary); }
 .mcp-inline-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .mcp-inline-actions .button { min-height: 36px; padding-block: 6px; }
+.mcp-grant-picker { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--color-line); }
+.mcp-grant-picker fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.mcp-grant-picker legend { padding: 0; color: var(--color-ink-strong); font-size: 12px; font-weight: 600; }
+.mcp-grant-picker .button { min-height: 44px; }
+.mcp-access-mode .mcp-choice { min-height: 44px; }
+.mcp-access-mode .mcp-hint { margin-top: 0; }
+.mcp-access-selections { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: 24px; margin-block: 18px; }
+.mcp-access-bulk { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.mcp-access-bulk .text-button { min-height: 44px; padding-block: 8px; }
+.mcp-access-list { max-height: 280px; overflow-y: auto; overscroll-behavior: contain; }
+.mcp-access-list .mcp-check { min-height: 44px; padding: 10px 4px; }
+.mcp-access-list .mcp-check > span { min-width: 0; overflow-wrap: anywhere; }
+.mcp-access-list code, .mcp-access-list small { display: block; color: var(--color-muted); font-size: 11px; }
+.mcp-access-list code { overflow-wrap: anywhere; }
+.mcp-access-options .mcp-tool-search { margin-top: 0; }
+.mcp-access-options .mcp-tool-search input { width: 100%; }
+.mcp-grant-picker input:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.mcp-access-stale { margin-block: 12px; }
 .mcp-tools { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--color-line); font-size: 12px; }
 .mcp-tools > summary { display: inline-flex; align-items: center; gap: 6px; color: var(--color-primary); cursor: pointer; text-underline-offset: 4px; }
 .mcp-tools > summary:hover { text-decoration: underline; }
@@ -105,6 +123,7 @@
 }
 @media (max-width: 850px) {
   .mcp-columns { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .mcp-access-selections { grid-template-columns: minmax(0, 1fr); gap: 20px; }
   .mcp-compact-check { margin-left: 0; }
   .mcp-kv-row { grid-template-columns: minmax(0, 1fr); }
   .mcp-kv-row .icon-button { justify-self: end; }

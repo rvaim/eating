@@ -1,6 +1,6 @@
 # Eating QQ 与平台能力架构
 
-更新：2026-10-29。QQ0.10.0通过公开SDK3.0.0与唯一API3接入Host，提供正式OneBot v11连接、原39项标准工具及1项受控查看图片扩展，共40项。默认不兼容旧Eating版本，见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)；时间与图片能力见[ADR-0016](../decisions/ADR-0016-原生只读Web与多模态会话.md)，官方Web原样接入见[ADR-0017](../decisions/ADR-0017-原样接入DSH原生Web.md)，实际流程见[操作说明](../operations/QQ配置与功能测试.md)。
+更新：2026-11-02。QQ0.13.4通过plugin-sdk4.7.0／API4接入Host，提供OneBot v11连接、39项标准JSON工具和1项受控图片content扩展，共40项。当前主／子会话职责按[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)：main轻量分流，子独立理解／回复／工具执行；真实账号／目标／资源范围保持。默认不兼容按[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)，操作见[使用说明](../operations/QQ配置与功能测试.md)。
 
 ## 职责和数据流
 
@@ -22,7 +22,7 @@ flowchart TB
     API --> QQ
 ```
 
-Host不生成AI回复，普通模型文本不转发QQ。QQ核对实际账号与发送者，再把规范化外部信封交Host；Harness自主决定是否委派或沉默。无接收者时仅保有界待投递，不称Agent已读。
+Host不生成AI回复，普通模型文本不转发QQ。QQ核对实际账号与发送者，再把规范化外部信封交Host；main对普通会话优先eating_handle_conversation，仅context_ref交绑定子；子自行理解原话／独立历史／人格，决定回复、必要工具与真实发送，main核对Host回执。明确任务／用户明确逐字用途留delegate，跨目标仍list/contact。无接收者时仅保有界待投递，不称Agent已读。
 
 ## 插件和工具
 

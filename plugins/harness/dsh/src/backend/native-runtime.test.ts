@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { defaultNativeCapabilities } from '../native-capabilities'
+import type { NativeCapabilitiesConfiguration, NativeToolGrant } from '../native-capabilities'
+import { DshNativeConfigurationFile } from './native-configuration'
 import { getNativeCapabilitiesRuntimeSource } from './native-runtime'
 
 type Tool = { name: string; description: string; parameters: object }
@@ -16,11 +18,12 @@ const digest = (tool: Tool) => {
   const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : value !== null && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, canonical(entry)])) : value
   return createHash('sha256').update(JSON.stringify(canonical(tool))).digest('hex')
 }
-async function fixture(toolGrants: ReturnType<typeof defaultNativeCapabilities>['toolGrants'] = []) {
+async function fixture(toolGrants: readonly NativeToolGrant[] = [], toolAccessOverrides?: readonly NativeToolGrant[], saved?: NativeCapabilitiesConfiguration) {
   const parent = realpathSync(tmpdir()), directory = realpathSync(mkdtempSync(join(parent, 'eating-native-runtime-')))
   stops.push(async () => { if (realpathSync(directory) !== directory || dirname(directory) !== parent || !basename(directory).startsWith('eating-native-runtime-')) throw new Error('Unsafe native runtime fixture cleanup'); rmSync(directory, { recursive: true }) })
   const configurationPath = join(directory, 'native-configuration.json'), defaults = defaultNativeCapabilities([])
-  writeFileSync(configurationPath, JSON.stringify({ ...defaults, features: defaults.features.map(feature => ({ ...feature, enabled: false, agentTypeIds: [] })), toolGrants }))
+  const configuration: NativeCapabilitiesConfiguration = saved ?? { ...defaults, features: defaults.features.map(feature => ({ ...feature, enabled: false, agentTypeIds: [] })), toolGrants, ...(toolAccessOverrides ? { toolAccessOverrides } : {}) }
+  writeFileSync(configurationPath, JSON.stringify(configuration))
   vi.stubEnv('EATING_DSH_BRIDGE_DIRECTORY', directory); vi.stubEnv('EATING_DSH_BRIDGE_NONCE', 'fixture-nonce'); vi.stubEnv('EATING_DSH_NATIVE_TOKEN', 'fixture-token'); vi.stubEnv('EATING_DSH_NATIVE_CONFIGURATION', configurationPath); vi.stubEnv('EATING_DSH_NATIVE_MANAGEMENT', 'true')
   const listeners = new Map<string, Set<(...args: any[]) => unknown>>(), globals = new Map<string, Tool>(), agents = new Map<string, Agent>()
   let native!: Native, restrictionChanges = 0
@@ -58,7 +61,7 @@ async function fixture(toolGrants: ReturnType<typeof defaultNativeCapabilities>[
   const set = (tool: Tool) => { globals.set(tool.name, tool); emit('tools/change') }
   const remove = (name: string) => { globals.delete(name); emit('tools/change') }
   const disposeAgent = (agent: Agent) => { agent.ctx.fiber.state = 3; for (const cleanup of scopeCleanups.get(agent) ?? []) cleanup(); for (const mask of agent.masks) { agent.masks.delete(mask); emit('tools/change') }; agents.delete(agent.id); emit('agent/disposed', { agent }) }
-  return { native, globals, agents, tools, emit, set, remove, request, createAgent, disposeAgent, changes: () => restrictionChanges }
+  return { directory, configuration, native, globals, agents, tools, emit, set, remove, request, createAgent, disposeAgent, changes: () => restrictionChanges }
 }
 
 describe('generated native runtime automatic global access', () => {
@@ -76,6 +79,65 @@ describe('generated native runtime automatic global access', () => {
     expect(catalog.status).toBe(200)
     expect(catalog.body.result.tools).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'write', automaticAccess: 'main' }), expect.objectContaining({ name: 'mcp__memory__find', automaticAccess: 'all' })]))
     expect(catalog.body.result.tools).toHaveLength(3)
+  })
+  it('honors persisted owner overrides for main and child, disables all, and restores automatic access after runtime restart', async () => {
+    const echo = schema('fixture_native_echo'), mcp = schema('mcp__profile__find'), f = await fixture()
+    const file = new DshNativeConfigurationFile(f.directory, () => ['qq.private', 'qq.group'])
+    const childGrant = { name: echo.name, fingerprint: digest(echo), agentTypeIds: ['qq.private'] }
+    const save = (overrides: readonly NativeToolGrant[] | undefined) => {
+      const current = file.read()
+      return file.commit(file.prepare({ expectedRevision: current.revision, features: f.configuration.features, toolGrants: [childGrant], ...(overrides ? { toolAccessOverrides: overrides } : {}) }), current.revision)
+    }
+    const check = async (expected: { main: string[]; private: string[]; group: string[]; future: string[] }) => {
+      const next = await fixture([], undefined, file.read()); next.set(echo); next.set(mcp)
+      for (const [id, type] of [['main', 'main'], ['private', 'qq.private'], ['group', 'qq.group'], ['future', 'future.type']] as const) {
+        const agent = next.createAgent(id); next.native.restrict(agent, type)
+        expect(next.tools.schemas(agent).map(tool => tool.name)).toEqual(expected[id])
+        for (const tool of [echo, mcp]) expect(next.native.authorize({ agent, name: tool.name }, agent, type, [echo.name, mcp.name]) === undefined).toBe(expected[id].includes(tool.name))
+      }
+      return next
+    }
+    save([{ name: echo.name, fingerprint: digest(echo), agentTypeIds: ['qq.group'] }, { name: mcp.name, fingerprint: digest(mcp), agentTypeIds: ['main', 'qq.private'] }])
+    await check({ main: [mcp.name], private: [mcp.name], group: [echo.name], future: [] })
+    const persisted = readFileSync(file.filePath, 'utf8'); save(undefined)
+    expect(readFileSync(file.filePath, 'utf8')).toBe(persisted)
+    save([{ name: echo.name, fingerprint: digest(echo), agentTypeIds: [] }, { name: mcp.name, fingerprint: digest(mcp), agentTypeIds: [] }])
+    const denied = await check({ main: [], private: [], group: [], future: [] })
+    denied.set(schema(mcp.name, 'changed while disabled'))
+    expect(denied.native.allowedGlobal('main')).toEqual([])
+    expect(denied.native.allowedGlobal('qq.private')).toEqual([])
+    save([])
+    await check({ main: [echo.name, mcp.name], private: [echo.name, mcp.name], group: [mcp.name], future: [mcp.name] })
+  })
+  it('keeps named overrides closed after live schema changes, removal and reappearance without denying new automatic tools', async () => {
+    const tool = schema('mcp__profile__read'), f = await fixture([], [{ name: tool.name, fingerprint: digest(tool), agentTypeIds: ['main', 'qq.private'] }])
+    f.set(tool)
+    const main = f.createAgent('main'), child = f.createAgent('child'); f.native.restrict(main, 'main'); f.native.restrict(child, 'qq.private')
+    for (const agent of [main, child]) expect(f.tools.get(tool.name, agent)).toBe(tool)
+    f.set(schema(tool.name, 'changed schema'))
+    for (const agent of [main, child]) expect(f.tools.get(tool.name, agent)).toBeUndefined()
+    expect(f.native.authorize({ agent: main, name: tool.name }, main, 'main', [tool.name])).toBeTypeOf('string')
+    f.remove(tool.name); f.set(schema(tool.name, 'returning changed schema')); f.set(schema('mcp__profile__new_tool'))
+    expect(f.native.allowedGlobal('main')).toEqual(['mcp__profile__new_tool'])
+    expect(f.native.allowedGlobal('future.type')).toEqual(['mcp__profile__new_tool'])
+    const configuration = { ...f.configuration, toolAccessOverrides: [{ name: tool.name, fingerprint: digest(tool), agentTypeIds: ['main'] }] }
+    expect((await f.request('validate', { configuration })).status).toBe(200)
+    const restarted = await fixture([], undefined, configuration); restarted.set(schema(tool.name, 'returning changed schema'))
+    expect(restarted.native.allowedGlobal('main')).toEqual([])
+    expect((await restarted.request('list', {})).body.result.tools[0]).toMatchObject({ name: tool.name, automaticAccess: 'all' })
+  })
+  it('never applies owner overrides to reserved communication tools or inherited same-name shadows', async () => {
+    const tool = schema('mcp__profile__find'), reserved = ['eating_delegate_task', 'qq_send_private_message', 'mcp__qq__qq_send_private_message'].map(name => schema(name))
+    const f = await fixture([], [tool, ...reserved].map(entry => ({ name: entry.name, fingerprint: digest(entry), agentTypeIds: ['main', 'qq.group'] })))
+    for (const entry of [tool, ...reserved]) f.set(entry)
+    const agent = f.createAgent('group'); agent.inherited.set(tool.name, schema(tool.name, 'forged source'))
+    f.native.restrict(agent, 'qq.group'); f.native.reportTools(agent, 'qq.group', [tool.name, ...reserved.map(entry => entry.name)])
+    expect(f.native.authorize({ agent, name: tool.name }, agent, 'qq.group', [tool.name])).toBeTypeOf('string')
+    for (const entry of reserved) expect(f.native.authorize({ agent, name: entry.name }, agent, 'qq.group', reserved.map(row => row.name))).toBeTypeOf('string')
+    expect(f.native.allowedGlobal('main')).toEqual([tool.name])
+    const scoped = schema('mcp__qq__qq_get_group'); agent.local.set(scoped.name, scoped); f.native.reportTools(agent, 'qq.group', [scoped.name])
+    expect(f.native.authorize({ agent, name: scoped.name }, agent, 'qq.group', [scoped.name])).toBeUndefined()
+    expect(f.native.authorize({ agent, name: 'mcp__qq__qq_send_private_message' }, agent, 'qq.group', [scoped.name])).toBeTypeOf('string')
   })
   it('refreshes live masks without recursive events, admits newly published MCP tools, and immediately denies removed tools or changed child grants', async () => {
     const echo = schema('fixture_native_echo'), f = await fixture([{ name: echo.name, fingerprint: digest(echo), agentTypeIds: ['qq.private'] }])
@@ -136,5 +198,6 @@ describe('generated native runtime automatic global access', () => {
     expect((await f.request('validate', { configuration: { ...configuration, toolGrants: [grant] } })).status).toBe(200)
     const rejected = await f.request('validate', { configuration: { ...configuration, toolGrants: [{ ...grant, agentTypeIds: ['qq.private'] }] } })
     expect(rejected.status).toBe(409); expect(rejected.body.error.code).toBe('NATIVE_TOOL_CHANGED')
+    expect((await f.request('validate', { configuration: { ...configuration, toolGrants: [{ ...grant, agentTypeIds: ['qq.private'] }], toolAccessOverrides: [{ ...grant, agentTypeIds: [] }] } })).status).toBe(200)
   })
 })

@@ -150,7 +150,7 @@ export class DirectMcpConnections {
       ? { command: config.command, args: [...config.args], envKeys: Object.keys(config.env ?? {}) }
       : { url: `${url!.origin}${url!.pathname}`, urlHasQuery: Boolean(url!.search), queryKeys: [...new Set(url!.searchParams.keys())], headerKeys: Object.keys(config.headers ?? {}) }
     return structuredClone({ id: config.id, name: config.name, source: { kind: 'direct' as const }, transport: config.transport, enabled: true, autoConnect: config.autoConnect,
-      state: entry.state, lastError: entry.lastError, tools: entry.tools, grant: { agentTypeIds: [...new Set(agentTypeIds)], toolNames: entry.tools.map(tool => tool.name) }, configuration })
+      state: entry.state, lastError: entry.lastError, tools: entry.tools, accessPolicy: { mode: 'all' as const }, grant: { agentTypeIds: [...new Set(agentTypeIds)], toolNames: entry.tools.map(tool => tool.name) }, configuration })
   }
 
   save(input: unknown): McpServiceSummary {

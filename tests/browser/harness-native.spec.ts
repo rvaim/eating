@@ -12,7 +12,6 @@ import { createInstalledHost } from '../../apps/host/src/installed-host'
 import { installPluginPackage } from '../../apps/host/src/plugin-installation'
 
 const staticDirectory = fileURLToPath(new URL('../../dist/', import.meta.url))
-const captures = fileURLToPath(new URL('../../.impeccable/review/dsh-native/', import.meta.url))
 const json = (route: Route, value: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) })
 function snapshotFixture(): NativeSnapshot {
   const defaults = defaultNativeCapabilities(['qq.private', 'qq.group'])
@@ -27,14 +26,14 @@ function snapshotFixture(): NativeSnapshot {
 
 test.describe('DSH 原生能力与插件管理', () => {
   test.setTimeout(60000)
-  let home: string, host: EatingHost, url: string
+  let home: string, host: EatingHost, url: string, captures: string
   let errors: string[]
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page }, info) => {
     errors = []; page.on('pageerror', error => errors.push(error.message))
     home = await realpath(await mkdtemp(join(tmpdir(), 'Eating_native_ui_')))
     for (const plugin of ['communication/qq', 'harness/dsh']) await installPluginPackage(home, fileURLToPath(new URL(`../../plugins/${plugin}/dist/`, import.meta.url)))
     host = await createInstalledHost({ dataDirectory: home, port: 0, allowedUiOrigins: [], staticDirectory })
-    url = await host.listen(); await mkdir(captures, { recursive: true })
+    url = await host.listen(); captures = info.outputPath('captures'); await mkdir(captures, { recursive: true })
   })
   test.afterEach(async () => {
     await host?.close()
@@ -51,7 +50,7 @@ test.describe('DSH 原生能力与插件管理', () => {
       if (await handler?.(operation, body.input, route)) return
       if (operation === 'list') { await json(route, snapshot); return }
       if (operation === 'save') {
-        snapshot.configuration = { schemaVersion: 1, revision: snapshot.configuration.revision + 1, features: body.input.features, toolGrants: body.input.toolGrants } as NativeCapabilitiesConfiguration
+        snapshot.configuration = { ...snapshot.configuration, revision: snapshot.configuration.revision + 1, features: body.input.features, toolGrants: body.input.toolGrants, ...(Object.hasOwn(body.input, 'toolAccessOverrides') ? { toolAccessOverrides: body.input.toolAccessOverrides } : {}) } as NativeCapabilitiesConfiguration
         await json(route, { configuration: snapshot.configuration }); return
       }
       throw new Error('Unexpected fixture native operation: ' + operation)
@@ -153,7 +152,7 @@ test.describe('DSH 原生能力与插件管理', () => {
     await page.screenshot({ path: join(captures, 'tools-light-mobile.png'), animations: 'disabled' })
   })
 
-  test('原生全局工具自动供主代理使用，功能MCP向所有代理只读开放且新增目录不需授权保存', async ({ page }, info) => {
+  test('原生全局工具默认供主代理使用，功能MCP默认所有代理且新增目录不需授权保存', async ({ page }, info) => {
     const snapshot = snapshotFixture(); let writes = 0
     await mock(page, snapshot, async operation => { if (operation !== 'list') writes++; return false })
     await open(page); await page.getByRole('button', { name: '插件工具授权', exact: true }).click()
@@ -177,6 +176,46 @@ test.describe('DSH 原生能力与插件管理', () => {
     await page.setViewportSize({ width: 390, height: 844 }); await added.scrollIntoViewIfNeeded()
     await page.screenshot({ path: info.outputPath('native-automatic-access-mobile.png'), animations: 'disabled' })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  })
+
+  test('主人可自定义main和子代理、全部禁用、重读保持并恢复自动，语言切换保留权限草稿', async ({ page }, info) => {
+    const snapshot = snapshotFixture(); let writes = 0, reads = 0
+    await mock(page, snapshot, async operation => { if (operation === 'save') writes++; if (operation === 'list') reads++; return false })
+    await open(page); await page.getByRole('button', { name: '插件工具授权', exact: true }).click()
+    const native = page.locator('details.dsh-native-row').filter({ hasText: 'fixture_echo' }).first(), mcp = page.locator('details.dsh-native-row').filter({ hasText: 'mcp__profile__find' }).first()
+    await native.locator('summary').click(); await native.getByRole('radio', { name: '自定义', exact: true }).check()
+    await native.getByRole('checkbox', { name: '主 Agent', exact: true }).uncheck(); await native.getByRole('checkbox', { name: 'QQ 群聊', exact: true }).check()
+    await mcp.locator('summary').click(); await mcp.getByRole('radio', { name: '自定义', exact: true }).check()
+    expect(await mcp.getByRole('checkbox').count()).toBe(3)
+    expect(await mcp.locator('input[type="checkbox"]:checked').count()).toBe(3)
+    await mcp.getByRole('checkbox', { name: '主 Agent', exact: true }).uncheck(); await mcp.getByRole('checkbox', { name: 'QQ 群聊', exact: true }).uncheck()
+    const before = reads; await page.getByRole('combobox', { name: '界面语言', exact: true }).selectOption('en-US')
+    await expect(mcp.getByRole('radio', { name: 'Custom', exact: true })).toBeChecked(); await expect(mcp.getByRole('checkbox', { name: 'Main Agent', exact: true })).not.toBeChecked(); expect(reads).toBe(before); expect(writes).toBe(0)
+    await page.getByRole('combobox', { name: 'Display language', exact: true }).selectOption('zh-CN')
+    const save = page.getByRole('button', { name: '保存原生能力与授权', exact: true }); await save.click()
+    await expect.poll(() => snapshot.configuration.toolAccessOverrides).toEqual([{ name: 'fixture_echo', fingerprint: 'a'.repeat(64), agentTypeIds: ['qq.group'] }, { name: 'mcp__profile__find', fingerprint: 'd'.repeat(64), agentTypeIds: ['qq.private'] }])
+    await page.reload(); await page.getByRole('tab', { name: '原生能力与插件', exact: true }).click(); await page.getByRole('button', { name: '插件工具授权', exact: true }).click(); await mcp.locator('summary').click()
+    await expect(mcp.getByRole('radio', { name: '自定义', exact: true })).toBeChecked(); await expect(mcp.getByRole('checkbox', { name: 'QQ 私聊', exact: true })).toBeChecked(); await expect(mcp.getByRole('checkbox', { name: '主 Agent', exact: true })).not.toBeChecked()
+    await page.setViewportSize({ width: 1440, height: 1000 }); await mcp.scrollIntoViewIfNeeded(); await page.screenshot({ path: info.outputPath('native-custom-access-desktop.png'), animations: 'disabled' })
+    await mcp.getByRole('button', { name: '清空选择', exact: true }).click(); await save.click()
+    await expect.poll(() => snapshot.configuration.toolAccessOverrides?.find(row => row.name === 'mcp__profile__find')?.agentTypeIds).toEqual([])
+    await expect(mcp.getByText('自定义：全部禁用', { exact: true })).toBeVisible()
+    await page.setViewportSize({ width: 390, height: 844 }); await page.emulateMedia({ colorScheme: 'dark' }); await mcp.scrollIntoViewIfNeeded(); await page.screenshot({ path: info.outputPath('native-custom-disabled-mobile.png'), animations: 'disabled' }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await mcp.getByRole('radio', { name: '自动（默认规则）', exact: true }).check(); await native.locator('summary').click(); await native.getByRole('radio', { name: '自动（默认规则）', exact: true }).check(); await save.click()
+    await expect.poll(() => snapshot.configuration.toolAccessOverrides).toEqual([]); expect(snapshot.configuration.toolGrants).toEqual([]); expect(writes).toBe(3)
+    await expect(mcp.getByText('所有 Agent 自动可用', { exact: true })).toBeVisible(); await expect(mcp.getByRole('checkbox')).toHaveCount(0)
+  })
+
+  test('结构变化保留自定义禁用，保存其它项不改指纹，主人可核对或恢复缺失工具自动模式', async ({ page }) => {
+    const snapshot = snapshotFixture()
+    snapshot.configuration = { ...snapshot.configuration, toolAccessOverrides: [{ name: 'mcp__profile__find', fingerprint: 'a'.repeat(64), agentTypeIds: ['main'] }, { name: 'mcp__profile__missing', fingerprint: 'b'.repeat(64), agentTypeIds: [] }] }
+    await mock(page, snapshot); await open(page); await page.getByRole('button', { name: '插件工具授权', exact: true }).click()
+    const mcp = page.locator('details.dsh-native-row').filter({ hasText: 'mcp__profile__find' }).first(); await mcp.locator('summary').click()
+    await expect(mcp.getByText('工具已变化，需重新授权', { exact: true })).toBeVisible(); await expect(mcp.getByText(/工具结构已变化，当前自定义范围/)).toBeVisible(); await expect(mcp.getByRole('checkbox', { name: '主 Agent', exact: true })).toBeChecked()
+    const missing = page.locator('.dsh-native-stale').filter({ hasText: 'mcp__profile__missing' }); await missing.getByRole('button', { name: '恢复自动模式', exact: true }).click(); await page.getByRole('button', { name: '保存原生能力与授权', exact: true }).click()
+    await expect.poll(() => snapshot.configuration.toolAccessOverrides).toEqual([{ name: 'mcp__profile__find', fingerprint: 'a'.repeat(64), agentTypeIds: ['main'] }])
+    await mcp.getByRole('button', { name: '确认当前工具并保留所选范围', exact: true }).click(); await page.getByRole('button', { name: '保存原生能力与授权', exact: true }).click()
+    await expect.poll(() => snapshot.configuration.toolAccessOverrides).toEqual([{ name: 'mcp__profile__find', fingerprint: 'd'.repeat(64), agentTypeIds: ['main'] }]); await expect(mcp.getByText('工具已变化，需重新授权', { exact: true })).toHaveCount(0)
   })
 
   test('安装需要来源检查和信任选择，插件配置不回显，隐藏清理秘密并停止读取', async ({ page }) => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clearNativeDraftSecrets, readNativeSnapshot } from './native-data'
+import { clearNativeDraftSecrets, readNativeConfiguration, readNativeSnapshot } from './native-data'
 import { defaultNativeCapabilities } from '../native-capabilities'
 
 describe('native panel private drafts and response validation', () => {
@@ -12,6 +12,13 @@ describe('native panel private drafts and response validation', () => {
   it('retains nonsecret invalid JSON drafts and clears incomplete secret drafts', () => {
     expect(clearNativeDraftSecrets('{ "timeoutMs":', {})).toBe('{ "timeoutMs":')
     expect(clearNativeDraftSecrets('{ "apiKey": "incomplete-private', { service: {} })).not.toContain('incomplete-private')
+  })
+  it('accepts the current optional override policy without supplementing absent fields and rejects malformed or reserved policies', () => {
+    const current = defaultNativeCapabilities([]), override = { name: 'mcp__profile__find', fingerprint: 'a'.repeat(64), agentTypeIds: ['main', 'qq.private'] }
+    expect(Object.hasOwn(readNativeConfiguration(current), 'toolAccessOverrides')).toBe(false)
+    for (const toolAccessOverrides of [[], [override], [{ ...override, agentTypeIds: [] }]]) expect(readNativeConfiguration({ ...current, toolAccessOverrides }).toolAccessOverrides).toEqual(toolAccessOverrides)
+    for (const toolAccessOverrides of [null, {}, [override, override], [{ ...override, fingerprint: 'changed' }], [{ ...override, agentTypeIds: ['main', 'main'] }], ...['eating_delegate_task', 'qq_send_private_message', 'mcp__qq__send'].map(name => [{ ...override, name }])]) expect(() => readNativeConfiguration({ ...current, toolAccessOverrides })).toThrow()
+    expect(() => readNativeConfiguration({ ...current, toolAccessOverrides: undefined })).toThrow()
   })
   it('requires truthful automatic access summaries and excludes reserved communication names', () => {
     const tool = { name: 'mcp__profile__find', description: 'Profile capability', fingerprint: 'a'.repeat(64), automaticAccess: 'all' }

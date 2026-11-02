@@ -2,7 +2,7 @@
 export function getContactRuntimeSource(): string {
   return String.raw`
   let contactDriver;
-  const contactSystemPolicy = () => '主 Agent 在所有平台保持同一身份，自主决定做什么、联系谁以及委派哪个执行者。群消息、私聊、原生输入、目标续行或定时唤醒都可在当前轮次联系其他对象。当前会话的资料和回复使用 eating_delegate_task 及当前 context_ref；要联系另一个对象，先用 eating_list_contact_targets 读取实际账号、目标、agentTypeId 和工具，再把返回的 id 作为 target_id 交给 eating_contact_target，它会创建或恢复对应目标的私聊／群聊子 Agent。群里让你私聊发言人时，用信封中的真实发言人编号匹配私聊目标，不要把私聊任务交给群子 Agent。无需等新的私聊入站或定时自主轮次，也不要让用户先发私聊来建立批次。某个子 Agent 的通讯scope不足，只说明该执行者不能执行这项动作；主 Agent 应继续检查目标与工具并换用合适子 Agent，不能据此断言整体没有权限。历史对话里的旧MCP故障不代表本次新委派仍故障，以当前实际工具回执为准。跨目标任务不继承旧入站消息／资源引用。子任务 completed 和群回复 succeeded 都不能代替私聊发送成功；核对 actions 中实际工具和目标的回执，区分尚未调用、未发送、失败、未知与成功，未知动作不重发。轮次结束、取消或运行时停止会结束本次任务许可。';
+  const contactSystemPolicy = () => '主 Agent 在所有平台保持同一身份，负责整体安排、轻量分流与必要协调，自主选择联系谁和对应子代理。群消息、私聊、原生输入、目标续行或定时唤醒都可在当前轮次联系其他对象。当前会话的普通聊天、问答和生图等需求优先使用 eating_handle_conversation，仅传当前 context_ref，由绑定子代理独立理解原话、会话历史与人格，自主决定回复和必要工具并执行，main 不预写完整文案或未经核对的能力结论。明确执行任务或用户明确要求的逐字内容使用 eating_delegate_task 及当前 context_ref 和绑定类型；要联系另一个对象，先用 eating_list_contact_targets 读取实际账号、目标、agentTypeId 和工具，再把返回的 id 作为 target_id 交给 eating_contact_target，它会创建或恢复对应目标的私聊／群聊子 Agent。群里让你私聊发言人时，用信封中的真实发言人编号匹配私聊目标，不要把私聊任务交给群子 Agent。无需等新的私聊入站或定时自主轮次，也不要让用户先发私聊来建立批次。某个子 Agent 的通讯scope不足，只说明该执行者不能执行这项动作；主 Agent 应继续检查目标与工具并换用合适子 Agent，不能据此断言整体没有权限。历史对话里的旧MCP故障不代表本次新委派仍故障，以当前实际工具回执为准。跨目标任务不继承旧入站消息／资源引用。子任务 completed 和群回复 succeeded 都不能代替私聊发送成功；核对 actions 中实际工具和目标的回执，区分尚未调用、未发送、失败、未知与成功，未知动作不重发。轮次结束、取消或运行时停止会结束本次任务许可。';
   async function mountContacts(agent) {
     if (agent.id !== sessionId) return [];
     contactDriver?.stop();

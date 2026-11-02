@@ -280,7 +280,7 @@ export function apply(ctx){
       expect(tools).toEqual(expect.arrayContaining(['read', 'write', 'edit', 'web_fetch', 'web_search']))
       expect(tools.some(name => name?.startsWith('mcp__qq__'))).toBe(false)
     }
-    expect(rootRequests.every(request => request.tools?.map(tool => tool.function?.name).filter(name => name?.startsWith('eating_')).sort().join(',') === ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task'].join(','))).toBe(true)
+    expect(rootRequests.every(request => request.tools?.map(tool => tool.function?.name).filter(name => name?.startsWith('eating_')).sort().join(',') === ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task'].join(','))).toBe(true)
     expect(requests.filter(request => request.tools?.some(tool => tool.function?.name === 'mcp__qq__qq_send_private_message')).every(request => !request.tools?.some(tool => tool.function?.name === 'mcp__qq__qq_send_group_message'))).toBe(true)
     expect(JSON.stringify(rootRequests.flatMap(request => request.messages?.filter(message => message.role === 'tool') ?? []))).toContain('succeeded')
   }, 90000)
@@ -333,7 +333,7 @@ export function apply(ctx){
     expect(model.errors).toEqual([])
     expect(plugin.isReady()).toBe(true)
     const names = model.requests.map(request => request.tools?.map(tool => tool.function?.name) ?? [])
-    expect(names[0]?.filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task'])
+    expect(names[0]?.filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task'])
     expect(names[0]).toEqual(expect.arrayContaining(['read', 'write', 'edit', 'web_fetch', 'web_search']))
     expect(names[0]?.some(name => name?.startsWith('mcp__qq__'))).toBe(false)
     expect(names[3]).toEqual(names[0])

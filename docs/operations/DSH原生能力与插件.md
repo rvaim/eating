@@ -1,6 +1,6 @@
 # DSH 原生能力与插件
 
-适用：DSH插件0.14.0、Eating0.16.0／API4；当前main默认与官方权限按[ADR-0034](../decisions/ADR-0034-主Agent自主决策与功能能力默认开放.md)。入口：**Harness → DeepSeek Harness → 原生能力与插件**。
+适用：DSH插件0.15.0、Eating0.17.0／API4；当前默认与主人配置按[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)。入口：**Harness → DeepSeek Harness → 原生能力与插件**。
 
 ## 原生功能
 
@@ -8,14 +8,14 @@
 
 功能可搜索，展开目标条目后：
 
-1. main原生工具自动开放，目录用只读automaticAccess显示自动类型，不提供无效的main授权勾选。
-2. 为其他子类型选择非MCP原生功能；功能型native Profile MCP及新增工具自动供所有Agent使用，排除Eating／QQ受控通讯。子非MCP选择按类型独立生效。
+1. 选择功能是否开启及使用它的代理类型；新main默认开启平台支持的全部功能，主人仍可显式修改。
+2. 功能型native Profile MCP默认供所有Agent使用，main非reserved全局工具默认开放；逐工具的自动／自定义例外在“插件工具授权”中保存。其他子非MCP选择独立生效，Eating／QQ受控通讯范围不绕过。
 3. 根据需要修改原生模块 JSON。每个模块条目下是该模块的完整配置，依赖服务的配置也在同一对象内。`<stored-secret>` 表示保持原秘密；删除字段表示明确清除。保存前系统 DSH 校验模块、平台、依赖与原生配置。
 4. 停止 Harness 后点击“保存原生能力与授权”，再启动 Harness。
 
 新配置的main默认开启当前平台支持的全部原生feature；时间上下文保留主／子、上海时区与600000ms，其他子类型不自动开启这些原生feature。main文件默认read/readImage/write/edit均为true，web默认fetch/search均为true。已有配置不通过读取自动覆盖；本次已授权实例由部署执行者用正式设置同步main能力，保留其他选择和自定义提示词／人格。Bash/PowerShell、文件搜索、工作目录、后台任务、网页、技能、提醒、目标、待办、结构化提问和文件交付都使用官方原生模块。
 
-模块存在不代表远端服务已经配置。网页搜索需要此 Eating 实例自己的原生搜索提供商和鉴权，未配置会返回真实错误；不会借用主 DSH 的账号或环境密钥。网页获取与关键词搜索是不同工具，新main默认fetch=true/search=true；缺搜索提供商或Key明确报告未配置，不能冒充Eating权限拒绝。若网页获取报non-public IP且DNS返回198.18/15，属于原生HTTP公网地址策略与TUN/Fake-IP的冲突；普通网络可通也可能在请求前被拒绝，原生参数没有allowFakeIp开关，详见[现场诊断](../reports/2026-11-01-原生网页Fake-IP拦截与图片声明诊断.md)。Eating专属官方permission默认danger-full-access／approval never，既存根通过正式设置同步本次主人授权；终端和文件仍使用实际DSH／OS能力，代理范围选择不是OS沙箱，不改主人主DSH或官方Web。
+模块存在不代表远端服务已经配置。网页搜索需要此 Eating 实例自己的原生搜索提供商和鉴权，未配置会返回真实错误；不会借用主 DSH 的账号或环境密钥。网页获取与关键词搜索是不同工具，新main默认fetch=true/search=true；缺搜索提供商或Key明确报告未配置，不能冒充Eating权限拒绝。若网页获取报non-public IP且DNS返回198.18/15，属于原生HTTP公网地址策略与TUN/Fake-IP的冲突；普通网络可通也可能在请求前被拒绝，原生参数没有allowFakeIp开关，详见[现场诊断](../reports/2026-11-01-原生网页Fake-IP拦截与图片声明诊断.md)。Eating专属官方permission默认danger-full-access／approval never，主人仍可通过正式设置显式再配；终端和文件仍使用实际DSH／OS能力，代理范围选择不是OS沙箱，不改主人主DSH或官方Web。
 
 “草稿未保存”“已保存，待启动”“等待代理创建”和“已挂载”是不同状态。页首同时显示已保存版本与运行中应用版本。子代理尚未创建时没有实际挂载记录，不会为了检查状态唤醒模型。运行中修改按钮禁用，请先停止 Harness。
 
@@ -35,17 +35,17 @@
 2. 勾选信任该来源代码，再点击“确认安装插件”。检查本身不等于安装。
 3. 安装由官方 PluginManager 和 pnpm 完成，安装后保持停用。不要把包下载/安装结果当成已挂载成功。
 4. 若原生管理器报告依赖需要安装脚本，页面列出确切包名；只有主人再勾选脚本许可才会重试安装。
-5. 核对目录后单独启用插件；main及所有Agent功能型native MCP自动获得工具，需要时仅为其他子Agent选择非MCP原生工具。
+5. 核对目录后单独启用插件；main及所有Agent功能型native MCP默认自动取得工具。需要限制时可为该工具改“自定义”，选择精确代理类型并保存；其他子非MCP仍可按当前目录选择。
 
 安装、启停、配置、卸载都要求 Harness 完全停止；其他页面也不能在管理进程活动时启动同一实例。安装失败只显示原生结构化原因，不回显 pnpm 原始输出或秘密。结果未知时重新读取目录，不自动重做。卸载需要先停用并再次确认，仅删除插件代码，保留资料。
 
 ## 插件工具授权和 MCP
 
-main自动开放全部原生全局工具；所有Agent自动获得功能型native Profile MCP及后续新增工具，排除Eating／QQ受控通讯。目录automaticAccess是只读摘要，不保存无效的main／全功能MCP勾选。
+“自动”下，main取得非reserved全局工具，所有Agent取得功能型native Profile MCP及新增工具；其他子非MCP按原有名称／schema指纹／类型选择。目录automaticAccess说明默认行为，主人可以逐项切换“自定义”，选择精确类型并保存，排除main或清空全部类型可禁用工具。
 
-其他子Agent的非MCP原生工具继续按精确名称、schema指纹和类型选择；新增／结构变化时需更新这一子类型的选择。main和功能型native MCP新工具自动纳入，tools/change后更新native.restrict及当前scope限制；真实目录和最终调用守卫同时生效。
+自定义以同名toolAccessOverrides为准，优先于自动行为与toolGrants。schema指纹变化后保留限制且停止授权，不回落为自动开放；先读新目录核对，再确认当前工具或恢复自动。暂时缺失的工具也保留例外，可明确恢复自动。工具目录与最终调用守卫同时执行，tools/change更新native.restrict；reserved／来源／QQ scope不能通过同名覆盖绕过。
 
-原生工具自动类型与可编辑的其他子非MCP选择分别展示。Host的功能型capability／direct MCP在“MCP”页连接后全部当前及新增工具自动供所有现有／后续Agent类型使用，无授权勾选或save-grants；运行区只展示实际挂载。QQ通讯继续受账号、会话、目标及消息／图片引用范围控制。
+原生配置保持schema1，toolAccessOverrides缺省沿用默认、不补写；保存省略保持当前例外，[]恢复全部自动。feature的启用／代理范围／参数保持独立。Host capability／direct来源则到“MCP”页选择all/custom并保存，custom不自动纳入后续新类型／新工具，可恢复all；QQ通讯仍由来源权限页管理。
 
 ## 草稿、隐藏和错误
 
@@ -55,4 +55,4 @@ main自动开放全部原生全局工具；所有Agent自动获得功能型nativ
 
 Eating暂停只控制其无输入定时机会及真正自主周期，不冻结main所有能力；原生schedule_create/schedule_update不再被Eating自主周期人工阻断，保持官方语义，Eating agenda仍按其暂停／额度规则执行。
 
-本功能使用Eating自己的数据和系统DSH安装，不修改主人主 DSH、当前 DSH GUI、主 Profile 或凭据。实现决策见[ADR-0021](../decisions/ADR-0021-DSH原生能力与插件管理.md)，当前验证与部署见[本轮报告](../reports/2026-11-02-主Agent自主与默认能力验证部署报告.md)，首次原生管理阶段证据保留在[历史报告](../reports/2026-11-01-DSH原生能力与插件管理验证.md)。
+本功能使用Eating自己的数据和系统DSH安装，不修改主人主 DSH、当前 DSH GUI、主 Profile 或凭据。实现决策见[ADR-0021](../decisions/ADR-0021-DSH原生能力与插件管理.md)，当前验证／清理与部署见[本轮报告](../reports/2026-11-02-会话代理自主处理与默认开放可配置验证清理报告.md)，首次原生管理阶段证据保留在[历史报告](../reports/2026-11-01-DSH原生能力与插件管理验证.md)。

@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { AlertCircle, Cable, ChevronDown, LoaderCircle, Plus, RefreshCw, Trash2, X } from 'lucide-react'
-import type { HarnessRemount, McpDirectorySnapshot, McpServiceSummary } from '@eating/plugin-sdk'
+import type { HarnessRemount, McpAccessPolicy, McpDirectorySnapshot, McpServiceSummary } from '@eating/plugin-sdk'
 import { ActionButton, getErrorMessage, HostApiError, hostRequest, useI18n } from '@eating/ui-sdk'
 import { httpSaveInput, readMcpDirectory, readMcpMutationResult, stdioSaveInput } from '../state/mcp'
 import type { DirectMcpSaveInput } from '../state/mcp'
@@ -100,7 +100,7 @@ export function McpPage({ onFeedback }: { readonly onFeedback: (message: string)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function mutate(key: string, operation: 'save' | 'connect' | 'disconnect' | 'delete', input: unknown, success: string): Promise<boolean> {
+  async function mutate(key: string, operation: 'save' | 'save-grants' | 'connect' | 'disconnect' | 'delete', input: unknown, success: string): Promise<boolean> {
     if (lock.current || !mounted.current) return false
     lock.current = true; setBusy(key); setFailure(null); setRemounts([]); setNoRemount(false)
     const controller = new AbortController()
@@ -179,7 +179,9 @@ export function McpPage({ onFeedback }: { readonly onFeedback: (message: string)
     {!snapshot && loading && <p className="mcp-loading" role="status"><LoaderCircle size={16} aria-hidden="true" />{t('mcp.loading')}</p>}
     {snapshot && services.length === 0 && <div className="empty-state mcp-empty"><Cable size={30} aria-hidden="true" /><h3>{t('mcp.emptyTitle')}</h3><p>{t('mcp.emptyDescription')}</p><ActionButton reason={t('ui.reason.read')} type="button" className="button button-primary" disabled={stale} onClick={addService}><Plus size={16} aria-hidden="true" />{t('mcp.addDirect')}</ActionButton></div>}
     <div className="mcp-service-list" aria-busy={loading}>
-      {services.map(service => <div key={service.id} hidden={service.id !== selectedId} className="mcp-service-slot"><ServiceCard service={service} agentTypes={agentTypes} busy={busy} stale={stale}
+      {services.map(service => <div key={service.id} hidden={service.id !== selectedId} className="mcp-service-slot"><ServiceCard service={service} agentTypes={agentTypes} revision={revision} busy={busy} stale={stale} loading={loading}
+        onRefresh={() => void refresh()}
+        onSaveAccess={(policy, expectedRevision) => mutate(`access-${service.id}`, 'save-grants', { id: service.id, expectedRevision, ...policy }, t('mcp.access.savedFeedback'))}
         onEdit={() => setEditor(draftFrom(service, revision))}
         onConnect={() => void mutate('connect', 'connect', { id: service.id }, t('mcp.connectedFeedback'))}
         onDisconnect={() => void mutate('disconnect', 'disconnect', { id: service.id }, t('mcp.disconnectedFeedback'))}
@@ -199,11 +201,15 @@ function HarnessRemountNotice({ reports, unchanged }: { readonly reports: readon
   </div>
 }
 
-function ServiceCard({ service, agentTypes, busy, stale, onEdit, onConnect, onDisconnect, onDelete }: {
+function ServiceCard({ service, agentTypes, revision, busy, stale, loading, onRefresh, onSaveAccess, onEdit, onConnect, onDisconnect, onDelete }: {
   readonly service: McpServiceSummary
   readonly agentTypes: McpDirectorySnapshot['agentTypes']
+  readonly revision: number
   readonly busy: string | null
   readonly stale: boolean
+  readonly loading: boolean
+  readonly onRefresh: () => void
+  readonly onSaveAccess: (policy: McpAccessPolicy, expectedRevision: number) => Promise<boolean>
   readonly onEdit: () => void
   readonly onConnect: () => void
   readonly onDisconnect: () => void
@@ -224,7 +230,6 @@ function ServiceCard({ service, agentTypes, busy, stale, onEdit, onConnect, onDi
   const pluginKind = stringValue(configuration.pluginKind)
   const permissionsManaged = configuration.permissionsManagedByPlugin === true
   const transport = service.transport === 'stdio' ? t('mcp.transport.stdio') : service.transport === 'streamable-http' ? t('mcp.transport.http') : t('mcp.transport.plugin')
-  const partner = (id: string) => agentTypes.find(type => type.id === id)?.title ?? id
   const disabled = busy !== null || stale
   const disabledReason = t(stale ? 'ui.reason.read' : 'ui.reason.busy')
 
@@ -259,23 +264,110 @@ function ServiceCard({ service, agentTypes, busy, stale, onEdit, onConnect, onDi
       </section>
       <section className="mcp-block mcp-block-access" aria-labelledby={`mcp-access-${service.id}`}>
         <h3 id={`mcp-access-${service.id}`}>{t('mcp.access.title')}</h3>
-        {permissionsManaged ? <p className="mcp-hint">{t('mcp.access.managedByPlugin', { name: service.source.kind === 'plugin' ? service.source.pluginName : '' })}</p> : <>
-          <p className="mcp-access-summary">{t('mcp.access.default')}</p>
-          <p className="mcp-access-summary">{t('mcp.access.agentTypes', { names: service.grant.agentTypeIds.map(partner).join(' / ') })}</p>
-          <p className="mcp-access-summary">{t('mcp.access.tools', { value: formatNumber(service.grant.toolNames.length) })}</p>
-          <p className="mcp-hint">{t('mcp.access.automatic')}</p>
-          <p className="mcp-hint">{t(service.enabled && service.state === 'connected' ? 'mcp.access.ready' : 'mcp.access.unavailable')}</p>
-        </>}
+        {permissionsManaged ? <p className="mcp-hint">{t('mcp.access.managedByPlugin', { name: service.source.kind === 'plugin' ? service.source.pluginName : '' })}</p> : service.accessPolicy !== null && <AccessPolicyPanel service={service} policy={service.accessPolicy} agentTypes={agentTypes} revision={revision} busy={busy} stale={stale} loading={loading} onRefresh={onRefresh} onSave={onSaveAccess} />}
       </section>
     </div>
     <details className="mcp-tools"><summary><ChevronDown size={15} aria-hidden="true" />{t('mcp.tools.title', { count: service.tools.length, value: formatNumber(service.tools.length) })}</summary>
       <label className="mcp-tool-search"><span>{t('mcp.tools.search')}</span><input type="search" value={toolQuery} onChange={event => setToolQuery(event.target.value)} /></label>
-      {visibleTools.length === 0 ? <p className="mcp-muted">{t('mcp.tools.empty')}</p> : <ul>{visibleTools.map(tool => <li key={tool.name}><div className="mcp-tool-head"><strong>{tool.title}</strong><code>{tool.name}</code>{tool.readOnly && <span className="mcp-tool-badge">{t('mcp.tools.readOnly')}</span>}{tool.destructive && <span className="mcp-tool-badge mcp-tool-badge-warn">{t('mcp.tools.destructive')}</span>}</div><p>{tool.description}</p></li>)}</ul>}
+      {visibleTools.length === 0 ? <p className="mcp-muted">{t('mcp.tools.empty')}</p> : <ul>{visibleTools.map(tool => <li key={tool.name}><div className="mcp-tool-head"><strong>{tool.title}</strong><code>{tool.name}</code>{service.accessPolicy?.mode === 'custom' && <span className="mcp-tool-badge">{t(service.accessPolicy.toolNames.includes(tool.name) ? 'mcp.access.allowed' : 'mcp.access.denied')}</span>}{tool.readOnly && <span className="mcp-tool-badge">{t('mcp.tools.readOnly')}</span>}{tool.destructive && <span className="mcp-tool-badge mcp-tool-badge-warn">{t('mcp.tools.destructive')}</span>}</div><p>{tool.description}</p></li>)}</ul>}
     </details>
     {direct && <div className="mcp-danger-zone">
       {!confirmDelete ? <ActionButton reason={disabledReason} type="button" className="text-button mcp-danger-trigger" disabled={disabled} onClick={() => setConfirmDelete(true)}><Trash2 size={14} aria-hidden="true" />{t('mcp.delete')}</ActionButton> : <div className="mcp-confirm" role="alertdialog" aria-label={t('mcp.deleteConfirmTitle', { name: service.name })}><div><strong>{t('mcp.deleteConfirmTitle', { name: service.name })}</strong><p>{t('mcp.deleteConfirmDescription')}</p></div><div className="mcp-inline-actions"><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-secondary" disabled={busy !== null} onClick={() => setConfirmDelete(false)}>{t('mcp.cancel')}</ActionButton><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-danger" disabled={disabled || busy !== null} onClick={onDelete}>{busy === 'delete' ? t('mcp.deleting') : t('mcp.deleteConfirm')}</ActionButton></div></div>}
     </div>}
   </section>
+}
+
+interface AccessDraft {
+  readonly revision: number
+  readonly mode: McpAccessPolicy['mode']
+  readonly customized: boolean
+  readonly agentTypeIds: readonly string[]
+  readonly toolNames: readonly string[]
+}
+
+function AccessPolicyPanel({ service, policy, agentTypes, revision, busy, stale, loading, onRefresh, onSave }: {
+  readonly service: McpServiceSummary
+  readonly policy: McpAccessPolicy
+  readonly agentTypes: McpDirectorySnapshot['agentTypes']
+  readonly revision: number
+  readonly busy: string | null
+  readonly stale: boolean
+  readonly loading: boolean
+  readonly onRefresh: () => void
+  readonly onSave: (policy: McpAccessPolicy, expectedRevision: number) => Promise<boolean>
+}) {
+  const { t, formatNumber } = useI18n('app')
+  const prefix = useId()
+  const [draft, setDraft] = useState<AccessDraft | null>(null)
+  const [query, setQuery] = useState('')
+  const partner = (id: string) => agentTypes.find(type => type.id === id)?.title ?? id
+  const disabled = busy !== null
+  const outdated = draft !== null && (draft.revision !== revision || stale)
+  const all = draft?.mode === 'all'
+  const savedAll = policy.mode === 'all'
+  const selectedTypes = savedAll ? agentTypes.map(type => type.id) : policy.agentTypeIds
+  const selectedTools = savedAll ? service.tools.map(tool => tool.name) : policy.toolNames
+  const excludedTypes = agentTypes.filter(type => !selectedTypes.includes(type.id))
+  const allowedTools = service.tools.filter(tool => selectedTools.includes(tool.name)).length
+  const ready = service.enabled && service.state === 'connected'
+  const readiness = !ready ? 'mcp.access.unavailable' : savedAll ? 'mcp.access.ready' : service.grant.agentTypeIds.length && service.grant.toolNames.length ? 'mcp.access.customReady' : 'mcp.access.closed'
+
+  function edit() {
+    setDraft({ revision, mode: policy.mode, customized: policy.mode === 'custom', agentTypeIds: [...selectedTypes], toolNames: [...selectedTools] })
+    setQuery('')
+  }
+  function mode(value: McpAccessPolicy['mode']) {
+    if (!draft) return
+    setDraft(value === 'custom' && !draft.customized
+      ? { ...draft, mode: value, customized: true, agentTypeIds: agentTypes.map(type => type.id), toolNames: service.tools.map(tool => tool.name) }
+      : { ...draft, mode: value })
+  }
+  function toggle(key: 'agentTypeIds' | 'toolNames', id: string, checked: boolean) {
+    if (!draft || draft.mode !== 'custom') return
+    setDraft({ ...draft, [key]: checked ? [...draft[key], id] : draft[key].filter(value => value !== id) })
+  }
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!draft || disabled || loading || outdated) return
+    const next: McpAccessPolicy = draft.mode === 'all' ? { mode: 'all' } : { mode: 'custom', agentTypeIds: draft.agentTypeIds, toolNames: draft.toolNames }
+    if (await onSave(next, draft.revision)) setDraft(null)
+  }
+
+  const typeOptions = [...agentTypes, ...(draft?.mode === 'custom' ? draft.agentTypeIds : []).filter(id => !agentTypes.some(type => type.id === id)).map(id => ({ id, title: id }))]
+  const toolOptions = [...service.tools.map(tool => ({ name: tool.name, title: tool.title, current: true })), ...(draft?.mode === 'custom' ? draft.toolNames : []).filter(name => !service.tools.some(tool => tool.name === name)).map(name => ({ name, title: name, current: false }))]
+  const visibleTools = toolOptions.filter(tool => `${tool.name} ${tool.title}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
+
+  return <>
+    <p className="mcp-access-summary"><strong>{t(savedAll ? 'mcp.access.default' : 'mcp.access.customSaved')}</strong></p>
+    <p className="mcp-access-summary">{t(savedAll ? 'mcp.access.agentTypes' : 'mcp.access.selectedTypes', { names: selectedTypes.length ? selectedTypes.map(partner).join(' / ') : t('mcp.access.none') })}</p>
+    <p className="mcp-access-summary">{t(savedAll ? 'mcp.access.tools' : 'mcp.access.selectedTools', { value: formatNumber(allowedTools), total: formatNumber(service.tools.length) })}</p>
+    {!savedAll && excludedTypes.length > 0 && <p className="mcp-hint">{t('mcp.access.excludedTypes', { names: excludedTypes.map(type => type.title).join(' / ') })}</p>}
+    <p className="mcp-hint">{t(savedAll ? 'mcp.access.automatic' : 'mcp.access.customHint')}</p>
+    <p className="mcp-hint">{t(readiness)}</p>
+    {!draft ? <div className="mcp-inline-actions"><ActionButton reason={t(stale ? 'ui.reason.read' : loading ? 'ui.reason.loading' : 'ui.reason.busy')} type="button" className="button button-secondary" disabled={disabled || loading || stale} onClick={edit}>{t('mcp.access.edit')}</ActionButton></div> : <form className="mcp-grant-picker" aria-label={t('mcp.access.editor')} onSubmit={event => void save(event)}>
+      <fieldset className="mcp-access-mode" disabled={disabled} aria-describedby={`${prefix}-mode-hint`}>
+        <legend>{t('mcp.access.mode')}</legend>
+        <div className="mcp-choice-row">{(['all', 'custom'] as const).map(value => <label className="mcp-choice" key={value}><input type="radio" name={`${prefix}-mode`} checked={draft.mode === value} onChange={() => mode(value)} /><span>{t(`mcp.access.mode.${value}`)}</span></label>)}</div>
+        <p className="mcp-hint" id={`${prefix}-mode-hint`}>{t(all ? 'mcp.access.automatic' : 'mcp.access.customHint')}</p>
+      </fieldset>
+      {outdated && <div className="mcp-notice mcp-access-stale" role="alert"><AlertCircle size={17} aria-hidden="true" /><div><p>{t('mcp.access.stale')}</p><div className="mcp-inline-actions"><ActionButton reason={t(disabled ? 'ui.reason.busy' : 'ui.reason.loading')} type="button" className="button button-secondary" disabled={disabled || loading} onClick={onRefresh}>{t('mcp.refresh')}</ActionButton><ActionButton reason={t(stale ? 'ui.reason.read' : loading ? 'ui.reason.loading' : 'ui.reason.busy')} type="button" className="button button-secondary" disabled={disabled || loading || stale || draft.revision === revision} onClick={() => setDraft({ ...draft, revision })}>{t('mcp.access.reviewed')}</ActionButton></div></div></div>}
+      <div className="mcp-access-selections">
+        <fieldset className="mcp-access-options" disabled={disabled}>
+          <legend>{t('mcp.access.types')}</legend>
+          <div className="mcp-access-bulk"><ActionButton reason={t(all ? 'mcp.access.customFirst' : 'ui.reason.busy')} type="button" className="text-button" disabled={disabled || all} onClick={() => setDraft({ ...draft, agentTypeIds: [...new Set([...draft.agentTypeIds, ...agentTypes.map(type => type.id)])] })}>{t('mcp.access.selectAll')}</ActionButton><ActionButton reason={t(all ? 'mcp.access.customFirst' : 'ui.reason.busy')} type="button" className="text-button" disabled={disabled || all} onClick={() => setDraft({ ...draft, agentTypeIds: [] })}>{t('mcp.access.clear')}</ActionButton></div>
+          <div className="mcp-access-list">{typeOptions.map(type => <label className="mcp-check" key={type.id}><input type="checkbox" checked={all || draft.agentTypeIds.includes(type.id)} disabled={all} onChange={event => toggle('agentTypeIds', type.id, event.target.checked)} /><span>{type.title}{!agentTypes.some(current => current.id === type.id) && <small>{t('mcp.access.notInDirectory')}</small>}</span></label>)}</div>
+        </fieldset>
+        <fieldset className="mcp-access-options" disabled={disabled}>
+          <legend>{t('mcp.access.toolSelection')}</legend>
+          <div className="mcp-access-bulk"><ActionButton reason={t(all ? 'mcp.access.customFirst' : 'ui.reason.busy')} type="button" className="text-button" disabled={disabled || all} onClick={() => setDraft({ ...draft, toolNames: [...new Set([...draft.toolNames, ...service.tools.map(tool => tool.name)])] })}>{t('mcp.access.selectAll')}</ActionButton><ActionButton reason={t(all ? 'mcp.access.customFirst' : 'ui.reason.busy')} type="button" className="text-button" disabled={disabled || all} onClick={() => setDraft({ ...draft, toolNames: [] })}>{t('mcp.access.clear')}</ActionButton></div>
+          <label className="mcp-tool-search"><span>{t('mcp.access.searchTools')}</span><input type="search" value={query} onChange={event => setQuery(event.target.value)} /></label>
+          <div className="mcp-access-list">{visibleTools.length ? visibleTools.map(tool => <label className="mcp-check" key={tool.name}><input type="checkbox" checked={all || draft.toolNames.includes(tool.name)} disabled={all} onChange={event => toggle('toolNames', tool.name, event.target.checked)} /><span>{tool.title}<code>{tool.name}</code>{!tool.current && <small>{t('mcp.access.notInDirectory')}</small>}</span></label>) : <p className="mcp-muted">{t(service.tools.length ? 'mcp.access.noMatch' : 'mcp.tools.empty')}</p>}</div>
+        </fieldset>
+      </div>
+      <p className="mcp-hint">{t('mcp.access.draftHint')}</p>
+      <div className="mcp-inline-actions"><ActionButton reason={t(outdated ? 'ui.reason.read' : loading ? 'ui.reason.loading' : 'ui.reason.busy')} type="submit" className="button button-primary" disabled={disabled || loading || outdated}>{t(busy === `access-${service.id}` ? 'mcp.access.saving' : 'mcp.access.save')}</ActionButton><ActionButton reason={t('ui.reason.busy')} type="button" className="button button-secondary" disabled={disabled} onClick={() => setDraft(null)}>{t('mcp.access.cancel')}</ActionButton><ActionButton reason={t('ui.reason.busy')} type="button" className="text-button" disabled={disabled || all} onClick={() => mode('all')}>{t('mcp.access.restore')}</ActionButton></div>
+    </form>}
+  </>
 }
 
 function McpEditor({ draft, onChange, onCancel, onSave, saving }: {

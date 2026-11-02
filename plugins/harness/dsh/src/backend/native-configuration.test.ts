@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, realpathSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -25,6 +25,45 @@ describe('native capabilities current configuration and owner grants', () => {
     expect(value.features.find(feature => feature.id === 'bash')).toMatchObject({ enabled: platform !== 'win32', agentTypeIds: platform !== 'win32' ? ['main'] : [] })
     expect(value.features.find(feature => feature.id === 'powershell')).toMatchObject({ enabled: platform === 'win32', agentTypeIds: platform === 'win32' ? ['main'] : [] })
     expect(value.features.filter(feature => feature.enabled)).toHaveLength(13)
+  })
+  it('leaves the optional automatic policy absent when reading fresh or persisted current configurations', () => {
+    const file = fixture(), current = file.read()
+    expect(Object.hasOwn(current, 'toolAccessOverrides')).toBe(false)
+    expect(existsSync(file.filePath)).toBe(false)
+    const bytes = JSON.stringify({ ...current, revision: 7 }, null, 2) + '\n'
+    writeFileSync(file.filePath, bytes)
+    expect(Object.hasOwn(file.read(), 'toolAccessOverrides')).toBe(false)
+    expect(Object.hasOwn(publicNativeConfiguration(file.read()), 'toolAccessOverrides')).toBe(false)
+    expect(file.prepare(input(file))).toEqual({ ...current, revision: 7 })
+    expect(readFileSync(file.filePath, 'utf8')).toBe(bytes)
+    const prepared = file.prepare({ ...input(file), features: current.features.map(feature => feature.id === 'todo' ? { ...feature, enabled: false } : feature) })
+    file.commit(prepared, 7)
+    expect(Object.hasOwn(file.read(), 'toolAccessOverrides')).toBe(false)
+  })
+  it('persists exact custom main and child scopes, an empty disable, and explicit restoration while PATCH omission preserves policy', () => {
+    const file = fixture(), native = { name: 'native_echo', fingerprint: 'a'.repeat(64), agentTypeIds: ['qq.private'] }, mcp = { name: 'mcp__profile__find', fingerprint: 'b'.repeat(64), agentTypeIds: ['main', 'qq.group'] }
+    const saved = file.commit(file.prepare({ ...input(file), toolGrants: [native], toolAccessOverrides: [{ ...native, agentTypeIds: [] }, mcp] }), 0)
+    expect(file.read().toolAccessOverrides).toEqual([{ ...native, agentTypeIds: [] }, mcp])
+    expect(publicNativeConfiguration(file.read()).toolAccessOverrides).toEqual(saved.toolAccessOverrides)
+    expect(file.prepare(input(file))).toEqual(saved)
+    const disabled = file.commit(file.prepare({ ...input(file), toolAccessOverrides: [{ ...mcp, agentTypeIds: [] }] }), saved.revision)
+    expect(file.read().toolAccessOverrides).toEqual([{ ...mcp, agentTypeIds: [] }])
+    expect(() => file.prepare({ expectedRevision: 0, features: saved.features, toolGrants: [], toolAccessOverrides: [] })).toThrow(expect.objectContaining({ code: 'NATIVE_CAPABILITIES_CONFLICT' }))
+    const restored = file.prepare({ ...input(file), toolAccessOverrides: [] })
+    expect(() => file.commit(restored, 0)).toThrow(expect.objectContaining({ code: 'NATIVE_CAPABILITIES_CONFLICT' }))
+    file.commit(restored, disabled.revision)
+    expect(file.read()).toMatchObject({ toolGrants: [native], toolAccessOverrides: [], revision: 3 })
+  })
+  it('strictly validates the optional current policy without reserving native MCP names or granting communication tools', () => {
+    const file = fixture(), grant = { name: 'mcp__profile__find', fingerprint: 'c'.repeat(64), agentTypeIds: ['main'] }
+    expect(file.prepare({ ...input(file), toolAccessOverrides: [grant] }).toolAccessOverrides).toEqual([grant])
+    for (const toolAccessOverrides of [null, {}, [grant, grant], [{ ...grant, fingerprint: 'old' }], [{ ...grant, agentTypeIds: ['main', 'main'] }], [{ ...grant, agentTypeIds: ['invented-owner'] }], [{ ...grant, extra: true }]]) expect(() => file.prepare({ ...input(file), toolAccessOverrides })).toThrow()
+    for (const name of ['eating_delegate_task', 'qq_send_private_message', 'mcp__qq__send']) {
+      expect(() => file.prepare({ ...input(file), toolAccessOverrides: [{ ...grant, name }] })).toThrow()
+      expect(() => file.prepare({ ...input(file), toolGrants: [{ ...grant, name }] })).toThrow()
+    }
+    expect(() => parseNativeCapabilities({ ...file.read(), toolAccessOverrides: undefined })).toThrow()
+    expect(() => parseNativeCapabilities({ ...file.read(), unknownPolicy: [] })).toThrow()
   })
   it('requires a complete current shape and preserves rejected files byte for byte', () => {
     const file = fixture(), damaged = JSON.stringify({ schemaVersion: 0, revision: 9, features: [] })

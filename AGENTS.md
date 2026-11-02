@@ -37,9 +37,11 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`。
 
-当前应用／Host／Web0.17.1，plugin-sdk4.7.0、ui-sdk4.2.0、plugin-core4.0.0，QQ0.13.4、DSH0.15.1、表情包0.1.1、生图0.2.0、记忆源码0.2.0（真实安装0.1.1保持）；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前应用／Host／Web0.17.2，plugin-sdk4.7.0、ui-sdk4.2.0、plugin-core4.0.0，QQ0.13.5、DSH0.15.2、表情包0.1.1、生图0.2.0、记忆源码0.2.0（真实安装0.1.1保持）；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
+
+QQ授权资源readAsset＋checked后才按实际Base64提供后台发送预算：扣除该Base64的wire≤1MiB、额外≤14MiB、全JSON≤15MiB，单图5MiB／4张10MiB及入站／响应／ws1MiB保持；模型不能提供预算。autonomy按code区分额度／暂停／禁用／stale／CAS／输入，contactLimit只读派生，签lease前及计数时核验，小时额度6不改；控制层保真实statusCode／outcome及脱敏details，不按409猜unknown。
 
 跨进程输入有协议版本、严格形状校验、超时、来源与关联标识。错误区分不支持、未发送、失败、未知和成功；未知外部动作不盲重做。不得吞异常或把缺必要接口当成默认成功。
 
@@ -53,7 +55,7 @@ Eating 不建立聊天历史库；只保存有界未交接规范化信封。send
 
 内存队列退出丢失未交接消息；持久队列可恢复。容量、聚合和冷却必须真实生效。清空／缩容有明确确认，不删除账号配置和发送账本。实时日志仅可见页签订阅，浏览器内存有界，隐藏／离开停止并清空，不落盘、不后台缓存、不补历史。
 
-本轮主人已授权删除Eating本地主／子会话；执行者须先停所有目标Eating端口和worker，再按审计精确白名单清原生日志／派生缓存／附件及相关备份，混合文件只清会话／任务字段，旧备份queue单独清，保config／凭据／persona／资源／actions／dedup／settings。记忆0.1.1正文仅RAM，停机后清本地及备份state任务元数据；不生成含正文新backup。审计不等于apply；清理后QQ／DSH／记忆保持关闭，云端主人自删。助手主DSH／60182绝不动；localStorage草稿和OS快照未覆盖，不声称全机forensic抹除。
+本轮主人已授权删除Eating本地主／子会话；执行者须先停所有目标Eating端口和worker，再按审计精确白名单清原生日志／派生缓存／附件及相关备份，混合文件只清会话／任务字段，旧备份queue单独清，保config／凭据／persona／资源／actions／dedup／settings。记忆0.1.1正文仅RAM，停机后清本地及备份state任务元数据；不生成含正文新backup。审计不等于apply；上述清理及停机属于前轮历史交付，当前QQ／DSH／记忆已正常connected，不沿用停止指令；本轮不再清历史、不操作云端。助手主DSH／60182绝不动；localStorage草稿和OS快照未覆盖，不声称全机forensic抹除。
 
 ## 代理、人格与工具
 
@@ -63,7 +65,7 @@ Eating 不建立聊天历史库；只保存有界未交接规范化信封。send
 
 DSH主提供会话处理／列类型／明确任务委派、活动状态／安排、联系对象／联系委派工具。普通会话优先eating_handle_conversation，仅{context_ref}；核对真实root／当前批次及digest／owner绑定／callId后，固定中立task＋原始context/events交绑定子，main不预写完整回复或未经核对的能力结论。eating_delegate_task用于明确执行任务或用户明确逐字内容。新Harness仅time默认开启并供主子使用，文件、shell、网页、目标等原生feature默认关闭且可按需配置；main非reserved全局工具、所有Agent功能型native Profile MCP默认自动可用，其他子非MCP仍精确名称／指纹选择。主人可用同名toolAccessOverrides按精确指纹＋类型覆盖默认及toolGrants，可关main、空列表禁用；指纹变化仍限制，不回落开放，reserved／来源／scope不绕过。UI逐项自动／自定义可保存，catalog.automaticAccess说明默认；tools/change更新native.restrict。Host功能MCP默认all，custom来源只按精确类型＋工具，新增项不自动获该例外source。子按真实账号／会话／目标／类型绑定独立原生会话，挂受限通讯及当前有效功能能力。deliverBatch仍唯一交接接口，scope／真实回执／撤权服务必需，不回退主人全权令牌。
 
-同批允许查询→主判断→继续委派同子。内部以公开 `ToolExecutionInput.callId` 防重；不把任意 system／scope／tools 参数交模型，不用任务文本 hash 代替调用 ID。最多32调用，重复／pending／unknown拒绝，迟到回调不能覆盖新任务或撤新权限。当前正文在主 turn/end 清理，不能在第一次委派后清掉。
+同批允许查询→主判断→继续委派同子。内部以公开 `ToolExecutionInput.callId` 防重；不把任意 system／scope／tools 参数交模型，不用任务文本 hash 代替调用 ID。普通入站最多32引用；pending拒并发，unknown只拒原contextRef或原taskId，新context＋新call允许复用同child并重取scope；仅淘汰旧completed／failed，unknown／当前批次不淘汰，满则capacity。启动旧pending转unknown保原nonce；迟到actions／finish须匹配当前pending任务，不能覆盖新任务或撤新权限。详见[ADR-0037](docs/decisions/ADR-0037-未知委派隔离与受控图片发送预算.md)。当前正文在主 turn/end 清理，不能在第一次委派后清掉。
 
 QQ保留39项标准JSON工具，另有qq_view_received_image内容扩展，共40项。手动副作用需确认和稳定request_id；子只用当前类型可范围化的已选集合，每次核对账号、目标及消息／图片引用配对，异步查询和下载后复查权限。保存读取不自动给已保存权限补新工具；本次显式部署的必要许可更新使用完整字段＋CAS且保留其他选择。
 

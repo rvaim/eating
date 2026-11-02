@@ -33,6 +33,23 @@ export function createImageFixturePng(): Buffer {
   ])
 }
 
+/** Real PNG with lossless pseudorandom pixels and a valid ancillary chunk for an exact byte boundary. */
+export function createLargeImageFixturePng(byteLength = 1280 * 1024): Buffer {
+  const width = 512, height = 512, header = Buffer.alloc(13)
+  header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4)
+  header[8] = 8; header[9] = 6
+  const pixels = Buffer.alloc(height * (1 + width * 4))
+  let seed = 0x12345678
+  for (let row = 0; row < height; row++) for (let column = 0; column < width * 4; column++) {
+    seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5
+    pixels[row * (1 + width * 4) + 1 + column] = seed & 255
+  }
+  const parts = [Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), chunk('IDAT', deflateSync(pixels))]
+  const end = chunk('IEND', Buffer.alloc(0)), overhead = parts.reduce((sum, part) => sum + part.length, end.length) + 12
+  if (!Number.isSafeInteger(byteLength) || byteLength < overhead) throw new Error('Large PNG fixture boundary is too small')
+  return Buffer.concat([...parts, chunk('paDd', Buffer.alloc(byteLength - overhead)), end])
+}
+
 /** Test-only transport routes an authorized source to the independent loopback fixture. */
 export async function startImageFixture() {
   const bytes = createImageFixturePng()

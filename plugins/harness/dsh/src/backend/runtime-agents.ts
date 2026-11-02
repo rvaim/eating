@@ -30,12 +30,56 @@ export function getRuntimeAgentSource(): string {
   if (!controlUrl || !/^http:\/\/127\.0\.0\.1:\d+$/.test(controlUrl) || !opaque(controlToken) || !moduleSpec(mcpEntry)) throw bridgeError('BRIDGE_CONFIGURATION_INVALID');
 
   async function control(operation, value, signal) {
-    const response = await fetch(controlUrl + '/' + operation, { method: 'POST', redirect: 'error', signal,
-      headers: { Authorization: 'Bearer ' + controlToken, 'X-Eating-Runtime': nonce, 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
-    const text = await response.text();
-    if (text.length > 1024 * 1024) throw new Error('Runtime control response is too large');
-    const result = JSON.parse(text);
-    if (!response.ok || !record(result)) throw new Error(record(result) && typeof result.message === 'string' ? result.message : 'Runtime control request failed');
+    const sensitive = /authorization|cookie|token|secret|passw[o]rd|credential|api[-_]?key|headers|nonce/i;
+    const secrets = new Set([controlToken, nonce].filter(value => typeof value === 'string' && value));
+    const collectSecrets = (value, depth = 0) => {
+      if (depth > 8 || !value || typeof value !== 'object') return;
+      for (const [key, entry] of Object.entries(value)) {
+        if (sensitive.test(key) && typeof entry === 'string' && entry) secrets.add(entry);
+        else if (sensitive.test(key) && entry && typeof entry === 'object') {
+          for (const item of Object.values(entry)) if (typeof item === 'string' && item) secrets.add(item);
+        }
+        collectSecrets(entry, depth + 1);
+      }
+    };
+    const redactText = value => {
+      let text = value;
+      for (const secret of [...secrets].sort((a, b) => b.length - a.length)) text = text.split(secret).join('[REDACTED]');
+      return text.replace(/https?:\/\/[^\s<>"']+/gi, '[REDACTED_URL]')
+        .replace(/\bBearer\s+[^\s,;"']+/gi, 'Bearer [REDACTED]')
+        .replace(/\b((?:api[-_]?key|access[-_]?token|token|secret|passw[o]rd|authorization|cookie)\s*[:=]\s*)[^\s,;"']+/gi, '$1[REDACTED]')
+        .replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 4000);
+    };
+    const sanitize = (value, depth = 0) => {
+      if (depth > 8) return null;
+      if (typeof value === 'string') return redactText(value);
+      if (value === null || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value)) return value;
+      if (Array.isArray(value)) return value.slice(0, 100).map(entry => sanitize(entry, depth + 1));
+      if (!record(value)) return null;
+      return Object.fromEntries(Object.entries(value).slice(0, 100).filter(([key]) => !sensitive.test(key) && !['__proto__', 'constructor', 'prototype'].includes(key)).map(([key, entry]) => [redactText(key), sanitize(entry, depth + 1)]));
+    };
+    const failure = (code, message, outcome = 'unknown', details = {}, statusCode) => {
+      const safeCode = redactText(code);
+      return Object.assign(new Error('[' + safeCode + '] ' + redactText(message) + ' (outcome=' + outcome + ')'), { name: 'RuntimeControlError', code: safeCode, outcome, details: sanitize(details), statusCode });
+    };
+    let response, text;
+    try {
+      response = await fetch(controlUrl + '/' + operation, { method: 'POST', redirect: 'error', signal,
+        headers: { Authorization: 'Bearer ' + controlToken, 'X-Eating-Runtime': nonce, 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
+      text = await response.text();
+    } catch {
+      throw failure('CONTROL_TRANSPORT_FAILED', '运行时控制连接中断，结果尚未确认；请核对现有任务回执，不要自动重发。');
+    }
+    if (text.length > 1024 * 1024) throw failure('CONTROL_RESPONSE_INVALID', '运行时控制响应过大，无法确认操作结果；请核对现有任务回执。', 'unknown', {}, response.status);
+    let result;
+    try { result = JSON.parse(text); } catch { throw failure('CONTROL_RESPONSE_INVALID', '运行时控制响应格式无效，无法确认操作结果；请核对现有任务回执。', 'unknown', {}, response.status); }
+    if (!record(result)) throw failure('CONTROL_RESPONSE_INVALID', '运行时控制响应必须为对象，无法确认操作结果；请核对现有任务回执。', 'unknown', {}, response.status);
+    if (!response.ok) {
+      collectSecrets(value); collectSecrets(result);
+      const code = typeof result.code === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,99}$/.test(result.code) ? result.code : 'CONTROL_REQUEST_FAILED';
+      const outcome = ['not-sent', 'failed', 'unknown'].includes(result.outcome) ? result.outcome : 'unknown';
+      throw failure(code, typeof result.message === 'string' ? result.message : '运行时受控请求失败，请根据错误码核对原因。', outcome, record(result.details) ? result.details : {}, response.status);
+    }
     return result;
   }
   function acceptContext(message, expected) {

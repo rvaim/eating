@@ -1,5 +1,70 @@
 import { describe, expect, it, vi } from 'vitest'
 import { getAutonomyRuntimeSource } from './autonomy-runtime'
+import { getRuntimeAgentSource } from './runtime-agents'
+
+type ControlError = Error & { code: string; outcome: string; details: unknown; statusCode?: number }
+function runtimeControl(fetch: (url: string, init: RequestInit) => Promise<Response>) {
+  const source = getRuntimeAgentSource()
+  const start = source.indexOf('  async function control('), end = source.indexOf('  function acceptContext(', start)
+  if (start < 0 || end < 0) throw new Error('Actual runtime control function was not found')
+  return new Function('fetch', 'controlUrl', 'controlToken', 'nonce', 'record', source.slice(start, end) + '\nreturn control;')(
+    fetch, 'http://127.0.0.1:12345', 'fixture-control-secret', 'fixture-runtime-nonce', (value: unknown) => value !== null && typeof value === 'object' && !Array.isArray(value),
+  ) as (operation: string, body: unknown, signal?: AbortSignal) => Promise<unknown>
+}
+
+describe('runtime control errors visible to native tools', () => {
+  it('preserves the quota code, not-sent outcome, safe details and reset instruction through message-only SDK errors', async () => {
+    const contactLimit = { limit: 6, used: 6, remaining: 0, exhausted: true, windowStartedAt: 1700000000000, resetAt: 1700003600000 }
+    const fetch = vi.fn(async () => Response.json({ code: 'AUTONOMY_CONTACT_LIMIT', outcome: 'not-sent', message: '当前小时主动联系额度已用尽（6/6）；2023-11-14T23:13:20.000Z 重置，请等待。', details: { contactLimit } }, { status: 409 }))
+    const control = runtimeControl(fetch)
+    for (let i = 0; i < 3; i++) {
+      const error = await control('prepare-proactive', { agentId: 'root' }).catch(error => error) as ControlError
+      expect(error).toBeInstanceOf(Error)
+      expect(error).toMatchObject({ name: 'RuntimeControlError', code: 'AUTONOMY_CONTACT_LIMIT', outcome: 'not-sent', details: { contactLimit }, statusCode: 409 })
+      expect(error.message).toContain('[AUTONOMY_CONTACT_LIMIT]')
+      expect(error.message).toContain('额度已用尽（6/6）')
+      expect(error.message).toContain('2023-11-14T23:13:20.000Z')
+      expect(error.message).not.toContain('配置或状态无效')
+    }
+    expect(fetch).toHaveBeenCalledTimes(3)
+  })
+  it.each(['not-sent', 'failed', 'unknown'])('keeps the backend %s outcome for a 409 instead of guessing from HTTP status', async outcome => {
+    const control = runtimeControl(async () => Response.json({ code: 'AGENT_TASK_UNKNOWN', outcome, message: '已有任务待核对，此次未重复提交。' }, { status: 409 }))
+    await expect(control('prepare-task', {})).rejects.toMatchObject({ code: 'AGENT_TASK_UNKNOWN', outcome, message: expect.stringContaining('[AGENT_TASK_UNKNOWN]') })
+  })
+  it('preserves the current lowercase OneBot error code and not-sent result', async () => {
+    const control = runtimeControl(async () => Response.json({ code: 'onebot_payload_too_large', outcome: 'not-sent', message: 'OneBot 请求超过大小上限' }, { status: 413 }))
+    await expect(control('prepare-proactive', {})).rejects.toMatchObject({ code: 'onebot_payload_too_large', outcome: 'not-sent', statusCode: 413, message: expect.stringContaining('[onebot_payload_too_large]') })
+  })
+  it('returns successful activity state even while contact quota is exhausted', async () => {
+    const snapshot = { revision: 1, configuration: { enabled: true }, state: { revision: 2, contacts: 6, contactLimit: { limit: 6, used: 6, remaining: 0, exhausted: true } } }
+    const control = runtimeControl(async () => Response.json(snapshot))
+    await expect(control('autonomy-snapshot', { agentId: 'root' })).resolves.toEqual(snapshot)
+  })
+  it('redacts credentials, nested headers and signed URLs without losing numeric quota details', async () => {
+    const control = runtimeControl(async () => Response.json({ code: 'AUTONOMY_CONTACT_LIMIT', outcome: 'not-sent',
+      message: 'fixture-control-secret fixture-runtime-nonce detail-private-value Bearer provider-key token=inline-key https://example.test/asset?signature=signed-key',
+      details: { contactLimit: { limit: 6, remaining: 0 }, token: 'detail-private-value', headers: { Authorization: 'Bearer nested-private-value' }, nested: { note: 'Bearer nested-private-value', url: 'https://example.test/?token=signed-key', api_key: 'hidden-api-key' } },
+    }, { status: 409 }))
+    const error = await control('prepare-proactive', {}).catch(error => error) as ControlError
+    expect(error).toMatchObject({ code: 'AUTONOMY_CONTACT_LIMIT', outcome: 'not-sent', details: { contactLimit: { limit: 6, remaining: 0 } } })
+    const rendered = JSON.stringify({ message: error.message, details: error.details })
+    for (const secret of ['fixture-control-secret', 'fixture-runtime-nonce', 'detail-private-value', 'provider-key', 'inline-key', 'signed-key', 'nested-private-value', 'hidden-api-key']) expect(rendered).not.toContain(secret)
+    expect(rendered).not.toContain('Authorization')
+  })
+  it('does not leak malformed response bodies or raw transport exceptions and never retries', async () => {
+    const malformed = vi.fn(async () => new Response('fixture-control-secret invalid-json', { status: 403 }))
+    const bad = await runtimeControl(malformed)('prepare-task', {}).catch(error => error) as ControlError
+    expect(bad).toMatchObject({ code: 'CONTROL_RESPONSE_INVALID', outcome: 'unknown', statusCode: 403 })
+    expect(bad.message).not.toContain('fixture-control-secret')
+    expect(malformed).toHaveBeenCalledOnce()
+    const disconnected = vi.fn(async () => { throw new Error('fixture-control-secret transport failed') })
+    const error = await runtimeControl(disconnected)('prepare-task', {}).catch(error => error) as ControlError
+    expect(error).toMatchObject({ code: 'CONTROL_TRANSPORT_FAILED', outcome: 'unknown' })
+    expect(error.message).not.toContain('fixture-control-secret')
+    expect(disconnected).toHaveBeenCalledOnce()
+  })
+})
 
 describe('native autonomous driver publication lifecycle', () => {
   it('publishes Chinese tools and policy while preserving the admitted opportunity context and trusted source', async () => {
@@ -20,7 +85,7 @@ describe('native autonomous driver publication lifecycle', () => {
       const context = {
         process: { env: { EATING_DSH_AUTONOMY: 'true' } }, sessionId: 'root', ctx, releases, initialization, nonce: 'fixture-runtime',
         loadModule: async () => ({ createUserMessage }),
-        control: async (operation: string, body?: { task?: unknown }) => operation === 'autonomy-snapshot' ? { ready: true, configuration: { enabled: true, targets: [{ id: 'legacy-target' }] }, state: { ownerPaused: false, errorCode: null, active: null }, contactPolicy: { mode: 'all', entryCount: 1 } }
+        control: async (operation: string, body?: { task?: unknown }) => operation === 'autonomy-snapshot' ? { ready: true, configuration: { enabled: true, targets: [{ id: 'legacy-target' }] }, state: { ownerPaused: false, errorCode: null, active: null, contactLimit: { limit: 6, used: 6, remaining: 0, exhausted: true, windowStartedAt: 1700000000000, resetAt: 1700003600000 } }, contactPolicy: { mode: 'all', entryCount: 1 } }
           : operation === 'autonomy-claim' ? { admitted: true, cycle, activity, limits }
           : operation === 'autonomy-schedule-task' ? (scheduledTask = body?.task, { revision: 1, tasks: [] }) : {},
         record: (value: unknown) => value !== null && typeof value === 'object', opaque: () => true, runDelegation: () => {}, createHash: () => {},
@@ -35,7 +100,7 @@ describe('native autonomous driver publication lifecycle', () => {
 
       const stateTool = tools.find(tool => tool.name === 'eating_activity_state')!
       const modelState = await stateTool.execute!({}, { agent, callId: 'fixture-state', signal: new AbortController().signal })
-      expect(modelState).toMatchObject({ configuration: { enabled: true }, contactPolicy: { mode: 'all', entryCount: 1 } })
+      expect(modelState).toMatchObject({ configuration: { enabled: true }, state: { contactLimit: { limit: 6, used: 6, remaining: 0, exhausted: true, resetAt: 1700003600000 } }, contactPolicy: { mode: 'all', entryCount: 1 } })
       expect(JSON.stringify(modelState)).not.toContain('targets')
       const scheduleTool = tools.find(tool => tool.name === 'eating_schedule_task')!
       const dueAt = new Date(Date.now() + 60000).toISOString()

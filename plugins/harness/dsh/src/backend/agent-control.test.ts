@@ -71,7 +71,9 @@ describe('trusted native Agent control boundary', () => {
   it('requires an admitted main round and exact saved contact while persisting native call replay protection', async () => {
     const f = await autonomousFixture()
     const input = { agentId: parentId, targetId: 'contact', cycleId: f.cycle.id, taskId: '1'.repeat(64) }
-    for (const invalid of [{ ...input, agentId: 'different-root' }, { ...input, targetId: 'not-approved' }, { ...input, cycleId: 'different-cycle' }, { ...input, scope: { targetId: 'attacker' } }]) expect((await f.post('/prepare-proactive', invalid)).status).toBe(409)
+    for (const invalid of [{ ...input, agentId: 'different-root' }, { ...input, cycleId: 'different-cycle' }, { ...input, scope: { targetId: 'attacker' } }]) expect((await f.post('/prepare-proactive', invalid)).status).toBe(409)
+    const denied = await f.post('/prepare-proactive', { ...input, targetId: 'not-approved' })
+    expect(denied.status).toBe(403); expect(await denied.json()).toMatchObject({ code: 'AUTONOMY_TARGET_DENIED', outcome: 'not-sent' })
     expect(f.host.getMcpConnection).not.toHaveBeenCalled()
     const prepared = await f.post('/prepare-proactive', input); expect(prepared.status).toBe(200)
     const first = await prepared.json() as JsonObject
@@ -181,9 +183,11 @@ describe('trusted native Agent control boundary', () => {
     const f = await ordinaryFixture(), snapshot = f.activity.snapshot()
     await f.activity.configure({ expectedRevision: snapshot.revision, configuration: { ...(snapshot.configuration as JsonObject), maxContactsPerHour: 0 } })
     const response = await f.prepare()
-    expect(response.status).toBe(409); expect(await response.json()).toMatchObject({ code: 'AUTONOMY_CONTACT_LIMIT' })
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({ code: 'AUTONOMY_CONTACT_LIMIT', outcome: 'not-sent', details: { contactLimit: { limit: 0, used: 0, remaining: 0, exhausted: true } } })
     expect(f.control.proactiveStatus()).toEqual([])
-    expect(f.host.revokeAgentAccess).toHaveBeenCalled()
+    expect(f.host.getMcpConnection).not.toHaveBeenCalled()
+    expect(f.host.revokeAgentAccess).not.toHaveBeenCalled()
   })
 
   it('times out an unconfirmed task as unknown and late completion cannot revoke a reviewed replacement', async () => {
@@ -350,6 +354,137 @@ describe('trusted native Agent control boundary', () => {
     const reopened = new DshAgentControl(f.directory, f.host); stops.push(() => reopened.close())
     expect(reopened.list()[0]?.taskRefs.map(task => [task.taskId, task.state])).toEqual([[first, 'completed'], [second, 'failed'], [third, 'unknown']])
     expect(readFileSync(join(f.directory, 'agent-bindings.json'), 'utf8')).not.toContain('EXTERNAL-MESSAGE-BODY')
+  })
+
+  it('keeps a timed-out call unknown while a fresh batch reuses the child with independent permissions', async () => {
+    const f = fixture(); await f.control.start('fixture-runtime-nonce')
+    const binding = f.control.bind(f.batch, parentId)
+    const old = { agentId: binding.scope.agentId, contextRef: f.batch.batchId, taskId: '1'.repeat(64) }
+    const prepare = (contextRef: string, taskId: string) => f.post('/prepare-task', { agentId: old.agentId, agentTypeId: 'qq.private', contextRef, taskId })
+    expect((await prepare(old.contextRef, old.taskId)).status).toBe(200)
+    // The runtime reports unknown after its deadline interrupts and drains the child.
+    expect((await f.post('/finish-task', { ...old, status: 'unknown' })).status).toBe(200)
+    const retry = await prepare(old.contextRef, '2'.repeat(64))
+    expect(retry.status).toBe(409); expect(await retry.json()).toMatchObject({ code: 'AGENT_TASK_UNKNOWN', outcome: 'not-sent' })
+    const revoked = vi.mocked(f.host.revokeAgentAccess).mock.calls.length
+    expect((await f.post('/finish-task', { ...old, status: 'completed' })).status).toBe(409)
+    expect((await f.post('/actions', old)).status).toBe(409)
+    expect(f.host.revokeAgentAccess).toHaveBeenCalledTimes(revoked)
+
+    const batch = { ...f.batch, batchId: 'b'.repeat(64), events: f.batch.events.map(event => ({ ...event, eventId: 'fresh-event', messageId: '301', resourceIds: ['fresh-resource'] })) }
+    const next = f.control.bind(batch, parentId)
+    expect(next.scope.agentId).toBe(old.agentId)
+    expect(next.taskRefs).toMatchObject([{ contextRef: old.contextRef, taskId: old.taskId, state: 'unknown' }])
+    const reusedCall = await prepare(batch.batchId, old.taskId)
+    expect(reusedCall.status).toBe(409); expect(await reusedCall.json()).toMatchObject({ code: 'AGENT_TASK_UNKNOWN' })
+    expect((await prepare(old.contextRef, '3'.repeat(64))).status).toBe(409)
+    const fresh = { agentId: old.agentId, contextRef: batch.batchId, taskId: '2'.repeat(64) }
+    expect((await prepare(fresh.contextRef, fresh.taskId)).status).toBe(200)
+    expect(vi.mocked(f.host.getMcpConnection).mock.calls[0]![1]).toMatchObject({ messageIds: ['300'], resourceIds: ['https://fixture.invalid/file'] })
+    expect(vi.mocked(f.host.getMcpConnection).mock.calls[1]![1]).toMatchObject({ messageIds: ['300', '301'], resourceIds: ['https://fixture.invalid/file', 'fresh-resource'] })
+    const actionsRead = vi.mocked(f.host.readAgentActions).mock.calls.length
+    for (const request of [old, { ...old, contextRef: fresh.contextRef }]) {
+      expect((await f.post('/actions', request)).status).toBe(409)
+      expect((await f.post('/finish-task', { ...request, status: 'completed' })).status).toBe(409)
+    }
+    expect(f.host.readAgentActions).toHaveBeenCalledTimes(actionsRead)
+    expect(f.host.revokeAgentAccess).toHaveBeenCalledTimes(revoked)
+    expect(f.control.list()[0]!.task).toMatchObject({ contextRef: fresh.contextRef, taskId: fresh.taskId, state: 'pending' })
+    expect((await f.post('/actions', fresh)).status).toBe(200)
+    expect((await f.post('/finish-task', { ...fresh, status: 'completed' })).status).toBe(200)
+    expect(f.control.list()[0]!.taskRefs.map(task => [task.contextRef, task.taskId, task.state])).toEqual([[old.contextRef, old.taskId, 'unknown'], [fresh.contextRef, fresh.taskId, 'completed']])
+    f.control.bind(f.batch, parentId)
+    expect((await prepare(old.contextRef, '3'.repeat(64))).status).toBe(409)
+    expect((await prepare(old.contextRef, old.taskId)).status).toBe(409)
+  })
+
+  it.each(['completed', 'failed', 'unknown'])('blocks fresh batches while pending until the exact old task reports %s', async status => {
+    const f = fixture(); await f.control.start('fixture-runtime-nonce')
+    const binding = f.control.bind(f.batch, parentId)
+    const old = { agentId: binding.scope.agentId, contextRef: f.batch.batchId, taskId: '1'.repeat(64) }
+    const prepare = (contextRef: string, taskId: string) => f.post('/prepare-task', { agentId: old.agentId, agentTypeId: 'qq.private', contextRef, taskId })
+    expect((await prepare(old.contextRef, old.taskId)).status).toBe(200)
+    const next = f.control.bind({ ...f.batch, batchId: 'b'.repeat(64) }, parentId)
+    expect(next.scope.agentId).toBe(old.agentId)
+    for (const taskId of [old.taskId, '2'.repeat(64)]) {
+      const blocked = await prepare('b'.repeat(64), taskId)
+      expect(blocked.status).toBe(409); expect(await blocked.json()).toMatchObject({ code: 'AGENT_TASK_PENDING', outcome: 'not-sent' })
+    }
+    expect((await f.post('/actions', old)).status).toBe(409)
+    expect((await f.post('/finish-task', { ...old, taskId: '3'.repeat(64), status })).status).toBe(409)
+    expect(f.host.getMcpConnection).toHaveBeenCalledTimes(1)
+    expect(f.host.revokeAgentAccess).not.toHaveBeenCalled()
+    expect((await f.post('/finish-task', { ...old, status })).status).toBe(200)
+    expect((await prepare('b'.repeat(64), '2'.repeat(64))).status).toBe(200)
+    const revocations = vi.mocked(f.host.revokeAgentAccess).mock.calls.length
+    expect((await f.post('/finish-task', { ...old, status: 'unknown' })).status).toBe(409)
+    expect(f.host.revokeAgentAccess).toHaveBeenCalledTimes(revocations)
+    expect((await f.post('/finish-task', { agentId: old.agentId, contextRef: 'b'.repeat(64), taskId: '2'.repeat(64), status: 'completed' })).status).toBe(200)
+  })
+
+  it.each(['unknown', 'pending'])('preserves persisted %s identities across a new runtime while allowing a fresh batch', async state => {
+    const f = fixture(); await f.control.start('fixture-runtime-nonce')
+    const binding = f.control.bind(f.batch, parentId)
+    const old = { agentId: binding.scope.agentId, contextRef: f.batch.batchId, taskId: '1'.repeat(64) }
+    expect((await f.post('/prepare-task', { ...old, agentTypeId: 'qq.private' })).status).toBe(200)
+    if (state === 'unknown') expect((await f.post('/finish-task', { ...old, status: 'unknown' })).status).toBe(200)
+    await f.control.close()
+    const restarted = new DshAgentControl(f.directory, f.host); stops.push(() => restarted.close())
+    expect(restarted.list()[0]!.task!.state).toBe(state)
+    await restarted.start('restarted-runtime-nonce')
+    const post = (path: string, body: object, nonce = 'restarted-runtime-nonce') => fetch(restarted.url + path, { method: 'POST', headers: { Authorization: `Bearer ${restarted.token}`, 'X-Eating-Runtime': nonce, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    expect(restarted.list()[0]!.task).toMatchObject({ contextRef: old.contextRef, taskId: old.taskId, state: 'unknown', nonce: 'fixture-runtime-nonce' })
+    expect(restarted.list()[0]!.taskRefs).toMatchObject([{ contextRef: old.contextRef, taskId: old.taskId, state: 'unknown' }])
+    restarted.bind(f.batch, parentId)
+    expect((await post('/prepare-task', { ...old, agentTypeId: 'qq.private', taskId: '2'.repeat(64) })).status).toBe(409)
+    expect((await post('/finish-task', { ...old, status: 'completed' })).status).toBe(409)
+    expect((await post('/finish-task', { ...old, status: 'completed' }, 'fixture-runtime-nonce')).status).toBe(403)
+    const next = restarted.bind({ ...f.batch, batchId: 'b'.repeat(64) }, parentId)
+    expect(next.scope.agentId).toBe(old.agentId)
+    expect((await post('/prepare-task', { ...old, contextRef: 'b'.repeat(64), agentTypeId: 'qq.private' })).status).toBe(409)
+    const fresh = { agentId: old.agentId, contextRef: 'b'.repeat(64), taskId: '2'.repeat(64) }
+    expect((await post('/prepare-task', { ...fresh, agentTypeId: 'qq.private' })).status).toBe(200)
+    const revocations = vi.mocked(f.host.revokeAgentAccess).mock.calls.length
+    expect((await post('/actions', old)).status).toBe(409)
+    expect((await post('/finish-task', { ...old, status: 'completed' })).status).toBe(409)
+    expect((await post('/finish-task', { ...fresh, status: 'completed' }, 'fixture-runtime-nonce')).status).toBe(403)
+    expect(f.host.revokeAgentAccess).toHaveBeenCalledTimes(revocations)
+    expect(restarted.list()[0]!.task).toMatchObject({ taskId: fresh.taskId, state: 'pending' })
+    expect((await post('/finish-task', { ...fresh, status: 'completed' })).status).toBe(200)
+    expect(restarted.list()[0]!.taskRefs[0]).toMatchObject({ taskId: old.taskId, state: 'unknown', nonce: 'fixture-runtime-nonce' })
+  })
+
+  it('retains old unknown references when rolling completed batches and refuses to evict unresolved tasks at capacity', async () => {
+    const f = fixture(); await f.control.start('fixture-runtime-nonce')
+    const binding = f.control.bind(f.batch, parentId), agentId = binding.scope.agentId
+    for (let index = 0; index < 35; index++) {
+      const contextRef = index.toString(16).padStart(64, '0'), taskId = (index + 100).toString(16).padStart(64, '0')
+      f.control.bind({ ...f.batch, batchId: contextRef }, parentId)
+      expect((await f.post('/prepare-task', { agentId, agentTypeId: 'qq.private', contextRef, taskId })).status).toBe(200)
+      expect((await f.post('/finish-task', { agentId, contextRef, taskId, status: index === 0 ? 'unknown' : 'completed' })).status).toBe(200)
+    }
+    expect(f.control.list()[0]!.taskRefs).toHaveLength(32)
+    expect(f.control.list()[0]!.taskRefs[0]).toMatchObject({ contextRef: '0'.repeat(64), taskId: (100).toString(16).padStart(64, '0'), state: 'unknown' })
+    f.control.bind({ ...f.batch, batchId: '0'.repeat(64) }, parentId)
+    expect((await f.post('/prepare-task', { agentId, agentTypeId: 'qq.private', contextRef: '0'.repeat(64), taskId: 'f'.repeat(64) })).status).toBe(409)
+    for (let index = 1; index < 32; index++) {
+      const contextRef = (index + 1000).toString(16).padStart(64, '0'), taskId = (index + 2000).toString(16).padStart(64, '0')
+      f.control.bind({ ...f.batch, batchId: contextRef }, parentId)
+      expect((await f.post('/prepare-task', { agentId, agentTypeId: 'qq.private', contextRef, taskId })).status).toBe(200)
+      expect((await f.post('/finish-task', { agentId, contextRef, taskId, status: 'unknown' })).status).toBe(200)
+    }
+    expect(f.control.list()[0]!.taskRefs).toHaveLength(32)
+    expect(f.control.list()[0]!.taskRefs.every(task => task.state === 'unknown')).toBe(true)
+    const bytes = readFileSync(join(f.directory, 'agent-bindings.json'), 'utf8')
+    const blockedBatch = 'e'.repeat(64)
+    f.control.bind({ ...f.batch, batchId: blockedBatch }, parentId)
+    const requests = vi.mocked(f.host.getMcpConnection).mock.calls.length
+    const blocked = await f.post('/prepare-task', { agentId, agentTypeId: 'qq.private', contextRef: blockedBatch, taskId: 'f'.repeat(64) })
+    expect(blocked.status).toBe(409); expect(await blocked.json()).toMatchObject({ code: 'AGENT_TASK_CAPACITY', outcome: 'not-sent' })
+    expect(f.host.getMcpConnection).toHaveBeenCalledTimes(requests)
+    expect(readFileSync(join(f.directory, 'agent-bindings.json'), 'utf8')).toBe(bytes)
+    const reopened = new DshAgentControl(f.directory, f.host); stops.push(() => reopened.close())
+    expect(reopened.list()[0]!.taskRefs).toEqual(f.control.list()[0]!.taskRefs)
   })
 
   it('keeps at most 32 call references and refuses a 33rd call in the active context instead of forgetting replay protection', async () => {

@@ -29,7 +29,23 @@ interface Document { schemaVersion: 1; revision: number; configuration: Autonomy
 const integer = (value: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max
 const text = (value: unknown, max = 256): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max && !/[\u0000-\u001f\u007f]/.test(value)
 const exact = (value: JsonObject, names: string[]) => Object.keys(value).length === names.length && names.every(name => Object.hasOwn(value, name))
-function fail(code = 'INVALID_AUTONOMY_CONFIGURATION', status = 400): never { throw new PlatformError(code, '自主运行配置或状态无效，请重新读取并核对。', status, 'not-sent') }
+const errorMessages: Readonly<Record<string, string>> = {
+  INVALID_AUTONOMY_CONFIGURATION: '自主运行配置参数无效，请核对字段和允许范围后提交。',
+  INVALID_AUTONOMY_INPUT: '自主运行请求参数无效，请核对操作、字段和允许范围后提交。',
+  AUTONOMY_STATE_CORRUPTED: '自主运行状态文件格式无效，原文件已保留；请由主人检查文件，不能通过重复活动安排修复。',
+  AUTONOMY_REVISION_EXHAUSTED: '自主运行版本号已达到上限，请由主人检查状态；未保存此次操作。',
+  AUTONOMY_CONFIGURATION_CONFLICT: '自主运行配置版本已变化，请读取最新 revision 后重新判断并提交操作。',
+  AUTONOMY_ACTIVITY_CONFLICT: '活动安排版本已变化，请读取最新 state.revision 后重新判断并提交安排。',
+  AUTONOMY_DISABLED: '主人尚未开启自主运行，无法开始定时活动；需要主人明确开启。',
+  AUTONOMY_PAUSED: '自主定时活动已暂停，无法修改安排或定时任务；需要主人检查暂停原因并明确恢复。',
+  AUTONOMY_CYCLE_RUNNING: '当前自主活动周期仍在运行，请等待该周期结束后再执行此操作。',
+  AUTONOMY_RUNTIME_STALE: '此请求来自已失效的运行时，未执行；请使用当前运行时，勿重复提交旧请求。',
+  AUTONOMY_TARGET_DENIED: '此联系对象当前未获授权，请选择当前联系人目录内允许的对象。',
+  AUTONOMY_CONTACT_LIMIT: '当前小时的主动联系任务额度已用尽，请等待小时窗口重置；读取配置或安排 active 不会恢复额度。',
+}
+function fail(code = 'INVALID_AUTONOMY_CONFIGURATION', status = 400, details?: JsonObject, message = errorMessages[code] ?? '自主运行操作被拒绝，请根据错误码核对具体原因。'): never {
+  throw Object.assign(new PlatformError(code, message, status, 'not-sent'), details ? { details } : {})
+}
 export const AUTONOMY_DEFAULTS: AutonomyConfiguration = Object.freeze({ enabled: false, autoResume: false, minIntervalSeconds: 60, maxCyclesPerHour: 12, maxRunMinutes: 120, cycleTimeoutSeconds: 120, maxConsecutiveFailures: 3, maxContactsPerHour: 6, targets: [] })
 export function parseAutonomyConfiguration(input: unknown): AutonomyConfiguration {
   if (!isJsonObject(input) || Buffer.byteLength(JSON.stringify(input)) > 128 * 1024 || !exact(input, Object.keys(AUTONOMY_DEFAULTS)) || typeof input.enabled !== 'boolean' || typeof input.autoResume !== 'boolean') fail()
@@ -94,9 +110,16 @@ export class DshAutonomy {
     this.resolvedTargets = structuredClone([...targets]); return structuredClone([...targets])
   }
   async prepareContactTarget(id: string): Promise<ProactiveTarget> { await this.listTargets(); return this.contactTarget(id) }
+  private contactLimit(): JsonObject {
+    const { configuration, state } = this.document, now = this.clock()
+    const reset = state.windowAt === 0 || now - state.windowAt >= 3600000
+    const used = reset ? 0 : state.contacts, limit = configuration.maxContactsPerHour
+    const windowStartedAt = reset ? now : state.windowAt
+    return { limit, used, remaining: Math.max(0, limit - used), exhausted: used >= limit, windowStartedAt, resetAt: windowStartedAt + 3600000 }
+  }
   snapshot(): JsonObject {
     const { configuration, state } = this.document, now = this.clock()
-    const reset = now - state.windowAt >= 3600000
+    const reset = state.windowAt === 0 || now - state.windowAt >= 3600000
     let reason = !configuration.enabled ? 'disabled' : state.active && state.ownerPaused ? 'pausing' : state.errorCode ? 'error' : state.ownerPaused ? 'owner-paused' : !this.runtimeReady() ? 'runtime-stopped' : state.active ? 'running' : state.mode === 'waiting' ? 'waiting-event' : (state.wakeAt ?? 0) > now ? state.mode === 'sleeping' ? 'sleeping' : 'interval' : !reset && state.cycles >= configuration.maxCyclesPerHour ? 'hourly-limit' : 'ready'
     if (['ready', 'waiting-event', 'sleeping', 'interval', 'hourly-limit'].includes(reason) && this.runtimeNonce && now - (this.observed?.at ?? this.runtimeStartedAt) > 15000) reason = 'status-unavailable'
     else if (reason === 'ready' && this.observed && now - this.observed.at < 5000 && this.observed.phase !== 'idle') reason = this.observed.phase
@@ -104,10 +127,11 @@ export class DshAutonomy {
     // Only an active segment consumes the continuous-run budget. Sleeping/waiting
     // ends the segment; the next admitted cycle starts a new one.
     const runRemainingMs = state.startedAt === null ? configuration.maxRunMinutes * 60000 : Math.max(0, state.startedAt + configuration.maxRunMinutes * 60000 - now)
-    return { protocolVersion: 1, revision: this.document.revision, configuration: structuredClone(configuration) as unknown as JsonObject, agenda: this.agenda.snapshot(), state: { ...structuredClone(state), cycles: reset ? 0 : state.cycles, contacts: reset ? 0 : state.contacts, reason, nextWakeAt, runtimeReady: this.runtimeReady(), observedAt: this.observed?.at ?? null, runRemainingMs } as unknown as JsonObject }
+    return { protocolVersion: 1, revision: this.document.revision, configuration: structuredClone(configuration) as unknown as JsonObject, agenda: this.agenda.snapshot(), state: { ...structuredClone(state), cycles: reset ? 0 : state.cycles, contacts: reset ? 0 : state.contacts, contactLimit: this.contactLimit(), reason, nextWakeAt, runtimeReady: this.runtimeReady(), observedAt: this.observed?.at ?? null, runRemainingMs } as unknown as JsonObject }
   }
   async configure(input: unknown): Promise<JsonObject> {
-    if (!isJsonObject(input) || !exact(input, ['expectedRevision', 'configuration']) || input.expectedRevision !== this.document.revision) fail('AUTONOMY_CONFIGURATION_CONFLICT', 409)
+    if (!isJsonObject(input) || !exact(input, ['expectedRevision', 'configuration']) || !integer(input.expectedRevision)) fail('INVALID_AUTONOMY_INPUT')
+    if (input.expectedRevision !== this.document.revision) fail('AUTONOMY_CONFIGURATION_CONFLICT', 409)
     const configuration = parseAutonomyConfiguration(input.configuration)
     this.validateTargets(configuration.targets)
     if (this.document.revision >= Number.MAX_SAFE_INTEGER) fail('AUTONOMY_REVISION_EXHAUSTED', 409)
@@ -117,8 +141,9 @@ export class DshAutonomy {
     return this.snapshot()
   }
   async control(operation: string, input: unknown): Promise<JsonObject> {
-    if (!isJsonObject(input) || !exact(input, ['expectedRevision', 'expectedActivityRevision']) || input.expectedRevision !== this.document.revision || input.expectedActivityRevision !== this.document.state.revision) fail('AUTONOMY_CONFIGURATION_CONFLICT', 409)
-    if (!['pause', 'resume', 'wake'].includes(operation)) fail()
+    if (!['pause', 'resume', 'wake'].includes(operation) || !isJsonObject(input) || !exact(input, ['expectedRevision', 'expectedActivityRevision']) || !integer(input.expectedRevision) || !integer(input.expectedActivityRevision)) fail('INVALID_AUTONOMY_INPUT')
+    if (input.expectedRevision !== this.document.revision) fail('AUTONOMY_CONFIGURATION_CONFLICT', 409)
+    if (input.expectedActivityRevision !== this.document.state.revision) fail('AUTONOMY_ACTIVITY_CONFLICT', 409)
     const s = this.document.state
     if (operation !== 'pause' && !this.document.configuration.enabled) fail('AUTONOMY_DISABLED', 409)
     if (operation !== 'pause' && s.active) fail('AUTONOMY_CYCLE_RUNNING', 409)
@@ -127,7 +152,11 @@ export class DshAutonomy {
     else { s.ownerPaused = false; s.errorCode = null; s.failures = 0; s.startedAt = this.clock(); if (operation === 'wake' || s.mode === 'active') { s.mode = 'active'; s.wakeAt = this.clock() } }
     this.save(); return this.snapshot()
   }
-  private agendaAvailable(): void { const s = this.document.state; if (!this.document.configuration.enabled || s.ownerPaused || s.errorCode) fail('AUTONOMY_PAUSED', 409) }
+  private agendaAvailable(): void {
+    const s = this.document.state
+    if (!this.document.configuration.enabled) fail('AUTONOMY_DISABLED', 409)
+    if (s.ownerPaused || s.errorCode) fail('AUTONOMY_PAUSED', 409)
+  }
   scheduleTask(nonce: string, input: unknown): JsonObject { this.requireRuntime(nonce); this.agendaAvailable(); return this.agenda.schedule(input) }
   cancelTask(nonce: string, input: unknown): JsonObject { this.requireRuntime(nonce); this.agendaAvailable(); return this.agenda.cancel(input) }
   ownerCancelTask(input: unknown): JsonObject { return this.agenda.cancel(input) }
@@ -151,7 +180,7 @@ export class DshAutonomy {
     s.ownerPaused = true; s.errorCode = 'AUTONOMY_CONTROL_FAILED'; this.advance(); this.onRevoke(); this.save()
     return { paused: true }
   }
-  observe(phase: string): void { if (!['idle', 'busy', 'external-pending', 'native-goal'].includes(phase)) fail(); this.observed = { phase, at: this.clock() } }
+  observe(phase: string): void { if (!['idle', 'busy', 'external-pending', 'native-goal'].includes(phase)) fail('INVALID_AUTONOMY_INPUT'); this.observed = { phase, at: this.clock() } }
   claim(nonce: string): JsonObject {
     this.requireRuntime(nonce)
     const s = this.document.state, c = this.document.configuration, now = this.clock()
@@ -174,11 +203,13 @@ export class DshAutonomy {
   activeCycle(): Cycle | null { return this.document.state.active ? { ...this.document.state.active } : null }
   decide(nonce: string, input: unknown): JsonObject {
     this.requireRuntime(nonce)
-    if (!isJsonObject(input) || !exact(input, ['expectedActivityRevision', 'mode', 'wakeAt', 'note']) || input.expectedActivityRevision !== this.document.state.revision) fail('AUTONOMY_ACTIVITY_CONFLICT', 409)
-    if (!this.document.configuration.enabled || this.document.state.ownerPaused) fail('AUTONOMY_PAUSED', 409)
-    if (!['active', 'sleeping', 'waiting'].includes(String(input.mode)) || typeof input.note !== 'string' || input.note.length > 500 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(input.note)) fail()
+    if (!isJsonObject(input) || !exact(input, ['expectedActivityRevision', 'mode', 'wakeAt', 'note']) || !integer(input.expectedActivityRevision)) fail('INVALID_AUTONOMY_INPUT')
+    if (input.expectedActivityRevision !== this.document.state.revision) fail('AUTONOMY_ACTIVITY_CONFLICT', 409)
+    if (!this.document.configuration.enabled) fail('AUTONOMY_DISABLED', 409)
+    if (this.document.state.ownerPaused) fail('AUTONOMY_PAUSED', 409)
+    if (!['active', 'sleeping', 'waiting'].includes(String(input.mode)) || typeof input.note !== 'string' || input.note.length > 500 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(input.note)) fail('INVALID_AUTONOMY_INPUT')
     const now = this.clock()
-    if (input.mode === 'sleeping' ? !integer(input.wakeAt, now + 1000, now + 365 * 86400000) : input.wakeAt !== null) fail()
+    if (input.mode === 'sleeping' ? !integer(input.wakeAt, now + 1000, now + 365 * 86400000) : input.wakeAt !== null) fail('INVALID_AUTONOMY_INPUT')
     const s = this.document.state
     this.advance(); s.mode = input.mode as AutonomyState['mode']; s.note = input.note; s.wakeAt = input.mode === 'sleeping' ? input.wakeAt as number : input.mode === 'active' ? now + this.document.configuration.minIntervalSeconds * 1000 : null
     // A sleep/wait boundary ends the active segment. Otherwise a long sleep
@@ -190,7 +221,7 @@ export class DshAutonomy {
     this.requireRuntime(nonce)
     const s = this.document.state, cycle = s.active
     if (!cycle || cycle.id !== cycleId || cycle.nonce !== nonce) return { accepted: false }
-    if (code !== null && !/^[A-Z][A-Z0-9_]{0,99}$/.test(code)) fail()
+    if (code !== null && !/^[A-Z][A-Z0-9_]{0,99}$/.test(code)) fail('INVALID_AUTONOMY_INPUT')
     s.active = null; s.lastOutcome = outcome; s.lastFinishedAt = this.clock()
     s.history.push({ cycleId, startedAt: cycle.startedAt, finishedAt: s.lastFinishedAt, outcome, code }); s.history = s.history.slice(-20)
     if (outcome === 'completed') s.failures = 0
@@ -203,9 +234,16 @@ export class DshAutonomy {
     if (!target) fail('AUTONOMY_TARGET_DENIED', 403)
     this.validateTargets([target]); return structuredClone(target)
   }
+  assertContactAvailable(): void {
+    const contactLimit = this.contactLimit()
+    if (contactLimit.exhausted) {
+      const reset = contactLimit.limit === 0 ? '主人当前将小时上限设为 0，窗口重置后也无可用额度。' : `此窗口将于 ${new Date(Number(contactLimit.resetAt)).toISOString()} 重置，请等待重置后再判断是否联系。`
+      fail('AUTONOMY_CONTACT_LIMIT', 409, { contactLimit }, `当前小时的主动联系任务额度已用尽（已用 ${contactLimit.used}/${contactLimit.limit}，剩余 0）。${reset}本次未发送；读取配置或安排 active 不会恢复额度。`)
+    }
+  }
   countContact(): void {
+    this.assertContactAvailable()
     this.resetWindow()
-    if (this.document.state.contacts >= this.document.configuration.maxContactsPerHour) fail('AUTONOMY_CONTACT_LIMIT', 409)
     this.document.state.contacts++; this.save()
   }
   contactTargetStillAllowed(target: ProactiveTarget): boolean { return JSON.stringify((this.targetDirectory ? this.resolvedTargets ?? [] : this.document.configuration.targets).find(candidate => candidate.id === target.id)) === JSON.stringify(target) }

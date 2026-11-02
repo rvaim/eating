@@ -1,6 +1,6 @@
 # DSH 原生能力与插件
 
-适用：DSH插件0.15.1、Eating0.17.1／API4；当前默认与主人配置按[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)。入口：**Harness → DeepSeek Harness → 原生能力与插件**。
+适用：DSH插件0.15.2、Eating0.17.2／API4；当前默认与主人配置按[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)。入口：**Harness → DeepSeek Harness → 原生能力与插件**。
 
 ## 原生功能
 
@@ -46,6 +46,8 @@
 自定义以同名toolAccessOverrides为准，优先于自动行为与toolGrants。schema指纹变化后保留限制且停止授权，不回落为自动开放；先读新目录核对，再确认当前工具或恢复自动。暂时缺失的工具也保留例外，可明确恢复自动。工具目录与最终调用守卫同时执行，tools/change更新native.restrict；reserved／来源／QQ scope不能通过同名覆盖绕过。
 
 原生配置保持schema1，toolAccessOverrides缺省沿用默认、不补写；保存省略保持当前例外，[]恢复全部自动。feature的启用／代理范围／参数保持独立。Host capability／direct来源则到“MCP”页选择all/custom并保存，custom不自动纳入后续新类型／新工具，可恢复all；QQ通讯仍由来源权限页管理。
+
+普通入站委派遇unknown时先核对原任务及Host回执，不换call重放原context；新入站context＋新call可继续使用同child，pending仍拒并发。旧unknown／迟到回调不会撤新scope，动作账本保持。联系额度错误按code及used／resetAt判断，读取activity_state或安排active不会重置每小时6次；409须结合outcome判断，不一律视为unknown。见[ADR-0037](../decisions/ADR-0037-未知委派隔离与受控图片发送预算.md)。当前服务正常connected，前轮清理后保持停止只描述历史状态，本轮交付以[报告](../reports/2026-11-03-未知委派隔离与受控图片发送验证报告.md)为准。
 
 ## 草稿、隐藏和错误
 

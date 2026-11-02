@@ -1,6 +1,6 @@
 # Eating QQ 配置与功能测试
 
-Eating 使用 QQ OneBot v11 插件，需要已登录QQ并开启OneBot的协议端，不实现QQ登录。当前应用／Host／Web0.17.0、SDK4.7.0、UI4.2.0、core4.0.0、QQ0.13.4、DSH0.15.0，仅API4。保留38公开API＋1框架quick共39项标准工具，另有qq_view_received_image受控扩展，共40项；子通讯只用当前类型可范围化已选集合。普通会话自主处理和功能默认开放可配置见[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)，标准目录见[OneBot覆盖清单](../technical/OneBot标准功能覆盖.md)，官方Web与图片操作遵循当前架构。
+Eating 使用 QQ OneBot v11 插件，需要已登录QQ并开启OneBot的协议端，不实现QQ登录。当前应用／Host／Web0.17.2、SDK4.7.0、UI4.2.0、core4.0.0、QQ0.13.5、DSH0.15.2，仅API4。保留38公开API＋1框架quick共39项标准工具，另有qq_view_received_image受控扩展，共40项；子通讯只用当前类型可范围化已选集合。普通会话自主处理和功能默认开放可配置见[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)，标准目录见[OneBot覆盖清单](../technical/OneBot标准功能覆盖.md)，官方Web与图片操作遵循当前架构。
 
 ## 构建、安装与启动
 
@@ -137,6 +137,8 @@ QQ“功能测试”下拉读取后台同一目录，原39项＝官方38公开AP
 Cookies、CSRF Token和QQ接口凭据只在主动查询后显示，不加入普通执行记录；离开测试页签、隐藏、pagehide或停用会清除并防止迟到回包恢复。普通面板只保最近10条执行，未知结果保留至明确核对，不持久化浏览器。MCP调用方收到敏感结果后自行保管，其原生会话可能保存，不能认为整个链路都不留存。
 
 “MCP能力 → 查看MCP配置”仅在主动点击后获取QQ专属StreamableHTTP地址与独立Bearer，离开页签隐藏；不回显OneBot令牌，不自动修改其他Harness。新增未知可执行扩展仍需主人批准；本轮标准QQ工具已由用户授权加入。
+
+授权插件图片发送使用eating-asset引用：后台readAsset授权且checked后才计算实际Base64额外预算，模型不能传预算或借此读取任意URL／路径。单图仍5MiB，每次最多4张／10MiB原图；普通wire扣该Base64后≤1MiB，额外≤14MiB，全JSON≤15MiB。普通JSON／文本／模型输入和入站／响应／ws1MiB保持，不对普通Base64开放额外空间。OneBot retcode100仍failed；unknown先查回执，不换request_id重发。普通入站unknown只拦原context或原task，新入站新call可由同child处理；pending仍串行，主动联系另受自身防重及每小时6次限制。额度错误可读contactLimit的used／resetAt，activity_state读取成功不表示额度恢复。见[ADR-0037](../decisions/ADR-0037-未知委派隔离与受控图片发送预算.md)与[本轮报告](../reports/2026-11-03-未知委派隔离与受控图片发送验证报告.md)。
 
 ## 查看本会话图片
 

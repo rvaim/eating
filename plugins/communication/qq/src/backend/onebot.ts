@@ -8,7 +8,18 @@ import type { ConnectionStatus, JsonObject, JsonValue } from '@eating/plugin-sdk
 // OneBot v11 d4456ee706f9ada9c2dfde56a2bcfc69752600e4:
 // communication/{ws,authorization,http}.md and api/{public,README}.md.
 // One forward WebSocket endpoint must carry both API responses and events.
-const MAX_PAYLOAD_BYTES = 1024 * 1024
+const MAX_INCOMING_PAYLOAD_BYTES = 1024 * 1024
+const MAX_REQUEST_PARAMETER_BYTES = 1024 * 1024
+// Only backend-resolved plugin images earn additional request space. Four images
+// totalling 10 MiB encode to <14 MiB; keep a separate hard cap on the whole JSON.
+const MAX_RESOLVED_IMAGE_BASE64_BYTES = 14 * 1024 * 1024
+const MAX_OUTGOING_PAYLOAD_BYTES = MAX_REQUEST_PARAMETER_BYTES + MAX_RESOLVED_IMAGE_BASE64_BYTES
+type RequestOptions = {
+  timeoutMs?: number
+  readOnly?: boolean
+  /** Exact base64 byte count from authorized resource resolution, never model input. */
+  resolvedImageBase64Bytes?: number
+}
 const MAX_PENDING_REQUESTS = 1024
 const DEFAULT_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000] as const
 const STABLE_CONNECTION_MS = 30000
@@ -145,12 +156,12 @@ export class OneBotClient {
     this.publish({ state: this.configured ? 'disconnected' : 'unconfigured', connectedAt: null, reconnectAttempt: 0 })
   }
 
-  async call(action: string, params: JsonObject, options?: { timeoutMs?: number; readOnly?: boolean }): Promise<JsonValue> {
+  async call(action: string, params: JsonObject, options?: RequestOptions): Promise<JsonValue> {
     const session = this.session
     if (!session?.ready || !this.isCurrent(session) || session.socket.readyState !== WebSocket.OPEN) {
       throw new PlatformError('onebot_not_connected', 'OneBot 尚未通过在线核验', 409, 'not-sent')
     }
-    return this.request(session, action, params, options?.timeoutMs, options?.readOnly === true)
+    return this.request(session, action, params, options?.timeoutMs, options?.readOnly === true, options?.resolvedImageBase64Bytes)
   }
 
   async dispose(): Promise<void> {
@@ -188,7 +199,7 @@ export class OneBotClient {
       try {
         socket = new WebSocket(config.endpoint, {
           headers: config.accessToken ? { Authorization: `Bearer ${config.accessToken}` } : {},
-          followRedirects: false, maxPayload: MAX_PAYLOAD_BYTES, perMessageDeflate: false,
+          followRedirects: false, maxPayload: MAX_INCOMING_PAYLOAD_BYTES, perMessageDeflate: false,
         })
       } catch {
         const error = new PlatformError('onebot_connection_failed', '无法建立 OneBot WebSocket 连接', 502, 'not-sent')
@@ -279,7 +290,7 @@ export class OneBotClient {
     }
   }
 
-  private request(session: Session, action: string, params: JsonObject, timeoutMs: number | undefined, readOnly: boolean): Promise<JsonValue> {
+  private request(session: Session, action: string, params: JsonObject, timeoutMs: number | undefined, readOnly: boolean, resolvedImageBase64Bytes = 0): Promise<JsonValue> {
     if (!this.isCurrent(session) || session.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new PlatformError('onebot_not_connected', 'OneBot 连接不可用', 409, 'not-sent'))
     }
@@ -291,7 +302,11 @@ export class OneBotClient {
     } catch {
       return Promise.reject(new PlatformError('onebot_invalid_request', 'OneBot 请求必须包含有效动作与 JSON 参数', 400, 'not-sent'))
     }
-    if (Buffer.byteLength(wire) > MAX_PAYLOAD_BYTES) {
+    const wireBytes = Buffer.byteLength(wire)
+    if (!Number.isSafeInteger(resolvedImageBase64Bytes) || resolvedImageBase64Bytes < 0
+      || resolvedImageBase64Bytes > MAX_RESOLVED_IMAGE_BASE64_BYTES
+      || wireBytes > MAX_OUTGOING_PAYLOAD_BYTES
+      || wireBytes - resolvedImageBase64Bytes > MAX_REQUEST_PARAMETER_BYTES) {
       return Promise.reject(new PlatformError('onebot_payload_too_large', 'OneBot 请求超过大小上限', 413, 'not-sent'))
     }
     if (session.pending.size >= MAX_PENDING_REQUESTS) {
@@ -332,7 +347,7 @@ export class OneBotClient {
     let message: JsonObject
     try {
       const bytes = Array.isArray(raw) ? Buffer.concat(raw) : Buffer.isBuffer(raw) ? raw : Buffer.from(raw)
-      if (bytes.byteLength > MAX_PAYLOAD_BYTES) {
+      if (bytes.byteLength > MAX_INCOMING_PAYLOAD_BYTES) {
         this.fail(session, new PlatformError('onebot_payload_too_large', 'OneBot 消息超过大小上限', 502, 'failed'))
         return
       }

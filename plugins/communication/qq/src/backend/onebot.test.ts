@@ -558,6 +558,22 @@ describe('OneBotClient forward unified WebSocket', () => {
     expect(remote.requests).toHaveLength(2)
   })
 
+  it('bounds backend image allowances and the full outgoing JSON before transport without raising the ordinary request limit', async () => {
+    const remote = await fixture()
+    const value = client()
+    await value.connect(config(remote.endpoint))
+    for (const resolvedImageBase64Bytes of [-1, 0.5, NaN, 14 * 1024 * 1024 + 1]) {
+      expect(await errorFrom(value.call('send_msg', {}, { resolvedImageBase64Bytes }))).toMatchObject({ code: 'onebot_payload_too_large', outcome: 'not-sent' })
+    }
+    // Extra image space cannot absorb unrelated JSON beyond the original 1 MiB.
+    expect(await errorFrom(value.call('send_msg', { message: 'x'.repeat(1024 * 1024 + 4) }, { resolvedImageBase64Bytes: 4 })))
+      .toMatchObject({ code: 'onebot_payload_too_large', outcome: 'not-sent' })
+    expect(await errorFrom(value.call('send_msg', { message: 'x'.repeat(15 * 1024 * 1024) }, { resolvedImageBase64Bytes: 14 * 1024 * 1024 })))
+      .toMatchObject({ code: 'onebot_payload_too_large', outcome: 'not-sent' })
+    expect(remote.requests).toHaveLength(2)
+    expect(value.getStatus().state).toBe('connected')
+  })
+
   it('ignores unknown, missing, non-string and duplicate echoes without resolving a different action', async () => {
     const onEvent = vi.fn()
     const remote = await fixture()

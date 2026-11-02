@@ -62,7 +62,7 @@ class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly kind = 'communication' as const
   readonly name = 'QQ'
-  readonly version = '0.13.4'
+  readonly version = '0.13.5'
   readonly logs = new LiveLogChannel()
   readonly tools = [...qqTools, qqViewReceivedImageTool]
   readonly capabilities = [
@@ -182,7 +182,8 @@ class QQPlugin implements BackendPlugin {
       if (scope?.signal?.aborted) throw new PlatformError('AGENT_SCOPE_VIOLATION', '资源读取期间任务已撤销，未发送。', 403, 'not-sent')
       if (scope) assertQQAgentInvocation(name, params, scope, this.configuration, { instanceId: this.instanceId, accountId: this.client.getStatus().accountId })
       if (this.client.getStatus().accountId !== account) throw new PlatformError('ACCOUNT_CHANGED', '资源读取期间账号已变化，未发送。', 409, 'not-sent')
-      return this.client.call(action, wire, { timeoutMs: this.configuration.timeoutMs, readOnly: tool.readOnly })
+      return this.client.call(action, wire.params, { timeoutMs: this.configuration.timeoutMs, readOnly: tool.readOnly,
+        ...(wire.imageBase64Bytes ? { resolvedImageBase64Bytes: wire.imageBase64Bytes } : {}) })
     }
     if (tool.readOnly) return execute()
     const accountId = this.client.getStatus().accountId
@@ -198,8 +199,8 @@ class QQPlugin implements BackendPlugin {
     return checkedImageResource({ mimeType: image.mimeType ?? null, data: image.data ?? null })
   }
 
-  private async resolveAssets(params: JsonObject, scope?: AgentInvocationScope): Promise<JsonObject> {
-    let count = 0, totalBytes = 0
+  private async resolveAssets(params: JsonObject, scope?: AgentInvocationScope): Promise<{ params: JsonObject; imageBase64Bytes: number }> {
+    let count = 0, totalBytes = 0, imageBase64Bytes = 0
     const resolveMessage = async (value: JsonValue): Promise<JsonValue> => {
       if (Array.isArray(value)) return Promise.all(value.map(resolveMessage))
       if (!isJsonObject(value) || !isJsonObject(value.data)) return value
@@ -211,6 +212,7 @@ class QQPlugin implements BackendPlugin {
         const image = checkedImageResource(await this.context.resources.readAsset(reference, scope ? { agentId: scope.agentId, agentTypeId: scope.agentTypeId, source: scope } : undefined))
         totalBytes += Buffer.byteLength(image.data, 'base64')
         if (totalBytes > 10 * 1024 * 1024) throw new PlatformError('MEDIA_ASSET_LIMIT', '单次发送的插件图片总大小不能超过10MiB。', 400, 'not-sent')
+        imageBase64Bytes += image.data.length
         return { ...value, data: { ...value.data, file: 'base64://' + image.data } }
       }
       if (value.type === 'node' && value.data.content !== undefined) return { ...value, data: { ...value.data, content: await resolveMessage(value.data.content) } }
@@ -219,7 +221,7 @@ class QQPlugin implements BackendPlugin {
     const result = { ...params }
     if (result.message !== undefined) result.message = await resolveMessage(result.message)
     if (isJsonObject(result.operation) && result.operation.reply !== undefined) result.operation = { ...result.operation, reply: await resolveMessage(result.operation.reply) }
-    return result
+    return { params: result, imageBase64Bytes }
   }
 
   private async viewReceivedImage(params: JsonObject, scope?: AgentInvocationScope): Promise<JsonObject> {

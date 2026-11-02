@@ -158,6 +158,7 @@ export class DshAgentControl {
     const target = await activity.prepareContactTarget(body.targetId)
     signal.throwIfAborted()
     if (!this.validContactTurn(turn) || this.contactPolicySummary?.().revision !== policyRevision) fail('CONTACT_TURN_EXPIRED', '读取联系人时轮次或授权已变化。')
+    activity.assertContactAvailable()
     const key = createHash('sha256').update(JSON.stringify([rootId, target.pluginId, target.instanceId, target.accountId, target.agentTypeId, target.targetId])).digest('hex')
     const previous = this.proactiveBindings.find(binding => binding.key === key)
     if (previous && (previous.taskRefs.some(ref => ref.taskId === body.taskId) || ['pending', 'unknown'].includes(previous.task.state))) fail('PROACTIVE_TASK_UNKNOWN', '已有联系任务待核对或此调用已提交，未重复执行。')
@@ -267,6 +268,13 @@ export class DshAgentControl {
     if (this.server) return
     this.stopping = false; this.nonce = nonce; this.secret = randomBytes(32).toString('hex'); this.contactTurn = null; this.lastContactTurn = 0
     this.revokeProactive()
+    // A restarted runtime cannot finish an interrupted child from its predecessor.
+    // Preserve its identity and replay guards without keeping a permanent pending lock.
+    if (this.bindings.some(binding => binding.task?.state === 'pending' || binding.taskRefs.some(task => task.state === 'pending'))) {
+      const interrupted = (task: AgentTaskReference): AgentTaskReference => task.state === 'pending' ? { ...task, state: 'unknown' } : task
+      for (const binding of this.bindings) if (binding.task?.state === 'pending') this.host.revokeAgentAccess(binding.scope.agentId)
+      this.save(this.bindings.map(binding => ({ ...binding, ...(binding.task ? { task: interrupted(binding.task) } : {}), taskRefs: binding.taskRefs.map(interrupted) })))
+    }
     const server = createServer((request, response) => {
       const controller = new AbortController(); this.active.add(controller)
       const stopRequest = () => { request.destroy(); response.destroy() }
@@ -354,15 +362,26 @@ export class DshAgentControl {
           return
         }
         const binding = this.bindings.find(entry => entry.scope.agentId === body.agentId)
-        if (!binding || !this.activeContext || this.activeContext.agentId !== binding.scope.agentId || body.contextRef !== this.activeContext.contextRef) fail('AGENT_CONTEXT_UNAVAILABLE', '本次消息上下文已失效。')
+        // A new batch can be bound while the previous child is still draining.
+        // Only its exact pending task may finish; it cannot read the new context.
+        if (!binding || request.url !== '/finish-task' && (!this.activeContext || this.activeContext.agentId !== binding.scope.agentId || body.contextRef !== this.activeContext.contextRef)) fail('AGENT_CONTEXT_UNAVAILABLE', '本次消息上下文已失效。')
         let result: JsonObject
         if (request.url === '/prepare-task') {
           if (Object.keys(body).some(key => !['agentId', 'contextRef', 'agentTypeId', 'taskId'].includes(key)) || body.agentTypeId !== binding.scope.agentTypeId || (typeof body.taskId !== 'string' || !DIGEST.test(body.taskId))) fail('AGENT_SCOPE_INVALID', '子代理类型或调用标识与消息来源不匹配。')
-          if (binding.task?.state === 'pending' || binding.task?.state === 'unknown') fail('AGENT_TASK_UNKNOWN', '已有子代理任务结果待核对，未重复执行。')
           const references = binding.taskRefs
+          if (binding.task?.state === 'pending') fail('AGENT_TASK_PENDING', '已有子代理任务仍在执行，请等待原任务结束，未登记新任务。')
+          const unknown = (task: AgentTaskReference) => task.state === 'unknown' && (task.contextRef === body.contextRef || task.taskId === body.taskId)
+          if (binding.task && unknown(binding.task) || references.some(unknown)) fail('AGENT_TASK_UNKNOWN', '此批消息或工具调用已有结果未知的子代理任务，未重复执行；新的入站批次可独立处理。')
           const sameContext = binding.task?.contextRef === body.contextRef
           if (references.some(task => task.contextRef === body.contextRef && task.taskId === body.taskId) || sameContext && binding.task?.taskId === body.taskId) fail('AGENT_TASK_ALREADY_SUBMITTED', '此工具调用已委派，未重复执行。')
           if (references.filter(task => task.contextRef === body.contextRef).length >= MAX_TASK_REFERENCES) fail('AGENT_TASK_CAPACITY', '本批消息的委派次数已达上限，未登记新任务。')
+          // Never evict unresolved tasks or calls from this batch to make room.
+          const retained = [...references]
+          if (retained.length >= MAX_TASK_REFERENCES) {
+            const expired = retained.findIndex(task => task.contextRef !== body.contextRef && (task.state === 'completed' || task.state === 'failed'))
+            if (expired < 0) fail('AGENT_TASK_CAPACITY', '子代理调用索引已达上限，未知任务与本批防重记录均已保留，未登记新任务。')
+            retained.splice(expired, 1)
+          }
           const owner = this.host.readOwnerConfiguration()
           const type = owner.agentTypes.find(entry => entry.id === binding.scope.agentTypeId && entry.enabled && entry.pluginId === binding.scope.pluginId)
           if (!type) fail('AGENT_TYPE_UNAVAILABLE', '子代理类型当前不可用。')
@@ -373,20 +392,20 @@ export class DshAgentControl {
           try {
             mcp = this.host.getMcpConnection(binding.scope.pluginId, binding.scope)
             capabilities = this.host.getCapabilityMcpConnections({ agentId: binding.scope.agentId, agentTypeId: type.id, source: binding.scope })
-            this.replace({ ...binding, configurationRevision: preview.revision, task, taskRefs: [...references, task].slice(-MAX_TASK_REFERENCES) })
+            this.replace({ ...binding, configurationRevision: preview.revision, task, taskRefs: [...retained, task] })
           } catch (error) { this.host.revokeAgentAccess(binding.scope.agentId); throw error }
           const beforeActions = this.host.readAgentActions(binding.scope.agentId)
           this.actionBaselines.set(binding.scope.agentId, new Map(beforeActions.map(action => [action.requestId, JSON.stringify(action)])))
           result = { agentId: binding.scope.agentId, agentTypeId: type.id, systemPrompt: preview.systemPrompt, revision: preview.revision, mcp: { url: mcp.url, headers: { ...mcp.headers } }, tools: [...type.enabledTools], capabilities: capabilities.map(connection => ({ ...connection, headers: { ...connection.headers }, tools: [...connection.tools] })) }
         } else if (request.url === '/actions') {
-          if (Object.keys(body).some(key => !['agentId', 'contextRef', 'taskId'].includes(key)) || typeof body.taskId !== 'string' || !DIGEST.test(body.taskId) || binding.task?.nonce !== this.nonce || binding.task.contextRef !== body.contextRef || binding.task.taskId !== body.taskId) fail('CONTROL_REQUEST_INVALID', '运行时请求无效。')
+          if (Object.keys(body).some(key => !['agentId', 'contextRef', 'taskId'].includes(key)) || typeof body.taskId !== 'string' || !DIGEST.test(body.taskId) || binding.task?.nonce !== this.nonce || binding.task.contextRef !== body.contextRef || binding.task.taskId !== body.taskId || binding.task.state !== 'pending') fail('CONTROL_REQUEST_INVALID', '运行时请求无效。')
           const actions = this.host.readAgentActions(binding.scope.agentId)
           const sentMessageIds = actions.flatMap(action => isJsonObject(action.result) && (typeof action.result.message_id === 'string' || typeof action.result.message_id === 'number') ? [String(action.result.message_id)] : [])
           if (sentMessageIds.length) this.replace({ ...binding, scope: { ...binding.scope, messageIds: [...new Set([...binding.scope.messageIds, ...sentMessageIds])].slice(-256) } })
           const baseline = this.actionBaselines.get(binding.scope.agentId)
           result = { actions: actions.filter(action => baseline?.get(action.requestId) !== JSON.stringify(action)) as unknown as JsonValue[] }
         } else if (request.url === '/finish-task') {
-          if (Object.keys(body).some(key => !['agentId', 'contextRef', 'status', 'taskId'].includes(key)) || typeof body.taskId !== 'string' || !DIGEST.test(body.taskId) || !['completed', 'failed', 'unknown'].includes(String(body.status)) || binding.task?.nonce !== this.nonce || binding.task.contextRef !== body.contextRef || binding.task.taskId !== body.taskId || !['pending', 'unknown'].includes(binding.task.state)) fail('CONTROL_REQUEST_INVALID', '运行时任务状态无效。')
+          if (Object.keys(body).some(key => !['agentId', 'contextRef', 'status', 'taskId'].includes(key)) || typeof body.taskId !== 'string' || !DIGEST.test(body.taskId) || !['completed', 'failed', 'unknown'].includes(String(body.status)) || binding.task?.nonce !== this.nonce || binding.task.contextRef !== body.contextRef || binding.task.taskId !== body.taskId || binding.task.state !== 'pending') fail('CONTROL_REQUEST_INVALID', '运行时任务状态无效。')
           this.host.revokeAgentAccess(binding.scope.agentId)
           this.actionBaselines.delete(binding.scope.agentId)
           const task: AgentTaskReference = { ...binding.task, state: body.status as 'completed' | 'failed' | 'unknown' }
@@ -397,8 +416,8 @@ export class DshAgentControl {
         response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result))
       })().catch(error => {
         if (response.writableEnded || response.destroyed) return
-        const publicError = error instanceof PlatformError ? { code: error.code, message: error.message } : { code: 'CONTROL_REQUEST_FAILED', message: '运行时受控请求失败。' }
-        response.writeHead(409, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(publicError))
+        const publicError = error instanceof PlatformError ? { code: error.code, message: error.message, outcome: error.outcome, ...('details' in error && isJsonObject(error.details) ? { details: error.details } : {}) } : { code: 'CONTROL_REQUEST_FAILED', message: '运行时受控请求失败。', outcome: 'unknown' }
+        response.writeHead(error instanceof PlatformError ? error.statusCode : 500, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(publicError))
       }).finally(() => { clearTimeout(timer); controller.signal.removeEventListener('abort', stopRequest); this.active.delete(controller) })
     })
     server.requestTimeout = 5000; server.headersTimeout = 5000

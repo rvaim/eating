@@ -2,11 +2,12 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { composeAgentPrompt, isJsonObject } from '@eating/plugin-sdk'
+import { checkedImageResource, composeAgentPrompt, isJsonObject } from '@eating/plugin-sdk'
 import type { AgentActionReceipt, AgentInvocationScope, BackendPluginEntry, CapabilityInvocationScope, HarnessHostServices, JsonObject } from '@eating/plugin-sdk'
 import imagesEntry from '../../../plugins/capabilities/image-generation/src/server'
 import qqEntry from '../../../plugins/communication/qq/src/server'
 import { DshPlugin } from '../../../plugins/harness/dsh/src/backend/adapter'
+import { createLargeImageFixturePng } from '../../../tests/fixtures/image'
 import { startImagesProviderFixture } from '../../../tests/fixtures/images-provider'
 import { connectNativeWeb } from '../../../tests/fixtures/native-web'
 import { readModelFixtureBatch } from '../../../tests/fixtures/openai'
@@ -81,7 +82,7 @@ async function ownerApi(host: EatingHost) {
 /** Scripted local models verify the executable handoff and receipts, not which path a real LLM will choose. */
 async function fixture(kind: 'chat' | 'image') {
   const home = await temporaryHome()
-  const provider = kind === 'image' ? await startImagesProviderFixture('base64', { defer: true }) : undefined
+  const provider = kind === 'image' ? await startImagesProviderFixture('base64', { defer: true, image: createLargeImageFixturePng() }) : undefined
   if (provider) stops.push(() => provider.close())
   const onebot = await startOneBotFixture({ login: { user_id: selfId, nickname: 'Dialogue loopback account' } })
   stops.push(() => onebot.close())
@@ -141,9 +142,15 @@ async function fixture(kind: 'chat' | 'image') {
     const assetId = (polled.assetIds as string[])[0]!
     if (last.name === imagePrefix + 'image_get') {
       expect(value).toMatchObject({ item: { assetId }, sendable: { type: 'image', data: { file: 'eating-asset://image-generation/' + assetId } } })
-      const imageBlocks = request.messages?.flatMap(message => Array.isArray(message.content) ? message.content.filter(isJsonObject).filter(block => block.type === 'image_url') : [])
-      expect(imageBlocks).toEqual([expect.objectContaining({ image_url: { url: 'data:image/png;base64,' + provider.image.toString('base64') } })])
-      return { name: 'mcp__qq__qq_send_private_message', arguments: { user_id: String(current.event.targetId), message: object(value.sendable), request_id: 'dialogue-private-image-send-001' } }
+      const imageBlocks = request.messages?.flatMap(message => Array.isArray(message.content) ? message.content.filter(isJsonObject).filter(block => block.type === 'image_url') : []) ?? []
+      expect(imageBlocks).toHaveLength(1)
+      // The SDK may normalize a large preview; the sendable asset must retain
+      // its original bytes, which the OneBot receipt assertions verify below.
+      const preview = String(object(object(imageBlocks[0]).image_url).url)
+      const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(preview)
+      expect(match).not.toBeNull()
+      expect(checkedImageResource({ mimeType: match![1], data: match![2] }).data.length).toBeGreaterThan(0)
+      return { name: 'mcp__qq__qq_send_private_message', arguments: { user_id: String(current.event.targetId), message: [{ type: 'text', data: { text: '月亮和小狐狸，画好啦。' } }, object(value.sendable)], request_id: 'dialogue-private-image-send-001' } }
     }
     expect(last.name).toBe('mcp__qq__qq_send_private_message')
     expect(value).toEqual({ message_id: 1001 })
@@ -284,7 +291,7 @@ describe.runIf(enabled)('system DSH conversation ownership with real Host and is
     expect(JSON.stringify(f.sends().map(send => send.params))).not.toContain(mainSummary)
   }, 60000)
 
-  it('lets the child generate once, poll and read the actual asset, send it to the private target, and return both real receipts', async () => {
+  it('lets the child generate once and send a real PNG above the old OneBot request limit with both real receipts', async () => {
     const f = await fixture('image'), provider = f.provider!
     f.emit()
     const { roots, children, receipt } = await expectCompletedHandoff(f)
@@ -296,12 +303,17 @@ describe.runIf(enabled)('system DSH conversation ownership with real Host and is
     expect(completed).toMatchObject({ status: 'succeeded', assetIds: [expect.any(String)] })
     const assetId = (completed.assetIds as string[])[0]!, actualGet = turns.find(turn => turn.name === imagePrefix + 'image_get')!
     const sendable = object(result(actualGet).sendable)
-    expect(turns.at(-1)!.arguments.message).toEqual(sendable)
+    expect(turns.at(-1)!.arguments.message).toEqual([{ type: 'text', data: { text: '月亮和小狐狸，画好啦。' } }, sendable])
+    expect(provider.image.length).toBeGreaterThan(1024 * 1024)
+    expect(provider.image.length).toBeLessThanOrEqual(5 * 1024 * 1024)
     expect(sendable).toEqual({ type: 'image', data: { file: 'eating-asset://image-generation/' + assetId } })
     expect(provider.requests).toHaveLength(1)
     expect(provider.requests[0]).toMatchObject({ path: '/custom/v1/images/generations', body: { prompt: imagePrompt, model: 'dialogue-fixture-images', n: 1 } })
     expect(provider.edits).toEqual([])
-    expect(f.sends()[0]).toMatchObject({ action: 'send_private_msg', params: { user_id: userId, message: { type: 'image', data: { file: 'base64://' + provider.image.toString('base64') } } } })
+    expect(f.sends()[0]).toMatchObject({ action: 'send_private_msg', params: { user_id: userId, message: [{ type: 'text', data: { text: '月亮和小狐狸，画好啦。' } }, { type: 'image', data: { file: 'base64://' + provider.image.toString('base64') } }] } })
+    const sentImage = object((f.sends()[0]!.params.message as JsonObject[])[1])
+    expect(Buffer.from(String(object(sentImage.data).file).slice('base64://'.length), 'base64').equals(provider.image)).toBe(true)
+    expect(Buffer.byteLength(JSON.stringify(f.sends()[0]!.params))).toBeGreaterThan(1024 * 1024)
     expect(await f.api('/plugins/image-generation/manage', { operation: 'get', input: { assetId } })).toMatchObject({ image: { mimeType: 'image/png', data: provider.image.toString('base64') }, sendable })
     expect(receipt.summary).toBe(`CHILD-IMAGE-DONE：job=${String(completed.jobId)}，asset=${assetId}，生成 succeeded，实际 private message_id=1001。`)
     expect(receipt.actions).toHaveLength(2)

@@ -22,11 +22,11 @@ function readMultipart(body: Buffer, contentType: string): { fields: JsonObject;
 }
 
 /** Independent OpenAI Images wire fixture; never a configured product provider. */
-export async function startImagesProviderFixture(mode: 'base64' | 'url' = 'base64', options: { defer?: boolean; edit?: boolean } = {}) {
+export async function startImagesProviderFixture(mode: 'base64' | 'url' = 'base64', options: { defer?: boolean; edit?: boolean; image?: Buffer } = {}) {
   let release!: () => void
   const gate = options.defer ? new Promise<void>(resolve => { release = resolve }) : Promise.resolve()
   if (!options.defer) release = () => {}
-  const image = createImageFixturePng(), apiKey = 'images-fixture-only-key'
+  const image = options.image ?? createImageFixturePng(), apiKey = 'images-fixture-only-key'
   const requests: Array<{ path: string | undefined; headers: IncomingHttpHeaders; body: JsonObject }> = []
   const edits: EditCapture[] = []
   const downloads: IncomingHttpHeaders[] = []

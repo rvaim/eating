@@ -42,7 +42,7 @@ export function getAutonomyRuntimeSource(): string {
       const { targets, ...publicConfiguration } = configuration;
       return { ...value, configuration: publicConfiguration };
     };
-    agent.ctx.tools.register({ name: 'eating_activity_state', description: '读取自主运行配置、主人暂停状态、当前活动安排、state.revision、AI 定时任务（agenda.revision）、额度、下次唤醒时间及主动联系策略摘要；具体联系人必须用 eating_list_contact_targets 查询。', parameters: { type: 'object', properties: {}, additionalProperties: false }, output,
+    agent.ctx.tools.register({ name: 'eating_activity_state', description: '读取自主运行配置、主人暂停状态、当前活动安排、state.revision、AI 定时任务（agenda.revision）、下次唤醒时间及主动联系策略摘要。state.contactLimit 提供当前小时主动联系任务的 limit、used、remaining、exhausted、windowStartedAt 与 resetAt（Unix 毫秒）；额度用尽需等窗口重置，读取状态或安排 active 不会恢复额度。具体联系人必须用 eating_list_contact_targets 查询。', parameters: { type: 'object', properties: {}, additionalProperties: false }, output,
       async execute(args, exec) { if (exec.agent !== agent || !record(args) || Object.keys(args).length) throw new Error('Activity state arguments are invalid'); return modelView(await auto('snapshot', {}, exec.signal)); } });
     agent.ctx.tools.register({ name: 'eating_plan_activity', description: '登记下一步活动：先调用 eating_activity_state，将最新 state.revision 填入 expected_revision。active 按主人设定的间隔等待下一轮机会；sleeping 休息至 wake_at 指定的带时区 RFC3339 时间；waiting 等待真实外部事件。active 和 waiting 的 wake_at 必须为 null，note 简述安排原因。',
       parameters: { type: 'object', properties: { expected_revision: { type: 'integer', minimum: 0 }, mode: { type: 'string', enum: ['active', 'sleeping', 'waiting'] }, wake_at: { type: ['string', 'null'] }, note: { type: 'string', maxLength: 500 } }, required: ['expected_revision', 'mode', 'wake_at', 'note'], additionalProperties: false }, output,

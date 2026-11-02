@@ -89,18 +89,18 @@ describe('owner controlled autonomous activity state', () => {
   it('revokes in-flight authority on pause and refuses the AI to resume owner-paused activity', async () => {
     const f = fixture(); await f.configure({ targets: [target] }); f.activity.startRuntime('runtime'); await f.control('resume')
     const cycle = f.activity.claim('runtime').cycle as JsonObject
-    expect(f.activity.target('runtime', String(cycle.id), target.id)).toEqual(target)
+    expect(f.activity.contactTarget(target.id)).toEqual(target)
     await f.control('pause')
     expect(f.activity.validCycle('runtime', String(cycle.id))).toBe(false)
-    expect(f.activity.targetStillAllowed('runtime', String(cycle.id), target)).toBe(false)
+    expect(f.activity.validCycle('runtime', String(cycle.id))).toBe(false); expect(f.activity.contactTargetStillAllowed(target)).toBe(true)
     expect(() => f.activity.decide('runtime', { expectedActivityRevision: state(f.activity).revision, mode: 'active', wakeAt: null, note: 'Resume' })).toThrow()
     expect(f.revoke).toHaveBeenCalled()
   })
   it('enforces hourly round and contact limits without invoking a model to poll', async () => {
     const f = fixture(); await f.configure({ maxCyclesPerHour: 1, maxContactsPerHour: 1, targets: [target] }); f.activity.startRuntime('runtime'); await f.control('resume')
     const cycle = f.activity.claim('runtime').cycle as JsonObject
-    f.activity.target('runtime', String(cycle.id), target.id); f.activity.countContact()
-    expect(() => f.activity.target('runtime', String(cycle.id), target.id)).toThrow()
+    f.activity.contactTarget(target.id); f.activity.countContact()
+    expect(() => f.activity.countContact()).toThrow()
     f.activity.finish('runtime', String(cycle.id), 'completed', null); f.advance(1000)
     expect(f.activity.claim('runtime').admitted).toBe(false); expect(state(f.activity).reason).toBe('hourly-limit')
     f.advance(3600000); expect(f.activity.claim('runtime').admitted).toBe(true)

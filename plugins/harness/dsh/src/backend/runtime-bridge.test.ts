@@ -74,7 +74,7 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
     eatingNativeCapabilities: { ready: vi.fn(async () => {}), allowedGlobal: vi.fn(() => []), mount: vi.fn(async () => []), reportTools: vi.fn(), authorize: vi.fn() },
     sessions: { flush, get: () => options.live ? session : undefined },
     sessionPersistence: { open, stat: vi.fn(async () => undefined) },
-    systemPrompt: { section: (value: NonNullable<typeof section.current>) => { section.current = value; return () => { section.current = undefined } } },
+    systemPrompt: { section: (value: NonNullable<typeof section.current>) => { if (value.name === 'eating:owner-system') section.current = value; return () => { if (section.current === value) section.current = undefined } } },
     tools: { schemas: () => tools, restrict: vi.fn(() => () => {}), register: vi.fn((tool: Json) => { registrations.push(tool); return () => {} }), guard: vi.fn(() => () => {}) },
     agents: { get: vi.fn(() => undefined) }, subagents: { drainChildren: vi.fn(async () => {}), sendMessage: vi.fn(async () => {}), interrupt: vi.fn(), startActivation: vi.fn() }, agentPresets: { register: vi.fn(async () => () => {}) },
   }

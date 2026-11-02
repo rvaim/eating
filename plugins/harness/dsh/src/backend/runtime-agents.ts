@@ -1,5 +1,6 @@
 import { getAutonomyRuntimeSource } from './autonomy-runtime'
 import { getMemoryRuntimeSource } from './memory-runtime'
+import { getContactRuntimeSource } from './contact-runtime'
 
 /** Runs inside the installed runtime. All Agent APIs below are public npm contracts. */
 export function getRuntimeAgentSource(): string {
@@ -199,8 +200,9 @@ export function getRuntimeAgentSource(): string {
     const connections = await control('capabilities', { agentId: agent.id, agentTypeId: 'main' }, initialization.signal);
     const capabilityNames = await mountCapabilities(agent, connections.capabilities);
     const autonomyNames = await mountAutonomy(agent);
+    const contactNames = await mountContacts(agent);
     await mountMemory(agent);
-    const allowedNames = ['eating_list_agent_types', 'eating_delegate_task', ...capabilityNames, ...nativeNames, ...autonomyNames];
+    const allowedNames = ['eating_list_agent_types', 'eating_delegate_task', ...capabilityNames, ...nativeNames, ...autonomyNames, ...contactNames];
     native.reportTools(agent, 'main', allowedNames);
     agent.ctx.tools.guard(exec => autonomyDriver?.flight?.entered && ['schedule_create', 'schedule_update'].includes(exec.name) ? 'Use eating_plan_activity for autonomous wake arrangements so owner pause remains authoritative.' : native.authorize(exec, agent, 'main', allowedNames));
   }
@@ -220,5 +222,6 @@ export function getRuntimeAgentSource(): string {
   }
   ${getAutonomyRuntimeSource()}
   ${getMemoryRuntimeSource()}
+  ${getContactRuntimeSource()}
 `;
 }

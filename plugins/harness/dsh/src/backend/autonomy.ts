@@ -93,7 +93,7 @@ export class DshAutonomy {
     if (revision !== this.document.revision) fail('AUTONOMY_CONFIGURATION_CONFLICT', 409)
     this.resolvedTargets = structuredClone([...targets]); return structuredClone([...targets])
   }
-  async prepareTarget(nonce: string, cycleId: string, id: string): Promise<ProactiveTarget> { await this.listTargets(); return this.target(nonce, cycleId, id) }
+  async prepareContactTarget(id: string): Promise<ProactiveTarget> { await this.listTargets(); return this.contactTarget(id) }
   snapshot(): JsonObject {
     const { configuration, state } = this.document, now = this.clock()
     const reset = now - state.windowAt >= 3600000
@@ -198,15 +198,16 @@ export class DshAutonomy {
     if (s.mode === 'active') s.wakeAt = Math.max(s.wakeAt ?? 0, this.clock() + this.document.configuration.minIntervalSeconds * 1000 * Math.max(1, s.failures))
     this.onRevoke(); this.save(); return { accepted: true }
   }
-  target(nonce: string, cycleId: string, id: string): ProactiveTarget {
-    if (!this.validCycle(nonce, cycleId)) fail('AUTONOMY_CYCLE_REVOKED', 409)
-    this.resetWindow()
-    if (this.document.state.contacts >= this.document.configuration.maxContactsPerHour) fail('AUTONOMY_CONTACT_LIMIT', 409)
+  contactTarget(id: string): ProactiveTarget {
     const target = (this.targetDirectory ? this.resolvedTargets ?? [] : this.document.configuration.targets).find(target => target.id === id)
     if (!target) fail('AUTONOMY_TARGET_DENIED', 403)
     this.validateTargets([target]); return structuredClone(target)
   }
-  countContact(): void { this.document.state.contacts++; this.save() }
-  targetStillAllowed(nonce: string, cycleId: string, target: ProactiveTarget): boolean { return this.validCycle(nonce, cycleId) && JSON.stringify((this.targetDirectory ? this.resolvedTargets ?? [] : this.document.configuration.targets).find(candidate => candidate.id === target.id)) === JSON.stringify(target) }
+  countContact(): void {
+    this.resetWindow()
+    if (this.document.state.contacts >= this.document.configuration.maxContactsPerHour) fail('AUTONOMY_CONTACT_LIMIT', 409)
+    this.document.state.contacts++; this.save()
+  }
+  contactTargetStillAllowed(target: ProactiveTarget): boolean { return JSON.stringify((this.targetDirectory ? this.resolvedTargets ?? [] : this.document.configuration.targets).find(candidate => candidate.id === target.id)) === JSON.stringify(target) }
   private requireRuntime(nonce: string): void { if (!this.runtimeNonce || nonce !== this.runtimeNonce) fail('AUTONOMY_RUNTIME_STALE', 409) }
 }

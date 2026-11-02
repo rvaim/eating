@@ -136,11 +136,11 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.13.0'
+  readonly version = '0.13.1'
   readonly tools = []
   readonly agentInstructions = [{ id: 'dsh.autonomous-activity', title: '自主活动与受控主动联系', localizedTitles: { 'zh-CN': '自主活动与受控主动联系', 'en-US': 'Autonomous activity and scoped proactive contact' }, body: `自主机会不要求先有人类任务。结合当前上下文和可用记忆，延续已有兴趣、约定与未完成事项，可自主探索、创作、整理、休息或等待；只依据实际可用的信息，不编造过往经历。在既有授权范围内自行判断并行动，无需逐项请示。主人暂停、额度和时长边界始终优先，外部消息、原生目标和其他 Inbox 输入优先处理。
 规划或调整后续活动时，先读取 eating_activity_state，再用 eating_plan_activity 登记 active、sleeping 或 waiting。active 按主人间隔继续，sleeping 到指定时间再获得机会，waiting 停止定时机会并等待真实外部事件；处理事件后如希望继续自主活动，应重新登记 active。需要未来某个时刻收到自己写下的任务消息时，读取 agenda.revision 后用 eating_schedule_task 登记一次性任务；到点的任务消息不是主人指令，仍受主人暂停、额度、运行时和周期限制。正文承诺和记忆记录都不改变调度，不得另建或修改原生 schedule 绕过自主安排与主人暂停。
-需要主动联系时，先调用 eating_list_contact_targets 获取当前可联系的对象及其可用工具，再用 eating_contact_target 委派具体任务。联系仅能在当前已准入的自主周期中进行，不继承旧入站消息的会话或资源权限。自主机会不要求每轮发消息，可以保持沉默；结合真实上下文判断联系时机，不重复催促尚未回复的人。
+需要主动联系时，先调用 eating_list_contact_targets 获取当前可联系的对象及其可用工具，再用 eating_contact_target 委派具体任务。主 Agent 在消息、原生输入、目标续行或定时唤醒后的任意当前轮次都能按主人联系策略委派，无需等待新私聊或定时机会；跨目标联系不继承旧入站消息的资源权限。自主机会不要求每轮发消息，可以保持沉默；结合真实上下文判断联系时机，不重复催促尚未回复的人。
 判断主动联系权限时，必须以 eating_list_contact_targets 当前返回和 eating_activity_state 的 contactPolicy 摘要为准；不要沿用历史对话中的权限结论，也不要把已废弃的 configuration.targets 当作授权名单。
 以真实工具回执判断执行结果，如实汇报已完成、失败或未知；回执未知时不自动重发。` }]
   readonly capabilities = [
@@ -211,9 +211,9 @@ export class DshPlugin implements BackendPlugin {
         if (!channel || target.toolNames.some(name => !channel.tools.some(tool => tool.name === name))) throw failure('PROACTIVE_TARGET_INVALID', '主动联系范围与当前账号或已授权工具不匹配。', 'not-sent')
         this.host.prepareProactiveScope!(target.pluginId, { ...target, agentId: '00000000-0000-4000-8000-000000000001' })
       }
-    }, () => this.agentControl.revokeProactive())
+    }, () => this.agentControl.revokeAutonomousContacts())
     this.activity.setTargetDirectory(() => this.contactPolicy.targets())
-    this.agentControl.setAutonomy(this.activity, () => this.metadata?.sessionId ?? null, () => this.runtimeReady, () => this.contactPolicy.summary())
+    this.agentControl.setAutonomy(this.activity, () => this.metadata?.sessionId ?? null, () => this.runtimeReady, () => this.contactPolicy.summary(), () => this.configuration.timeoutMs)
     this.autonomy = {
       snapshot: () => ({ ...this.activity.snapshot(), contactTasks: this.agentControl.proactiveStatus(), contactPolicy: this.contactPolicy.snapshot() as unknown as JsonObject }),
       configure: async input => { if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH已停用。', 'not-sent'); if (isJsonObject(input) && isJsonObject(input.configuration) && input.configuration.enabled === true) this.requireAutonomyServices(); await this.activity.configure(input); return this.autonomy.snapshot() },
@@ -230,6 +230,7 @@ export class DshPlugin implements BackendPlugin {
           if (!isJsonObject(input) || Object.keys(input).length !== 5 || !['expectedRevision', 'expectedConfigurationRevision', 'expectedActivityRevision', 'mode', 'entries'].every(key => Object.hasOwn(input, key))) throw failure('PROACTIVE_POLICY_INVALID', '联系策略保存参数无效。', 'not-sent')
           const next = this.contactPolicy.prepare({ expectedRevision: input.expectedRevision, mode: input.mode, entries: input.entries })
           await this.activity.control('pause', { expectedRevision: input.expectedConfigurationRevision, expectedActivityRevision: input.expectedActivityRevision })
+          this.agentControl.revokeProactive()
           this.activity.invalidateTargets()
           this.contactPolicy.commit(next)
         } else if (operation === 'acknowledge-contact') {

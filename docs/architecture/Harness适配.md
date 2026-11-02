@@ -1,6 +1,6 @@
 # Eating Harness 适配设计
 
-更新：2026-11-02。用户选择的 Harness 承担认知与行动，Eating 提供连接、运行、授权和可靠交接。DSH0.11.3是当前具体适配；其他Harness不自动继承其能力。当前应用／Host／Web0.14.0、QQ0.13.2、plugin-sdk4.4.0、ui-sdk4.1.0、plugin-core4.0.0、插件唯一API4，默认不兼容旧版，见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)。系统DSH与官方原样Web见[ADR-0018](../decisions/ADR-0018-系统DSH原生Web与看板移除.md)，原生能力与插件管理见[ADR-0021](../decisions/ADR-0021-DSH原生能力与插件管理.md)，人格模板与默认生命周期见[ADR-0027](../decisions/ADR-0027-人格模板与默认提示词生命周期.md)。
+更新：2026-11-02。用户选择的 Harness 承担认知与行动，Eating 提供连接、运行、授权和可靠交接。DSH0.13.1是当前具体适配；其他Harness不自动继承其能力。当前应用／Host／Web0.15.0、QQ0.13.2、plugin-sdk4.5.0、ui-sdk4.1.0、plugin-core4.0.0、插件唯一API4，默认不兼容旧版，见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)。系统DSH与官方原样Web见[ADR-0018](../decisions/ADR-0018-系统DSH原生Web与看板移除.md)，原生能力与插件管理见[ADR-0021](../decisions/ADR-0021-DSH原生能力与插件管理.md)，人格模板与默认生命周期见[ADR-0027](../decisions/ADR-0027-人格模板与默认提示词生命周期.md)。
 
 ## 外部记忆接入（2026-11-01）
 
@@ -38,7 +38,7 @@ DSH复用系统安装的命令与 Web 组件，使用 Eating 专属的DSH_HOME�
 
 | 对象 | 受信system顺序 | 工具 |
 | --- | --- | --- |
-| 主Agent | common→main→启用插件说明→统一当前人格 | eating_list_agent_types、eating_delegate_task |
+| 主Agent | common→main→启用插件说明→统一当前人格 | eating_list_agent_types、eating_delegate_task；活动状态／安排及联系对象／委派工具 |
 | 子Agent | common→subagent→agent类型独有→同一人格 | 当前类型可范围化且已勾选的MCP工具 |
 
 插件通过公开契约贡献类型、默认规则、主使用说明、可选／默认工具和展示标题。QQ提供qq.private／qq.group，通用Host与UI不硬编码QQ目录。未启用人格明确空共享层，最多启用一份；不复制人格到每个角色。
@@ -51,9 +51,11 @@ DSH复用系统安装的命令与 Web 组件，使用 Eating 专属的DSH_HOME�
 
 [静态人格模板](../../apps/web/src/persona-templates.ts)本轮仅一份主人批准的“AI女儿”。新增人格页只把模板正文填入未保存草稿，名称由主人填写且保留已填名称，已有非空正文先确认；不自动创建或启用，不写模板目录到`host:authoring`。显式保存后是普通人格，不随模板更新而改变；locale只改UI。当前上下文与可用记忆承载经历连续性，人格可以影响兴趣和表达，但不授予后台权限，也不自动共享全部会话经历。
 
-默认指引要求主Agent在子回执后核对真实结果，必要时继续当前有效授权工作，再判断后续自主安排。`waiting`处理新消息后不自动变为`active`；希望继续时由AI读取`eating_activity_state`并通过`eating_plan_activity`登记。正文承诺或记忆记录不安排真实唤醒。本轮只调整行为说明，不修改自主调度状态机；联系人继续按当前全部放行／白名单／黑名单策略及工具权限解析，见[自主活动](自主活动.md)。操作与验证入口见[提示词与人格模板](../operations/提示词与人格模板.md)和[本轮报告](../reports/2026-11-02-人格模板与默认提示词验证.md)。
+主 Agent 在所有轮次自主决定行动与委派，子回执后核对真实结果，再判断继续或后续安排。`waiting` 处理新消息后不自动变为 `active`；AI 希望取得后续无输入定时机会时，用 `eating_activity_state`／`eating_plan_activity` 登记，正文或记忆不安排唤醒。`enabled`／`ownerPaused` 只控制无输入定时机会，普通有输入轮次仍可联系获准对象。
 
-主按真实context_ref与类型委派，不能传任意system／tools／persona／scope。DSH从实际批次取得targetId并预绑定插件、账号、会话和引用；不猜sender或解析会话字符串补目标。user信封只有当前context/events，子任务另含实际任务，不再有renderedPrompt。
+按[ADR-0033](../decisions/ADR-0033-主Agent当前轮次联系权限.md)，真实主 Agent 当前原生 turn，无论QQ群／私聊、原生输入、目标续行或定时唤醒，均可用 `eating_list_contact_targets`／`eating_contact_target` 委派联系，无需目标先私聊。跨目标使用当前联系策略，不借用入站批次或旧资源；普通委派保持原 scope。每小时联系上限计所有联系任务；策略保存、turn结束/abort/销毁/运行时停止撤旧许可，真正自主机会取消撤该轮许可。具体架构见[自主活动](自主活动.md)，实际验证层级及限制见[本轮报告](../reports/2026-11-02-主Agent当前轮次联系权限验证.md)；真实目标续行及Web浏览器输入控件未单独端到端验证，未部署。
+
+普通 eating_delegate_task 按真实context_ref与类型委派，不能传任意system／tools／persona／scope。DSH从当前实际批次取得targetId并预绑定插件、账号、会话和引用；不猜sender或解析会话字符串补目标，群context不能授权私聊。跨目标使用eating_contact_target的当前对象引用，由后台独立构造无旧入站资源的scope。user信封保可信context/events及实际任务，不含renderedPrompt。
 
 适配器使用公开Agent创建钩子、Preset和in-process原生startActivation／sendMessage。实例按plugin＋instance＋account＋conversation＋type绑定稳定UUID；每个新任务装配最新系统与精确MCP。创建标签为“平台-绑定登录账号-私聊／群聊-目标”，平台取注册元数据真实pluginName，无元数据用canonical pluginId；账号取scope.accountId，不使用instanceId。切号区分新实例，历史归属与UUID不改，不解析旧label猜账号。原生Web显示依官方机制，不再使用agentLabels前端映射，不承诺旧标题一律外观修正。
 
@@ -91,7 +93,7 @@ Eating 自有会话看板、记录组件及 list-sessions／read-session 已移�
 
 Eating仅提供“打开 DSH Web”按钮：主人管理操作`open-native-web`按需返回`{url, rootSessionId}`，URL限定127.0.0.1合法端口及官方鉴权交换，普通`runtimeStatus.nativeWeb`只有`{ready}`，入口不进入普通status或模型上下文。移除readOnly字段，以及Eating readerPeer、connection隔离、HTTP写白名单、readonlyController与冷follow拦截；官方Web不施加Eating根树限制，也不通过隐藏按钮限制原生操作。
 
-删除Eating的src/native-client源码、打包与模块注入，插件 assets 仅包含 launch/dsh-system.mjs 启动资产；不替换官方sidebar／composer／message renderer，不硬编码配色，不挂LocaleBridge或agentLabels前端映射。按[ADR-0024](../decisions/ADR-0024-外部入站的原生执行请求展示.md)，DSH0.10.3在公开agent/pre-step中仅将当前完整校验的SDK入站消息标记为eating-external，保留ID、时间、role=user和正文；SDK入箱与flush/ACK仍记录真实运输事实。官方Web据消费来源显示原生可折叠“收到执行请求”，展开呈现完整JSON；自主机会和原生主人输入保留各自来源，已有记录不改写，不承诺旧标题外观修正。Eating SDK主的两个工具、按任务受限的QQ子MCP与time-context保持；官方Web创建的普通Agent不作为QQ scope child校验或报错。
+删除Eating的src/native-client源码、打包与模块注入，插件 assets 仅包含 launch/dsh-system.mjs 启动资产；不替换官方sidebar／composer／message renderer，不硬编码配色，不挂LocaleBridge或agentLabels前端映射。按[ADR-0024](../decisions/ADR-0024-外部入站的原生执行请求展示.md)，DSH0.10.3在公开agent/pre-step中仅将当前完整校验的SDK入站消息标记为eating-external，保留ID、时间、role=user和正文；SDK入箱与flush/ACK仍记录真实运输事实。官方Web据消费来源显示原生可折叠“收到执行请求”，展开呈现完整JSON；自主机会和原生主人输入保留各自来源，已有记录不改写，不承诺旧标题外观修正。Eating主的受控委派及当前轮次联系工具、按任务受限的QQ子MCP与time-context保持；官方Web创建的普通Agent不作为QQ scope child校验或报错。
 
 系统命令与当前看板移除决策见[ADR-0018](../decisions/ADR-0018-系统DSH原生Web与看板移除.md)。
 

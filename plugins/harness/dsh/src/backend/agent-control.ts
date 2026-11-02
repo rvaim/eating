@@ -44,6 +44,10 @@ export class DshAgentControl {
   private rootId: () => string | null = () => null
   private runtimeReady: () => boolean = () => false
   private contactPolicySummary: (() => JsonObject) | null = null
+  private contactTurn: { id: string; turn: number; autonomyCycleId: string | null } | null = null
+  private lastContactTurn = 0
+  private contactTimeoutMs: () => number = () => 120000
+  private readonly contactTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private bindings: AgentBinding[] = []
   private server: Server | null = null
   private secret = ''
@@ -95,8 +99,8 @@ export class DshAgentControl {
     }
   }
 
-  setAutonomy(activity: DshAutonomy, rootId: () => string | null, runtimeReady: () => boolean, contactPolicySummary?: () => JsonObject): void {
-    this.activity = activity; this.rootId = rootId; this.runtimeReady = runtimeReady; this.contactPolicySummary = contactPolicySummary ?? null
+  setAutonomy(activity: DshAutonomy, rootId: () => string | null, runtimeReady: () => boolean, contactPolicySummary?: () => JsonObject, contactTimeoutMs?: () => number): void {
+    this.activity = activity; this.rootId = rootId; this.runtimeReady = runtimeReady; this.contactPolicySummary = contactPolicySummary ?? null; this.contactTimeoutMs = contactTimeoutMs ?? (() => 120000)
   }
   proactiveStatus(): JsonObject[] { return this.proactiveBindings.map(binding => ({ agentId: binding.agentId, targetId: binding.target.id, label: binding.target.label, taskId: binding.task.taskId, state: binding.task.state })) }
   private saveProactive(): void {
@@ -106,45 +110,82 @@ export class DshAgentControl {
     catch (error) { this.proactivePersistenceFailed = true; for (const binding of this.proactiveBindings) this.host.revokeAgentAccess(binding.agentId); throw error }
   }
   private setProactiveState(binding: ProactiveBinding, state: ProactiveTask['state']): void { binding.task.state = state; binding.taskRefs = binding.taskRefs.map(ref => ref.taskId === binding.task.taskId ? { ...ref, state } : ref) }
-  revokeProactive(): void {
+  private revokeContact(binding: ProactiveBinding): boolean {
+    this.host.revokeAgentAccess(binding.agentId)
+    const timer = this.contactTimers.get(binding.agentId)
+    if (timer) clearTimeout(timer)
+    this.contactTimers.delete(binding.agentId)
+    if (binding.task.state !== 'pending') return false
+    this.setProactiveState(binding, 'unknown'); return true
+  }
+  revokeProactive(cycleId?: string): void {
     let changed = false
-    for (const binding of this.proactiveBindings) {
-      this.host.revokeAgentAccess(binding.agentId)
-      if (binding.task.state === 'pending') { this.setProactiveState(binding, 'unknown'); changed = true }
-    }
+    for (const binding of this.proactiveBindings) if (!cycleId || binding.task.cycleId === cycleId) changed = this.revokeContact(binding) || changed
     if (changed) this.saveProactive()
+  }
+  revokeAutonomousContacts(): void {
+    if (this.contactTurn?.autonomyCycleId) this.revokeProactive(this.contactTurn.id)
+  }
+  private beginContactTurn(body: JsonObject): JsonObject {
+    if (!this.runtimeReady() || body.agentId !== this.rootId() || Object.keys(body).length !== 3 || !Number.isSafeInteger(body.turn) || Number(body.turn) < 1 || body.autonomyCycleId !== null && !opaque(body.autonomyCycleId)) fail('CONTACT_TURN_INVALID', '联系任务缺少真实主 Agent 当前轮次。')
+    if (body.autonomyCycleId !== null && !this.activity?.validCycle(this.nonce, String(body.autonomyCycleId))) fail('AUTONOMY_CYCLE_REVOKED', '当前活动机会已撤销。')
+    const existing = this.contactTurn
+    if (existing && existing.turn === body.turn) {
+      if (existing.autonomyCycleId !== body.autonomyCycleId) fail('CONTACT_TURN_INVALID', '主 Agent 当前轮次来源已变化。')
+      return { id: existing.id }
+    }
+    if (Number(body.turn) <= this.lastContactTurn) fail('CONTACT_TURN_EXPIRED', '主 Agent 旧轮次不能重新取得联系许可。')
+    if (this.contactTurn) this.revokeProactive(this.contactTurn.id)
+    this.contactTurn = { id: randomUUID(), turn: Number(body.turn), autonomyCycleId: body.autonomyCycleId as string | null }
+    this.lastContactTurn = Number(body.turn)
+    return { id: this.contactTurn.id }
+  }
+  private validContactTurn(turn: NonNullable<DshAgentControl['contactTurn']>): boolean {
+    return !this.stopping && this.runtimeReady() && this.contactTurn === turn && (!turn.autonomyCycleId || this.activity?.validCycle(this.nonce, turn.autonomyCycleId) === true)
   }
   acknowledgeProactive(agentId: string, taskId: string): void {
     const binding = this.proactiveBindings.find(binding => binding.agentId === agentId && binding.task.taskId === taskId)
-    if (!binding || !['pending', 'unknown'].includes(binding.task.state) || this.activity?.activeCycle()) fail('PROACTIVE_TASK_CONFLICT', '请在自主轮次结束后核对对应未知任务。')
+    if (!binding || !['pending', 'unknown'].includes(binding.task.state) || this.contactTurn?.id === binding.task.cycleId) fail('PROACTIVE_TASK_CONFLICT', '请在自主轮次结束后核对对应未知任务。')
     this.host.revokeAgentAccess(agentId); this.setProactiveState(binding, 'reviewed'); this.saveProactive()
   }
   private async prepareProactive(body: JsonObject, signal: AbortSignal): Promise<JsonObject> {
     const activity = this.activity, rootId = this.rootId()
     if (this.proactivePersistenceFailed) fail('PROACTIVE_PERSISTENCE_FAILED', '主动联系状态保存失败，已停止新任务。')
-    if (!activity || body.agentId !== rootId || typeof body.targetId !== 'string' || typeof body.cycleId !== 'string' || typeof body.taskId !== 'string' || !DIGEST.test(body.taskId) || Object.keys(body).length !== 4 || !this.host.prepareProactiveScope) fail('AUTONOMY_SCOPE_INVALID', '主动任务缺少真实自主轮次和目标绑定。')
-    const target = await activity.prepareTarget(this.nonce, body.cycleId, body.targetId)
+    if (!activity || body.agentId !== rootId || typeof body.targetId !== 'string' || typeof body.cycleId !== 'string' || typeof body.taskId !== 'string' || !DIGEST.test(body.taskId) || Object.keys(body).length !== 4 || !this.host.prepareProactiveScope) fail('CONTACT_TURN_INVALID', '联系任务缺少真实主 Agent 轮次和目标绑定。')
+    const turn = this.contactTurn
+    if (!turn || turn.id !== body.cycleId || !this.validContactTurn(turn)) fail('CONTACT_TURN_EXPIRED', '主 Agent 当前轮次已结束或撤销。')
+    const policyRevision = this.contactPolicySummary?.().revision
+    const target = await activity.prepareContactTarget(body.targetId)
     signal.throwIfAborted()
+    if (!this.validContactTurn(turn) || this.contactPolicySummary?.().revision !== policyRevision) fail('CONTACT_TURN_EXPIRED', '读取联系人时轮次或授权已变化。')
     const key = createHash('sha256').update(JSON.stringify([rootId, target.pluginId, target.instanceId, target.accountId, target.agentTypeId, target.targetId])).digest('hex')
     const previous = this.proactiveBindings.find(binding => binding.key === key)
     if (previous && (previous.taskRefs.some(ref => ref.taskId === body.taskId) || ['pending', 'unknown'].includes(previous.task.state))) fail('PROACTIVE_TASK_UNKNOWN', '已有联系任务待核对或此调用已提交，未重复执行。')
-    if (previous && previous.taskRefs.filter(ref => ref.cycleId === body.cycleId).length >= MAX_TASK_REFERENCES) fail('PROACTIVE_TASK_CAPACITY', '本自主轮次对此目标的委派次数达到上限。')
+    if (previous && previous.taskRefs.filter(ref => ref.cycleId === body.cycleId).length >= MAX_TASK_REFERENCES) fail('PROACTIVE_TASK_CAPACITY', '本轮对此目标的委派次数达到上限。')
     if (!previous && this.proactiveBindings.length >= 100) fail('PROACTIVE_BINDINGS_CAPACITY', '主动会话绑定数量达到上限。')
     const agentId = previous?.agentId ?? randomUUID()
     const scope = this.host.prepareProactiveScope(target.pluginId, { ...target, agentId })
     const owner = this.host.readOwnerConfiguration(), type = owner.agentTypes.find(type => type.id === target.agentTypeId && type.pluginId === target.pluginId && type.enabled)
     if (!type || target.toolNames.some(name => !type.enabledTools.includes(name))) fail('AUTONOMY_TARGET_DENIED', '当前类型或工具已撤权。')
-    const contextRef = createHash('sha256').update('eating-autonomy\0' + body.cycleId).digest('hex')
+    const contextRef = createHash('sha256').update('eating-contact\0' + body.cycleId).digest('hex')
+    const deadline = Date.now() + Math.max(1000, Math.min(120000, this.contactTimeoutMs()))
+    const task: ProactiveTask = { taskId: body.taskId, cycleId: body.cycleId, contextRef, nonce: this.nonce, state: 'pending' }
     let mcp, capabilities
     try {
-      mcp = this.host.getMcpConnection(target.pluginId, scope, { toolNames: target.toolNames, active: () => activity.targetStillAllowed(this.nonce, String(body.cycleId), target) && this.runtimeReady() })
+      mcp = this.host.getMcpConnection(target.pluginId, scope, { toolNames: target.toolNames, active: () => task.state === 'pending' && this.validContactTurn(turn) && Date.now() < deadline && this.contactPolicySummary?.().revision === policyRevision && activity.contactTargetStillAllowed(target) })
       capabilities = this.host.getCapabilityMcpConnections({ agentId, agentTypeId: type.id, source: scope })
       signal.throwIfAborted()
-      const task: ProactiveTask = { taskId: body.taskId, cycleId: body.cycleId, contextRef, nonce: this.nonce, state: 'pending' }
       const binding: ProactiveBinding = { key, parentId: rootId!, agentId, target, task, taskRefs: [...(previous?.taskRefs ?? []), task].slice(-MAX_TASK_REFERENCES) }
       activity.countContact()
       this.proactiveBindings = previous ? this.proactiveBindings.map(row => row === previous ? binding : row) : [...this.proactiveBindings, binding]
       this.saveProactive()
+      const timer = setTimeout(() => {
+        this.contactTimers.delete(agentId)
+        if (binding.task.state === 'pending' && this.revokeContact(binding)) {
+          try { this.saveProactive() } catch { console.error('联系任务状态保存失败，已撤销许可并停止接受新任务。') }
+        }
+      }, Math.max(1, deadline - Date.now()))
+      timer.unref(); this.contactTimers.set(agentId, timer)
     } catch (error) { this.host.revokeAgentAccess(agentId); throw error }
     const preview = composeAgentPrompt(owner, type.id, { 当前时间: new Date().toISOString(), 人格名称: owner.activePersona?.name ?? '', 平台: scope.pluginId, 机器人账号: scope.accountId, 会话编号: scope.conversationId, 会话类型: scope.kind, 目标编号: scope.targetId })
     this.actionBaselines.set(agentId, new Map(this.host.readAgentActions(agentId).map(action => [action.requestId, JSON.stringify(action)])))
@@ -224,7 +265,8 @@ export class DshAgentControl {
 
   async start(nonce: string): Promise<void> {
     if (this.server) return
-    this.stopping = false; this.nonce = nonce; this.secret = randomBytes(32).toString('hex')
+    this.stopping = false; this.nonce = nonce; this.secret = randomBytes(32).toString('hex'); this.contactTurn = null; this.lastContactTurn = 0
+    this.revokeProactive()
     const server = createServer((request, response) => {
       const controller = new AbortController(); this.active.add(controller)
       const stopRequest = () => { request.destroy(); response.destroy() }
@@ -242,6 +284,30 @@ export class DshAgentControl {
           const result = await this.memoryRequest(request.url.slice('/memory-'.length), body, controller.signal)
           response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result)); return
         }
+        if (request.url === '/contact-turn-start') {
+          const result = this.beginContactTurn(body)
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result)); return
+        }
+        if (request.url === '/contact-targets') {
+          const turn = this.contactTurn
+          if (body.agentId !== this.rootId() || Object.keys(body).length !== 2 || !turn || body.cycleId !== turn.id || !this.validContactTurn(turn) || !this.activity) fail('CONTACT_TURN_EXPIRED', '联系人查询不属于当前主 Agent 轮次。')
+          const targets = await this.activity.listTargets()
+          if (!this.validContactTurn(turn)) fail('CONTACT_TURN_EXPIRED', '查询联系人时主 Agent 轮次已结束。')
+          const result = { targets: targets.map(target => ({ id: target.id, label: target.label, agentTypeId: target.agentTypeId, pluginId: target.pluginId, targetId: target.targetId, tools: [...target.toolNames] })) }
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result)); return
+        }
+        if (request.url === '/contact-turn-end') {
+          if (body.agentId !== this.rootId() || Object.keys(body).length !== 3 || !Number.isSafeInteger(body.turn) || Number(body.turn) < 1 || body.cycleId !== null && !opaque(body.cycleId)) fail('CONTACT_TURN_INVALID', '联系轮次结束参数无效。')
+          const current = this.contactTurn
+          if (current && current.turn <= Number(body.turn)) {
+            if (current.turn === body.turn && body.cycleId !== null && current.id !== body.cycleId) fail('CONTACT_TURN_INVALID', '联系轮次结束引用无效。')
+            this.contactTurn = null; this.revokeProactive(current.id)
+          }
+          // Also close an uncertain start whose response was lost. The native turn
+          // tombstone rejects a delayed start without touching any newer turn.
+          this.lastContactTurn = Math.max(this.lastContactTurn, Number(body.turn))
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify({ ended: true })); return
+        }
         if (request.url?.startsWith('/autonomy-')) {
           if (!this.activity || body.agentId !== this.rootId()) fail('AUTONOMY_SCOPE_INVALID', '只有当前主Agent可操作自主安排。')
           const operation = request.url.slice('/autonomy-'.length)
@@ -253,7 +319,6 @@ export class DshAgentControl {
           else if (operation === 'valid' && Object.keys(body).length === 2 && typeof body.cycleId === 'string') result = { valid: this.activity.validCycle(this.nonce, body.cycleId) }
           else if (operation === 'decide' && Object.keys(body).length === 2) result = this.activity.decide(this.nonce, body.decision)
           else if (operation === 'finish' && Object.keys(body).length === 4 && typeof body.cycleId === 'string' && ['completed', 'failed', 'unknown', 'cancelled'].includes(String(body.outcome))) { result = this.activity.finish(this.nonce, body.cycleId, body.outcome as 'completed', typeof body.code === 'string' ? body.code : null); this.host.wake() }
-          else if (operation === 'targets' && Object.keys(body).length === 1) result = { targets: (await this.activity.listTargets()).map(target => ({ id: target.id, label: target.label, agentTypeId: target.agentTypeId, pluginId: target.pluginId, targetId: target.targetId, tools: [...target.toolNames] })) }
           else fail('CONTROL_REQUEST_INVALID', '自主运行请求形状无效。')
           if (this.contactPolicySummary) result = { ...result, contactPolicy: this.contactPolicySummary() }
           response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result)); return
@@ -272,6 +337,7 @@ export class DshAgentControl {
             result = { actions: this.host.readAgentActions(proactive.agentId).filter(action => baseline?.get(action.requestId) !== JSON.stringify(action)) as unknown as JsonValue[] }
           } else {
             if (task.state !== 'pending') fail('PROACTIVE_TASK_UNKNOWN', '主动任务已撤销或待核对，迟到回执不能覆盖。')
+            const timer = this.contactTimers.get(proactive.agentId); if (timer) clearTimeout(timer); this.contactTimers.delete(proactive.agentId)
             this.host.revokeAgentAccess(proactive.agentId); this.actionBaselines.delete(proactive.agentId)
             this.setProactiveState(proactive, body.status as 'completed'); this.saveProactive(); result = { ok: true }
           }
@@ -340,9 +406,11 @@ export class DshAgentControl {
   }
 
   async close(): Promise<void> {
-    this.stopping = true
+    this.stopping = true; this.contactTurn = null
     let persistenceError: unknown
     try { this.revokeProactive() } catch (error) { persistenceError = error }
+    for (const timer of this.contactTimers.values()) clearTimeout(timer)
+    this.contactTimers.clear()
     this.actionBaselines.clear()
     for (const [agentId, turnId] of this.memoryTurns) this.host.memory?.end(agentId, turnId)
     this.memoryTurns.clear(); this.memoryTurnBatches.clear(); this.memoryBatch = null

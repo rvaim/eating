@@ -33,14 +33,17 @@ describe('trusted native Agent control boundary', () => {
     const f = fixture()
     const target: ProactiveTarget = { id: 'contact', label: 'Approved fixture', pluginId: 'qq', instanceId: 'instance', accountId: '100', agentTypeId: 'qq.private', targetId: '200', toolNames: ['send'] }
     f.host.prepareProactiveScope = (pluginId, request) => ({ agentId: request.agentId, agentTypeId: request.agentTypeId, pluginId, instanceId: request.instanceId, accountId: request.accountId, conversationId: `qq:${request.accountId}:private:${request.targetId}`, targetId: request.targetId, kind: 'private', messageIds: [], resourceIds: [] })
-    const activity = new DshAutonomy(f.directory, () => true, () => {}, () => f.control.revokeProactive())
+    const activity = new DshAutonomy(f.directory, () => true, () => {}, () => f.control.revokeAutonomousContacts())
     f.control.setAutonomy(activity, () => parentId, () => true)
     await activity.configure({ expectedRevision: 0, configuration: { ...AUTONOMY_DEFAULTS, enabled: true, targets: [target], maxContactsPerHour: 100 } })
     activity.startRuntime('fixture-runtime-nonce')
     await activity.control('resume', { expectedRevision: activity.snapshot().revision, expectedActivityRevision: (activity.snapshot().state as JsonObject).revision })
     const cycle = activity.claim('fixture-runtime-nonce').cycle as JsonObject
     await f.control.start('fixture-runtime-nonce')
-    return { ...f, activity, cycle }
+    const begun = await f.post('/contact-turn-start', { agentId: parentId, turn: 1, autonomyCycleId: cycle.id })
+    expect(begun.status).toBe(200)
+    const turnRef = await begun.json() as JsonObject
+    return { ...f, activity, autonomyCycle: cycle, cycle: { id: turnRef.id } }
   }
 
   it('exposes a contact policy summary beside activity state without a real contact directory', async () => {
@@ -84,9 +87,113 @@ describe('trusted native Agent control boundary', () => {
     expect((await f.post('/finish-task', { agentId: task.agentId, contextRef: task.contextRef, taskId: '3'.repeat(64), status: 'completed' })).status).toBe(409)
     expect(f.control.proactiveStatus()).toMatchObject([{ state: 'unknown' }])
     expect(() => f.control.acknowledgeProactive(String(task.agentId), '3'.repeat(64))).toThrow()
-    f.activity.finish('fixture-runtime-nonce', String(f.cycle.id), 'cancelled', null)
+    f.activity.finish('fixture-runtime-nonce', String(f.autonomyCycle.id), 'cancelled', null)
+    await f.post('/contact-turn-end', { agentId: parentId, turn: 1, cycleId: f.cycle.id })
     f.control.acknowledgeProactive(String(task.agentId), '3'.repeat(64))
     expect(f.control.proactiveStatus()).toMatchObject([{ state: 'reviewed' }])
+  })
+
+  async function ordinaryFixture() {
+    const f = fixture()
+    const target: ProactiveTarget = { id: 'contact', label: 'Approved private', pluginId: 'qq', instanceId: 'instance', accountId: '100', agentTypeId: 'qq.private', targetId: '200', toolNames: ['send'] }
+    f.host.prepareProactiveScope = (pluginId, request) => ({ ...request, pluginId, kind: 'private', conversationId: 'qq:100:private:200', messageIds: [], resourceIds: [] })
+    const activity = new DshAutonomy(f.directory, () => true, () => {}, () => f.control.revokeAutonomousContacts())
+    activity.setTargetDirectory(async () => [target])
+    let revision = 1
+    f.control.setAutonomy(activity, () => parentId, () => true, () => ({ revision, mode: 'all' }))
+    activity.startRuntime('fixture-runtime-nonce'); await f.control.start('fixture-runtime-nonce')
+    const begin = async (turn: number) => { const response = await f.post('/contact-turn-start', { agentId: parentId, turn, autonomyCycleId: null }); expect(response.status).toBe(200); return String((await response.json()).id) }
+    const id = await begin(1)
+    const prepare = (cycleId = id, taskId = '1'.repeat(64)) => f.post('/prepare-proactive', { agentId: parentId, cycleId, targetId: target.id, taskId })
+    return { ...f, activity, target, id, begin, prepare, changePolicy: () => { revision++ } }
+  }
+
+  it('contacts an approved private target from a normal main turn while timed activity is disabled and paused', async () => {
+    const f = await ordinaryFixture()
+    expect(f.activity.snapshot()).toMatchObject({ configuration: { enabled: false }, state: { ownerPaused: true, active: null } })
+    const prepared = await f.prepare(); expect(prepared.status).toBe(200)
+    const task = await prepared.json()
+    expect(task).toMatchObject({ tools: ['send'], scope: { kind: 'private', targetId: '200' } })
+    const lease = vi.mocked(f.host.getMcpConnection).mock.calls[0]![2]!
+    expect(lease.active()).toBe(true)
+    const state = f.activity.snapshot()
+    await f.activity.control('pause', { expectedRevision: state.revision, expectedActivityRevision: (state.state as JsonObject).revision })
+    expect(lease.active()).toBe(true)
+    f.changePolicy(); expect(lease.active()).toBe(false)
+    await f.post('/contact-turn-end', { agentId: parentId, turn: 1, cycleId: f.id })
+    expect(f.control.proactiveStatus()).toMatchObject([{ state: 'unknown' }])
+  })
+
+  it('keeps same-turn begin idempotent and old begin/end calls cannot affect the newer turn', async () => {
+    const f = await ordinaryFixture()
+    expect(await f.begin(1)).toBe(f.id)
+    await f.post('/contact-turn-end', { agentId: parentId, turn: 1, cycleId: f.id })
+    expect((await f.post('/contact-turn-start', { agentId: parentId, turn: 1, autonomyCycleId: null })).status).toBe(409)
+    const next = await f.begin(2)
+    await f.post('/contact-turn-end', { agentId: parentId, turn: 1, cycleId: f.id })
+    expect((await f.prepare(next)).status).toBe(200)
+    expect(vi.mocked(f.host.getMcpConnection).mock.calls[0]![2]!.active()).toBe(true)
+    expect((await f.prepare(f.id, '2'.repeat(64))).status).toBe(409)
+  })
+
+  it('ends an uncertain newer start and tombstones any older turn without invalidating a later turn', async () => {
+    const f = await ordinaryFixture()
+    expect((await f.prepare()).status).toBe(200)
+    const lease = vi.mocked(f.host.getMcpConnection).mock.calls[0]![2]!
+    const end = await f.post('/contact-turn-end', { agentId: parentId, turn: 2, cycleId: null })
+    expect(end.status).toBe(200); expect(lease.active()).toBe(false)
+    expect((await f.post('/contact-turn-start', { agentId: parentId, turn: 2, autonomyCycleId: null })).status).toBe(409)
+    expect((await f.post('/contact-turn-start', { agentId: parentId, turn: 1, autonomyCycleId: null })).status).toBe(409)
+    const current = await f.begin(3)
+    await f.post('/contact-turn-end', { agentId: parentId, turn: 2, cycleId: null })
+    expect((await f.post('/contact-targets', { agentId: parentId, cycleId: current })).status).toBe(200)
+  })
+
+  it('rechecks the main turn after a slow contact directory and issues no lease after it ends', async () => {
+    const f = await ordinaryFixture()
+    let release!: (targets: readonly ProactiveTarget[]) => void
+    const pending = new Promise<readonly ProactiveTarget[]>(resolve => { release = resolve })
+    const entered = vi.fn(() => pending)
+    f.activity.setTargetDirectory(entered)
+    const preparation = f.prepare()
+    await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce())
+    await f.post('/contact-turn-end', { agentId: parentId, turn: 1, cycleId: f.id })
+    release([f.target])
+    expect((await preparation).status).toBe(409)
+    expect(f.host.getMcpConnection).not.toHaveBeenCalled()
+  })
+
+  it('enforces the saved hourly contact limit for ordinary main turns too', async () => {
+    const f = await ordinaryFixture(), snapshot = f.activity.snapshot()
+    await f.activity.configure({ expectedRevision: snapshot.revision, configuration: { ...(snapshot.configuration as JsonObject), maxContactsPerHour: 0 } })
+    const response = await f.prepare()
+    expect(response.status).toBe(409); expect(await response.json()).toMatchObject({ code: 'AUTONOMY_CONTACT_LIMIT' })
+    expect(f.control.proactiveStatus()).toEqual([])
+    expect(f.host.revokeAgentAccess).toHaveBeenCalled()
+  })
+
+  it('times out an unconfirmed task as unknown and late completion cannot revoke a reviewed replacement', async () => {
+    const f = await ordinaryFixture()
+    f.control.setAutonomy(f.activity, () => parentId, () => true, () => ({ revision: 1 }), () => 1000)
+    const first = await (await f.prepare()).json()
+    await vi.waitFor(() => expect(f.control.proactiveStatus()).toMatchObject([{ state: 'unknown' }]), { timeout: 2000 })
+    expect(vi.mocked(f.host.getMcpConnection).mock.calls[0]![2]!.active()).toBe(false)
+    await f.post('/contact-turn-end', { agentId: parentId, turn: 1, cycleId: f.id })
+    f.control.acknowledgeProactive(first.agentId, '1'.repeat(64))
+    const next = await f.begin(2)
+    expect((await f.prepare(next, '2'.repeat(64))).status).toBe(200)
+    expect((await f.post('/finish-task', { agentId: first.agentId, contextRef: first.contextRef, taskId: '1'.repeat(64), status: 'completed' })).status).toBe(409)
+    expect(vi.mocked(f.host.getMcpConnection).mock.calls[1]![2]!.active()).toBe(true)
+  })
+
+  it('preserves unknown contact tasks across a fresh runtime without restoring expired authority', async () => {
+    const f = await ordinaryFixture()
+    expect((await f.prepare()).status).toBe(200)
+    await f.control.close()
+    await f.control.start('fixture-runtime-nonce')
+    expect(f.control.proactiveStatus()).toMatchObject([{ state: 'unknown' }])
+    const next = await f.begin(2)
+    expect((await f.prepare(next, '2'.repeat(64))).status).toBe(409)
   })
 
   it('labels verified account identities without changing binding keys or native UUIDs', () => {

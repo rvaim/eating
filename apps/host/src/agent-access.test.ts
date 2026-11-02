@@ -72,7 +72,7 @@ describe('Host scoped agent MCP and plugin prompt registry', () => {
     let state = activity.snapshot(); await activity.control('resume', { expectedRevision: state.revision, expectedActivityRevision: (state.state as JsonObject).revision })
     const admitted = activity.claim('group-nonce') as JsonObject, cycleId = String((admitted.cycle as JsonObject).id), target = (await activity.listTargets()).find(target => target.agentTypeId === 'qq.group')!
     const scope = f.services.prepareProactiveScope!('qq', { ...target, agentId }); expect(scope.messageIds).toEqual([]); expect(scope.resourceIds).toEqual([])
-    const issued = await f.client(scope, { toolNames: target.toolNames, active: () => activity.targetStillAllowed('group-nonce', cycleId, target) })
+    const issued = await f.client(scope, { toolNames: target.toolNames, active: () => activity.validCycle('group-nonce', cycleId) && activity.contactTargetStillAllowed(target) })
     const wrong = await issued.mcp.callTool({ name: 'qq_send_group_message', arguments: { group_id: '999999', message: 'wrong group fixture', request_id: 'group-wrong-1' } }); expect(wrong.isError).toBe(true)
     expect((await issued.mcp.callTool({ name: 'qq_send_group_message', arguments: { group_id: '123456', message: 'loopback-only group fixture', request_id: 'group-before-1' } })).isError).toBe(false)
     const next = policies.prepare({ expectedRevision: 1, mode: 'denylist', entries: [{ pluginId: target.pluginId, instanceId: target.instanceId, accountId: target.accountId, agentTypeId: target.agentTypeId, targetId: target.targetId, label: target.label }] })

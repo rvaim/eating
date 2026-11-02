@@ -1,6 +1,6 @@
 # OpenViking 记忆插件
 
-适用：Eating记忆0.2.0、Host/Web0.14.0、plugin-sdk4.5.0、DSH0.12.0、API4。服务端需要与openviking==0.5.2.1配套的[增量扩展](../../integrations/openviking-incremental/README.md)。本轮只交付代码，不替换用户现有安装、不部署服务器。
+适用：Eating记忆0.2.0、Host/Web0.14.0、plugin-sdk4.5.0、DSH0.12.1、API4。服务端需要与openviking==0.5.2.1配套的[增量扩展](../../integrations/openviking-incremental/README.md)。本轮只交付代码，不替换用户现有安装、不部署服务器。
 
 ## 接入和当前格式
 

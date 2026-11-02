@@ -25,7 +25,7 @@ describe('native autonomous driver publication lifecycle', () => {
       }
       const mount = new Function(...Object.keys(context), getAutonomyRuntimeSource() + '\nreturn mountAutonomy;')(...Object.values(context)) as (agent: unknown) => Promise<string[]>
       const names = await mount(agent)
-      expect(names).toEqual(['eating_activity_state', 'eating_plan_activity', 'eating_list_contact_targets', 'eating_contact_target'])
+      expect(names).toEqual(['eating_activity_state', 'eating_plan_activity'])
       expect(tools.map(tool => tool.name)).toEqual(names)
       for (const tool of tools) expect(tool.description).toMatch(/^\p{Script=Han}/u)
       expect(tools[1]!.parameters).toMatchObject({ properties: { mode: { enum: ['active', 'sleeping', 'waiting'] } }, required: ['expected_revision', 'mode', 'wake_at', 'note'], additionalProperties: false })
@@ -84,12 +84,12 @@ describe('native autonomous driver publication lifecycle', () => {
       await expect(mount(first)).rejects.toThrow('already owns')
       current = undefined
       const second = newAgent()
-      await expect(mount(second)).resolves.toHaveLength(4)
+      await expect(mount(second)).resolves.toHaveLength(2)
       current = second
       const before = reads.length
       await vi.advanceTimersByTimeAsync(1000)
       expect(reads.length - before).toBe(1)
-      expect(second.ctx.tools.register).toHaveBeenCalledTimes(4)
+      expect(second.ctx.tools.register).toHaveBeenCalledTimes(2)
       for (const release of releases) release()
       initialization.abort()
       const stopped = reads.length

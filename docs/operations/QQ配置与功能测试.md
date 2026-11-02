@@ -69,7 +69,9 @@ pnpm plugin list
 
 QQ 注册 `qq.private` 和 `qq.group` 两类执行者。可勾选工具只来自各类型真实 availableTools，默认是适用的只读工具加本类型明确发送。凭据查询、无关全局工具，以及难以固定目标的通用 send_msg 和 quick 操作不提供给子代理；主人“功能测试”的 39 项标准目录保持。
 
-主 Agent 只列出可用类型并按真实 context_ref 委派，平台动作由对应子代理执行；子代理不能自行换账号、改会话／目标或声明任意消息／资源引用。每次工具调用会再次核对当前启用列表和会话 scope；停用、断开与任务结束撤销任务令牌。子结果回主时包含 Host 本任务真实回执，普通文本或委派接纳不等于 QQ 已发送。未知动作先核对，不换 request_id 盲目重发。
+主 Agent 自主决定是否行动，普通 eating_delegate_task 按真实当前批次 context_ref 委派；跨目标先用 eating_list_contact_targets 读取获准对象，再以 eating_contact_target 委派受限子代理。QQ群／私聊、原生主输入、目标续行和定时当前轮次均可联系，无需目标先发私聊；群context不能冒充私聊或旧资源授权。enabled/ownerPaused只控制无输入定时机会，小时联系任务额度作用所有来源。
+
+平台动作仍由子代理执行，不能自行换账号、对象、工具或引用。保存联系策略、当前turn结束/abort/销毁/运行时停止撤旧许可，真正自主机会取消撤该轮许可；调用、资源取得后和发送前复查。子结果包含Host真实回执，普通文本或委派接纳不等于QQ已发送；未知先核对，不换request_id重发。见[ADR-0032](../decisions/ADR-0032-主Agent当前轮次联系权限.md)。
 
 通用提示词和人格中的主人／管理员变量由本地受信配置生成，支持多个号码。所有代理共用同一启用人格，也可全部停用显示空层。当前只有6种作用域和9个可信变量，没有旧群私消息模板或外部正文模板变量，见[Harness设计](../architecture/Harness适配.md)。
 
@@ -158,7 +160,7 @@ DSH插件自有会话看板已移除，会话查看与操作由官方 Web 负责
 
 在DSH面板点击“打开 DSH Web”，主人管理操作按需取得`{url, rootSessionId}`并在新页签进入同一Eating专属DSH进程的官方鉴权入口；不连接用户主DSH，也不另起共享会话写进程。普通`runtimeStatus.nativeWeb`只有`{ready}`，删除readOnly字段，URL不进入普通status或模型上下文。挂当前官方SessionController host、client roster、Gateway和owner鉴权，完整保留官方UI／主题／侧栏／消息组件与正常会话操作；可依官方能力新建会话、发言、设置，cold follow与激活遵循官方机制。关网页不影响QQ自动处理，停Harness则Web一同关闭。
 
-原生Web完全移除Eating自定义客户端源码／打包／模块注入、sidebar／composer／message renderer、硬编码配色、LocaleBridge、agentLabels映射及readerPeer／connection隔离／HTTP写白名单／readonlyController／冷follow拦截；DSH产物assets仅含launch/dsh-system.mjs启动文件。web的printUrl／openBrowser／surfaceContext均为false，避免污染SDK。四段名称保留为创建标签，官方页面显示依官方机制，不承诺全部旧标题外观修正。平台JSON与工具结果按官方默认组件原样显示；Eating自有面板的summary／source不注入DSH。SDK主的两个工具、受限QQ子MCP及time-context保持，官方Web创建的普通Agent不作为QQ scope child报错。
+原生Web完全移除Eating自定义客户端源码／打包／模块注入、sidebar／composer／message renderer、硬编码配色、LocaleBridge、agentLabels映射及readerPeer／connection隔离／HTTP写白名单／readonlyController／冷follow拦截；DSH产物assets仅含launch/dsh-system.mjs启动文件。web的printUrl／openBrowser／surfaceContext均为false，避免污染SDK。四段名称保留为创建标签，官方页面显示依官方机制，不承诺全部旧标题外观修正。平台JSON与工具结果按官方默认组件原样显示；Eating自有面板的summary／source不注入DSH。SDK主的受控委派及当前轮次联系工具、受限QQ子MCP及time-context保持，官方Web创建的普通Agent不作为QQ scope child报错。
 
 主子各一次官方time-context使用上海时区与原生600000ms，仅在已有合格step末尾追加来源明确的user运行时读数，冷恢复去重，无新时钟工具／scheduler／后台唤醒。通用与QQ默认system移除动态时间行；9个可信变量仍注册，若主人自定义再插当前时间，system仍动态变化，不能承诺缓存收益。
 

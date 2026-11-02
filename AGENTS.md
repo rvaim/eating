@@ -33,7 +33,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`。
 
-当前应用／Host／Web0.14.0，plugin-sdk4.5.0、ui-sdk4.1.0、plugin-core4.0.0，QQ0.13.2、DSH0.12.0、表情包0.1.1、生图0.2.0、记忆0.2.0；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前应用／Host／Web0.14.0，plugin-sdk4.5.0、ui-sdk4.1.0、plugin-core4.0.0，QQ0.13.2、DSH0.12.1、表情包0.1.1、生图0.2.0、记忆0.2.0；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -55,7 +55,7 @@ Eating 不建立聊天历史库；只保存有界未交接规范化信封。send
 
 人格模板只生成新增人格的可编辑草稿，不自动保存或启用，名称由主人填写；保存后是普通人格，模板更新不改已有正文。本轮AI女儿模板依据上下文与可用记忆延续经历，不指定记忆插件或预设成长阶段。提示词文档 updatedAt:null 表示跟随当前默认，非null为主人覆盖；恢复默认保留记录并递增文档/全局revision，不删除归零或自动覆盖自定义。schema2保持，普通读取不回写默认。见[ADR-0027](docs/decisions/ADR-0027-人格模板与默认提示词生命周期.md)。
 
-DSH 主保留列类型／受控委派两个基础工具，并可挂主人批准给main的通用MCP和原生能力；主／各子类型的原生功能及插件工具按[ADR-0021](docs/decisions/ADR-0021-DSH原生能力与插件管理.md)显式授权，实例启用不等于全部工具授权。子按真实账号实例、登录账号、会话、目标与类型绑定稳定 UUID，独立挂受限通讯MCP及当前类型获准的额外能力。`deliverBatch` 是唯一交接接口；Harness 取得 MCP 必须带完整 scope，真实回执和撤权服务必需，不能回退主人全权令牌。
+DSH 主提供列类型／受控委派、活动状态／安排、联系对象／联系委派工具，并可挂主人批准给main的通用MCP和原生能力；主／各子类型的原生功能及插件工具按[ADR-0021](docs/decisions/ADR-0021-DSH原生能力与插件管理.md)显式授权，实例启用不等于全部工具授权。子按真实账号实例、登录账号、会话、目标与类型绑定稳定 UUID，独立挂受限通讯MCP及当前类型获准的额外能力。`deliverBatch` 是唯一交接接口；Harness 取得 MCP 必须带完整 scope，真实回执和撤权服务必需，不能回退主人全权令牌。
 
 同批允许查询→主判断→继续委派同子。内部以公开 `ToolExecutionInput.callId` 防重；不把任意 system／scope／tools 参数交模型，不用任务文本 hash 代替调用 ID。最多32调用，重复／pending／unknown拒绝，迟到回调不能覆盖新任务或撤新权限。当前正文在主 turn/end 清理，不能在第一次委派后清掉。
 
@@ -69,7 +69,9 @@ DSH 不自行下载运行时：检测系统安装的 `dsh`（EATING_DSH_BIN → 
 
 实例名含真实绑定账号，不改UUID，不从旧label猜账号。默认系统层去实时时间；原生time-context在主、子对应scope各挂一次，上海时区、600000ms，不另加调度或时钟工具。当前9变量仍可手写使用，含动态变量的自定义正文对缓存的影响应如实报告。
 
-自主活动按[ADR-0023](docs/decisions/ADR-0023-自主活动协调与主动通讯授权.md)：同一主Agent以原生followup接受机会，外部消息/原生目标/Inbox优先，机械检查不请求模型。新autonomy.json/schema1保存配置CAS、主人暂停、AI安排revision、窗口额度、周期nonce及有界无正文结果；保存与开启分开、默认关闭，未知不重放、暂停撤权。主动联系独立proactive-bindings.json/schema1，主人精确账号/类型/目标/工具，旧消息资源不继承；复用原生子Agent和真实Host MCP回执。当前周期32个callId上限防遗忘，迟到回调不改unknown；主人明确核对后解除任务阻塞不删动作账本。设置→自主运行配置与查看，无需修改人格或安装第二认知循环。普通入站批次保持原deliverBatch，内部活动有独立受信来源，不能伪装external或主人指令。
+无输入时的定时机会按[ADR-0023](docs/decisions/ADR-0023-自主活动协调与主动通讯授权.md)由同一主Agent原生followup接受，外部消息/原生目标/Inbox优先，机械检查不请求模型。autonomy.json/schema1保存配置CAS、主人暂停、AI安排revision、窗口额度、周期nonce及有界无正文结果；保存与开启分开、默认关闭。enabled/ownerPaused只控制此类定时机会，普通有输入轮次仍可联系获准目标；真正自主机会取消撤销该轮许可。
+
+联系权限按[ADR-0032](docs/decisions/ADR-0032-主Agent当前轮次联系权限.md)绑定真实主Agent当前原生turn；QQ群/私聊、原生主输入、目标续行、定时唤醒均可自主调用eating_list_contact_targets/eating_contact_target委派受限子代理，无需目标先发私聊。普通eating_delegate_task仍只用当前批次context_ref及资源scope，群context不能冒充私聊，跨目标走联系策略。逐次核对账号/对象/工具，所有联系任务计入maxContactsPerHour；策略保存、turn结束/abort/销毁/运行时停止撤旧许可，资源取得后及发送前复查。proactive-bindings.json保持schema1，cycleId保留为内部轮次引用，不迁移或恢复旧许可，新runtime把pending转unknown。每目标当前轮次32个callId上限防遗忘，重复/pending/unknown拒绝，迟到回调不改unknown；核对后解除任务阻塞不删动作账本。普通入站保持deliverBatch，内部活动有独立受信来源，不伪装external或主人指令。
 
 ## UI 与文档
 

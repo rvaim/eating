@@ -1,6 +1,6 @@
 # ADR-0033：主 Agent 当前轮次联系权限
 
-状态：Accepted。日期：2026-11-02，Asia/Shanghai。确认来源：主人明确“主agent所有行为都是自主的”，要求联系能力不再仅限定时自主周期。原独立工作树 `fix/main-agent-contact-authority` 的DSH0.12.1已完成本地及隔离系统验证，具体层级见文末与报告，当时未部署。本轮在 `integrate/main-contact-deploy` 与main `10aa62c`整合为DSH0.13.1；为保留主分支[ADR-0032：AI定时任务](ADR-0032-AI定时任务.md)，本联系决策由原0032重编号为0033。整合验证与部署分别见[本轮报告](../reports/2026-11-02-定时任务与当前轮次联系整合部署.md)。
+状态：Accepted。日期：2026-11-02，Asia/Shanghai。确认来源：主人明确“主agent所有行为都是自主的”，要求联系能力不再仅限定时自主周期。原独立工作树 `fix/main-agent-contact-authority` 的DSH0.12.1已完成本地及隔离系统验证，具体层级见文末与报告，当时未部署。本轮在 `integrate/main-contact-deploy` 与main `10aa62c`整合为DSH0.13.2；为保留主分支[ADR-0032：AI定时任务](ADR-0032-AI定时任务.md)，本联系决策由原0032重编号为0033。整合验证与部署分别见[本轮报告](../reports/2026-11-02-定时任务与当前轮次联系整合部署.md)。
 
 ## 背景与根因
 

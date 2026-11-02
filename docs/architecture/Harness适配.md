@@ -1,6 +1,6 @@
 # Eating Harness 适配设计
 
-更新：2026-11-02。用户选择的 Harness 承担认知与行动，Eating 提供连接、运行、授权和可靠交接。DSH0.13.1是当前具体适配；其他Harness不自动继承其能力。当前应用／Host／Web0.15.0、QQ0.13.2、plugin-sdk4.5.0、ui-sdk4.1.0、plugin-core4.0.0、插件唯一API4，默认不兼容旧版，见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)。系统DSH与官方原样Web见[ADR-0018](../decisions/ADR-0018-系统DSH原生Web与看板移除.md)，原生能力与插件管理见[ADR-0021](../decisions/ADR-0021-DSH原生能力与插件管理.md)，人格模板与默认生命周期见[ADR-0027](../decisions/ADR-0027-人格模板与默认提示词生命周期.md)。
+更新：2026-11-02。用户选择的 Harness 承担认知与行动，Eating 提供连接、运行、授权和可靠交接。DSH0.13.2是当前具体适配；其他Harness不自动继承其能力。当前应用／Host／Web0.15.0、QQ0.13.2、plugin-sdk4.5.0、ui-sdk4.1.0、plugin-core4.0.0、插件唯一API4，默认不兼容旧版，见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)。系统DSH与官方原样Web见[ADR-0018](../decisions/ADR-0018-系统DSH原生Web与看板移除.md)，原生能力与插件管理见[ADR-0021](../decisions/ADR-0021-DSH原生能力与插件管理.md)，人格模板与默认生命周期见[ADR-0027](../decisions/ADR-0027-人格模板与默认提示词生命周期.md)。
 
 ## 外部记忆接入（2026-11-01）
 

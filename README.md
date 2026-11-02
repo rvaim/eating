@@ -122,7 +122,7 @@ plugins/capabilities/stickers 表情包能力插件
 docs                      当前规范、决策与历史验证
 ```
 
-主应用／Host／Web当前整合版本0.15.0，plugin-sdk4.5.0、ui-sdk4.1.0、plugin-core4.0.0，QQ0.13.2、DSH0.13.1、表情包0.1.1、生图0.2.0、记忆源码0.2.0，插件唯一 API4。主人已授权本轮合并、push与部署，部署仅更新DSH，不升级真实记忆安装、不修改真实数据；实际验证、Git与部署结果见[本轮整合报告](docs/reports/2026-11-02-定时任务与当前轮次联系整合部署.md)。工具必须声明 `resultFormat`；清单必须声明 `assets`——DSH 通过该字段交付一个启动转交层 `launch/dsh-system.mjs`，用于把 SDK 的 node 启动方式转交给系统 `dsh`。原有当前存储 schema 独立版本化，不通过统一改编号或自动转换让旧格式继续运行。
+主应用／Host／Web当前整合版本0.15.0，plugin-sdk4.5.0、ui-sdk4.1.0、plugin-core4.0.0，QQ0.13.2、DSH0.13.2、表情包0.1.1、生图0.2.0、记忆源码0.2.0，插件唯一 API4。已按主人授权合并并推送main，经原Host正式安装DSH0.13.2并恢复连接，实际配置面板刷新正常；真实记忆保持0.1.1，配置／人格／授权、原生会话UUID和历史／账本保留。实际验证、Git与部署结果见[本轮整合报告](docs/reports/2026-11-02-定时任务与当前轮次联系整合部署.md)。工具必须声明 `resultFormat`；清单必须声明 `assets`——DSH 通过该字段交付一个启动转交层 `launch/dsh-system.mjs`，用于把 SDK 的 node 启动方式转交给系统 `dsh`。原有当前存储 schema 独立版本化，不通过统一改编号或自动转换让旧格式继续运行。
 
 ## 文档
 

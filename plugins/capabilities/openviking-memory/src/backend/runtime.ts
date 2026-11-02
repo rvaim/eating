@@ -1,21 +1,21 @@
 import { createHash } from 'node:crypto'
 import type { Message } from '@openviking/sdk'
-import { isJsonObject } from '@eating/plugin-sdk'
 import type { CapabilityInvocationScope, MemoryCaptureInput, MemoryContext, MemoryProvider, MemoryRecallResult, MemoryScope } from '@eating/plugin-sdk'
 import type { RuntimeSnapshot } from '../types'
 import { MemoryClient } from './client'
 import { configured, configurationKey, ConfigurationStore } from './config'
 import type { PrivateConfiguration } from './config'
 import { allowedLocation, crossSession, parsePeer, peerId, policy, scope, SELF_SCOPE } from './scopes'
-import { archive, localDay, StateStore } from './state'
+import { localDay, StateStore } from './state'
 import type { RequestKey, StoredJob } from './state'
-import { bool, checkSignal, error, errorCode, identifier, integer, LIMITS, object, schema, text, timestamp } from './validation'
+import type { IncrementalReceipt } from './incremental'
+import { bool, checkSignal, error, errorCode, identifier, LIMITS, object, schema, text, timestamp } from './validation'
 
-interface PendingBody { messages: Message[]; bytes: number; chars: number; submit: boolean; timer?: ReturnType<typeof setTimeout>; signal?: AbortSignal }
+interface PendingBody { messages: Message[]; bytes: number }
 interface Worker { controller: AbortController; done: Promise<void> }
 const digest = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const empty: MemoryRecallResult = { text: '', items: [] }
-const terminal = (job: StoredJob): boolean => job.status === 'completed' || job.status === 'failed' || job.status === 'unknown'
+const terminal = (job: StoredJob): boolean => job.status === 'completed' || job.status === 'failed'
 
 export class MemoryRuntime implements MemoryProvider {
   private connected = false
@@ -24,7 +24,6 @@ export class MemoryRuntime implements MemoryProvider {
   private lifetime = new AbortController()
   private connectionAttempt: Promise<void> | null = null
   private readonly bodies = new Map<string, PendingBody>()
-  private readonly buffers = new Map<string, string>()
   private readonly workers = new Map<string, Worker>()
   private retryTimer?: ReturnType<typeof setTimeout>
   private readonly pausedJobs = new Set<string>()
@@ -66,13 +65,12 @@ export class MemoryRuntime implements MemoryProvider {
     this.lifetime.abort()
     if (this.retryTimer) clearTimeout(this.retryTimer)
     this.retryTimer = undefined; this.pausedJobs.clear()
-    for (const body of this.bodies.values()) if (body.timer) clearTimeout(body.timer)
-    this.bodies.clear(); this.buffers.clear()
+    this.bodies.clear()
     for (const worker of this.workers.values()) worker.controller.abort()
     for (const job of this.store.value.jobs) {
       if (job.status === 'queued') { job.status = 'failed'; job.errorCode = code }
-      else if (job.status === 'submitting') { job.status = job.staged && !job.commitAttempted ? 'cleaning' : 'unknown'; job.errorCode = job.status === 'cleaning' ? code : 'MEMORY_SUBMISSION_UNKNOWN' }
-      else if (job.status === 'processing' || job.status === 'cleaning') job.errorCode = code
+      else if (job.status === 'submitting') { job.status = job.submissionAttempted ? 'unknown' : 'failed'; job.errorCode = job.submissionAttempted ? 'MEMORY_SUBMISSION_UNKNOWN' : code }
+      else if (job.status === 'processing' || job.status === 'unknown') job.errorCode = code
     }
     for (const item of this.store.value.scopes) item.bufferedMessages = 0
     this.store.save()
@@ -93,8 +91,9 @@ export class MemoryRuntime implements MemoryProvider {
     return { ready: this.ready, lastErrorCode: this.lastError, lastRecallAt: this.store.value.lastRecallAt, lastCaptureAt: this.store.value.lastCaptureAt, todayExtractions: this.store.value.extractionDay === today ? this.store.value.extractionCount : 0, pending: this.store.value.jobs.filter(job => job.status !== 'completed' && job.status !== 'failed').length, jobs: this.store.publicJobs(), scopes }
   }
   private touch(current: MemoryScope): void {
-    const effective = policy(this.configuration.snapshot().settings, current), id = this.buffers.get(peerId(current)), body = id ? this.bodies.get(id) : undefined
-    this.store.touch(current, effective.capture, effective.recall, body && !body.submit ? body.messages.length : 0)
+    const effective = policy(this.configuration.snapshot().settings, current), peer = peerId(current)
+    const buffered = this.store.value.jobs.filter(job => job.peerId === peer && job.status === 'queued').reduce((sum, job) => sum + (this.bodies.get(job.id)?.messages.length ?? 0), 0)
+    this.store.touch(current, effective.capture, effective.recall, buffered)
   }
   private context(input: MemoryContext): MemoryContext {
     const value = object(input, ['agentId', 'agentTypeId', 'turnId', 'scope'])
@@ -110,7 +109,7 @@ export class MemoryRuntime implements MemoryProvider {
       return { text: items.map(item => `${item.uri}\n${item.text}`).join('\n\n'), items }
     } catch (cause) { this.report(cause); throw cause }
   }
-  private prepareCapture(input: MemoryCaptureInput): { current: MemoryContext; messages: Message[]; actions: boolean; fingerprint: string } {
+  private prepareCapture(input: MemoryCaptureInput): { current: MemoryContext; messages: Message[]; fingerprint: string } {
     const data = object(input, ['context', 'messages', 'actions', 'outcome', 'immediate'], ['context', 'messages', 'actions', 'outcome']), current = this.context(input.context)
     if (!Array.isArray(data.messages) || data.messages.length > LIMITS.messages || !Array.isArray(data.actions) || data.actions.length > 128 || !['completed', 'failed', 'cancelled'].includes(String(data.outcome))) throw error('MEMORY_INVALID_INPUT')
     if (data.immediate !== undefined) bool(data.immediate)
@@ -138,150 +137,117 @@ export class MemoryRuntime implements MemoryProvider {
       if (!['returned', 'succeeded', 'failed', 'unknown'].includes(String(value.outcome))) throw error('MEMORY_INVALID_INPUT')
       return { tool: identifier(value.tool, 160), outcome: value.outcome }
     })
-    if (safeAssistant && actions.length) messages.push({ role: 'assistant', peerId: peer, createdAt: new Date().toISOString(), content: 'Tool outcomes (returned is not a success receipt):\n' + actions.map(action => `${action.tool}: ${action.outcome}`).join('\n') })
-    return { current, messages, actions: input.actions.length > 0, fingerprint: digest([input.messages.map(({ timestamp: _timestamp, ...item }) => item), actions, input.outcome, settings.globalMemory]) }
+    if (safeAssistant && actions.length) {
+      const summary = 'Tool outcomes (returned is not a success receipt):\n' + actions.map(action => `${action.tool}: ${action.outcome}`).join('\n')
+      const assistant = [...messages].reverse().find(message => message.role === 'assistant')
+      if (assistant) assistant.content = assistant.content + '\n\n' + summary
+      else messages.push({ role: 'assistant', peerId: peer, createdAt: new Date().toISOString(), content: summary })
+    }
+    return { current, messages, fingerprint: digest([input.messages.map(({ timestamp: _timestamp, ...item }) => item), actions, input.outcome, settings.globalMemory]) }
   }
   async capture(input: MemoryCaptureInput): Promise<void> {
     if (!this.ready || this.closing || !this.configuration.snapshot().settings.autoCapture) return
     try {
-      const { current, messages, actions, fingerprint } = this.prepareCapture(input), settings = this.configuration.snapshot().settings
+      const { current, messages, fingerprint } = this.prepareCapture(input), settings = this.configuration.snapshot().settings
       if (!policy(settings, current.scope).capture || !messages.length) return
       // Deduplication hashes identity + stable turn ID. Bodies never enter state or Host's action ledger.
       const key: RequestKey = { id: digest(['capture', current.agentId, current.turnId, peerId(current.scope)]), hash: fingerprint }
       if (this.store.existing(key, peerId(current.scope))) return
-      const job = this.append(current.scope, messages, key, settings.globalMemory, false)
-      const body = this.bodies.get(job.id)!
-      if (input.immediate || actions || settings.submissionMode === 'turn' || settings.submissionMode === 'tokens' && Math.ceil(body.chars / 4) >= settings.tokenThreshold || settings.submissionMode === 'batch' && (body.messages.length >= settings.batchMessages || body.chars >= settings.batchChars)) this.accept(job)
-      else this.armIdle(job, body)
+      this.append(current.scope, messages, key, settings.globalMemory)
       this.store.value.lastCaptureAt = new Date().toISOString(); this.store.value.lastErrorCode = null; this.store.save(); this.pump()
     } catch (cause) { this.report(cause); throw cause }
   }
-  private append(current: MemoryScope, messages: Message[], key: RequestKey, global: boolean, separate: boolean, signal?: AbortSignal): StoredJob {
+  private append(current: MemoryScope, messages: Message[], key: RequestKey, global: boolean, signal?: AbortSignal): StoredJob {
     this.assertReady(signal)
-    const peer = peerId(current), bytes = Buffer.byteLength(JSON.stringify(messages)), chars = messages.reduce((count, item) => count + (item.content?.length ?? 0), 0)
+    const peer = peerId(current), bytes = Buffer.byteLength(JSON.stringify(messages))
     if (bytes > LIMITS.jobBytes || [...this.bodies.values()].reduce((count, item) => count + item.bytes, 0) + bytes > LIMITS.bufferedBytes) throw error('MEMORY_CAPACITY', 409)
-    this.store.capacity(false)
-    let job = separate ? undefined : this.store.value.jobs.find(job => job.id === this.buffers.get(peer)), body = job ? this.bodies.get(job.id) : undefined
-    if (job && body && (job.global !== global || body.bytes + bytes > LIMITS.jobBytes || body.messages.length + messages.length > LIMITS.messages || job.requests.length >= LIMITS.messages)) { this.accept(job); job = undefined; body = undefined }
-    if (!job) {
-      job = this.store.create(peer, configurationKey(this.configuration.snapshot()), global)
-      body = { messages: [], bytes: 0, chars: 0, submit: false, signal }; this.bodies.set(job.id, body)
-      if (!separate) this.buffers.set(peer, job.id)
-    }
-    body!.messages.push(...messages); body!.bytes += bytes; body!.chars += chars; job.messages = body!.messages.length; job.requests.push(key); job.updatedAt = new Date().toISOString(); this.touch(current)
-    this.store.save(); return job
-  }
-  private armIdle(job: StoredJob, body: PendingBody): void {
-    if (body.timer) clearTimeout(body.timer)
-    body.timer = setTimeout(() => { body.timer = undefined; if (this.ready && this.bodies.get(job.id) === body) { this.accept(job); this.pump() } }, this.configuration.snapshot().settings.idleSeconds * 1000)
-    body.timer.unref()
-  }
-  private accept(job: StoredJob): void {
-    const body = this.bodies.get(job.id)
-    if (!body || body.submit) return
-    if (body.timer) clearTimeout(body.timer)
-    body.timer = undefined; body.submit = true
-    if (this.buffers.get(job.peerId) === job.id) this.buffers.delete(job.peerId)
-    this.touch(parsePeer(job.peerId)); this.store.save()
+    const job = this.store.create(peer, configurationKey(this.configuration.snapshot()), global)
+    this.bodies.set(job.id, { messages, bytes }); job.messages = messages.length; job.requests.push(key)
+    this.touch(current); this.store.save(); return job
   }
   async flush(peer?: string): Promise<void> {
     this.assertReady()
     if (peer !== undefined) parsePeer(peer)
-    for (const job of this.store.value.jobs) if (job.status === 'queued' && (peer === undefined || job.peerId === peer)) this.accept(job)
+    // Sync is already immediate. This action only resumes pending work/receipt reads.
+    for (const job of this.store.value.jobs) if (peer === undefined || job.peerId === peer) this.pausedJobs.delete(job.id)
     this.pump()
+  }
+  async retryExtraction(value: unknown): Promise<void> {
+    this.assertReady()
+    const id = identifier(value, 64), job = this.store.value.jobs.find(item => item.id === id)
+    if (!job || job.configurationKey !== configurationKey(this.configuration.snapshot()) || job.status !== 'failed' || !job.submissionAttempted || job.taskId === null) throw error('MEMORY_RETRY_DENIED', 409)
+    const client = this.client(parsePeer(job.peerId))
+    const existing = await client.incrementalReceipt(job.sessionId, job.id)
+    if (existing === null || existing.status !== 'failed') throw error('MEMORY_RETRY_DENIED', 409)
+    this.store.update(job, { status: 'unknown', errorCode: 'MEMORY_SUBMISSION_UNKNOWN' })
+    try {
+      this.applyReceipt(job, await client.retryIncremental(job.sessionId, job.id))
+      this.pausedJobs.delete(job.id); this.pump()
+    } catch (cause) { this.retry(job); this.report(cause); throw cause }
   }
   private pump(): void {
     if (!this.ready) return
     const key = configurationKey(this.configuration.snapshot())
     for (const job of this.store.value.jobs) {
       if (this.workers.size >= LIMITS.concurrent) break
-      if (job.configurationKey !== key || this.workers.has(job.id) || this.pausedJobs.has(job.id) || terminal(job) || job.status === 'submitting' || job.status === 'queued' && !this.bodies.get(job.id)?.submit) continue
-      // A persistent session is one ordered stream. Never interleave appends/commits,
-      // or append after an uncertain write until its remote state is checked.
-      if (this.store.value.jobs.some(other => other.id !== job.id && other.configurationKey === key && other.sessionId === job.sessionId && (other.status === 'unknown' || this.workers.has(other.id) || other.createdAt < job.createdAt && !terminal(other) && other.status !== 'queued'))) continue
-      const controller = new AbortController(), signal = AbortSignal.any([this.lifetime.signal, controller.signal, ...(this.bodies.get(job.id)?.signal ? [this.bodies.get(job.id)!.signal!] : [])])
+      if (job.configurationKey !== key || this.workers.has(job.id) || this.pausedJobs.has(job.id) || terminal(job) || job.status === 'submitting') continue
+      const sameSession = this.store.value.jobs.filter(other => other.configurationKey === key && other.sessionId === job.sessionId && other.id !== job.id)
+      if (sameSession.some(other => this.workers.has(other.id) || other.status === 'submitting' || other.status === 'unknown' || other.status === 'failed' && other.submissionAttempted && other.taskId !== null)) continue
+      const controller = new AbortController(), signal = AbortSignal.any([this.lifetime.signal, controller.signal])
       const worker: Worker = { controller, done: Promise.resolve() }
       this.workers.set(job.id, worker)
-      worker.done = this.run(job, signal).catch(cause => { this.report(cause) }).finally(() => { this.workers.delete(job.id); this.bodies.delete(job.id); this.pump() })
+      worker.done = this.run(job, signal).catch(cause => { if (!signal.aborted) this.report(cause) }).finally(() => { this.workers.delete(job.id); this.bodies.delete(job.id); this.touch(parsePeer(job.peerId)); this.pump() })
     }
   }
   private retry(job: StoredJob): void {
     this.pausedJobs.add(job.id)
     if (this.retryTimer || !this.ready) return
-    this.retryTimer = setTimeout(() => { this.retryTimer = undefined; this.pausedJobs.clear(); this.pump() }, 5000); this.retryTimer.unref()
+    this.retryTimer = setTimeout(() => { this.retryTimer = undefined; this.pausedJobs.clear(); this.pump() }, 1000); this.retryTimer.unref()
+  }
+  private applyReceipt(job: StoredJob, receipt: IncrementalReceipt): void {
+    schema(job.sequence === null || receipt.from_sequence === job.sequence)
+    schema(receipt.to_sequence - receipt.from_sequence === job.messages)
+    schema(job.taskId === null || receipt.task_id === job.taskId)
+    const status = receipt.status === 'accepted' || receipt.status === 'processing' ? 'processing' : receipt.status
+    this.store.update(job, { taskId: receipt.task_id, sequence: receipt.from_sequence, submissionAttempted: true,
+      status, changes: receipt.changes, archiveUri: receipt.archive_uris.at(-1) ?? null,
+      errorCode: receipt.error_code ?? (status === 'failed' ? 'MEMORY_EXTRACTION_FAILED' : status === 'unknown' ? 'MEMORY_SUBMISSION_UNKNOWN' : null) })
+    if (terminal(job)) { this.store.value.lastErrorCode = job.errorCode; this.store.save() }
   }
   private async run(job: StoredJob, signal: AbortSignal): Promise<void> {
-    const client = this.client(parsePeer(job.peerId), signal)
-    let extractionTerminal = false
     try {
+      const client = this.client(parsePeer(job.peerId), signal)
       if (job.status === 'queued') {
         const body = this.bodies.get(job.id)
         if (!body) throw error('MEMORY_BUFFER_LOST', 409)
-        checkSignal(signal); this.store.update(job, { status: 'submitting', errorCode: null })
-        await client.create(job.sessionId, job.global)
-        checkSignal(signal); this.store.update(job, { staged: true })
-        await client.add(job.sessionId, body.messages)
-        checkSignal(signal); this.store.update(job, { commitAttempted: true })
-        const receipt = await client.run(() => client.sdk.commitSession(job.sessionId, 0))
-        schema(isJsonObject(receipt) && receipt.session_id === job.sessionId && receipt.status === 'accepted' && typeof receipt.task_id === 'string')
-        const taskId = identifier(receipt.task_id, 160), archiveUri = archive(receipt.archive_uri, job.sessionId, this.configuration.snapshot().user)
-        this.store.update(job, { taskId, archiveUri, status: 'processing', errorCode: null })
-        this.bodies.delete(job.id)
-      }
-      if (!job.taskId || !job.archiveUri) throw error('MEMORY_SUBMISSION_UNKNOWN', 502, 'unknown')
-      if (job.terminalStatus) { await this.finalizeTerminal(job, client, signal); return }
-      const started = Date.now()
-      for (;;) {
         checkSignal(signal)
-        const task = await client.task(job.taskId!)
-        if (task === null) { this.store.update(job, { status: 'unknown', errorCode: 'MEMORY_TASK_UNKNOWN' }); return }
-        schema(isJsonObject(task) && task.task_id === job.taskId && task.resource_id === job.sessionId && ['pending', 'running', 'cancelling', 'completed', 'failed', 'cancelled'].includes(String(task.status)))
-        if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') {
-          extractionTerminal = true
-          const completed = task.status === 'completed'
-          let extractionErrorCode: string | null = completed ? null : 'MEMORY_EXTRACTION_FAILED'
-          if (completed) {
-            try { schema(isJsonObject(task.result) && task.result.session_id === job.sessionId && task.result.archive_uri === job.archiveUri); if (task.result.user_config_error) throw error('MEMORY_EXTRACTION_FAILED', 502, 'failed') }
-            catch (cause) { extractionErrorCode = errorCode(cause) }
-          }
-          // Persist terminal proof before finalizing. Server task records can
-          // expire independently; their absence cannot revoke an observed result.
-          this.store.update(job, { status: 'cleaning', terminalStatus: completed ? 'completed' : 'failed', extractionErrorCode, errorCode: extractionErrorCode })
-          await this.finalizeTerminal(job, client, signal); return
-        }
-        if (Date.now() - started > 10 * 60 * 1000) { this.store.update(job, { errorCode: 'MEMORY_TASK_PENDING' }); this.retry(job); return }
-        await delay(1000, signal)
+        this.store.update(job, { status: 'submitting', errorCode: null })
+        await client.create(job.sessionId, job.global)
+        const state = await client.incrementalState(job.sessionId)
+        checkSignal(signal)
+        this.store.update(job, { sequence: state.next_sequence, submissionAttempted: true })
+        // One server transaction owns idempotent append and incremental scheduling.
+        // A lost reply is recovered only by reading this request's durable receipt.
+        const receipt = await client.submitIncremental(job.sessionId, job.id, state.next_sequence, body.messages)
+        checkSignal(signal); this.applyReceipt(job, receipt); this.bodies.delete(job.id)
+        // A pending extractor must not hold the transport slot or delay the next upload.
+        if (!terminal(job)) this.retry(job)
+        return
       }
+      checkSignal(signal)
+      const receipt = await client.incrementalReceipt(job.sessionId, job.id)
+      checkSignal(signal)
+      if (receipt === null) this.store.update(job, { status: 'unknown', errorCode: 'MEMORY_SUBMISSION_UNKNOWN' })
+      else this.applyReceipt(job, receipt)
+      if (!terminal(job)) this.retry(job)
     } catch (cause) {
-      const code = errorCode(cause)
-      if (job.taskId) {
-        // A known remote extraction may still run. Never delete its session on an uncertain result.
-        if (job.status !== 'completed' && job.status !== 'failed' && job.status !== 'unknown') this.store.update(job, { status: extractionTerminal || job.status === 'cleaning' ? 'cleaning' : 'processing', errorCode: code })
-        if (!signal.aborted) this.retry(job)
-      } else if (job.status !== 'unknown' && job.status !== 'failed') {
-        // The session may already contain earlier archives. Preserve everything,
-        // including partially written messages, and block uncertain replays.
-        const uncertain = job.staged || job.commitAttempted || signal.aborted || code === 'MEMORY_SUBMISSION_UNKNOWN'
-        this.store.update(job, { status: uncertain ? 'unknown' : 'failed', errorCode: uncertain ? 'MEMORY_SUBMISSION_UNKNOWN' : code })
+      if (!terminal(job)) {
+        const uncertain = job.submissionAttempted
+        this.store.update(job, { status: uncertain ? job.taskId ? 'processing' : 'unknown' : 'failed', errorCode: uncertain ? 'MEMORY_SUBMISSION_UNKNOWN' : errorCode(cause) })
+        if (uncertain && !signal.aborted) this.retry(job)
       }
       if (!signal.aborted) this.report(cause)
     }
-  }
-  private async finalizeTerminal(job: StoredJob, client: MemoryClient, signal: AbortSignal): Promise<void> {
-    let failure = job.extractionErrorCode
-    if (job.terminalStatus === 'completed' && job.changes === null && failure === null) {
-      try {
-        const raw = await client.run(() => client.sdk.read(job.archiveUri! + '/memory_diff.json'))
-        schema(typeof raw === 'string')
-        let diff: unknown
-        try { diff = JSON.parse(raw) } catch { throw error('MEMORY_UNSUPPORTED_SERVER', 502, 'failed') }
-        schema(isJsonObject(diff) && isJsonObject(diff.summary))
-        this.store.update(job, { changes: { added: integer(diff.summary.total_adds, 0, Number.MAX_SAFE_INTEGER), updated: integer(diff.summary.total_updates, 0, Number.MAX_SAFE_INTEGER), deleted: integer(diff.summary.total_deletes, 0, Number.MAX_SAFE_INTEGER) } })
-      } catch (cause) { if (signal.aborted) throw cause; failure = errorCode(cause); this.store.update(job, { extractionErrorCode: failure, errorCode: failure }) }
-    }
-    checkSignal(signal)
-    this.store.update(job, { status: failure ? 'failed' : 'completed', errorCode: failure })
-    this.store.value.lastErrorCode = failure; this.store.save()
   }
   invocationContext(invocation?: CapabilityInvocationScope): MemoryContext {
     if (invocation?.memory) return this.context(invocation.memory)
@@ -318,8 +284,8 @@ export class MemoryRuntime implements MemoryProvider {
     const key: RequestKey = { id: digest(['save', peerId(current.scope), stableId]), hash: digest([body, global]) }, previous = this.store.existing(key, peerId(current.scope))
     if (previous) return { jobId: previous.id, status: previous.status }
     checkSignal(signal)
-    const job = this.append(current.scope, [{ role: 'user', content: body, peerId: peerId(current.scope), createdAt: new Date().toISOString() }], key, global, true)
-    this.accept(job); this.pump(); return { jobId: job.id, status: job.status }
+    const job = this.append(current.scope, [{ role: 'user', content: body, peerId: peerId(current.scope), createdAt: new Date().toISOString() }], key, global, signal)
+    this.pump(); return { jobId: job.id, status: job.status }
   }
   async dispose(): Promise<void> {
     if (this.closed) return
@@ -335,10 +301,3 @@ export class MemoryRuntime implements MemoryProvider {
   }
 }
 function identityMember(value: unknown): string { if (typeof value !== 'string' || !/^[A-Za-z0-9_]{1,96}$/.test(value)) throw error('MEMORY_INVALID_INPUT'); return value }
-function delay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const abort = () => { clearTimeout(timer); signal.removeEventListener('abort', abort); reject(error('MEMORY_CANCELLED', 409)) }
-    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, ms)
-    signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort()
-  })
-}

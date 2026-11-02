@@ -33,7 +33,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`。
 
-当前应用／Host／Web0.14.0，plugin-sdk4.5.0、ui-sdk4.1.0、plugin-core4.0.0，QQ0.13.2、DSH0.12.0、表情包0.1.1、生图0.2.0、记忆0.1.1；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前应用／Host／Web0.14.0，plugin-sdk4.5.0、ui-sdk4.1.0、plugin-core4.0.0，QQ0.13.2、DSH0.12.0、表情包0.1.1、生图0.2.0、记忆0.2.0；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -118,7 +118,7 @@ README 用中文作为标准入口；其他文档标题／文件名中文，技�
 
 ## 外部记忆插件（OpenViking）
 
-openviking-memory@0.1.1按[ADR-0027](docs/decisions/ADR-0028-OpenViking记忆能力与自动采集.md)连接用户自建服务用户，用官方Node SDK和必要的当前公开HTTP字段补充。Eating只管理范围、当前回合和MCP，不建设记忆提取模型或第二认知循环。全局开启、可读platform-account-private/group-target Peer、自主self、群成员名单、主人私聊显式跨会话，来源由Host核验。自动采集独立于模型保存工具，无每日/小时提取额度；有界RAM/并发/元数据只是机械容量。正文不进Host账本或插件状态文件，提取Accepted不等于成功，同一Peer/提取策略复用固定Session，终态task＋实际memory_diff确认后保留Session和归档；不得自动删除会话，未知阻止同Session继续写入且不重放。规则保存/断开/停用立即撤销；已有任务只查询恢复。统一人格不复制进记忆。配置/状态严格独立schema1，无真实数据迁移或默认部署。原生DSH Web保持官方，Eating面板按现有白绿/双语/草稿/焦点/可见读取规则实现。
+openviking-memory@0.2.0按[ADR-0030](docs/decisions/ADR-0030-增量记忆提取与历史分段解耦.md)逐轮及时同步并增量提取，服务端扩展精确依赖OpenViking0.5.2.1，复用官方提取/合并/隔离框架。Eating只负责可信来源、范围、传输与回执，不建另一记忆引擎。Session固定eating-live-<peer>，全局关闭固定-local策略根；不调用commit或deleteSession，提取与归档解耦，成功处理原文达到archiveMaxMiB才分段且不重复提取。原始记录保留。POST结果未知只查原request_id持久回执；应用窗口不确定不盲目重放，证明未进入应用的失败才允许主人显式重试。缺协议1扩展明确不支持，不回退旧提交；配置/状态严格schema2，旧文件拒绝而保留，不自动迁移。用户最新要求只写代码供审查，不再远端访问或部署、不替换现有安装。无每日/小时提取额度；MCP授权、群成员过滤、主人显式跨会话和原生DSH Web约束保持。
 
 ## 生图插件（OpenAI Images）
 

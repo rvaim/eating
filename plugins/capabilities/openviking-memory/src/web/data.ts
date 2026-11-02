@@ -22,29 +22,29 @@ function readRule(value: unknown): ScopeRule {
 }
 export function readSettings(value: unknown): MemorySettings {
   if (!isJsonObject(value) || !flags(value, ['enabled', 'autoCapture', 'autoRecall', 'globalMemory', 'ownerCrossSession', 'privateCapture', 'privateRecall', 'groupCapture', 'groupRecall'])
-    || !['batch', 'turn', 'tokens'].includes(String(value.submissionMode))
-    || !['batchMessages', 'batchChars', 'idleSeconds', 'tokenThreshold', 'recallLimit', 'recallMaxChars'].every(key => integer(value[key]))
+    || !integer(value.archiveMaxMiB) || value.archiveMaxMiB < 1 || value.archiveMaxMiB > 64
+    || !['recallLimit', 'recallMaxChars'].every(key => integer(value[key]))
     || typeof value.scoreThreshold !== 'number' || !Number.isFinite(value.scoreThreshold) || value.scoreThreshold < 0 || value.scoreThreshold > 1
     || !Array.isArray(value.rules) || value.rules.length > 1000) return invalid()
   return { enabled: value.enabled as boolean, autoCapture: value.autoCapture as boolean, autoRecall: value.autoRecall as boolean,
     globalMemory: value.globalMemory as boolean, ownerCrossSession: value.ownerCrossSession as boolean, privateCapture: value.privateCapture as boolean,
     privateRecall: value.privateRecall as boolean, groupCapture: value.groupCapture as boolean, groupRecall: value.groupRecall as boolean,
-    submissionMode: value.submissionMode as MemorySettings['submissionMode'], batchMessages: value.batchMessages as number, batchChars: value.batchChars as number,
-    idleSeconds: value.idleSeconds as number, tokenThreshold: value.tokenThreshold as number, recallLimit: value.recallLimit as number,
+    archiveMaxMiB: value.archiveMaxMiB, recallLimit: value.recallLimit as number,
     recallMaxChars: value.recallMaxChars as number, scoreThreshold: value.scoreThreshold, rules: value.rules.map(readRule) }
 }
 export function readConfiguration(value: unknown): MemoryConfiguration {
-  if (!isJsonObject(value) || value.schemaVersion !== 1 || !integer(value.revision) || !text(value.endpoint) || !text(value.account)
+  if (isJsonObject(value) && value.schemaVersion !== 2) throw new HostApiError('MEMORY_CONFIGURATION_CORRUPTED', '', 'failed')
+  if (!isJsonObject(value) || !integer(value.revision) || !text(value.endpoint) || !text(value.account)
     || !text(value.user) || !integer(value.timeoutMs) || !flags(value, ['apiKeyConfigured', 'autoConnect', 'ready'])
     || 'apiKey' in value) return invalid()
-  return { schemaVersion: 1, revision: value.revision, endpoint: value.endpoint, account: value.account, user: value.user,
+  return { schemaVersion: 2, revision: value.revision, endpoint: value.endpoint, account: value.account, user: value.user,
     apiKeyConfigured: value.apiKeyConfigured as boolean, autoConnect: value.autoConnect as boolean, timeoutMs: value.timeoutMs,
     ready: value.ready as boolean, settings: readSettings(value.settings) }
 }
 function readJob(value: unknown): MemoryJob {
   if (!isJsonObject(value) || !['id', 'peerId', 'sessionId'].every(key => text(value[key]))
     || !['taskId', 'archiveUri', 'errorCode'].every(key => nullableText(value[key]))
-    || !['queued', 'submitting', 'processing', 'cleaning', 'completed', 'failed', 'unknown'].includes(String(value.status))
+    || !['queued', 'submitting', 'processing', 'completed', 'failed', 'unknown'].includes(String(value.status))
     || !date(value.createdAt) || !date(value.updatedAt) || !integer(value.messages)) return invalid()
   let changes: MemoryJob['changes'] = null
   if (value.changes !== null) {
@@ -90,7 +90,7 @@ export async function fetchConfiguration(signal?: AbortSignal): Promise<MemoryCo
 export async function updateConfiguration(input: MemoryConfigurationInput, signal?: AbortSignal): Promise<MemoryConfiguration> {
   return readConfiguration(await hostRequest<unknown>('/plugins/openviking-memory/configuration', { method: 'POST', body: input, signal }))
 }
-export function manage(operation: 'snapshot' | 'test-connection' | 'flush' | 'search' | 'read' | 'delete', input: JsonObject, signal?: AbortSignal): Promise<unknown> {
+export function manage(operation: 'snapshot' | 'test-connection' | 'flush' | 'retry' | 'search' | 'read' | 'delete', input: JsonObject, signal?: AbortSignal): Promise<unknown> {
   return hostRequest<unknown>('/plugins/openviking-memory/manage', { method: 'POST', body: { operation, input }, signal })
 }
 export function connect(signal?: AbortSignal): Promise<unknown> { return hostRequest('/plugins/openviking-memory/connect', { method: 'POST', body: {}, signal }) }
@@ -103,6 +103,7 @@ export function failure(error: unknown, fallback: MemoryTranslationKey = 'error.
 const knownErrors: Readonly<Record<string, MemoryTranslationKey>> = {
   MEMORY_AUTH_FAILED: 'error.auth', MEMORY_IDENTITY_MISMATCH: 'error.auth', MEMORY_ACCESS_DENIED: 'error.denied',
   MEMORY_REDIRECT_DENIED: 'error.redirect', MEMORY_UNSUPPORTED_SERVER: 'error.response', MEMORY_RESPONSE_TOO_LARGE: 'error.response',
+  MEMORY_INCREMENTAL_UNSUPPORTED: 'error.incrementalUnsupported',
   MEMORY_SERVER_NOT_READY: 'error.notReady', MEMORY_NOT_CONFIGURED: 'error.notReady', MEMORY_NOT_READY: 'error.notReady',
   MEMORY_CAPACITY: 'error.capacity', MEMORY_EXTRACTION_FAILED: 'error.extraction', MEMORY_BUFFER_LOST: 'error.bufferLost',
   MEMORY_TASK_PENDING: 'error.taskPending', MEMORY_TASK_UNKNOWN: 'error.unknown', MEMORY_SUBMISSION_UNKNOWN: 'error.unknown',

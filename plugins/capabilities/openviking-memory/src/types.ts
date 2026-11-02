@@ -1,6 +1,5 @@
 import type { MemoryScope } from '@eating/plugin-sdk'
 
-export type SubmissionMode = 'batch' | 'turn' | 'tokens'
 export type MemberMode = 'all' | 'allowlist' | 'denylist'
 export interface ScopeRule {
   id: string
@@ -24,18 +23,14 @@ export interface MemorySettings {
   privateRecall: boolean
   groupCapture: boolean
   groupRecall: boolean
-  submissionMode: SubmissionMode
-  batchMessages: number
-  batchChars: number
-  idleSeconds: number
-  tokenThreshold: number
+  archiveMaxMiB: number
   recallLimit: number
   recallMaxChars: number
   scoreThreshold: number
   rules: ScopeRule[]
 }
 export interface MemoryConfiguration {
-  schemaVersion: 1
+  schemaVersion: 2
   revision: number
   endpoint: string
   account: string
@@ -57,7 +52,7 @@ export interface MemoryConfigurationInput {
   timeoutMs: number
   settings: MemorySettings
 }
-export type ExtractionStatus = 'queued' | 'submitting' | 'processing' | 'cleaning' | 'completed' | 'failed' | 'unknown'
+export type ExtractionStatus = 'queued' | 'submitting' | 'processing' | 'completed' | 'failed' | 'unknown'
 export interface MemoryJob {
   id: string
   peerId: string
@@ -93,6 +88,5 @@ export interface RuntimeSnapshot {
 export const DEFAULT_SETTINGS: MemorySettings = {
   enabled: true, autoCapture: true, autoRecall: true, globalMemory: true, ownerCrossSession: true,
   privateCapture: true, privateRecall: true, groupCapture: false, groupRecall: true,
-  submissionMode: 'batch', batchMessages: 8, batchChars: 6000, idleSeconds: 300,
-  tokenThreshold: 2000, recallLimit: 6, recallMaxChars: 4800, scoreThreshold: 0.35, rules: [],
+  archiveMaxMiB: 8, recallLimit: 6, recallMaxChars: 4800, scoreThreshold: 0.35, rules: [],
 }

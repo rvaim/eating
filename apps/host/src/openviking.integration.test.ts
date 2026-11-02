@@ -26,7 +26,7 @@ async function ownerApi(host: EatingHost) {
   return async (path: string, body?: JsonObject) => { const response = await fetch(url + '/api' + path, { method: body ? 'POST' : 'GET', headers: { Cookie: cookie, 'X-Eating-CSRF': String(csrf), 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }); const value = object(await response.json()); if (!response.ok) throw new Error(path + ' ' + JSON.stringify(value)); return value }
 }
 async function configureMemory(api: Awaited<ReturnType<typeof ownerApi>>, service: Awaited<ReturnType<typeof startOpenVikingFixture>>) {
-  await api('/plugins/openviking-memory/configuration', { expectedRevision: 0, endpoint: service.endpoint, account: service.account, user: service.user, apiKey: service.apiKey, autoConnect: false, timeoutMs: 10000, settings: { ...DEFAULT_SETTINGS, submissionMode: 'turn' } as unknown as JsonObject })
+  await api('/plugins/openviking-memory/configuration', { expectedRevision: 0, endpoint: service.endpoint, account: service.account, user: service.user, apiKey: service.apiKey, autoConnect: false, timeoutMs: 10000, settings: { ...DEFAULT_SETTINGS } as unknown as JsonObject })
   await api('/plugins/openviking-memory/connect', {})
 }
 function batch(kind: 'private' | 'group', senderId = '200'): HarnessDeliveryBatch { const conversationId = `qq:100:${kind}:200`, stamp = new Date().toISOString(); return { protocolVersion: 1, batchId: 'a'.repeat(64), conversationId, createdAt: stamp, reason: 'quiet-window', events: [{ protocolVersion: 1, eventId: 'event', pluginId: 'qq', instanceId: 'fixture', platform: 'qq', accountId: '100', conversationId, senderId, targetId: '200', receivedAt: stamp, source: { trust: 'external', kind, senderRole: 'owner' }, content: 'fixture', text: 'fixture' }] } }
@@ -63,16 +63,49 @@ describe('real Host grants and scoped OpenViking MCP', () => {
     expect(saved.isError).toBe(false)
     await client.callTool({ name: 'memory_save', arguments: args })
     await until(async () => (object(await api('/plugins/openviking-memory/manage', { operation: 'snapshot', input: {} })).jobs as JsonObject[])[0]?.status === 'completed', 'Explicit extraction did not complete')
-    expect(service.committedSessions).toHaveLength(1); expect(service.cleaned).toEqual([])
-    expect(service.sessions.get(service.committedSessions[0]!.id)).toMatchObject({ deleted: false, messages: [expect.objectContaining({ role: 'user', content: 'Explicit stable preference' })] })
+    expect(service.submissions).toHaveLength(1); expect(service.archives.size).toBe(0)
+    expect(service.sessions.get(service.submissions[0]!.sessionId)!.messages).toMatchObject([{ role: 'user', content: 'Explicit stable preference' }])
+    expect(service.requests.filter(request => /\/(?:messages(?:\/batch)?|commit)$/.test(request.path))).toEqual([])
+    expect(service.requests.filter(request => request.method === 'DELETE')).toEqual([])
     harness.revokeAgentAccess('root')
     await expect(client.callTool({ name: 'memory_search', arguments: { query: 'fixture' } })).rejects.toThrow()
     expect(service.errors).toEqual([])
   })
+
+  it('automatically records ordinary QQ turns and action receipts without granting any memory tools', async () => {
+    const directory = await home(), service = await startOpenVikingFixture(); stops.push(service.close)
+    let harness!: HarnessHostServices
+    const harnessEntry: BackendPluginEntry = { id: 'fixture', kind: 'harness', storageDirectory: 'fixture', create(context) { harness = context.harness!; return { id: 'fixture', name: 'Fixture', kind: 'harness', version: '1.0.0', tools: [], capabilities: [], getStatus: () => ({ state: 'disconnected', accountId: null, accountName: null, lastError: null, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 }), getPublicConfiguration: () => ({}), updateConfiguration: async () => ({}), connect: async () => {}, disconnect: async () => {}, invoke: async () => null, dispose: async () => {} } } }
+    const host = new EatingHost({ dataDirectory: directory, entries: [qqEntry, memoryEntry, harnessEntry], port: 0, allowedUiOrigins: [] }); stops.push(() => host.close())
+    const api = await ownerApi(host); await configureMemory(api, service)
+    expect(harness.getCapabilityMcpConnections({ agentId: 'root', agentTypeId: 'main' })).toEqual([])
+    const root = `viking://user/${service.user}`
+    service.memories.set(root + '/memories/preferences/global.md', 'fixture GLOBAL-RECALLED-VALUE')
+    service.memories.set(root + '/peers/qq-100-private-200/memories/preferences/current.md', 'fixture LOCAL-RECALLED-VALUE')
+    service.memories.set(root + '/peers/qq-100-private-999/memories/preferences/other.md', 'fixture OTHER-PRIVATE-MEMORY')
+    for (let round = 0; round < 3; round++) {
+      const turnId = `automatic-qq-${round}`, recall = await harness.memory!.begin({ agentId: 'root', agentTypeId: 'main', turnId, batch: batch('private') })
+      expect(recall.text).toContain('GLOBAL-RECALLED-VALUE'); expect(recall.text).toContain('LOCAL-RECALLED-VALUE'); expect(recall.text).not.toContain('OTHER-PRIVATE-MEMORY')
+      await harness.memory!.finish({ agentId: 'root', turnId, assistantText: `Visible ordinary QQ reply ${round}`, actions: [{ tool: 'qq_send_private_msg', outcome: 'succeeded' }, { tool: 'qq_get_message', outcome: 'returned' }], outcome: 'completed' })
+      await until(async () => (object(await api('/plugins/openviking-memory/manage', { operation: 'snapshot', input: {} })).jobs as JsonObject[]).filter(job => job.status === 'completed').length === round + 1, 'Realtime QQ turn did not extract')
+    }
+    const remote = service.sessions.get('eating-live-qq-100-private-200')!
+    expect(service.sessions.size).toBe(1); expect(remote.messages).toHaveLength(6); expect(remote.archiveUris).toEqual([]); expect(service.archives.size).toBe(0)
+    expect(service.submissions.map(item => item.expectedSequence)).toEqual([0, 2, 4]); expect(service.extractions.map(item => item.messages.length)).toEqual([2, 2, 2])
+    for (const [round, submission] of service.submissions.entries()) {
+      expect(submission.messages).toMatchObject([{ role: 'user', content: expect.stringContaining('fixture') }, { role: 'assistant', content: expect.stringContaining(`Visible ordinary QQ reply ${round}`) }])
+      expect(submission.messages[1]!.content).toContain('qq_send_private_msg: succeeded'); expect(submission.messages[1]!.content).toContain('qq_get_message: returned')
+      for (const recalled of ['GLOBAL-RECALLED-VALUE', 'LOCAL-RECALLED-VALUE', 'OTHER-PRIVATE-MEMORY']) expect(JSON.stringify(submission.messages)).not.toContain(recalled)
+    }
+    const state = object(await api('/plugins/openviking-memory/manage', { operation: 'snapshot', input: {} }))
+    expect((state.jobs as JsonObject[]).every(job => job.archiveUri === null)).toBe(true); expect(JSON.stringify(state)).not.toContain('Visible ordinary QQ reply')
+    expect(service.requests.filter(request => /\/(?:messages(?:\/batch)?|commit)$/.test(request.path))).toEqual([]); expect(service.requests.filter(request => request.method === 'DELETE')).toEqual([]); expect(service.errors).toEqual([])
+    await host.close(); expect((await readFile(join(directory, 'host/Eating.sqlite'))).includes(Buffer.from('Visible ordinary QQ reply'))).toBe(false)
+  })
 })
 
 describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('system DSH automatic OpenViking memory end to end', () => {
-  it('recalls global plus current peer, extracts a normal QQ reply with no memory calls, and retains the remote transcript', async () => {
+  it('recalls only global and current peer, captures normal QQ replies without memory tools, and keeps a live session without archives', async () => {
     const directory = await home(), service = await startOpenVikingFixture(); stops.push(() => service.close())
     const onebot = await startOneBotFixture({ login: { user_id: 100000101, nickname: 'Memory fixture account' } }); stops.push(() => onebot.close())
     const requests: JsonObject[] = [], reply = 'Automatic memory captured this visible reply'
@@ -97,22 +130,31 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('system DSH auto
     const wire = JSON.stringify(requests[0]!.messages)
     expect(wire).toContain('GLOBAL-RECALLED-VALUE'); expect(wire).toContain('LOCAL-RECALLED-VALUE'); expect(wire).not.toContain('OTHER-PRIVATE-MEMORY')
     expect(JSON.stringify(requests[0]!.tools)).not.toContain('memory_save')
-    const submitted = service.requests.find(request => request.path.endsWith('/messages/batch'))!
+    const submitted = service.requests.find(request => request.method === 'POST' && request.path.endsWith('/incremental-memory'))!
     expect(JSON.stringify(submitted.body)).toContain(reply)
-    expect(JSON.stringify(submitted.body)).not.toContain('GLOBAL-RECALLED-VALUE')
+    for (const recalled of ['GLOBAL-RECALLED-VALUE', 'LOCAL-RECALLED-VALUE', 'OTHER-PRIVATE-MEMORY']) expect(JSON.stringify(submitted.body)).not.toContain(recalled)
+    expect(submitted.body).toMatchObject({ expected_sequence: 0, archive_max_bytes: 8 * 1024 * 1024 })
     expect(submitted.headers['x-openviking-actor-peer']).toBe('qq-100000101-private-100000202')
-    expect(service.committedSessions[0]!.policy).toMatchObject({ peer: { enabled: true }, self: { enabled: true } })
-    const sessionId = 'eating-qq-100000101-private-100000202', remote = service.sessions.get(sessionId)!
-    expect(remote.deleted).toBe(false); expect(remote.messages).toEqual(submitted.body.messages)
+    const sessionId = 'eating-live-qq-100000101-private-100000202', remote = service.sessions.get(sessionId)!
+    expect(remote.policy).toMatchObject({ peer: { enabled: true }, self: { enabled: true } })
+    expect(remote.messages).toEqual(submitted.body.messages)
     expect(remote.messages).toMatchObject([{ role: 'user', content: expect.stringContaining('fixture') }, { role: 'assistant', content: reply }])
-    expect(service.archives.get(remote.archiveUri!)?.messages).toEqual(submitted.body.messages)
-    expect(service.cleaned).toEqual([]); expect(service.requests.filter(request => request.method === 'DELETE')).toEqual([])
+    expect(remote.archiveUris).toEqual([]); expect(service.archives.size).toBe(0)
+    expect(service.requests.filter(request => request.method === 'DELETE')).toEqual([])
+    expect(service.requests.filter(request => /\/(?:messages(?:\/batch)?|commit)$/.test(request.path))).toEqual([])
+    expect(service.requests.filter(request => request.path.includes('/tasks/'))).toEqual([])
     const state = object(await api('/plugins/openviking-memory/manage', { operation: 'snapshot', input: {} }))
-    expect((state.jobs as JsonObject[])[0]).toMatchObject({ status: 'completed', sessionId, peerId: 'qq-100000101-private-100000202', changes: { added: 1, updated: 2, deleted: 0 } })
+    expect((state.jobs as JsonObject[])[0]).toMatchObject({ status: 'completed', sessionId, peerId: 'qq-100000101-private-100000202', archiveUri: null, changes: { added: 1, updated: 2, deleted: 0 } })
     for (const body of [reply, 'GLOBAL-RECALLED-VALUE', 'LOCAL-RECALLED-VALUE', 'OTHER-PRIVATE-MEMORY']) expect(JSON.stringify(state)).not.toContain(body)
     expect(service.errors).toEqual([])
     await dsh.disconnect(); await dsh.connect()
-    expect(requests).toHaveLength(1); expect(service.committedSessions).toHaveLength(1)
+    expect(requests).toHaveLength(1); expect(service.submissions).toHaveLength(1)
+    onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: 100000101, user_id: 100000202, message_id: 2002, message: 'fixture second round', raw_message: 'fixture second round' })
+    await until(async () => (object(await api('/plugins/openviking-memory/manage', { operation: 'snapshot', input: {} })).jobs as JsonObject[]).filter(job => job.status === 'completed').length === 2, 'Second live-session extraction did not complete')
+    expect(requests).toHaveLength(2); expect(service.sessions.size).toBe(1); expect(service.submissions.map(item => item.expectedSequence)).toEqual([0, 2])
+    expect(remote.messages).toHaveLength(4); expect(service.extractions.map(item => item.messages.length)).toEqual([2, 2]); expect(service.archives.size).toBe(0)
+    expect(service.requests.filter(request => request.method === 'POST' && request.path.endsWith('/sessions'))).toHaveLength(1)
+    for (const request of requests) expect(JSON.stringify(request.tools)).not.toContain('memory_save')
     await host.close()
     const sqlite = await readFile(join(directory, 'host/Eating.sqlite'))
     expect(sqlite.includes(Buffer.from(reply))).toBe(false)

@@ -19,7 +19,7 @@ export function Activity({ active, visible, prefix, blocked, blockedReason, conf
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<UiFailure | null>(null)
   const [peer, setPeer] = useState('')
-  const [busy, setBusy] = useState<'flush' | 'delete' | null>(null)
+  const [busy, setBusy] = useState<'flush' | 'retry' | 'delete' | null>(null)
   const [confirmFlush, setConfirmFlush] = useState(false)
   const [message, setMessage] = useState<'activity.flushDone' | 'browse.deleted' | null>(null)
   const [browseOpen, setBrowseOpen] = useState(false)
@@ -99,6 +99,19 @@ export function Activity({ active, visible, prefix, blocked, blockedReason, conf
       if (mutationController.current === controller) { mutationController.current = null; lock.current = false; if (mounted.current) setBusy(null) }
     }
   }
+  async function retry(jobId: string) {
+    if (lock.current || blocked || !snapshot?.ready || !enabled.current || !snapshot.jobs.some(job => job.id === jobId && job.status === 'failed')) return
+    lock.current = true; setBusy('retry'); setError(null); setMessage(null)
+    const controller = new AbortController(); mutationController.current = controller
+    try {
+      await manage('retry', { jobId }, controller.signal)
+      if (alive(controller)) await load()
+    } catch (error) {
+      if (alive(controller)) { setError(failure(error)); requestAnimationFrame(() => errorRef.current?.focus()) }
+    } finally {
+      if (mutationController.current === controller) { mutationController.current = null; lock.current = false; if (mounted.current) setBusy(null) }
+    }
+  }
   async function search() {
     if (!query.trim() || !enabled.current || (!all && !peer)) return
     clearMemory(); const ticket = ++searchGeneration.current, controller = new AbortController(); searchController.current = controller
@@ -167,6 +180,8 @@ export function Activity({ active, visible, prefix, blocked, blockedReason, conf
       <div className="ov-job-heading"><strong className={`ov-job-status ov-job-${job.status}`}>{t(`status.${job.status}`)}</strong><time dateTime={job.updatedAt}>{formatDateTime(job.updatedAt)}</time></div>
       <p className="ov-job-peer">{job.peerId}</p><p className="ov-hint">{t('activity.messages', { value: formatNumber(job.messages) })}{job.changes && ` · ${t('activity.changes', { added: formatNumber(job.changes.added), updated: formatNumber(job.changes.updated), deleted: formatNumber(job.changes.deleted) })}`}</p>
       {job.errorCode && <p className="ov-error">{t(errorKey(job.errorCode))}</p>}
+      {job.status === 'completed' && !job.archiveUri && <p className="ov-hint">{t('activity.noArchive')}</p>}
+      {job.status === 'failed' && <div className="ov-actions"><ActionButton className="button button-secondary" disabled={busy !== null || blocked || !snapshot.ready} reason={operationReason} onClick={() => void retry(job.id)}><RefreshCw size={16} aria-hidden="true" />{t('activity.retry')}</ActionButton></div>}
       <details className="ov-job-details"><summary>{t('activity.jobId')}: {job.id}</summary><dl><div><dt>{t('activity.sessionId')}</dt><dd>{job.sessionId}</dd></div>{job.taskId && <div><dt>{t('activity.taskId')}</dt><dd>{job.taskId}</dd></div>}{job.archiveUri && <div><dt>{t('activity.archiveUri')}</dt><dd>{job.archiveUri}</dd></div>}</dl></details>
     </li>)}</ul>}</section></>}
     <details className="ov-disclosure ov-section" open={browseOpen} onToggle={event => { setBrowseOpen(event.currentTarget.open); if (!event.currentTarget.open) clearMemory() }}>

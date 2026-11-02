@@ -1,7 +1,7 @@
 import type { MemoryConfiguration, MemoryConfigurationInput, MemorySettings, ScopeRule } from '../types'
 import type { MemoryTranslationKey } from './i18n'
 
-export const numericSettings = ['batchMessages', 'batchChars', 'idleSeconds', 'tokenThreshold', 'recallLimit', 'recallMaxChars', 'scoreThreshold'] as const
+export const numericSettings = ['archiveMaxMiB', 'recallLimit', 'recallMaxChars', 'scoreThreshold'] as const
 export type NumericSetting = typeof numericSettings[number]
 export type RuleDraft = Omit<ScopeRule, 'memberIds'> & { memberIdsText: string }
 export type SettingsDraft = Omit<MemorySettings, NumericSetting | 'rules'> & Record<NumericSetting, string> & { rules: RuleDraft[] }
@@ -18,12 +18,10 @@ export function validServiceIdentity(value: string, account = false): boolean {
     && value.indexOf('@') === value.lastIndexOf('@') && (!account || !value.startsWith('_'))
 }
 export const settingBounds: Record<Exclude<NumericSetting, 'scoreThreshold'>, readonly [number, number]> = {
-  batchMessages: [1, 100], batchChars: [256, 100_000], idleSeconds: [5, 86_400],
-  tokenThreshold: [128, 50_000], recallLimit: [1, 50], recallMaxChars: [256, 50_000],
+  archiveMaxMiB: [1, 64], recallLimit: [1, 50], recallMaxChars: [256, 50_000],
 }
 export function makeDraft(value: MemoryConfiguration): ConfigurationDraft {
-  const settings: SettingsDraft = { ...value.settings, batchMessages: String(value.settings.batchMessages), batchChars: String(value.settings.batchChars),
-    idleSeconds: String(value.settings.idleSeconds), tokenThreshold: String(value.settings.tokenThreshold), recallLimit: String(value.settings.recallLimit),
+  const settings: SettingsDraft = { ...value.settings, archiveMaxMiB: String(value.settings.archiveMaxMiB), recallLimit: String(value.settings.recallLimit),
     recallMaxChars: String(value.settings.recallMaxChars), scoreThreshold: String(value.settings.scoreThreshold),
     rules: value.settings.rules.map(rule => ({ ...rule, memberIdsText: rule.memberIds.join('\n') })) }
   return { endpoint: value.endpoint, account: value.account, user: value.user, apiKey: '', clearApiKey: false,
@@ -76,8 +74,7 @@ export function validateDraft(draft: ConfigurationDraft): FieldIssues {
 }
 export function configurationInput(draft: ConfigurationDraft, revision: number): MemoryConfigurationInput {
   const settings: MemorySettings = { ...draft.settings,
-    batchMessages: Number(draft.settings.batchMessages), batchChars: Number(draft.settings.batchChars), idleSeconds: Number(draft.settings.idleSeconds),
-    tokenThreshold: Number(draft.settings.tokenThreshold), recallLimit: Number(draft.settings.recallLimit), recallMaxChars: Number(draft.settings.recallMaxChars),
+    archiveMaxMiB: Number(draft.settings.archiveMaxMiB), recallLimit: Number(draft.settings.recallLimit), recallMaxChars: Number(draft.settings.recallMaxChars),
     scoreThreshold: Number(draft.settings.scoreThreshold), rules: draft.settings.rules.map(({ memberIdsText: _text, ...rule }) => ({ ...rule,
       label: rule.label.trim(), platform: rule.platform.trim(), accountId: rule.accountId.trim(), targetId: rule.targetId.trim(),
       memberMode: rule.kind === 'group' ? rule.memberMode : 'all', memberIds: rule.kind === 'group' && rule.memberMode !== 'all' ? members({ ...rule, memberIdsText: _text }) : [] })) }

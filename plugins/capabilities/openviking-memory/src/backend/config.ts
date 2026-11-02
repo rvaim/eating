@@ -7,9 +7,9 @@ import { peerId } from './scopes'
 import { bool, error, identity, identifier, integer, LIMITS, object, platform, serviceIdentity, text } from './validation'
 
 export interface PrivateConfiguration {
-  schemaVersion: 1; revision: number; endpoint: string; account: string; user: string; apiKey: string; autoConnect: boolean; timeoutMs: number; settings: MemorySettings
+  schemaVersion: 2; revision: number; endpoint: string; account: string; user: string; apiKey: string; autoConnect: boolean; timeoutMs: number; settings: MemorySettings
 }
-const defaultConfiguration = (): PrivateConfiguration => ({ schemaVersion: 1, revision: 0, endpoint: '', account: '', user: '', apiKey: '', autoConnect: false, timeoutMs: 15000, settings: structuredClone(DEFAULT_SETTINGS) })
+const defaultConfiguration = (): PrivateConfiguration => ({ schemaVersion: 2, revision: 0, endpoint: '', account: '', user: '', apiKey: '', autoConnect: false, timeoutMs: 15000, settings: structuredClone(DEFAULT_SETTINGS) })
 const hash = (value: Buffer | null): string | null => value === null ? null : createHash('sha256').update(value).digest('hex')
 export function endpoint(value: unknown): string {
   const input = text(value, 2048, true)
@@ -21,7 +21,7 @@ export function endpoint(value: unknown): string {
 }
 export function settings(value: unknown): MemorySettings {
   const input = object(value, Object.keys(DEFAULT_SETTINGS))
-  if (!['batch', 'turn', 'tokens'].includes(String(input.submissionMode)) || typeof input.scoreThreshold !== 'number' || !Number.isFinite(input.scoreThreshold) || input.scoreThreshold < 0 || input.scoreThreshold > 1 || !Array.isArray(input.rules) || input.rules.length > LIMITS.scopes) throw error('MEMORY_INVALID_CONFIGURATION')
+  if (typeof input.scoreThreshold !== 'number' || !Number.isFinite(input.scoreThreshold) || input.scoreThreshold < 0 || input.scoreThreshold > 1 || !Array.isArray(input.rules) || input.rules.length > LIMITS.scopes) throw error('MEMORY_INVALID_CONFIGURATION')
   const ids = new Set<string>(), peers = new Set<string>()
   const rules: ScopeRule[] = input.rules.map(value => {
     const rule = object(value, ['id', 'label', 'platform', 'accountId', 'kind', 'targetId', 'capture', 'recall', 'memberMode', 'memberIds'])
@@ -32,14 +32,14 @@ export function settings(value: unknown): MemorySettings {
     ids.add(result.id); peers.add(peer)
     return result
   })
-  return { enabled: bool(input.enabled), autoCapture: bool(input.autoCapture), autoRecall: bool(input.autoRecall), globalMemory: bool(input.globalMemory), ownerCrossSession: bool(input.ownerCrossSession), privateCapture: bool(input.privateCapture), privateRecall: bool(input.privateRecall), groupCapture: bool(input.groupCapture), groupRecall: bool(input.groupRecall), submissionMode: input.submissionMode as MemorySettings['submissionMode'], batchMessages: integer(input.batchMessages, 1, 100), batchChars: integer(input.batchChars, 256, 100000), idleSeconds: integer(input.idleSeconds, 5, 86400), tokenThreshold: integer(input.tokenThreshold, 128, 50000), recallLimit: integer(input.recallLimit, 1, 50), recallMaxChars: integer(input.recallMaxChars, 256, 50000), scoreThreshold: input.scoreThreshold, rules }
+  return { enabled: bool(input.enabled), autoCapture: bool(input.autoCapture), autoRecall: bool(input.autoRecall), globalMemory: bool(input.globalMemory), ownerCrossSession: bool(input.ownerCrossSession), privateCapture: bool(input.privateCapture), privateRecall: bool(input.privateRecall), groupCapture: bool(input.groupCapture), groupRecall: bool(input.groupRecall), archiveMaxMiB: integer(input.archiveMaxMiB, 1, 64), recallLimit: integer(input.recallLimit, 1, 50), recallMaxChars: integer(input.recallMaxChars, 256, 50000), scoreThreshold: input.scoreThreshold, rules }
 }
 function configuration(value: unknown): PrivateConfiguration {
   const input = object(value, Object.keys(defaultConfiguration()))
-  if (input.schemaVersion !== 1) throw error('MEMORY_INVALID_CONFIGURATION')
+  if (input.schemaVersion !== 2) throw error('MEMORY_INVALID_CONFIGURATION')
   const apiKey = text(input.apiKey, 4096, true)
   if (/[\r\n]/.test(apiKey)) throw error('MEMORY_INVALID_CONFIGURATION')
-  return { schemaVersion: 1, revision: integer(input.revision, 0, Number.MAX_SAFE_INTEGER), endpoint: endpoint(input.endpoint), account: serviceIdentity(input.account, true, true), user: serviceIdentity(input.user, true), apiKey, autoConnect: bool(input.autoConnect), timeoutMs: integer(input.timeoutMs, 1000, 120000), settings: settings(input.settings) }
+  return { schemaVersion: 2, revision: integer(input.revision, 0, Number.MAX_SAFE_INTEGER), endpoint: endpoint(input.endpoint), account: serviceIdentity(input.account, true, true), user: serviceIdentity(input.user, true), apiKey, autoConnect: bool(input.autoConnect), timeoutMs: integer(input.timeoutMs, 1000, 120000), settings: settings(input.settings) }
 }
 export function configured(value: PrivateConfiguration): boolean { return Boolean(value.endpoint && value.user) }
 /** Binds recovery metadata to its server identity without persisting credentials or URLs in jobs. */
@@ -63,7 +63,7 @@ export class ConfigurationStore {
       if (input.clearApiKey !== undefined) bool(input.clearApiKey)
       const apiKey = input.apiKey === undefined ? '' : text(input.apiKey, 4096, true)
       if (input.clearApiKey === true && apiKey) throw error('MEMORY_INVALID_CONFIGURATION')
-      return configuration({ schemaVersion: 1, revision: this.value.revision + 1, endpoint: input.endpoint, account: input.account, user: input.user, apiKey: input.clearApiKey === true ? '' : apiKey || this.value.apiKey, autoConnect: input.autoConnect, timeoutMs: input.timeoutMs, settings: input.settings })
+      return configuration({ schemaVersion: 2, revision: this.value.revision + 1, endpoint: input.endpoint, account: input.account, user: input.user, apiKey: input.clearApiKey === true ? '' : apiKey || this.value.apiKey, autoConnect: input.autoConnect, timeoutMs: input.timeoutMs, settings: input.settings })
     } catch (cause) { if (cause instanceof Error && 'code' in cause && cause.code === 'MEMORY_CONFIGURATION_CONFLICT') throw cause; throw error('MEMORY_INVALID_CONFIGURATION') }
   }
   commit(next: PrivateConfiguration): void {

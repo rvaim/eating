@@ -20,8 +20,9 @@ interface Fixture {
   config: MemoryConfiguration; snapshot: RuntimeSnapshot; reads: number; writes: MemoryConfigurationInput[]; calls: ManageCall[]; connectCalls: number
   connectError: string | null; saveError: string | null; readHandler: ((route: Route, uri: string) => Promise<void>) | null
   searchHandler: ((route: Route, query: string) => Promise<void>) | null
+  retryHandler: ((route: Route, jobId: string) => Promise<void>) | null
 }
-const initialConfiguration = (): MemoryConfiguration => ({ schemaVersion: 1, revision: 0, endpoint: '', account: '', user: '', apiKeyConfigured: false,
+const initialConfiguration = (): MemoryConfiguration => ({ schemaVersion: 2, revision: 0, endpoint: '', account: '', user: '', apiKeyConfigured: false,
   autoConnect: false, timeoutMs: 15000, ready: false, settings: structuredClone(DEFAULT_SETTINGS) })
 const initialSnapshot = (): RuntimeSnapshot => ({ ready: false, lastErrorCode: null, lastRecallAt: null, lastCaptureAt: null,
   todayExtractions: 0, pending: 0, jobs: [], scopes: [] })
@@ -47,7 +48,7 @@ test.describe('OpenViking memory installed panel', () => {
       expect((await page.request.post(url + '/api/plugins/openviking-memory/enable', { headers: { 'X-Eating-Csrf': csrf }, data: {} })).status()).toBe(200)
     }
     fixture = { config: initialConfiguration(), snapshot: initialSnapshot(), reads: 0, writes: [], calls: [], connectCalls: 0,
-      connectError: null, saveError: null, readHandler: null, searchHandler: null }
+      connectError: null, saveError: null, readHandler: null, searchHandler: null, retryHandler: null }
     await page.route('**/api/plugins/openviking-memory/configuration', async route => {
       if (route.request().method() === 'GET') { fixture.reads++; await route.fulfill({ json: fixture.config }); return }
       const input = route.request().postDataJSON() as MemoryConfigurationInput; fixture.writes.push(input)
@@ -68,6 +69,7 @@ test.describe('OpenViking memory installed panel', () => {
       const call = route.request().postDataJSON() as ManageCall; fixture.calls.push(call)
       if (call.operation === 'snapshot' || call.operation === 'flush') { await route.fulfill({ json: fixture.snapshot }); return }
       if (call.operation === 'test-connection') { await route.fulfill({ json: { ok: true } }); return }
+      if (call.operation === 'retry' && fixture.retryHandler) { await fixture.retryHandler(route, String(call.input.jobId)); return }
       if (call.operation === 'search') {
         if (fixture.searchHandler) { await fixture.searchHandler(route, String(call.input.query)); return }
         await route.fulfill({ json: { items: [{ uri: firstUri, text: 'First result excerpt', score: 0.91 }, { uri: secondUri, text: 'Second result excerpt', score: 0.8 }] } }); return
@@ -114,14 +116,27 @@ test.describe('OpenViking memory installed panel', () => {
     await expect(page.locator('.ov-memory-results li')).toHaveCount(2)
   }
 
-  test('saves the full configuration without extraction, keeps blank keys, and reports partial save/connect success', async ({ page }) => {
+  test('saves v2 without extraction, requires the paired extension, keeps blank keys, and reports partial connection success', async ({ page }) => {
     await open(page)
+    await expect(page.locator('.ov-panel')).toContainText('本版需要第 2 版配置。旧配置不会自动转换或覆盖')
     await expect(page.locator('.ov-panel').getByRole('button', { name: '连接', exact: true })).toBeDisabled()
     await configure(page)
     expect(fixture.calls).toHaveLength(0); expect(fixture.connectCalls).toBe(0)
     expect(fixture.writes[0]).toMatchObject({ expectedRevision: 0, endpoint: 'http://127.0.0.1:1933', user: 'owner', apiKey: fixtureKey,
-      settings: { enabled: true, globalMemory: true, ownerCrossSession: true, privateCapture: true, groupCapture: false, batchMessages: 8, batchChars: 6000, idleSeconds: 300, recallLimit: 6 } })
+      settings: { enabled: true, globalMemory: true, ownerCrossSession: true, privateCapture: true, groupCapture: false, archiveMaxMiB: 8, recallLimit: 6 } })
     await expect(page.getByLabel('API Key', { exact: true })).toHaveValue('')
+    expect(Object.keys(fixture.writes[0]!.settings)).toEqual(Object.keys(DEFAULT_SETTINGS))
+    await page.getByRole('button', { name: '测试已保存连接', exact: true }).click()
+    await expect(page.getByText('服务、认证及增量扩展检查通过；未进行模型提取测试。', { exact: true })).toBeVisible()
+    await activity(page)
+    await expect(page.locator('.ov-runtime')).toContainText('未连接')
+    await page.getByRole('tab', { name: '连接', exact: true }).click()
+    fixture.connectError = 'MEMORY_INCREMENTAL_UNSUPPORTED'
+    await page.locator('.ov-panel').getByRole('button', { name: '连接', exact: true }).click()
+    await expect(page.locator('.ov-notice').getByText('服务缺少所需的增量提取能力。请安装与本插件配套的 OpenViking 增量扩展（能力版本 1），再重新连接；仅健康检查通过不能启用记忆。', { exact: true })).toBeVisible()
+    await page.locator('#display-language').selectOption('en-US')
+    await expect(page.locator('.ov-notice')).toContainText('Install the paired OpenViking incremental extension')
+    await page.locator('#display-language').selectOption('zh-CN')
     await page.locator('.ov-panel').getByLabel('服务地址', { exact: true }).fill('http://127.0.0.1:1934')
     await expect(page.locator('.ov-panel').getByRole('button', { name: '连接', exact: true })).toBeDisabled()
     await expect(page.getByRole('button', { name: '测试已保存连接', exact: true })).toBeDisabled()
@@ -129,7 +144,7 @@ test.describe('OpenViking memory installed panel', () => {
     await page.locator('.ov-panel').getByRole('button', { name: '保存并连接', exact: true }).click()
     await expect(page.getByText('配置已保存，但连接检查未完成。可根据下方原因重新连接。', { exact: true })).toBeVisible()
     await expect(page.locator('.ov-notice').getByText('OpenViking 拒绝了认证，请检查已保存的用户、账号和 API Key。', { exact: true })).toBeVisible()
-    expect(fixture.writes[1]).not.toHaveProperty('apiKey'); expect(fixture.connectCalls).toBe(1)
+    expect(fixture.writes[1]).not.toHaveProperty('apiKey'); expect(fixture.connectCalls).toBe(2)
     expect(await page.locator('.ov-panel').innerText()).not.toContain('RAW_SERVER_KEY')
     await page.locator('#display-language').selectOption('en-US')
     await expect(page.getByText('OpenViking rejected authentication. Check the saved user, account and API Key.', { exact: true })).toBeVisible()
@@ -230,23 +245,34 @@ test.describe('OpenViking memory installed panel', () => {
     expect(fixture.writes).toHaveLength(1)
   })
 
-  test('reveals invalid inactive submission settings and preserves values until corrected', async ({ page }) => {
+  test('reveals invalid archive volume in advanced settings and preserves the cross-tab draft until corrected', async ({ page }, info) => {
     await open(page); await configure(page)
     await page.getByRole('tab', { name: '范围', exact: true }).click()
-    await page.locator('.ov-panel summary').filter({ hasText: '提取与召回参数' }).click()
-    await page.getByLabel('批次消息数', { exact: true }).fill('')
-    await page.getByLabel('提交时机', { exact: true }).selectOption('turn')
+    await expect(page.getByRole('heading', { name: '实时记录与历史分段', exact: true })).toBeVisible()
+    await expect(page.getByLabel('历史分段体积（MiB）', { exact: true })).toBeHidden()
+    await page.locator('.ov-panel summary').filter({ hasText: '高级处理设置' }).click()
+    await page.getByLabel('历史分段体积（MiB）', { exact: true }).fill('65')
+    await page.getByRole('tab', { name: '连接', exact: true }).click()
     await page.getByRole('button', { name: '保存配置', exact: true }).click()
     await expect(page.locator('.ov-validation')).toBeFocused()
     expect(fixture.writes).toHaveLength(1)
     await page.locator('.ov-validation').getByRole('button').first().click()
-    await expect(page.getByLabel('批次消息数', { exact: true })).toBeFocused()
-    await expect(page.getByLabel('批次消息数', { exact: true })).toHaveValue('')
-    await expect(page.getByLabel('提交时机', { exact: true })).toHaveValue('turn')
-    await page.getByLabel('批次消息数', { exact: true }).fill('9')
-    await page.getByRole('button', { name: '保存配置', exact: true }).click()
-    await expect(page.locator('.ov-save-state').getByText('配置已保存；未提取记忆。', { exact: true })).toBeVisible()
-    expect(fixture.writes.at(-1)!.settings).toMatchObject({ submissionMode: 'turn', batchMessages: 9 })
+    await expect(page.getByLabel('历史分段体积（MiB）', { exact: true })).toBeFocused()
+    await expect(page.getByLabel('历史分段体积（MiB）', { exact: true })).toHaveValue('65')
+    await page.setViewportSize({ width: 390, height: 844 }); await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' })
+    await page.locator('#display-language').selectOption('en-US')
+    const input = page.getByLabel('History segment size (MiB)', { exact: true })
+    await input.focus()
+    await expect.poll(async () => {
+      const field = await input.boundingBox(), rail = await page.locator('.ov-save-rail').boundingBox(), tabs = await page.locator('.ov-tabs').boundingBox()
+      return Boolean(field && rail && tabs && field.y >= tabs.y + tabs.height + 8 && field.y + field.height <= rail.y - 8)
+    }).toBe(true)
+    await page.screenshot({ path: info.outputPath('openviking-archive-volume-focus-390-dark-en.png'), fullPage: false, animations: 'disabled' })
+    await input.fill('9')
+    await page.getByRole('button', { name: 'Save configuration', exact: true }).click()
+    await expect(page.locator('.ov-save-state').getByText('Configuration saved. No memory was extracted.', { exact: true })).toBeVisible()
+    expect(fixture.writes.at(-1)!.settings).toMatchObject({ archiveMaxMiB: 9 })
+    expect(Object.keys(fixture.writes.at(-1)!.settings)).toEqual(Object.keys(DEFAULT_SETTINGS))
   })
 
   test('keeps clean Activity clear and preserves dirty cross-tab actions through locale changes', async ({ page }, info) => {
@@ -435,18 +461,82 @@ test.describe('OpenViking memory installed panel', () => {
     expect(await page.locator('#main-content').evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(0)
   })
 
+  test('retries only a failed extraction with the same job and refreshes processing through completion without an archive', async ({ page }, info) => {
+    const timestamp = '2026-11-02T05:32:00Z', jobId = 'failed-incremental-job'
+    fixture.snapshot.jobs = [{ id: jobId, peerId: 'self', sessionId: 'fixed-self-session', taskId: null, archiveUri: null,
+      status: 'failed', createdAt: timestamp, updatedAt: timestamp, messages: 2, changes: null, errorCode: 'MEMORY_NETWORK_ERROR' },
+    { id: 'unknown-incremental-job', peerId: 'qq-10001-private-20002', sessionId: 'fixed-private-session', taskId: null, archiveUri: null,
+      status: 'unknown', createdAt: timestamp, updatedAt: timestamp, messages: 2, changes: null, errorCode: 'MEMORY_SUBMISSION_UNKNOWN' }]
+    let releaseRetry: (() => void) | undefined
+    const heldRetry = new Promise<void>(resolve => { releaseRetry = resolve })
+    fixture.retryHandler = async (route, retriedJobId) => {
+      expect(retriedJobId).toBe(jobId)
+      await heldRetry
+      fixture.snapshot.jobs[0]!.status = 'processing'; fixture.snapshot.jobs[0]!.errorCode = null; fixture.snapshot.pending = 1
+      await route.fulfill({ json: { ok: true } })
+    }
+    await open(page); await configure(page, true)
+    await page.clock.install()
+    fixture.snapshot.ready = false
+    await activity(page)
+    const failed = page.locator('.ov-jobs > li').first(), unknown = page.locator('.ov-jobs > li').nth(1)
+    await expect(failed.getByRole('button', { name: '重试提取', exact: true })).toBeDisabled()
+    await expect(unknown.getByRole('button', { name: '重试提取', exact: true })).toHaveCount(0)
+    fixture.snapshot.ready = true
+    await page.getByRole('button', { name: '刷新活动', exact: true }).click()
+    await expect(failed.getByRole('button', { name: '重试提取', exact: true })).toBeEnabled()
+    const callsBeforeLocale = fixture.calls.length
+    await page.locator('#display-language').selectOption('en-US')
+    const retry = failed.getByRole('button', { name: 'Retry extraction', exact: true })
+    await expect(retry).toBeEnabled()
+    expect(fixture.calls).toHaveLength(callsBeforeLocale)
+    await page.setViewportSize({ width: 390, height: 844 }); await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' })
+    await retry.scrollIntoViewIfNeeded()
+    const target = await retry.boundingBox()
+    expect(target!.width).toBeGreaterThanOrEqual(44); expect(target!.height).toBeGreaterThanOrEqual(44)
+    await page.screenshot({ path: info.outputPath('openviking-retry-failed-390-dark-en.png'), fullPage: false, animations: 'disabled' })
+    const snapshotsBeforeRetry = fixture.calls.filter(call => call.operation === 'snapshot').length
+    await retry.click()
+    await expect.poll(() => fixture.calls.filter(call => call.operation === 'retry').length).toBe(1)
+    await expect(retry).toBeDisabled()
+    await expect(page.getByRole('button', { name: 'Submit buffered content', exact: true })).toBeDisabled()
+    releaseRetry!()
+    await expect(failed).toContainText('Extracting')
+    await expect(failed.getByRole('button', { name: 'Retry extraction', exact: true })).toHaveCount(0)
+    expect(fixture.calls.filter(call => call.operation === 'retry')).toEqual([{ operation: 'retry', input: { jobId } }])
+    expect(fixture.calls.filter(call => call.operation === 'snapshot').length).toBeGreaterThan(snapshotsBeforeRetry)
+    expect(fixture.snapshot.jobs[0]).toMatchObject({ id: jobId, sessionId: 'fixed-self-session', messages: 2, archiveUri: null })
+    fixture.snapshot.jobs[0]!.status = 'completed'; fixture.snapshot.jobs[0]!.changes = { added: 0, updated: 0, deleted: 0 }; fixture.snapshot.pending = 0
+    await page.clock.fastForward(5000)
+    await expect(failed).toContainText('Completed')
+    await expect(failed).toContainText('This incremental extraction created no history segment.')
+    await failed.locator('summary').click()
+    await expect(failed.getByText('fixed-self-session', { exact: true })).toBeVisible()
+    await expect(failed.getByText('History segment URI', { exact: true })).toHaveCount(0)
+    await expect(page.locator('.ov-jobs').getByRole('button', { name: 'Retry extraction', exact: true })).toHaveCount(0)
+    expect(fixture.calls.filter(call => call.operation === 'retry')).toHaveLength(1)
+    await failed.scrollIntoViewIfNeeded()
+    await page.screenshot({ path: info.outputPath('openviking-retry-completed-no-archive-390-dark-en.png'), fullPage: false, animations: 'disabled' })
+  })
+
   test('renders runtime metadata without a daily limit and explicitly submits a selected peer', async ({ page }, info) => {
     const peerId = 'qq-10001-group-20002', timestamp = '2026-11-01T15:00:00Z'
     fixture.snapshot = { ready: false, lastErrorCode: null, lastRecallAt: timestamp, lastCaptureAt: timestamp, todayExtractions: 3, pending: 1,
       scopes: [{ peerId, label: 'Friends group', scope: { platform: 'qq', accountId: '10001', kind: 'group', targetId: '20002', owner: false }, capture: true, recall: true, bufferedMessages: 8, lastSeenAt: timestamp }],
-      jobs: [{ id: 'fixture-job-1', peerId, sessionId: 'fixture-session-1', taskId: 'server-task-1', archiveUri: 'viking://user/owner/sessions/fixture-session-1/history/archive_001', status: 'completed', createdAt: timestamp, updatedAt: timestamp, messages: 8, changes: { added: 2, updated: 1, deleted: 0 }, errorCode: null },
-        { id: 'fixture-job-2', peerId, sessionId: 'fixture-session-2', taskId: null, archiveUri: null, status: 'unknown', createdAt: timestamp, updatedAt: timestamp, messages: 4, changes: null, errorCode: 'MEMORY_SUBMISSION_UNKNOWN' }] }
+      jobs: [{ id: 'fixture-job-1', peerId, sessionId: 'fixture-session-1', taskId: 'server-task-1', archiveUri: null, status: 'completed', createdAt: timestamp, updatedAt: timestamp, messages: 8, changes: { added: 2, updated: 1, deleted: 0 }, errorCode: null },
+        { id: 'fixture-job-2', peerId, sessionId: 'fixture-session-1', taskId: null, archiveUri: null, status: 'unknown', createdAt: timestamp, updatedAt: timestamp, messages: 4, changes: null, errorCode: 'MEMORY_SUBMISSION_UNKNOWN' }] }
     await open(page); await configure(page, true); await activity(page)
     await expect(page.locator('.ov-runtime')).toContainText('今日提取次数')
     await expect(page.locator('.ov-runtime')).toContainText('最近采集')
     await expect(page.locator('.ov-jobs')).toContainText('已完成')
     await expect(page.locator('.ov-jobs')).toContainText('结果未知')
-    expect(await page.locator('.ov-panel').innerText()).not.toMatch(/每日上限|daily limit/i)
+    const completed = page.locator('.ov-jobs > li').first()
+    await expect(completed).toContainText('本次增量提取未生成历史分段。')
+    await completed.locator('summary').click()
+    await expect(completed.getByText('fixture-session-1', { exact: true })).toBeVisible()
+    await expect(completed.getByText('历史分段 URI', { exact: true })).toHaveCount(0)
+    await expect(completed).not.toContainText('archive_')
+    expect(await page.locator('.ov-panel').innerText()).not.toMatch(/每日上限|daily limit|已提交的会话和归档保留|Submitted sessions and archives are retained/i)
     await page.locator('#main-content').evaluate(element => element.scrollTo(0, 0))
     await page.screenshot({ path: info.outputPath('openviking-activity-desktop.png'), fullPage: false, animations: 'disabled' })
     await page.emulateMedia({ colorScheme: 'dark' })

@@ -5,6 +5,8 @@ import type { MemoryHit, MemoryScope } from '@eating/plugin-sdk'
 import type { PrivateConfiguration } from './config'
 import { allowedLocation, globalRoot, memoryLocation, peerId, peerRoot } from './scopes'
 import { checkSignal, error, LIMITS, schema } from './validation'
+import { incrementalReceipt, incrementalState } from './incremental'
+import type { IncrementalReceipt, IncrementalState } from './incremental'
 
 function httpError(status: number): PlatformError {
   return error(status === 401 ? 'MEMORY_AUTH_FAILED' : status === 403 ? 'MEMORY_ACCESS_DENIED' : status === 404 ? 'MEMORY_NOT_FOUND' : status === 429 ? 'MEMORY_RATE_LIMITED' : status >= 500 ? 'MEMORY_SERVER_ERROR' : 'MEMORY_REQUEST_FAILED', status >= 400 && status < 600 ? status : 502, 'failed')
@@ -86,6 +88,7 @@ export class MemoryClient {
     schema(isJsonObject(envelope) && isJsonObject(envelope.result) && typeof envelope.result.initialized === 'boolean' && typeof envelope.result.user === 'string')
     if (envelope.result.user !== this.configuration.user) throw error('MEMORY_IDENTITY_MISMATCH', 403)
     if (!envelope.result.initialized) throw error('MEMORY_SERVER_NOT_READY', 503)
+    await this.incrementalCapabilities()
   }
   async find(query: string, settings: import('../types').MemorySettings, current: MemoryScope, all: boolean): Promise<MemoryHit[]> {
     const targets = [peerRoot(this.configuration.user, peerId(current))]
@@ -122,7 +125,6 @@ export class MemoryClient {
       const policy = existing.memory_policy
       schema(isJsonObject(policy.peer) && policy.peer.enabled === true && isJsonObject(policy.self) && policy.self.enabled === global)
       schema(typeof existing.message_count === 'number' && Number.isSafeInteger(existing.message_count) && existing.message_count >= 0)
-      if (existing.message_count !== 0) throw error('MEMORY_SUBMISSION_UNKNOWN', 409, 'unknown')
       return
     } catch (cause) { if (!(cause instanceof PlatformError) || cause.code !== 'MEMORY_NOT_FOUND') throw cause }
     // SDK 0.1.0 createSession cannot disable inherited server auto-commit.
@@ -131,15 +133,39 @@ export class MemoryClient {
     const envelope: unknown = await response.json()
     schema(isJsonObject(envelope) && isJsonObject(envelope.result) && envelope.result.session_id === sessionId && envelope.result.auto_commit_policy === null)
   }
-  async task(taskId: string): Promise<Record<string, unknown> | null> {
-    try { return await this.run(() => this.sdk.getTask(taskId)) }
-    catch (cause) { if (cause instanceof PlatformError && cause.code === 'MEMORY_NOT_FOUND') return null; throw cause }
+  private async json(path: string, method = 'GET', body?: unknown): Promise<unknown> {
+    const headers = new Headers(this.headers)
+    if (body !== undefined) headers.set('content-type', 'application/json')
+    const response = await this.fetch(this.configuration.endpoint + path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+    const envelope: unknown = await response.json()
+    schema(isJsonObject(envelope) && Object.hasOwn(envelope, 'result'))
+    return envelope.result
   }
-  async add(sessionId: string, messages: Message[]): Promise<void> {
-    for (let offset = 0; offset < messages.length; offset += 100) {
-      const batch = messages.slice(offset, offset + 100)
-      const result = await this.run(() => batch.length === 1 ? this.sdk.addMessage(sessionId, batch[0]!) : this.sdk.batchAddMessages(sessionId, batch))
-      schema(isJsonObject(result) && result.session_id === sessionId)
-    }
+  async incrementalCapabilities(): Promise<void> {
+    let result: unknown
+    try { result = await this.json('/api/v1/eating-memory/capabilities') }
+    catch (cause) { if (cause instanceof PlatformError && cause.code === 'MEMORY_NOT_FOUND') throw error('MEMORY_INCREMENTAL_UNSUPPORTED', 409); throw cause }
+    if (!isJsonObject(result) || result.protocol_version !== 1 || typeof result.server_version !== 'string' || result.incremental_extraction !== true || result.history_segmentation !== true) throw error('MEMORY_INCREMENTAL_UNSUPPORTED', 409)
+  }
+  async incrementalState(sessionId: string): Promise<IncrementalState> {
+    const result = await this.json('/api/v1/sessions/' + encodeURIComponent(sessionId) + '/incremental-memory')
+    return incrementalState(result, sessionId)
+  }
+  async submitIncremental(sessionId: string, requestId: string, expectedSequence: number, messages: Message[]): Promise<IncrementalReceipt> {
+    const payload = { request_id: requestId, expected_sequence: expectedSequence,
+      archive_max_bytes: this.configuration.settings.archiveMaxMiB * 1024 * 1024,
+      messages: messages.map(message => ({ role: message.role, content: message.content ?? '', peer_id: message.peerId ?? this.peer, created_at: message.createdAt })) }
+    const result = await this.json('/api/v1/sessions/' + encodeURIComponent(sessionId) + '/incremental-memory', 'POST', payload)
+    return incrementalReceipt(result, sessionId, requestId, this.configuration.user)
+  }
+  async retryIncremental(sessionId: string, requestId: string): Promise<IncrementalReceipt> {
+    const result = await this.json('/api/v1/sessions/' + encodeURIComponent(sessionId) + '/incremental-memory/requests/' + encodeURIComponent(requestId) + '/retry', 'POST', {})
+    return incrementalReceipt(result, sessionId, requestId, this.configuration.user)
+  }
+  async incrementalReceipt(sessionId: string, requestId: string): Promise<IncrementalReceipt | null> {
+    try {
+      const result = await this.json('/api/v1/sessions/' + encodeURIComponent(sessionId) + '/incremental-memory/requests/' + encodeURIComponent(requestId))
+      return incrementalReceipt(result, sessionId, requestId, this.configuration.user)
+    } catch (cause) { if (cause instanceof PlatformError && cause.code === 'MEMORY_NOT_FOUND') return null; throw cause }
   }
 }

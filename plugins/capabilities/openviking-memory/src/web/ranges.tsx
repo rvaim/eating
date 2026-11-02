@@ -2,8 +2,9 @@ import { useRef, useState } from 'react'
 import { ChevronDown, ChevronUp, Plus, Trash2, Undo2 } from 'lucide-react'
 import { ActionButton, useI18n } from '@eating/ui-sdk'
 import type { MemorySettings, ScopeRule } from '../types'
-import type { ConfigurationDraft, FieldIssues, NumericSetting, RuleDraft, SettingsDraft } from './draft'
-import { numericSettings, rulePath, selfPath } from './draft'
+import { DEFAULT_SETTINGS } from '../types'
+import type { ConfigurationDraft, FieldIssues, RuleDraft, SettingsDraft } from './draft'
+import { numericSettings, rulePath, selfPath, settingBounds } from './draft'
 import { CheckField, Field, fieldId, focusAndReveal, TextField } from './fields'
 
 type BooleanSetting = { [K in keyof MemorySettings]: MemorySettings[K] extends boolean ? K : never }[keyof MemorySettings]
@@ -43,12 +44,8 @@ export function Ranges({ prefix, draft, errors, locked, expanded, setExpanded, q
     update('rules', next); setRemoved(current => current.slice(0, -1)); setQuery(''); setExpanded(entry.rule.id); focus(`rule-${entry.rule.id}-label`)
   }
   const filtered = settings.rules.filter(rule => `${rule.label} ${rule.platform} ${rule.accountId} ${rule.targetId} ${rule.kind}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
-  const numbers: readonly NumericSetting[] = settings.submissionMode === 'batch' ? ['batchMessages', 'batchChars', 'idleSeconds', 'recallLimit', 'recallMaxChars', 'scoreThreshold']
-    : settings.submissionMode === 'tokens' ? ['tokenThreshold', 'idleSeconds', 'recallLimit', 'recallMaxChars', 'scoreThreshold']
-    : ['recallLimit', 'recallMaxChars', 'scoreThreshold']
-  // All numeric settings must remain valid for the saved contract. Reveal inactive errors so they can be corrected.
-  const visibleNumbers = [...numbers, ...numericSettings.filter(name => errors[name] && !numbers.includes(name))]
   const hasProcessingError = numericSettings.some(key => Boolean(errors[key]))
+  const archiveHint = t('ranges.archiveHint', { min: formatNumber(settingBounds.archiveMaxMiB[0]), max: formatNumber(settingBounds.archiveMaxMiB[1]), default: formatNumber(DEFAULT_SETTINGS.archiveMaxMiB) })
   return <>
     <div className="ov-section-heading"><h3>{t('ranges.title')}</h3><p>{t('ranges.description')}</p></div>
     <div className="ov-permission-list">{check('enabled')}{check('autoCapture')}{check('autoRecall')}{check('globalMemory')}{check('ownerCrossSession')}</div>
@@ -92,12 +89,14 @@ export function Ranges({ prefix, draft, errors, locked, expanded, setExpanded, q
         </li>
       })}</ul>
     </section>
-    <details className="ov-disclosure ov-section" open={processingOpen || hasProcessingError} onToggle={event => setProcessingOpen(event.currentTarget.open)}>
-      <summary>{t('ranges.processing')}</summary><div className="ov-disclosure-body"><Field prefix={prefix} name="submissionMode" label={t('ranges.submissionMode')}><select id={fieldId(prefix, 'submissionMode')} value={settings.submissionMode} disabled={locked} onChange={event => update('submissionMode', event.target.value as MemorySettings['submissionMode'])}>
-        {(['batch', 'turn', 'tokens'] as const).map(mode => <option key={mode} value={mode}>{t(`ranges.mode.${mode}`)}</option>)}</select></Field>
-        {visibleNumbers.map(name => <TextField key={name} prefix={prefix} name={name} label={t(`ranges.${name}`)} hint={name === 'idleSeconds' ? t('ranges.idleHint') : undefined} issue={errors[name]} value={settings[name]}
-          inputMode={name === 'scoreThreshold' ? 'decimal' : 'numeric'} disabled={locked} onChange={value => update(name, value)} onBlur={() => onBlur(name)} />)}
-      </div>
-    </details>
+    <section className="ov-section" aria-labelledby={`${prefix}-processing`}>
+      <div className="ov-section-heading"><h3 id={`${prefix}-processing`}>{t('ranges.processing')}</h3><p>{t('ranges.processingHint')}</p></div>
+      <details className="ov-disclosure" open={processingOpen || hasProcessingError} onToggle={event => setProcessingOpen(event.currentTarget.open)}>
+        <summary>{t('ranges.processingAdvanced')}</summary><div className="ov-disclosure-body">
+          {numericSettings.map(name => <TextField key={name} prefix={prefix} name={name} label={t(`ranges.${name}`)} hint={name === 'archiveMaxMiB' ? archiveHint : undefined} issue={errors[name]} value={settings[name]}
+            inputMode={name === 'scoreThreshold' ? 'decimal' : 'numeric'} disabled={locked} onChange={value => update(name, value)} onBlur={() => onBlur(name)} />)}
+        </div>
+      </details>
+    </section>
   </>
 }

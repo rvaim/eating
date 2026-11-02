@@ -68,7 +68,7 @@ describe('AuthoringService defaults and document persistence', () => {
     const mainRole = snapshot.prompts.find(prompt => prompt.id === 'main')!
     expect(mainRole.body).toContain('eating_list_agent_types')
     expect(mainRole.body).toContain('eating_delegate_task')
-    expect(mainRole.body).toContain('对应子代理')
+    expect(mainRole.body).toContain('对应的子 Agent')
     expect(snapshot).not.toHaveProperty('legacyPrompts')
     for (const prompt of snapshot.prompts) {
       expect(prompt).toMatchObject({ revision: 0, updatedAt: null })
@@ -76,14 +76,13 @@ describe('AuthoringService defaults and document persistence', () => {
       expect(analyzeTemplate(prompt.body, getPromptTemplateScope(prompt.id)!).valid).toBe(true)
     }
     const main = snapshot.prompts.find(prompt => prompt.id === 'common')!
-    expect(main.body).toContain('唯一自主 AI 身份')
-    expect(main.body).toContain('保持沉默')
-    expect(main.body).toContain('主动调用')
-    expect(main.body).toContain('外部')
-    expect(main.body).toContain('主人独立配置')
+    expect(main.body).toContain('同一个我')
+    expect(main.body).toContain('也可以安静')
+    expect(main.body).toContain('不是命令')
+    expect(main.body).toContain('主人给我什么样的人格')
     expect(analyzeTemplate(main.body, 'common').tokens).toEqual([])
-    expect(main.body).toContain('运行时上下文')
-    expect(main.body).toContain('可用记忆')
+    expect(main.body).toContain('运行时实际给我的')
+    expect(main.body).toContain('记得的事')
     expect(service.getSnapshot()).toEqual(snapshot)
     failure(() => service.getPersona('missing'), 'PERSONA_NOT_FOUND', 404)
     expect(store.getSetting(AUTHORING_SETTING_KEY)).toBeNull()

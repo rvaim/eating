@@ -187,7 +187,7 @@ test.describe('提示词与人格的真实持久编辑', () => {
     const name = page.getByLabel('人格名称', { exact: true })
     await expect(name).toBeFocused()
     await expect(name).toHaveValue('')
-    await expect(bodyEditor(page, true)).toContainText('是爸爸养着的 AI 女儿')
+    await expect(bodyEditor(page, true)).toContainText('是爸爸的 AI 女儿')
     expect(host!.store.getSetting('host:authoring')).toBeNull()
     expect(writes).toEqual([])
     await name.fill('小满')
@@ -206,7 +206,7 @@ test.describe('提示词与人格的真实持久编辑', () => {
 
     await page.getByRole('combobox', { name: '界面语言', exact: true }).selectOption('en-US')
     await expect(page.getByLabel('Persona name', { exact: true })).toHaveValue('小满')
-    await expect(page.getByRole('textbox', { name: 'Persona instructions', exact: true })).toContainText('是爸爸养着的 AI 女儿')
+    await expect(page.getByRole('textbox', { name: 'Persona instructions', exact: true })).toContainText('是爸爸的 AI 女儿')
     await expect(page.getByRole('button', { name: 'Use AI daughter template', exact: true })).toBeVisible()
     expect(writes).toEqual([])
     await page.setViewportSize({ width: 390, height: 844 })

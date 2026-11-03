@@ -38,9 +38,12 @@ try {
   assert(success.calls.filter(call => call.command === 'systemctl').every(call => call.args[0] === '--user' && (call.args.includes('daemon-reload') || call.args.includes('eating-managed.service'))))
   const unit = join(success.home, '.config/systemd/user/eating-managed.service')
   assert.equal(fs.statSync(unit).mode & 0o777, 0o600)
+  const unitText = fs.readFileSync(unit, 'utf8')
+  assert(unitText.split('\n').includes('WorkingDirectory=' + success.repository))
+  assert(!unitText.includes('WorkingDirectory="'))
   assert(!success.output.join('\n').includes(success.config.ownerToken))
   assert.equal(fs.readdirSync(success.repository).length, 0)
-  checks += 6
+  checks += 8
   for (const [rootUser, inside, symlinkState] of [[true, false, false], [false, true, false], [false, false, true]]) {
     const result = fixture(rootUser, inside, symlinkState)
     assert.equal(result.code, 1)

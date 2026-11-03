@@ -20,7 +20,9 @@
 
 负责人于2026-11-04明确授权本轮修复及云端Eating更新：按[ADR-0045](docs/decisions/ADR-0045-官方记忆接口与插件部署提示.md)重做官方OpenViking connector，逐轮标准messages/batch同步、commit归档提取、Task API查询，不强制server extension、不只删guard、不保双协议fallback。config／state严格schema3，移除archiveMaxMiB，autoCommit默认true／commitTokenThreshold默认20000（1～1000000），阈值／压缩／正常结束尊重开关，manual可强制；固定eating-standard-<peer>[-local]，不接管旧eating-live，unknown不重发，已知task只GET恢复。按[ADR-0046](docs/decisions/ADR-0046-可信图片传输与生图尺寸.md)增加可信图片asset／lease及主人确认共享目录，发送前逐图校验，否则选Base64，不宣称已自动实测OneBot远端file；AI只见opaque refs。生图单次size优先默认、空串省略用服务默认，provider决定支持，不换尺寸付费重试；Key可选，DSH提示以服务器检测为准，QQ须OneBot先登录。
 
-当前源码已实现，整体验证进行中、服务器尚未更新；不预填测试数字或完成结论，由父代理创建的[本轮报告](docs/reports/2026-11-04-官方记忆与插件能力更新验证报告.md)收口。云端旧记忆state预检schema2且jobs0／scopes0，已授权停Eating、核原SHA、备份后使用独立一次性工具显式转换：config schema3／revision+1、settings只移除archive加当前默认、Key／identity／rules保持，空state仅schema2→3保metadata；存在旧任务／scope、Host锁或hash不符停止核对，生产无自动迁移。仍先本地验证commit／push再云端GitHub拉取；本机真实记忆0.1.1不动、不配置或重启真实OV、不装extra依赖、不加TLS／网关／防火墙，真实服务器值留项目外。下方历史清理与“不操作云端”不撤回本次明确授权。
+本轮已实现并完成本地及云端验证与部署。源码 `91b18c3` 先本地commit／push；首候选云端构建exposed Linux Buffer深比较5s超时，等价native `Buffer.equals`＋长度断言修复为 `72fecad`；云端GitHub拉取该提交完整build及扩展Linux回归通过后，只停Eating、私有全数据备份、确认旧记忆state schema2且jobs0／scopes0，再由GitHub独立transition工具显式转schema3：config revision+1、archiveMaxMiB→autoCommittrue／commitTokenThreshold20000，保Key／endpoint／user／rules，空state仅schema2→3保其余metadata。正式五插件同data目录安装运行，全部connected、DSH ready、nativeWeb ready、gateway idle／queue0、service active／enabled、异常restart0、tracked tree clean；生产无自动迁移。
+
+本地完整1824项通过／8跳过（122.16s）、build／type通过、24项相关浏览器通过，官方stock3项实跑、未加载扩展。首raw hash比较有11个DSH正常派生／运行文件变化（nonce／outcome／bridge source／systemprompt／url／index record rows／日志追加），无缺失；不写全文件逐字节不变，按语义保留＋私人备份报告，不将strict false当数据丢失或回滚。Host settings／各表行数／schema、除明确memory转换外的保存配置与Token、原native UUID、2份原生日志prefix均保持。媒体默认auto且无confirmed mapping，继续Base64；用户以后一次配置三目录并确认才尝试file，机器人可读未真人probe。本机真实记忆0.1.1不动、不配置或重启真实OV、不装extra依赖、不加TLS／网关／防火墙，真实服务器值留项目外。详细证据见[本轮报告](docs/reports/2026-11-04-官方记忆与插件能力更新验证报告.md)；下方历史清理与“不操作云端”不撤回本次明确授权。
 
 ## 项目不变量
 

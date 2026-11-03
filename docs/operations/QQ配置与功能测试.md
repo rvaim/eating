@@ -1,6 +1,6 @@
 # Eating QQ 配置与功能测试
 
-Eating 使用 QQ OneBot v11 插件，需要先在协议端登录真实QQ并启用OneBot，Eating不实现QQ登录或自动安装协议端；连接页顶部明确提示这一前提。当前应用／Host／Web0.18.0、SDK4.8.0、UI4.2.1、core4.0.0、QQ0.14.0、DSH0.16.0，仅API4。部署提示与可信图片发送按[ADR-0045](../decisions/ADR-0045-官方记忆接口与插件部署提示.md)及[ADR-0046](../decisions/ADR-0046-可信图片传输与生图尺寸.md)实现，整体验证进行中、服务器尚未更新，最终证据见父代理创建的[本轮报告](../reports/2026-11-04-官方记忆与插件能力更新验证报告.md)。保留38公开API＋1框架quick共39项标准工具，另有qq_view_received_image受控扩展，共40项；子通讯只用当前类型可范围化已选集合。普通会话自主处理和功能默认开放可配置见[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)，标准目录见[OneBot覆盖清单](../technical/OneBot标准功能覆盖.md)，官方Web与图片操作遵循当前架构。
+Eating 使用 QQ OneBot v11 插件，需要先在协议端登录真实QQ并启用OneBot，Eating不实现QQ登录或自动安装协议端；连接页顶部明确提示这一前提。当前应用／Host／Web0.18.0、SDK4.8.0、UI4.2.1、core4.0.0、QQ0.14.0、DSH0.16.0，仅API4。部署提示与可信图片发送按[ADR-0045](../decisions/ADR-0045-官方记忆接口与插件部署提示.md)及[ADR-0046](../decisions/ADR-0046-可信图片传输与生图尺寸.md)实现，已完成本地和云端验证并部署更新（QQ0.14.0 connected），完整证据见[本轮报告](../reports/2026-11-04-官方记忆与插件能力更新验证报告.md)。保留38公开API＋1框架quick共39项标准工具，另有qq_view_received_image受控扩展，共40项；子通讯只用当前类型可范围化已选集合。普通会话自主处理和功能默认开放可配置见[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)，标准目录见[OneBot覆盖清单](../technical/OneBot标准功能覆盖.md)，官方Web与图片操作遵循当前架构。
 
 ## 构建、安装与启动
 
@@ -144,7 +144,7 @@ Cookies、CSRF Token和QQ接口凭据只在主动查询后显示，不加入普�
 
 ## 插件图片传输设置
 
-QQ面板独立提供图片传输设置，仅主人可读取／保存，使用revision／CAS；配置存本账号数据目录的 `media-transport.json`，严格schema1，与代码包和原连接配置分开。默认auto，无可信映射时发送前选Base64。共享目录模式需要sourceRoot、hostMappingRoot、onebotRoot及ownerConfirmed；先连接真实OneBot账号，主人确认映射关系后保存，绑定当前endpoint／账号。切换真实连接后须重新核对。
+QQ面板独立提供图片传输设置，仅主人可读取／保存，使用revision／CAS；配置存本账号数据目录的 `media-transport.json`，严格schema1，与代码包和原连接配置分开。默认auto，无可信映射时发送前选Base64。当前云端部署保持默认auto且没有主人confirmed mapping，因此实际仍走Base64；以后由主人按服务器实际挂载配置sourceRoot、hostMappingRoot、onebotRoot并确认一次，才尝试标准file，绑定当时真实endpoint／账号，切换连接后须重新核对。共享目录模式需要sourceRoot、hostMappingRoot、onebotRoot及ownerConfirmed。
 
 来源插件只从自己固定blobs返回本机文件能力。Host可见的源根／映射根和逐图目标须可验证、无越界或符号链接，字节数、MIME和SHA-256与原资源相同，才构造OneBot标准file://；条件不满足时在真正发送前选择Base64。主人需自行保证OneBot挂载和路径可读，本地校验不代表OneBot已自动远端实测；标准get_image不能探测任意localfile，Eating不虚构探测成功。
 

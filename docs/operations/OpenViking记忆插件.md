@@ -1,6 +1,6 @@
 # OpenViking 记忆插件
 
-适用：openviking-memory0.3.0、Eating／Host／Web0.18.0、plugin-sdk4.8.0、DSH0.16.0、API4。当前使用官方 OpenViking Session／Task API，无需安装 Eating 服务端扩展。源码已实现，整体验证进行中，服务器尚未更新；本轮修复及云端 Eating 更新已获批准，实际结果由父代理创建的[本轮报告](../reports/2026-11-04-官方记忆与插件能力更新验证报告.md)收口。本机已安装记忆0.1.1保持，不配置或重启真实OpenViking服务端。
+适用：openviking-memory0.3.0、Eating／Host／Web0.18.0、plugin-sdk4.8.0、DSH0.16.0、API4。当前使用官方 OpenViking Session／Task API，无需安装 Eating 服务端扩展。已实现、完成本地及云端验证并部署更新；完整证据见[本轮报告](../reports/2026-11-04-官方记忆与插件能力更新验证报告.md)。本机已安装记忆0.1.1保持，不配置或重启真实OpenViking服务端。
 
 ## 连接和当前格式
 
@@ -15,9 +15,9 @@
 | archiveMaxMiB | 当前格式已移除；归档随官方commit执行，不再由客户端体积分段 |
 | 手动提交 | 主人显式提交待处理记录，可在autoCommit关闭时执行 |
 
-本轮云端旧state的只读预检为schema2、jobs0／scopes0。实际更新由部署负责人先停止Eating、复核原文件SHA并备份，再使用独立[一次性转换工具](../../scripts/server-memory-transition.mjs)执行本轮已授权的精确变更。`EATING_MEMORY_TRANSITION_CONFIG` 指向项目外私有配置，含数据／备份目录、两份旧文件SHA及明确确认值；存在Host锁、哈希不符或jobs／scopes非空就停止核对，不能丢弃旧任务。
+本轮云端旧state已确认schema2、jobs0／scopes0。更新时先停止Eating并做私人全data备份，再复核原文件SHA，由项目外`EATING_MEMORY_TRANSITION_CONFIG`指定的独立[一次性工具](../../scripts/server-memory-transition.mjs)执行精确变更；存在Host锁、哈希不符或jobs／scopes非空即停止，不丢旧任务。该工具不进入应用正常读取路径，生产无自动迁移。
 
-转换保留已保存的Key、endpoint、Account、用户、范围规则及其他设置；配置只改schema3／revision+1，settings只移除archive字段并加入两个提交默认值。空state只把schema2改为3，其他metadata保留。该工具不进入应用正常读取路径；用户无需为本次保留配置更新重新填写密钥。预检不等于转换或部署已完成，最终记录见本轮报告。
+转换保留已保存的Key、endpoint、Account、用户、范围规则及其他设置；配置只改schema3／revision+1，settings只移除archive字段并加入autoCommittrue／commitTokenThreshold20000。空state只把schema2改为3，其他metadata保留。用户无需重新填写密钥。转换后正式同data安装五插件，记忆真实公网HTTP `isSecureContext=false`、插件ready／schema3 connected／无错误，扩展错误消失，autoCommit=true／阈值20000。Host settings／各表行数与schema、除本次明确转换外的保存配置与Token保持。
 
 ## 同步、提交和提取
 
@@ -64,8 +64,8 @@ viking://user/<user>/peers/self/memories/
 
 保留 `memory_search / memory_read / memory_save / memory_scopes`。启用且connected的新功能来源默认all，当前／未来工具和类型自动可用；主人可保存custom精确例外并恢复all，见[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)。真实Peer、群成员过滤、主人显式跨会话与自动采集开关独立生效。模型无删除工具；主人管理页只能明确确认删除精确记忆文件URI。
 
-Eating只保存有界任务、幂等与范围元数据，未同步正文只在RAM，崩溃可能丢失并明确报告；没有每日／每小时提取额度，缓冲／单批／并发限制只保护机械容量。Host正常启动按保存的autoConnect工作，`EATING_AUTO_CONNECT=false`只压制该次启动，不改变已保存偏好。
+Eating只保存有界任务、幂等与范围元数据，未同步正文只在RAM，崩溃可能丢失并明确报告；没有每日／每小时提取额度，缓冲／单批／并发限制只保护机械容量。有界append／commit任务队列按当前实现淘汰与阻塞；提交元数据独立预留，不能因待提取记录占满而无法commit。Host正常启动按保存的autoConnect工作，`EATING_AUTO_CONNECT=false`只压制该次启动，不改变已保存偏好。
 
-本轮只更新Eating，代码仍先本地验证commit／push，再由云端GitHub拉取确认提交构建。真实连接值、Key、部署目录与别名只存项目外；不安装额外依赖、不配置或重启真实OpenViking服务，不增加TLS、网关或防火墙。配置草稿／CAS、隐藏清Key与正文、双语／暗色／窄屏焦点保持。
+本轮已更新云端Eating：源码`91b18c3`→测试等价修复`72fecad`，云端GitHub拉取后完整build／Linux回归通过，停Eating、私人全data备份并执行上述转换，再同data安装五插件。最终五插件全connected、DSH ready、nativeWeb ready、gateway idle／queue0、service active／enabled、异常restart0；本地完整1824项通过／8跳过、24项浏览器及官方stock3项实跑。真实连接值、Key、部署目录与别名只存项目外；未安装额外依赖、未配置或重启真实OpenViking服务，未增加TLS、网关或防火墙。配置草稿／CAS、隐藏清Key与正文、双语／暗色／窄屏焦点保持。
 
-当前决策见[ADR-0045](../decisions/ADR-0045-官方记忆接口与插件部署提示.md)。[ADR-0030](../decisions/ADR-0030-增量记忆提取与历史分段解耦.md)、[增量扩展目录](../../integrations/openviking-incremental/README.md)与[旧报告](../reports/2026-11-02-增量记忆与历史分段验证.md)仅保留历史方案和数字，当前安装不以其为前提。真实OpenViking提取质量与付费模型尚须独立证据，隔离协议验证不能代替。
+当前决策见[ADR-0045](../decisions/ADR-0045-官方记忆接口与插件部署提示.md)。[ADR-0030](../decisions/ADR-0030-增量记忆提取与历史分段解耦.md)、[增量扩展目录](../../integrations/openviking-incremental/README.md)与[旧报告](../reports/2026-11-02-增量记忆与历史分段验证.md)仅保留历史方案和数字，当前安装不以其为前提。真实OpenViking语义提取质量与付费模型尚须独立证据，隔离协议验证不能代替；完整部署与保留数据证据见[本轮报告](../reports/2026-11-04-官方记忆与插件能力更新验证报告.md)。

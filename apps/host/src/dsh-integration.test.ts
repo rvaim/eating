@@ -67,10 +67,11 @@ function assertDelegation(requests: readonly ModelFixtureRequest[], id: string, 
     expect(batch(request).contextRef).toBe(contextRef)
     expect(batch(request).agentTypeId).toBe(`qq.${kind}`)
     expect(messageId(request)).toBe(id)
-    expect(Object.keys(batch(request).payload).sort()).toEqual(batch(request).kind === 'root' ? ['context', 'eating', 'events'] : ['context', 'eating', 'events', 'task'])
+    expect(Object.keys(batch(request).payload).sort()).toEqual(batch(request).kind === 'root' ? ['context', 'eating', 'events'] : ['context', 'coordination', 'eating', 'events', 'task'])
   }
   expect(batch(requests[0]!).payload.eating).toMatchObject({ magic: 'eating-harness-delivery', sessionId: rootId, batchId: contextRef })
   expect(batch(requests[1]!).payload.eating).toEqual({ protocolVersion: 1, contextRef, agentTypeId: `qq.${kind}` })
+  for (const request of [requests[1]!, requests[2]!]) expect(batch(request).payload.coordination).toEqual({ mode: 'reply', context_notes: '' })
   for (const request of [requests[0]!, requests[3]!]) assertRootTools(request)
   for (const request of [requests[1]!, requests[2]!]) assertChildTools(request, kind, approved)
   const childResult = requests[2]!.messages?.slice(batch(requests[2]!).messageIndex + 1).find(message => message.role === 'tool')
@@ -334,7 +335,9 @@ describe.runIf(Boolean(systemDshBin))('真实DSH SDK → 原生主子会话 → 
       expect(message.role).toBe('user')
       const envelope = object(JSON.parse((message.content as JsonObject[]).map(block => block.text).join('')))
       expect(message.source).toEqual({ kind: 'eating-external', batchId: object(envelope.eating).batchId })
-      return object(envelope.context).kind
+      const conversations = object(envelope.context).conversations
+      expect(conversations).toHaveLength(1)
+      return object((conversations as JsonObject[])[0]).kind
     })
     expect(externalKinds).toEqual(['private', 'private', 'group'])
     expect((await reopenedWeb.listSessions()).map(row => row.sessionId).sort()).toEqual(allSessions.map(row => row.sessionId).sort())

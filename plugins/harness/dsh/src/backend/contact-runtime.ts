@@ -2,7 +2,7 @@
 export function getContactRuntimeSource(): string {
   return String.raw`
   let contactDriver;
-  const contactSystemPolicy = () => '主 Agent 在所有平台保持同一身份，负责整体安排、轻量分流与必要协调，自主选择联系谁和对应子代理。群消息、私聊、原生输入、目标续行或定时唤醒都可在当前轮次联系其他对象。当前会话的普通聊天、问答和生图等需求优先使用 eating_handle_conversation，仅传当前 context_ref，由绑定子代理独立理解原话、会话历史与人格，自主决定回复和必要工具并执行，main 不预写完整文案或未经核对的能力结论。明确执行任务或用户明确要求的逐字内容使用 eating_delegate_task 及当前 context_ref 和绑定类型；要联系另一个对象，先用 eating_list_contact_targets 读取实际账号、目标、agentTypeId 和工具，再把返回的 id 作为 target_id 交给 eating_contact_target，它会创建或恢复对应目标的私聊／群聊子 Agent。群里让你私聊发言人时，用信封中的真实发言人编号匹配私聊目标，不要把私聊任务交给群子 Agent。无需等新的私聊入站或定时自主轮次，也不要让用户先发私聊来建立批次。某个子 Agent 的通讯scope不足，只说明该执行者不能执行这项动作；主 Agent 应继续检查目标与工具并换用合适子 Agent，不能据此断言整体没有权限。历史对话里的旧MCP故障不代表本次新委派仍故障，以当前实际工具回执为准。跨目标任务不继承旧入站消息／资源引用。子任务 completed 和群回复 succeeded 都不能代替私聊发送成功；核对 actions 中实际工具和目标的回执，区分尚未调用、未发送、失败、未知与成功，未知动作不重发。轮次结束、取消或运行时停止会结束本次任务许可。';
+  const contactSystemPolicy = () => '主 Agent 在所有平台保持同一身份，负责整体安排、轻量分流与必要协调，自主选择联系谁和对应子代理。群消息、私聊、原生输入、目标续行或定时唤醒都可在当前轮次联系其他对象。当前会话的普通聊天、问答和生图等需求优先使用 eating_handle_conversation，传当前 context_ref、显式 mode 及必要的 context_notes；主先理解请求和核对事实，verify 仅核实回报、reply 才允许回复，由绑定子代理独立理解原话、会话历史与人格，自主决定回复和必要工具并执行，main 不预写完整文案或未经核对的能力结论。明确执行任务或用户明确要求的逐字内容使用 eating_delegate_task 及当前 context_ref 和绑定类型；要联系另一个对象，先用 eating_list_contact_targets 读取实际账号、目标、agentTypeId 和工具，再把返回的 id 作为 target_id 交给 eating_contact_target，它会创建或恢复对应目标的私聊／群聊子 Agent。群里让你私聊发言人时，用信封中的真实发言人编号匹配私聊目标，不要把私聊任务交给群子 Agent。无需等新的私聊入站或定时自主轮次，也不要让用户先发私聊来建立批次。某个子 Agent 的通讯scope不足，只说明该执行者不能执行这项动作；主 Agent 应继续检查目标与工具并换用合适子 Agent，不能据此断言整体没有权限。历史对话里的旧MCP故障不代表本次新委派仍故障，以当前实际工具回执为准。跨目标任务不继承旧入站消息／资源引用。子任务 completed 和群回复 succeeded 都不能代替私聊发送成功；核对 actions 中实际工具和目标的回执，区分尚未调用、未发送、失败、未知与成功，未知动作不重发。轮次结束、取消或运行时停止会结束本次任务许可。';
   async function mountContacts(agent) {
     if (agent.id !== sessionId) return [];
     contactDriver?.stop();
@@ -67,20 +67,20 @@ export function getContactRuntimeSource(): string {
         if (!record(args) || Object.keys(args).length) throw new Error('Target listing arguments are invalid');
         return request('contact-targets', { cycleId: current.id }, exec.signal);
       } });
-    agent.ctx.tools.register({ name: 'eating_contact_target', description: '自主选择并启动／恢复 eating_list_contact_targets 返回的目标子 Agent 执行任务，target_id 填其 id，task 说明具体任务。群里收到私聊请求时选择私聊目标；不要求目标先发私聊。后台绑定真实账号、目标、工具和当前轮次，actions 是真实 Host 回执。',
-      parameters: { type: 'object', properties: { target_id: { type: 'string' }, task: { type: 'string', maxLength: 16000 } }, required: ['target_id', 'task'], additionalProperties: false }, output,
+    agent.ctx.tools.register({ name: 'eating_contact_target', description: '自主选择并启动／恢复 eating_list_contact_targets 返回的目标子 Agent 执行任务，target_id 填其 id，task 说明具体任务。群里收到私聊请求时选择私聊目标；不要求目标先发私聊。mode 必须显式选择：verify 仅核实并回报，后台只读限制禁止发消息及写操作；reply 才允许按任务对该目标回复。只核实时选择verify，不要用reply发出查询公告。后台绑定真实账号、目标、工具和当前轮次，actions 是真实 Host 回执。',
+      parameters: { type: 'object', properties: { target_id: { type: 'string' }, task: { type: 'string', maxLength: 16000 }, mode: { type: 'string', enum: ['reply', 'verify'] } }, required: ['target_id', 'task', 'mode'], additionalProperties: false }, output,
       async execute(args, exec) {
         const current = currentTurn(exec);
-        if (!record(args) || Object.keys(args).length !== 2 || !opaque(args.target_id) || typeof args.task !== 'string' || !args.task.trim() || args.task.length > 16000 || typeof exec.callId !== 'string' || !exec.callId) throw new Error('Contact task arguments are invalid');
+        if (!record(args) || Object.keys(args).length !== 3 || !opaque(args.target_id) || typeof args.task !== 'string' || !args.task.trim() || args.task.length > 16000 || !['reply', 'verify'].includes(args.mode) || typeof exec.callId !== 'string' || !exec.callId) throw new Error('Contact task arguments are invalid');
         const taskId = createHash('sha256').update(sessionId + '\0' + exec.callId).digest('hex');
-        const configuration = await request('prepare-proactive', { targetId: args.target_id, cycleId: current.id, taskId }, exec.signal);
+        const configuration = await request('prepare-proactive', { targetId: args.target_id, cycleId: current.id, taskId, mode: args.mode }, exec.signal);
         try {
           if (currentTurn(exec) !== current) throw new Error('Main Agent contact turn changed during task preparation');
         } catch (error) {
           await control('finish-task', { agentId: configuration.agentId, contextRef: configuration.contextRef, taskId, status: 'unknown' }, AbortSignal.timeout(5000)).catch(report);
           throw error;
         }
-        return runDelegation({ contextRef: configuration.contextRef, binding: { agentId: configuration.agentId, agentTypeId: configuration.agentTypeId, label: configuration.label }, payload: { context: { source: 'eating-contact', turnId: current.id, target: configuration.scope }, events: [] } }, configuration.agentTypeId, args.task, taskId, exec, configuration);
+        return runDelegation({ contextRef: configuration.contextRef, binding: { agentId: configuration.agentId, agentTypeId: configuration.agentTypeId, label: configuration.label }, payload: { context: { source: 'eating-contact', turnId: current.id, target: configuration.scope }, events: [] } }, configuration.agentTypeId, args.task, taskId, exec, configuration, { mode: args.mode, context_notes: '' });
       } });
     return ['eating_list_contact_targets', 'eating_contact_target'];
   }

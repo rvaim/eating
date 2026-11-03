@@ -59,7 +59,7 @@ export function apply(ctx) {
   function refreshRestriction(agent, entry) {
     const current = ctx.agents.get(agent.id);
     if (current && current !== agent) { releaseRestriction(agent, entry); return; }
-    const names = nativeToolNames(entry.type).sort(), signature = JSON.stringify(names);
+    const names = entry.readOnly ? [] : nativeToolNames(entry.type).sort(), signature = JSON.stringify(names);
     if (entry.signature === signature) return;
     // Publish before restrict emits tools/change, so our own registration cannot recurse.
     entry.signature = signature;
@@ -69,11 +69,11 @@ export function apply(ctx) {
   }
   ctx.on('tools/change', () => { for (const [agent, entry] of restrictions) refreshRestriction(agent, entry); });
   ctx.on('agent/disposed', ({ agent }) => { const entry = restrictions.get(agent); if (entry) releaseRestriction(agent, entry); approvedLocalTools.delete(agent); scopedNativeTools.delete(agent); });
-  function restrict(agent, type) {
+  function restrict(agent, type, readOnly = false) {
     const previous = restrictions.get(agent);
-    if (previous && previous.type !== type) invalid('NATIVE_AGENT_TYPE_CHANGED');
+    if (previous && (previous.type !== type || previous.readOnly !== readOnly)) invalid('NATIVE_AGENT_TYPE_CHANGED');
     if (previous) { refreshRestriction(agent, previous); return; }
-    const entry = { type, signature: null, release: null };
+    const entry = { type, readOnly, signature: null, release: null };
     restrictions.set(agent, entry);
     try {
       refreshRestriction(agent, entry);
@@ -157,7 +157,7 @@ export function apply(ctx) {
       if (exec.agent !== agent) return 'This Agent may only use its approved tools.';
       const actual = ctx.tools.get(exec.name, agent), global = ctx.tools.get(exec.name);
       if (!actual) return 'The tool is no longer available.';
-      if (actual === global) return nativeToolNames(type).includes(exec.name) ? undefined : 'The native plugin tool changed or is not authorized for this Agent.';
+      if (actual === global) return restrictions.get(agent)?.readOnly !== true && nativeToolNames(type).includes(exec.name) ? undefined : 'The native plugin tool changed or is not authorized for this Agent.';
       if (!allowed.includes(exec.name) || approvedLocalTools.get(agent)?.get(exec.name) !== actual) return 'The scoped tool changed or is not authorized for this Agent.';
     },
     async ready() { await initialized; if (readyError) invalid(readyError); await validate({ ...configuration, toolGrants: [] }); }, revision: configuration.revision });

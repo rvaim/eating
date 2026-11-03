@@ -1,10 +1,24 @@
 # Eating Harness 适配设计
 
-更新：2026-11-02。用户选择的 Harness 承担认知与行动，Eating 提供连接、运行、授权和可靠交接。DSH0.15.0是当前具体适配；其他Harness不自动继承其能力。当前应用／Host／Web0.17.0、QQ0.13.4、plugin-sdk4.7.0、ui-sdk4.2.0、plugin-core4.0.0、插件唯一API4，默认不兼容旧版，见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)。系统DSH与官方原样Web见[ADR-0018](../decisions/ADR-0018-系统DSH原生Web与看板移除.md)，原生能力与插件管理见[ADR-0021](../decisions/ADR-0021-DSH原生能力与插件管理.md)，人格模板与默认生命周期见[ADR-0027](../decisions/ADR-0027-人格模板与默认提示词生命周期.md)。
+更新：2026-11-03。用户选择的 Harness 承担认知与行动，Eating 提供连接、运行、授权和可靠交接。DSH0.15.3是当前具体适配；其他Harness不自动继承其能力。当前源码应用／Host／Web0.17.3、QQ0.13.6、plugin-sdk4.7.0、ui-sdk4.2.0、plugin-core4.0.0、插件唯一API4，默认不兼容旧版，见[ADR-0015](../decisions/ADR-0015-默认不兼容旧版.md)。系统DSH与官方原样Web见[ADR-0018](../decisions/ADR-0018-系统DSH原生Web与看板移除.md)，原生能力与插件管理见[ADR-0021](../decisions/ADR-0021-DSH原生能力与插件管理.md)，人格模板与默认生命周期见[ADR-0027](../decisions/ADR-0027-人格模板与默认提示词生命周期.md)。
+
+## 主Agent核实交接与只读阶段（2026-11-03，已实现、隔离验证及实际部署完成）
+
+按[ADR-0040](../decisions/ADR-0040-主Agent核实交接与只读任务阶段.md)，主先理解请求并判断事实充分性，handle严格必填context_ref／mode（reply或verify），可选context_notes≤8000传可披露事实／来源／未知；子信封新增coordination，不替换原context／events，不预写回复全文。contact必填target_id／task／mode，delegate schema保持且内部固定reply。verify由控制层构造临时readOnly scope，贯穿Host通讯及功能capability／direct MCP目录与最终调用guard，仅tool.readOnly===true，direct未知metadata拒绝；零只读工具空MCP可用，AgentMcpConnection.toolNames必填且为实际过滤集合。子原生feature／全局工具本阶段完全不挂，也不额外挂time。同canonical UUID的后续reply从原普通授权重新取scope与工具，旧lease撤销；readOnly／scope／闭包policy只在RAM，原持久schema保持。只保证显式verify受控阶段不能发／写；是否需核实仍是LLM语义判断，不保证事实绝对正确。
+
+主人已授权的实际Eating修复部署完成，最终类型／构建、回归及运行桥SHA一致、正常连接和页面读图证据见[本轮报告](../reports/2026-11-03-主Agent核实交接与实际部署验证报告.md)。前轮共享身份、自然多句／多条、canonical、整批和cold恢复一并部署完成，已有重复历史不merge／delete，旧unknown不重放或自动review。现场实际联系额度12／小时、native revision5 time＋web保持；记忆源码0.2只构建、真实0.1.1不安装替换。ADR-0040部分替代0035／0039的旧交接契约，以下阶段记录不代表本轮部署状态。
+
+## 身份核实与自然表达（前轮阶段）
+
+按[ADR-0039](../decisions/ADR-0039-统一身份核实与自然短消息.md)，[共享策略](../../plugins/harness/dsh/src/backend/conversation-policy.ts)提供身份／表达与主、子协调规则，[runtime-agents](../../plugins/harness/dsh/src/backend/runtime-agents.ts)将共享层及对应角色层合入各自唯一 complete provider。主人即使完全自定义正文，必需规则仍进入实际 request.system，保存正文／人格与类型隔离保持。跨会话事实由主先核实已有记录、获准记忆及对应会话事实；查询任务只核实回报不发言，随后给原会话子可披露事实与未知范围，自主自然回答，不以局部缺记录否认参与。独立短消息分别真实发送、不同且稳定 request_id、顺序回执，unknown 停止续发；不增加自动切句发送器、任意历史读取或第二Loop。范围与最终证据见[变更](../changes/2026-11-03-统一身份核实与自然短消息.md)及[报告](../reports/2026-11-03-统一身份核实与自然短消息验证报告.md)；真实实例需获准部署并加载后生效，脚本模型不保证真实LLM必然选同一路径，前轮自主活动／额度／sleeping／waiting不改。
+
+## 本轮整合（2026-11-03，已实现并隔离验证、未部署）
+
+[ADR-0038](../decisions/ADR-0038-空闲整批交接与统一会话身份.md)将交接改为空闲时整批取得所有可交接来源，并统一同对象普通入站／主动联系的后续子会话 UUID 选择。DSH 使用逐组 contexts 绑定和原生 idle／入箱反馈；记忆按真实来源分离。源码修复与隔离验证已完成，结果见[本轮报告](../reports/2026-11-03-空闲整批交接与统一会话身份验证报告.md)，尚未部署、不合并或删除已有历史。[主动活动行为改进](../plans/2026-11-03-主动活动行为改进方案.md)仅为方案，主动行为、默认值和主人配置未改。
 
 ## 外部记忆接入（2026-11-01）
 
-OpenViking0.1.0能力插件按[ADR-0027](../decisions/ADR-0028-OpenViking记忆能力与自动采集.md)实现公开MemoryProvider，Host仅协调当前主回合来源和短期RAM消息。DSH0.12.0采用原生pre-step/turn-end钩子自动召回和采集，不靠模型主动调用MCP；所有准入判断结束后才附历史参考，保留原ACK和主子授权。全局和可读平台/账号/会话Peer按配置保存，原始临时会话完成后清理。其他Harness可使用MCP或采用公开生命周期服务，不等于已支持自动钩子。详细范围、缓冲和故障语义见[使用说明](../operations/OpenViking记忆插件.md)。
+外部记忆能力以[ADR-0028](../decisions/ADR-0028-OpenViking记忆能力与自动采集.md)、[ADR-0029](../decisions/ADR-0029-持续记忆会话与记录保留.md)和[ADR-0030](../decisions/ADR-0030-增量记忆提取与历史分段解耦.md)为当前契约：Host协调真实来源和短期RAM消息，DSH在原生准入之后召回及采集，固定Peer会话保留记录，增量提取与体积分段解耦。本轮整批输入逐组核验账号／目标与主人身份、分别召回并附scope标签；混合主轮次没有唯一记忆scope，不能拿首组授权用于整轮。各Peer只采集其原始来源，混合协调输出不复制给各Peer；原生主人追加输入保持self范围。记忆MCP范围含糊时明确拒绝，由对应会话子代理以真实scope查询。记忆故障不撤运输ACK；真实安装不升级、不远端部署。其他Harness需独立实现生命周期，详细范围见[使用说明](../operations/OpenViking记忆插件.md)。
 
 ## 依赖与唯一控制者
 
@@ -18,9 +32,9 @@ DSH复用系统安装的命令与 Web 组件，使用 Eating 专属的DSH_HOME�
 
 [Gateway](../../apps/host/src/harness.ts)仅接受必填`deliverBatch(batch, signal)`，不存在单条deliver或逐条兼容循环。同工作区只允许一个主要接收者。可选isReady未就绪时不选批、不耗尝试，处理结束用wake恢复。
 
-按conversationId聚合，不混会话。默认静默500ms、最长2000ms、最多10条、目标32KiB；静默从末条计，最长从首条固定，达到数量／字节可提前。目标是软阈值，超目标单条独立投递，仍受总队列硬容量限制，不等于模型token或请求次数。
+以pluginId／instanceId／accountId／conversationId／source.kind／targetId完整身份分组，SDK的groupHarnessEvents保持各组事件相对顺序。默认静默500ms、最长2000ms、条数触发10条、体积触发32KiB；静默从同身份可交接末条计，最长从首条固定。maxBatchMessages／batchTargetBytes只提前触发、不截断；任一身份就绪时，将所有身份无冷却的可交接前缀按global sequence一次交主Agent，不逐会话调用。单一完整身份的batch.conversationId为其ID，多身份为null；仍受总队列硬容量约束，不等于模型token或请求次数。
 
-默认交接超时15秒，明确拒收后间隔10秒，最多5次包含首次；在途任务保开始时设置。同会话冷却的队首不能被新消息越过。批次接收与模型原生执行由Harness自己管理，Host不做第二认知Loop。
+默认交接超时15秒，明确拒收后间隔10秒，最多5次包含首次；在途任务保开始时设置。同完整身份遇到冷却项即停，后续不能越过，其他身份继续。isReady=false不消费attempts；wake重新取全队列。DSH就绪依据受认证、递增且未过期的root原生idle／nextTurn及nextStep入箱为空反馈，500ms刷新、3s有效期，SDK run结束或turn/end本身不能证明空闲。状态检查与SDK enqueue非原子，其间竞争输入由原生串行Inbox承接，不能保证严格原子idle-only enqueue。反馈和wake只协调交接，Host不做第二认知Loop。
 
 ## 可靠性与无历史责任
 
@@ -55,19 +69,21 @@ DSH复用系统安装的命令与 Web 组件，使用 Eating 专属的DSH_HOME�
 
 按[ADR-0033](../decisions/ADR-0033-主Agent当前轮次联系权限.md)，真实主 Agent 当前原生 turn，无论QQ群／私聊、原生输入、目标续行或定时唤醒，均可用 `eating_list_contact_targets`／`eating_contact_target` 委派联系，无需目标先私聊。跨目标使用当前联系策略，不借用入站批次或旧资源；普通委派保持原 scope。每小时联系上限计所有联系任务；策略保存、turn结束/abort/销毁/运行时停止撤旧许可，真正自主机会取消撤该轮许可。具体架构见[自主活动](自主活动.md)，实际验证层级及限制见[本轮报告](../reports/2026-11-02-主Agent当前轮次联系权限验证.md)；真实目标续行及Web浏览器输入控件未单独端到端验证，未部署。
 
-main负责整体安排、轻量分流与必要协调。普通聊天／问答／生图优先eating_handle_conversation，仅{context_ref}；核对当前真实root、批次／digest、owner绑定及callId，运行时固定中立task＋原始context/events交绑定子独立理解／回复／工具执行，main不先写完整文案或能力猜测。eating_delegate_task留明确执行任务或用户明确逐字用途；跨目标先list再contact，不要求新入站，不继承旧资源。子scope不足由main换执行者，真实目标回执分别核对。入口不接受任意system／tools／persona／scope，见[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)。
+main负责整体安排、轻量分流与必要协调。普通聊天／问答／生图优先eating_handle_conversation，必填context_ref／mode，可选≤8000的context_notes；主先理解请求和事实充分性，核对真实root、批次／digest、owner绑定及callId后，运行时固定中立task＋原始context/events＋coordination交绑定子。verify仅只读核实，reply子自主理解／回复／执行，main不预写全文或能力猜测。eating_delegate_task留明确执行任务或用户明确逐字用途，内部固定reply；跨目标先list再contact并显式mode，不要求新入站，不继承旧资源。子scope不足由main换执行者，真实目标回执分别核对。入口不接受任意system／tools／persona／scope，当前交接见[ADR-0040](../decisions/ADR-0040-主Agent核实交接与只读任务阶段.md)，默认策略继续按[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)。
 
-适配器使用公开Agent创建钩子、Preset和in-process原生startActivation／sendMessage。正常恢复按plugin＋instance＋account＋conversation＋type复用稳定UUID；本轮主人明确清主／子会话后再运行会创建新UUID，人格身份不变；每个新任务装配最新系统与精确MCP。创建标签为“平台-绑定登录账号-私聊／群聊-目标”，平台取注册元数据真实pluginName，无元数据用canonical pluginId；账号取scope.accountId，不使用instanceId。切号区分新实例，历史归属与UUID不改，不解析旧label猜账号。原生Web显示依官方机制，不再使用agentLabels前端映射，不承诺旧标题一律外观修正。
+适配器使用公开Agent创建钩子、Preset和in-process原生startActivation／sendMessage。后续普通入站与主动联系按parent root＋pluginId＋instanceId＋accountId＋agentTypeId＋kind＋targetId选择同一稳定UUID；优先现有普通绑定，否则现有联系绑定，否则新建。外部conversationId仍用于分组及逐组消息／资源scope，不把入口不同当成另建子会话的理由。已有重复UUID、原生日志和历史不自动合并、删除或搬运；本轮不清任何真实会话。普通／联系在途任务互斥，联系不继承旧入站引用，每任务取得最新系统与精确MCP。创建标签为“平台-绑定登录账号-私聊／群聊-目标”，名称使用注册pluginName或canonical pluginId及scope.accountId，不解析旧label猜账号；官方Web显示依官方机制，不承诺旧标题外观修正。
 
-同批可先查询、主看到结果后再派同一子发送。内部taskId来自公开exec.callId；同context最多32个调用，不淘汰旧ID后放行重放。重复、pending、unknown拒绝；actions／finish必须匹配当前taskId，迟到回调不能撤新权限。当前批正文RAM在主turn/end清理。
+一个整批信封保留全局events并列出context.conversations，各contextRef与owner policy绑定一一对应；主在原生准入核对batch／digest后激活contexts映射，按组引用轻量分配，子只收到其组events和精确scope。同批可先查询再派同子发送；同对象多组可共用UUID，但引用及资源范围不合并。内部taskId来自公开exec.callId；同context最多32引用，pending拒并发，unknown只拒原contextRef／taskId，新批次新call可按ADR-0037复用child。actions／finish须匹配当前任务，迟到回调不能撤新权限；正文RAM在所属主turn/end清理，不在首次委派后清空，也不能由旧turn清掉尚未准入的新批次。
 
-每任务独立临时MCP令牌，后台逐调用核对当前类型、账号／目标和引用，结束／断开／停用撤销。主不挂全权QQ，子保持受控委派边界；新main原生文件／Shell等按平台默认开，其他子原生选择保持；功能MCP默认all，主人custom例外按精确类型／工具限制。DSH插件安装管理继续使用正式管理入口。Host回传实际动作回执，集合按任务隔离；子摘要不冒充动作，主普通final文本不自动发QQ。
+每任务独立临时MCP令牌，后台逐调用核对当前类型、账号／目标和引用，结束／断开／停用撤销。主不挂全权QQ，子保持受控委派边界；新Harness原生feature仅time默认，既存主人原生选择保持，verify子阶段完全不挂原生工具；普通任务功能MCP默认all，主人custom例外按精确类型／工具限制。DSH插件安装管理继续使用正式管理入口。Host回传实际动作回执，集合按任务隔离；子摘要不冒充动作，主普通final文本不自动发QQ。
 
 主系统必需分流／委派／联系／自主规则与owner／persona合入主唯一complete provider，子会话自主规则合入子唯一complete provider。系统rc.5在存在complete时抑制普通section，普通contact／autonomy贡献不能独立承担必需规则；主与子层仍隔离。验收捕获本地模型实际request.system，工具可见、预览或脚本强制调用都不能证明规则已经送达或真实LLM必定自主选同一路径。
 
 ## 原生持久与服务边界
 
-主／子入箱与父目录显式flush成功后才能确认接管，原子ACK含匹配nonce／批次／摘要。中断恢复通过当前公开原生记录核对并重建ACK，不重复prompt，不宣称exactly-once。created=false就绪哨兵和同版固定UUID恢复继续保留；缺必要公开API明确失败，不用旧接口兜底。
+主／子入箱与父目录显式flush成功后才能确认接管，原子ACK含匹配nonce／批次／摘要。中断恢复通过当前公开原生记录核对并重建ACK，不重复prompt，不宣称exactly-once。ACK后尚未claim的持久输入按messageId／digest及existing bindings恢复受控路由，旧nonce不误归self记忆；原生send／remove无正文sentinel仅唤醒原已有Inbox输入，避免非空Inbox持续busy，不重新prompt正文或重放unknown。created=false就绪哨兵和同版固定UUID恢复继续保留；缺必要公开API明确失败，不用旧接口兜底。
+
+每组路由结果独立：类型不可用或绑定100容量耗尽以context.routingError unavailable向主保留原事件，其他组可继续。对同child先reserve及本地flight gate，再drain／激活；临时scope保本批引用，Host每类最多100000项且两类UTF-8合计≤100MiB，超限拒绝不静默截断；持久binding仍严格schema2、各256历史尾项。memory context区分单scope实际值、混合null明确拒绝main记忆MCP、无flight undefined保原语义；capture按序列化messages每段最多200条／256KiB减1KiB预留，多来源或单外部分段只采各组原始user，native追加self独立。
 
 适配器私有loopback通道仅prepare-task、actions、finish-task，随机令牌／nonce，只处理已绑定当前任务，不搬正文。Host必要scope连接、真实回执和撤权服务必填。
 
@@ -83,7 +99,7 @@ API4工具必须声明resultFormat为json或content。QQ原39项OneBot工具保�
 
 ## 时间上下文
 
-主、子Agent各在自身ctx挂载一次官方time-context，注入依赖agents与sessionProjections，默认Asia/Shanghai，使用原生600000ms刷新间隔。只在已有合格step准备请求时判断追加读数；运行时user context位于历史末尾，source.kind为time-context，冷恢复从原生日志恢复注入状态。time-context本身没有新时间工具或后台唤醒模型；原生Schedule不再受Eating自主周期人工阻断，Eating暂停只控制其无输入机会，不冻结main或所有原生提醒。
+主及普通reply子按已保存feature选择，在自身ctx各挂一次官方time-context；verify子本阶段不挂任何原生feature或time-context。注入依赖agents与sessionProjections，默认Asia/Shanghai，使用原生600000ms刷新间隔。只在已有合格step准备请求时判断追加读数；运行时user context位于历史末尾，source.kind为time-context，冷恢复从原生日志恢复注入状态。time-context本身没有新时间工具或后台唤醒模型；原生Schedule不再受Eating自主周期人工阻断，Eating暂停只控制其无输入机会，不冻结main或所有原生提醒。
 
 Host通用与QQ角色默认提示词移除动态时间行，其他规则保持。9个受信变量仍注册，主人自定义正文若再次引用当前时间，system仍会动态变化，缓存影响应如实说明。验收system前缀稳定和来源明确注入，不以日志条数或夹具结果推断提供商缓存命中率。
 

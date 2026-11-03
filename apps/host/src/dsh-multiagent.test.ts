@@ -174,15 +174,9 @@ export function apply(ctx){
     const model = await modelFixture(request => {
       const names = request.tools?.map(tool => tool.function?.name) ?? []
       if (names.includes('eating_delegate_task')) {
-        const users = request.messages?.filter(message => message.role === 'user') ?? []
-        for (const user of [...users].reverse()) {
-          try {
-            const payload: unknown = JSON.parse(String(user.content))
-            if (isJsonObject(payload) && isJsonObject(payload.context) && typeof payload.context.contextRef === 'string') {
-              currentBatch = payload.context.contextRef; currentType = String(payload.context.agentTypeId); break
-            }
-          } catch { /* Native runtime context is ordinary user text. */ }
-        }
+        const batch = readModelFixtureBatch(request)
+        if (!batch || batch.kind !== 'root') throw new Error('Expected the current root conversation envelope')
+        currentBatch = batch.contextRef; currentType = batch.agentTypeId
         if (!delegated.has(currentBatch)) { delegated.add(currentBatch); return { name: 'eating_delegate_task', arguments: { type_id: currentType, context_ref: currentBatch, task: '处理绑定会话并仅通过已授权工具回复。' } } }
         return '主Agent已核对返回结果，不自动发送文本。'
       }
@@ -272,7 +266,8 @@ export function apply(ctx){
     for (const request of requests) {
       const batch = readModelFixtureBatch(request)
       if (!batch) throw new Error('Missing current native batch envelope')
-      expect(Object.keys(batch.payload).sort()).toEqual(batch.kind === 'root' ? ['context', 'eating', 'events'] : ['context', 'eating', 'events', 'task'])
+      expect(Object.keys(batch.payload).sort()).toEqual(batch.kind === 'root' ? ['context', 'eating', 'events'] : ['context', 'coordination', 'eating', 'events', 'task'])
+      if (batch.kind === 'child') expect(batch.payload.coordination).toEqual({ mode: 'reply', context_notes: '' })
     }
     const rootRequests = requests.filter(request => request.tools?.some(tool => tool.function?.name === 'eating_delegate_task'))
     for (const request of rootRequests) {
@@ -292,11 +287,9 @@ export function apply(ctx){
     let contextRef = ''
     const model = await modelFixture((request, index) => {
       if (index === 0) {
-        for (const message of request.messages ?? []) {
-          if (message.role !== 'user') continue
-          try { const payload: unknown = JSON.parse(String(message.content)); if (isJsonObject(payload) && isJsonObject(payload.context) && typeof payload.context.contextRef === 'string') contextRef = payload.context.contextRef }
-          catch { /* Other runtime user context is plain text. */ }
-        }
+        const batch = readModelFixtureBatch(request)
+        if (!batch || batch.kind !== 'root') throw new Error('Expected the current root conversation envelope')
+        contextRef = batch.contextRef
         return { name: 'eating_delegate_task', arguments: { type_id: 'qq.private', context_ref: contextRef, task: '先查询此私聊对象资料，报告真实结果，不发送。' } }
       }
       if (index === 1) return { name: 'mcp__qq__qq_get_stranger_info', arguments: { user_id: '987654321' } }

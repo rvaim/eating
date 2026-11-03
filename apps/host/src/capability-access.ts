@@ -16,7 +16,7 @@ interface Options {
   readonly direct: DirectMcpConnections
   readonly plugins: () => Iterable<BackendPlugin>
   readonly enabled: (id: string) => boolean
-  readonly memoryContext?: (harnessId: string, agentId: string) => import('@eating/plugin-sdk').MemoryContext | undefined
+  readonly memoryContext?: (harnessId: string, agentId: string) => import('@eating/plugin-sdk').MemoryContext | null | undefined
   readonly executeIdempotent: (pluginId: string, action: string, params: JsonObject, requestId: string, execute: () => Promise<JsonValue>) => Promise<JsonValue>
 }
 interface Lease {
@@ -159,28 +159,31 @@ export class CapabilityAccess {
     if (!validRevision(current + changes)) throw new PlatformError('MCP_REVISION_EXHAUSTED', 'MCP 配置版本已达到上限。', 500, 'not-sent')
   }
   allowed(scope: CapabilityInvocationScope, sourceId: string, toolName: string): boolean {
-    if (this.closed || scope.signal?.aborted || scope.source?.signal?.aborted || !identifier(scope.agentId) || !identifier(scope.agentTypeId)) return false
+    if (this.closed || scope.signal?.aborted || scope.source?.signal?.aborted || !identifier(scope.agentId) || !identifier(scope.agentTypeId)
+      || scope.readOnly !== undefined && typeof scope.readOnly !== 'boolean' || scope.source?.readOnly !== undefined && typeof scope.source.readOnly !== 'boolean') return false
     let source: McpServiceSummary
     try { source = this.source(sourceId) } catch { return false }
-    return source.enabled && source.state === 'connected' && source.accessPolicy !== null && source.configuration.permissionsManagedByPlugin !== true && source.tools.some(tool => tool.name === toolName)
+    return source.enabled && source.state === 'connected' && source.accessPolicy !== null && source.configuration.permissionsManagedByPlugin !== true && source.tools.some(tool => tool.name === toolName && (!(scope.readOnly === true || scope.source?.readOnly === true) || tool.readOnly === true))
       && (source.accessPolicy.mode === 'all' || source.accessPolicy.agentTypeIds.includes(scope.agentTypeId) && source.accessPolicy.toolNames.includes(toolName))
   }
   activeService(scope: CapabilityInvocationScope, sourceId: string): boolean {
     return this.source(sourceId).tools.some(tool => this.activePermission(scope, sourceId, tool.name))
   }
   activePermission(scope: CapabilityInvocationScope, sourceId: string, toolName: string): boolean {
-    return this.allowed(scope, sourceId, toolName) && [...this.leases.values()].some(lease => !lease.abort.signal.aborted && lease.scope.agentId === scope.agentId && lease.scope.agentTypeId === scope.agentTypeId && lease.sourceId === sourceId && this.options.enabled(lease.harnessId))
+    return this.allowed(scope, sourceId, toolName) && [...this.leases.values()].some(lease => !lease.abort.signal.aborted && lease.scope.agentId === scope.agentId && lease.scope.agentTypeId === scope.agentTypeId && lease.sourceId === sourceId && this.options.enabled(lease.harnessId) && this.allowed(lease.scope, sourceId, toolName))
   }
   connections(harnessId: string, scope: CapabilityInvocationScope, baseUrl: string): readonly HarnessCapabilityConnection[] {
-    if (this.closed || !this.options.enabled(harnessId) || !identifier(scope.agentId) || !identifier(scope.agentTypeId)) return deny()
+    if (this.closed || !this.options.enabled(harnessId) || !identifier(scope.agentId) || !identifier(scope.agentTypeId)
+      || scope.readOnly !== undefined && typeof scope.readOnly !== 'boolean' || scope.source?.readOnly !== undefined && typeof scope.source.readOnly !== 'boolean') return deny()
     if (scope.source && (scope.source.agentId !== scope.agentId || scope.source.agentTypeId !== scope.agentTypeId)) return deny()
+    const sources = this.sources()
     const result: HarnessCapabilityConnection[] = []
-    for (const source of this.sources()) {
+    for (const lease of this.leases.values()) if (lease.harnessId === harnessId && lease.scope.agentId === scope.agentId) this.retire(lease)
+    for (const source of sources) {
       // Disconnected optional services never block a task's communication MCP.
       // The current policy selects exact tools; all also covers future types/tools.
       const tools = source.tools.filter(tool => this.allowed(scope, source.id, tool.name)).map(tool => tool.name)
       if (!tools.length) continue
-      for (const lease of this.leases.values()) if (lease.harnessId === harnessId && lease.scope.agentId === scope.agentId && lease.sourceId === source.id) this.retire(lease)
       if (this.leases.size >= 1024) throw new PlatformError('MCP_LEASE_CAPACITY', '当前 MCP 代理连接已达到上限，请停止未使用的 Harness。', 429, 'not-sent')
       const lease: Lease = { harnessId, sourceId: source.id, scope: structuredClone(scope), token: secret(), abort: new AbortController() }
       this.leases.set(lease.token, lease)
@@ -194,6 +197,7 @@ export class CapabilityAccess {
     return lease
   }
   private async invoke(lease: Lease, name: string, input: JsonObject): Promise<CallToolResult> {
+    this.requireLease(lease.token, lease.sourceId)
     if (!this.allowed(lease.scope, lease.sourceId, name)) return deny()
     const source = this.source(lease.sourceId), tool = source.tools.find(tool => tool.name === name)!
     if (source.source.kind === 'plugin') {
@@ -203,6 +207,7 @@ export class CapabilityAccess {
       const key = tool.readOnly ? randomUUID() : 'agent-' + createHash('sha256').update(lease.harnessId + '\0' + lease.scope.agentId + '\0' + String(input.request_id)).digest('hex')
       const args = { ...input, ...(!tool.readOnly ? { request_id: key } : {}) }
       const memory = plugin.memory ? this.options.memoryContext?.(lease.harnessId, lease.scope.agentId) : undefined
+      if (memory === null) throw new PlatformError('MEMORY_CONTEXT_AMBIGUOUS', '当前轮次包含多个会话来源，请由对应会话子代理在其真实范围内查询记忆。', 409, 'not-sent')
       const result = await plugin.invokeCapability(name, args, key, { ...structuredClone(lease.scope), memory, signal: lease.abort.signal })
       if (!this.allowed(lease.scope, lease.sourceId, name)) return deny()
       return toolResult(tool, result, key)

@@ -18,7 +18,7 @@ export function getMemoryRuntimeSource(): string {
       for (const message of user) if (message.id) current.seen.add(message.id);
       const turnId = current.turnId;
       const expected = agent.id === sessionId ? readExpected() : undefined;
-      const external = user.find(message => expected && identifyMessage({ ...message, source: { kind: 'user' } }, expected, false));
+      const external = user.find(message => expected && identifyCurrentDelivery({ ...message, source: { kind: 'user' } }, expected));
       const input = user.filter(message => message !== external).map(message => ({ role: 'user', text: lastText(message.content), timestamp: new Date(typeof message.time === 'number' ? message.time : Date.now()).toISOString(), ...(typeof message.id === 'string' ? { messageId: message.id } : {}) })).filter(message => message.text.trim());
       flight = current;
       try {

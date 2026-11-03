@@ -605,7 +605,7 @@ export class EatingHost {
         this.requireHarnessAccess(id)
         if (!this.url) throw new PlatformError('HOST_NOT_LISTENING', 'Host 尚未监听，无法登记 MCP 连接。', 503)
         if (this.requirePlugin(pluginId, true).kind !== 'communication') throw new PlatformError('PLUGIN_SCOPE_VIOLATION', 'Harness 仅可取得已启用通讯插件的 MCP 连接。', 403)
-        if (!isJsonObject(scope)) throw new PlatformError('AGENT_SCOPE_VIOLATION', '请提供当前代理的完整调用范围。', 403, 'not-sent')
+        if (!scope || typeof scope !== 'object' || Array.isArray(scope)) throw new PlatformError('AGENT_SCOPE_VIOLATION', '请提供当前代理的完整调用范围。', 403, 'not-sent')
         return this.agentAccess.issue(id, pluginId, scope, this.url, policy)
       },
       readProactiveChannels: () => { this.requireHarnessAccess(id); return [...this.plugins.values()].filter(plugin => plugin.kind === 'communication' && this.enabled.has(plugin.id)).flatMap(plugin => [...(plugin.proactive?.channels() ?? [])]) },

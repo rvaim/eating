@@ -16,6 +16,7 @@ export interface ReceivedImageReference { readonly messageId: string; readonly i
 export interface CapabilityInvocationScope {
   /** Trusted in-memory call lifetime, not part of saved grants. */
   readonly signal?: AbortSignal
+  readonly readOnly?: boolean
   readonly agentId: string
   readonly agentTypeId: string
   readonly source?: AgentInvocationScope

@@ -23,7 +23,7 @@ async function fixture(start?: Promise<{ id: string }>, autonomous = false) {
       })
     }
     if (operation === 'contact-targets') return { targets: [{ id: 'approved', targetId: '200' }] }
-    if (operation === 'prepare-proactive') return { agentId: 'child', agentTypeId: 'qq.private', label: 'Approved child', contextRef: 'context', scope: { targetId: '200' } }
+    if (operation === 'prepare-proactive') return { agentId: 'child', agentTypeId: 'qq.private', label: 'Approved child', contextRef: 'context', scope: { targetId: '200' }, mode: body.mode }
     return { ended: true }
   })
   const runDelegation = vi.fn(async () => ({ childId: 'child', status: 'completed', actions: [] }))
@@ -45,10 +45,10 @@ describe('main Agent contact turn authority', () => {
       await f.admit(1, source)
       await f.execute('eating_list_contact_targets')
       await f.admit(1, source, false, true)
-      await f.execute('eating_contact_target', { target_id: 'approved', task: 'Contact this approved private target.' })
+      await f.execute('eating_contact_target', { mode: 'reply', target_id: 'approved', task: 'Contact this approved private target.' })
       expect(f.control.mock.calls.filter(call => call[0] === 'contact-turn-start')).toHaveLength(1)
       expect(f.control).toHaveBeenCalledWith('contact-turn-start', { agentId: 'root', turn: 1, autonomyCycleId: source === 'eating-autonomy' ? 'autonomous-cycle' : null }, expect.any(AbortSignal))
-      expect(f.control).toHaveBeenCalledWith('prepare-proactive', expect.objectContaining({ cycleId: 'turn-1', targetId: 'approved' }), expect.any(AbortSignal))
+      expect(f.control).toHaveBeenCalledWith('prepare-proactive', expect.objectContaining({ cycleId: 'turn-1', targetId: 'approved', mode: 'reply' }), expect.any(AbortSignal))
       expect(f.runDelegation).toHaveBeenCalledOnce()
     } finally { f.close(); await settle() }
   })

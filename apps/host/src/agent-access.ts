@@ -6,11 +6,23 @@ import { createPluginMcpHandler } from './mcp'
 import { secret } from './security'
 
 const maximumAgents = 256
-const maximumReferences = 256
+const maximumReferences = 100000
+const maximumReferenceBytes = 100 * 1024 * 1024
+const maximumHistoricalReferences = 256
 const maximumReceipts = 100
 const opaque = (value: unknown, maximum = 256): value is string => typeof value === 'string' && value.length > 0 && value.length <= maximum && !/[\u0000-\u001f\u007f]/u.test(value)
 function forbidden(): never { throw new PlatformError('AGENT_SCOPE_VIOLATION', '此代理未获准执行该操作或访问该会话。', 403, 'not-sent') }
-const boundedReferences = (values: readonly string[]): readonly string[] => [...new Set(values)].slice(-maximumReferences)
+const boundedReferences = (values: readonly string[]): readonly string[] => [...new Set(values)].slice(-maximumHistoricalReferences)
+function validReferences(messageIds: readonly unknown[], resourceIds: readonly unknown[]): boolean {
+  if (messageIds.length > maximumReferences || resourceIds.length > maximumReferences) return false
+  let bytes = 0
+  for (const references of [messageIds, resourceIds]) for (const reference of references) {
+    if (!opaque(reference, 2048)) return false
+    bytes += Buffer.byteLength(reference, 'utf8')
+    if (bytes > maximumReferenceBytes) return false
+  }
+  return true
+}
 
 /** Contributions stay owned by the installed plugin; the Host adds identity and lifecycle. */
 export function collectAgentContributions(plugins: Iterable<BackendPlugin>, enabled: ReadonlySet<string>) {
@@ -46,7 +58,9 @@ export function collectAgentContributions(plugins: Iterable<BackendPlugin>, enab
 
 interface Actor {
   readonly harnessId: string
+  readonly baseScope: AgentInvocationScope
   scope: AgentInvocationScope
+  returnedMessageIds: readonly string[]
   receipts: Map<string, AgentActionReceipt>
   tokenHash?: string
 }
@@ -90,7 +104,7 @@ export class AgentAccessRegistry {
   private async invoke(lease: Lease, name: string, input: unknown, requestId: string): Promise<JsonValue> {
     const actor = this.requireLive(lease)
     const receipts = actor.receipts
-    const tool = this.typeTools(actor, lease.plugin).find(candidate => candidate.name === name && (!lease.policy || lease.policy.toolNames.includes(candidate.name)))
+    const tool = this.typeTools(actor, lease.plugin).find(candidate => candidate.name === name && (!lease.policy || lease.policy.toolNames.includes(candidate.name)) && (!(actor.scope.readOnly === true || lease.policy?.readOnly === true) || candidate.readOnly === true))
     if (!tool || !isJsonObject(input)) forbidden()
     const args: JsonObject = { ...input }
     let scopedRequestId = requestId
@@ -104,7 +118,10 @@ export class AgentAccessRegistry {
       if (!tool.readOnly) {
         const metadata = this.responseMetadata(result)
         this.remember(receipts, { requestId, tool: name, outcome: 'succeeded', ...(metadata !== undefined ? { result: metadata } : {}) })
-        if (isJsonObject(result) && (typeof result.message_id === 'string' || typeof result.message_id === 'number')) actor.scope = { ...actor.scope, messageIds: boundedReferences([...actor.scope.messageIds, String(result.message_id)]) }
+        if (isJsonObject(result) && (typeof result.message_id === 'string' || typeof result.message_id === 'number') && opaque(String(result.message_id), 2048)) {
+          actor.returnedMessageIds = boundedReferences([...actor.returnedMessageIds, String(result.message_id)])
+          actor.scope = { ...actor.baseScope, messageIds: [...new Set([...actor.baseScope.messageIds, ...actor.returnedMessageIds])] }
+        }
       }
       return result
     } catch (cause) {
@@ -117,40 +134,41 @@ export class AgentAccessRegistry {
   }
 
   issue(harnessId: string, pluginId: string, scope: AgentInvocationScope, baseUrl: string, policy?: import('@eating/plugin-sdk').ScopedAccessPolicy): AgentMcpConnection {
-    if (policy && (typeof policy.active !== 'function' || !policy.active() || !Array.isArray(policy.toolNames) || policy.toolNames.length === 0 || policy.toolNames.some(name => !opaque(name, 160)))) forbidden()
-    if (this.closed || !this.enabled(harnessId) || !this.enabled(pluginId) || scope.pluginId !== pluginId || !opaque(scope.agentId, 160) || !opaque(scope.agentTypeId, 160)
+    if (policy && (typeof policy.active !== 'function' || !policy.active() || policy.readOnly !== undefined && typeof policy.readOnly !== 'boolean' || !Array.isArray(policy.toolNames) || policy.toolNames.length === 0 && policy.readOnly !== true && scope.readOnly !== true || policy.toolNames.some(name => !opaque(name, 160)))) forbidden()
+    if (this.closed || !this.enabled(harnessId) || !this.enabled(pluginId) || scope.readOnly !== undefined && typeof scope.readOnly !== 'boolean' || scope.pluginId !== pluginId || !opaque(scope.agentId, 160) || !opaque(scope.agentTypeId, 160)
       || !opaque(scope.instanceId, 160) || !opaque(scope.accountId, 160) || !opaque(scope.conversationId) || !opaque(scope.targetId, 160)
       || !['private', 'group'].includes(scope.kind) || !Array.isArray(scope.messageIds) || !Array.isArray(scope.resourceIds)
-      || scope.messageIds.length > maximumReferences || scope.resourceIds.length > maximumReferences || [...scope.messageIds, ...scope.resourceIds].some(value => !opaque(value, 2048))) forbidden()
+      || !validReferences(scope.messageIds, scope.resourceIds)) forbidden()
     const plugin = this.plugin(pluginId)
     const key = this.actorKey(harnessId, scope.agentId)
-    let actor = this.actors.get(key)
-    if (actor && ['pluginId', 'instanceId', 'accountId', 'conversationId', 'agentTypeId', 'kind', 'targetId'].some(field => actor!.scope[field as keyof AgentInvocationScope] !== scope[field as keyof AgentInvocationScope])) forbidden()
-    if (!actor) {
-      if (this.actors.size >= maximumAgents) throw new PlatformError('TOO_MANY_SCOPED_AGENTS', '当前代理数量达到上限，请先停止不再使用的代理。', 429, 'not-sent')
-      actor = { harnessId, scope: structuredClone(scope), receipts: new Map() }
-      this.actors.set(key, actor)
-    } else {
-      if (actor.tokenHash) this.retire(actor.tokenHash)
-      actor.scope = { ...structuredClone(scope), messageIds: boundedReferences([...(policy ? [] : actor.scope.messageIds), ...scope.messageIds]), resourceIds: boundedReferences([...(policy ? [] : actor.scope.resourceIds), ...scope.resourceIds]) }
-      actor.receipts = new Map()
-    }
+    const previous = this.actors.get(key)
+    if (previous && ['pluginId', 'instanceId', 'accountId', 'conversationId', 'agentTypeId', 'kind', 'targetId'].some(field => previous.scope[field as keyof AgentInvocationScope] !== scope[field as keyof AgentInvocationScope])) forbidden()
+    if (!previous && this.actors.size >= maximumAgents) throw new PlatformError('TOO_MANY_SCOPED_AGENTS', '当前代理数量达到上限，请先停止不再使用的代理。', 429, 'not-sent')
+    const baseScope = { ...structuredClone(scope), ...(policy?.readOnly === true ? { readOnly: true } : {}),
+      messageIds: [...new Set([...(previous && !policy ? boundedReferences(previous.scope.messageIds) : []), ...scope.messageIds])],
+      resourceIds: [...new Set([...(previous && !policy ? boundedReferences(previous.scope.resourceIds) : []), ...scope.resourceIds])] }
+    const actor: Actor = { harnessId, baseScope, scope: baseScope, returnedMessageIds: [], receipts: new Map() }
     const currentTools = this.typeTools(actor, plugin)
     if (policy && policy.toolNames.some(name => !currentTools.some(tool => tool.name === name))) forbidden()
+    const scopedPolicy = policy ? { toolNames: [...policy.toolNames], active: policy.active, ...(policy.readOnly !== undefined ? { readOnly: policy.readOnly } : {}) } : undefined
+    const selectedTools = () => this.typeTools(actor, plugin).filter(tool => (!scopedPolicy || scopedPolicy.toolNames.includes(tool.name)) && (actor.scope.readOnly !== true || tool.readOnly === true))
+    const toolNames = Object.freeze(selectedTools().map(tool => tool.name))
     const token = secret(), tokenHash = createHash('sha256').update(token).digest('hex')
     let lease: Lease
     const registry = this
     const view: BackendPlugin = {
       id: plugin.id, kind: plugin.kind, name: plugin.name, version: plugin.version, capabilities: [],
-      get tools() { registry.requireLive(lease); return registry.typeTools(actor!, plugin).filter(tool => !lease.policy || lease.policy.toolNames.includes(tool.name)) },
+      get tools() { registry.requireLive(lease); return selectedTools() },
       getStatus: () => plugin.getStatus(), getPublicConfiguration: () => ({}),
       updateConfiguration: async () => forbidden(), connect: async () => forbidden(), disconnect: async () => {}, dispose: async () => {},
       invoke: (name, input, requestId) => registry.invoke(lease, name, input, requestId),
     }
-    lease = { actor, plugin, tokenHash, abort: new AbortController(), handler: createPluginMcpHandler(view), ...(policy ? { policy: { toolNames: [...policy.toolNames], active: policy.active } } : {}) }
+    lease = { actor, plugin, tokenHash, abort: new AbortController(), handler: createPluginMcpHandler(view), ...(scopedPolicy ? { policy: scopedPolicy } : {}) }
+    if (previous?.tokenHash) this.retire(previous.tokenHash)
     actor.tokenHash = tokenHash
+    this.actors.set(key, actor)
     this.leases.set(tokenHash, lease)
-    return Object.freeze({ url: `${baseUrl}/mcp/${pluginId}`, headers: Object.freeze({ Authorization: `Bearer ${token}` }) })
+    return Object.freeze({ toolNames, url: `${baseUrl}/mcp/${pluginId}`, headers: Object.freeze({ Authorization: `Bearer ${token}` }) })
   }
 
   private retire(hash: string) {

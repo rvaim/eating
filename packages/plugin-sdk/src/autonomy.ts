@@ -29,6 +29,7 @@ export interface ProactiveScopeRequest {
   readonly targetId: string
 }
 export interface ScopedAccessPolicy {
+  readonly readOnly?: boolean
   readonly toolNames: readonly string[]
   /** Host-process closure, never serialized or model supplied. */
   readonly active: () => boolean

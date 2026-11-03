@@ -67,7 +67,7 @@ async function startRecoveryModel() {
     }
     if (current.kind === 'root') {
       expect(tools).toEqual(mainTools)
-      if (!turns.length) tool('eating_handle_conversation', { context_ref: current.contextRef })
+      if (!turns.length) tool('eating_handle_conversation', { context_ref: current.contextRef, mode: 'reply' })
       else {
         expect(turns).toHaveLength(1)
         expect(turns[0]!.name).toBe('eating_handle_conversation')

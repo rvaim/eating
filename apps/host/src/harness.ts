@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { DeliverySettings, HarnessDeliveryBatch, HarnessDeliveryReceipt, HarnessMessageSink, JsonObject } from '@eating/plugin-sdk'
+import type { DeliverySettings, HarnessDeliveryBatch, HarnessDeliveryReceipt, HarnessEvent, HarnessMessageSink, JsonObject } from '@eating/plugin-sdk'
 import { HostStore } from './store'
 import type { QueuedHarnessEvent } from './store'
 
@@ -21,6 +21,10 @@ type PendingFinalization = {
     readonly retryAt: number
   }[]
 })
+
+function conversationKey(event: HarnessEvent): string {
+  return JSON.stringify([event.pluginId, event.instanceId, event.accountId, event.conversationId, event.source.kind, event.targetId ?? null])
+}
 
 /** A bounded delivery boundary, never an AI loop or a chat archive. */
 export class HarnessGateway {
@@ -169,9 +173,10 @@ export class HarnessGateway {
     for (const item of this.store.getQueuedHarnessEvents()) {
       if (item.status !== 'pending') continue
       if (item.attempts >= settings.maxDeliveryAttempts) { exhausted.push(item.event.eventId); continue }
-      const bucket = conversations.get(item.event.conversationId) ?? []
+      const key = conversationKey(item.event)
+      const bucket = conversations.get(key) ?? []
       bucket.push(item)
-      conversations.set(item.event.conversationId, bucket)
+      conversations.set(key, bucket)
     }
     if (exhausted.length) this.store.markHarnessDeliveryBatch(exhausted, 'uncertain', 'Harness 明确拒收且已达投递次数上限，保留正文等待主人核对。')
     const selections: BatchSelection[] = []
@@ -187,15 +192,12 @@ export class HarnessGateway {
       for (const item of bucket) {
         // A rejected head retains its order; newer arrivals cannot bypass its cooldown.
         if (item.nextAttemptAt > now) break
-        const eventBytes = Buffer.byteLength(JSON.stringify(item.event), 'utf8')
-        if (items.length && eventBytes >= settings.batchTargetBytes) {
-          threshold = { reason: 'target-bytes', at: item.enqueuedAt }
-          break
-        }
         items.push(item)
-        bytes += eventBytes
-        if (items.length >= settings.maxBatchMessages) { threshold = { reason: 'max-messages', at: item.enqueuedAt }; break }
-        if (bytes >= settings.batchTargetBytes) { threshold = { reason: 'target-bytes', at: item.enqueuedAt }; break }
+        bytes += Buffer.byteLength(JSON.stringify(item.event), 'utf8')
+        if (!threshold) {
+          if (items.length >= settings.maxBatchMessages) threshold = { reason: 'max-messages', at: item.enqueuedAt }
+          else if (bytes >= settings.batchTargetBytes) threshold = { reason: 'target-bytes', at: item.enqueuedAt }
+        }
       }
       const last = items[items.length - 1]!
       const quietAt = last.enqueuedAt + settings.quietWindowMs
@@ -217,19 +219,23 @@ export class HarnessGateway {
       if (!this.isReady(registration)) return
       const settings = this.store.getDeliverySettings()
       const now = Date.now()
-      const selection = this.selections(settings, now).filter(candidate => candidate.items.length && candidate.readyAt <= now)
-        .sort((left, right) => left.items[0]!.sequence - right.items[0]!.sequence)[0]
-      if (!selection) return
-      await this.deliverBatch(selection, registration, settings)
+      const selections = this.selections(settings, now).filter(candidate => candidate.items.length)
+      const trigger = selections.filter(candidate => candidate.readyAt <= now)
+        .sort((left, right) => left.readyAt - right.readyAt || left.items[0]!.sequence - right.items[0]!.sequence)[0]
+      if (!trigger) return
+      const items = selections.flatMap(selection => selection.items).sort((left, right) => left.sequence - right.sequence)
+      await this.deliverBatch({ ...trigger, items }, registration, settings)
     }
   }
 
   private async deliverBatch(selection: BatchSelection, registration: Registration, settings: DeliverySettings): Promise<void> {
     const items = selection.items
     const events = items.map(item => item.event)
+    const identity = conversationKey(events[0]!)
     const batch: HarnessDeliveryBatch = {
       protocolVersion: 1, batchId: createHash('sha256').update(JSON.stringify(events.map(event => event.eventId))).digest('hex'),
-      conversationId: events[0]!.conversationId, createdAt: new Date().toISOString(), reason: selection.reason, events,
+      conversationId: events.every(event => conversationKey(event) === identity) ? events[0]!.conversationId : null,
+      createdAt: new Date().toISOString(), reason: selection.reason, events,
     }
     const ids = events.map(event => event.eventId)
     this.store.markHarnessDeliveryBatch(ids, 'delivering')

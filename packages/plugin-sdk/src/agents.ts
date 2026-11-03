@@ -42,6 +42,7 @@ export interface RegisteredAgentInstructions extends AgentInstructions {
 export interface AgentInvocationScope {
   /** In-memory invocation lifetime; never persisted or supplied by model arguments. */
   readonly signal?: AbortSignal
+  readonly readOnly?: boolean
   readonly agentId: string
   readonly agentTypeId: string
   readonly pluginId: string
@@ -63,6 +64,7 @@ export interface AgentActionReceipt {
 }
 
 export interface AgentMcpConnection {
+  readonly toolNames: readonly string[]
   readonly url: string
   readonly headers: Readonly<Record<string, string>>
 }

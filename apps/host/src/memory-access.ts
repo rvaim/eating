@@ -1,22 +1,42 @@
-import { PlatformError } from '@eating/plugin-sdk'
+import { createHash } from 'node:crypto'
+import { groupHarnessEvents, PlatformError } from '@eating/plugin-sdk'
 import type { BackendPlugin, HarnessMemoryServices, MemoryAppendInput, MemoryBeginInput, MemoryContext, MemoryFinishInput, MemoryMessage, MemoryRecallResult } from '@eating/plugin-sdk'
 
-interface Flight { readonly context: MemoryContext; current: MemoryContext; readonly messages: readonly MemoryMessage[]; steering: MemoryMessage[]; readonly abort: AbortController }
+interface Source { readonly context: MemoryContext; readonly messages: readonly MemoryMessage[]; readonly label: string }
+interface Flight { readonly context: MemoryContext; current: MemoryContext | null; readonly sources: readonly Source[]; steering: MemoryMessage[]; readonly abort: AbortController }
 interface Options { plugins(): Iterable<BackendPlugin>; enabled(id: string): boolean }
 const empty = (): MemoryRecallResult => ({ text: '', items: [] })
 const identifier = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\u0000-\u001f\u007f]/.test(value)
 const invalid = (): never => { throw new PlatformError('MEMORY_CONTEXT_INVALID', '记忆调用缺少有效的会话来源。', 400, 'not-sent') }
 function messages(value: readonly MemoryMessage[]): MemoryMessage[] {
-  if (!Array.isArray(value) || value.length > 200) return invalid()
-  let bytes = 0
+  if (!Array.isArray(value)) return invalid()
   return value.map(message => {
-    if (!message || !['user', 'assistant'].includes(message.role) || typeof message.text !== 'string' || message.text.length > 32768 || !Number.isFinite(Date.parse(message.timestamp))) return invalid()
-    bytes += Buffer.byteLength(message.text)
-    if (bytes > 256 * 1024) return invalid()
+    if (!message || !['user', 'assistant'].includes(message.role) || typeof message.text !== 'string' || message.text.length > 32768 || typeof message.timestamp !== 'string' || !Number.isFinite(Date.parse(message.timestamp))
+      || message.senderId !== undefined && !identifier(message.senderId) || message.messageId !== undefined && !identifier(message.messageId)
+      || message.senderRole !== undefined && !['owner', 'administrator', 'user'].includes(message.senderRole)) return invalid()
     return { role: message.role, text: message.text, timestamp: message.timestamp,
       ...(message.senderId ? { senderId: message.senderId } : {}), ...(message.senderRole ? { senderRole: message.senderRole } : {}), ...(message.messageId ? { messageId: message.messageId } : {}) }
   })
 }
+function segments(value: readonly MemoryMessage[]): MemoryMessage[][] {
+  const result: MemoryMessage[][] = []
+  const budget = 256 * 1024 - 1024
+  let segment: MemoryMessage[] = [], bytes = 2
+  for (const message of value) {
+    const size = Buffer.byteLength(JSON.stringify(message))
+    if (size + 2 > budget) return invalid()
+    if (segment.length && (segment.length >= 200 || bytes + 1 + size > budget)) { result.push(segment); segment = []; bytes = 2 }
+    bytes += size + (segment.length ? 1 : 0); segment.push(message)
+  }
+  if (segment.length || !result.length) result.push(segment)
+  return result
+}
+function merged(results: readonly MemoryRecallResult[]): MemoryRecallResult {
+  const errors = results.flatMap(result => result.errors ?? [])
+  return { text: results.map(result => result.text).filter(Boolean).join('\n\n').slice(0, 64000), items: results.flatMap(result => result.items).slice(0, 20), ...(errors.length ? { errors } : {}) }
+}
+const selfScope = (owner: boolean): MemoryContext['scope'] => ({ kind: 'self', platform: '', accountId: '', targetId: '', owner })
+const label = (scope: MemoryContext['scope'], source = {}): string => 'Memory recall scope (trusted routing): ' + JSON.stringify({ ...source, ...scope })
 
 /** Bounded current-turn coordination only. All long-term content stays in the selected provider. */
 export class MemoryAccess {
@@ -24,7 +44,7 @@ export class MemoryAccess {
   constructor(private readonly options: Options) {}
   private key(harnessId: string, agentId: string): string { return harnessId + '\0' + agentId }
   private providers(): BackendPlugin[] { return [...this.options.plugins()].filter(plugin => plugin.kind === 'capability' && plugin.memory && this.options.enabled(plugin.id) && plugin.getStatus().state === 'connected') }
-  context(harnessId: string, agentId: string): MemoryContext | undefined {
+  context(harnessId: string, agentId: string): MemoryContext | null | undefined {
     const flight = this.flights.get(this.key(harnessId, agentId))
     return flight && !flight.abort.signal.aborted ? structuredClone(flight.current) : undefined
   }
@@ -37,41 +57,56 @@ export class MemoryAccess {
     if (previous?.context.turnId === input.turnId) return empty()
     if (previous) { previous.abort.abort(); this.flights.delete(key) }
     if (this.flights.size >= 512) throw new PlatformError('MEMORY_CAPACITY', '当前记忆会话数量达到容量上限。', 429, 'not-sent')
-    let captured: MemoryMessage[], scope: MemoryContext['scope']
+    const sources: Source[] = []
     if (input.batch) {
-      const batch = input.batch, first = batch.events[0]
-      if (batch.protocolVersion !== 1 || !first || !identifier(first.targetId) || !identifier(first.platform) || !identifier(first.accountId)
-        || batch.events.some(event => event.source.trust !== 'external' || event.platform !== first.platform || event.instanceId !== first.instanceId || event.accountId !== first.accountId || event.targetId !== first.targetId || event.conversationId !== batch.conversationId || event.source.kind !== first.source.kind)) return invalid()
-      const type = [...this.options.plugins()].find(plugin => plugin.id === first.pluginId && plugin.kind === 'communication' && this.options.enabled(plugin.id))
-      if (!type) return invalid()
-      const owners = type.getAgentIdentity?.().owners ?? []
-      // Re-evaluate owner identity from trusted plugin configuration, not message prose.
-      const owner = first.source.kind === 'private' && batch.events.every(event => event.source.senderRole === 'owner' && owners.includes(event.senderId) && event.senderId === event.targetId)
-      scope = { kind: first.source.kind, platform: first.platform, accountId: first.accountId, targetId: first.targetId, owner }
-      captured = messages(batch.events.map(event => ({ role: 'user', text: event.text, timestamp: event.receivedAt, senderId: event.senderId, senderRole: event.source.senderRole ?? 'user', ...(event.messageId ? { messageId: event.messageId } : {}) })))
+      const batch = input.batch
+      if (batch.protocolVersion !== 1 || !Array.isArray(batch.events) || !batch.events.length
+        || batch.conversationId !== null && !identifier(batch.conversationId)
+        || batch.events.some(event => !event || event.protocolVersion !== 1 || !event.source || event.source.trust !== 'external' || !['private', 'group'].includes(event.source.kind)
+          || !identifier(event.pluginId) || !identifier(event.instanceId) || !identifier(event.conversationId) || !identifier(event.targetId) || !identifier(event.platform) || !identifier(event.accountId) || !identifier(event.senderId)
+          || event.source.senderRole !== undefined && !['owner', 'administrator', 'user'].includes(event.source.senderRole))) return invalid()
+      const groups = groupHarnessEvents(batch.events)
+      if (batch.conversationId !== (groups.length === 1 ? batch.events[0]!.conversationId : null)) return invalid()
+      for (const events of groups) {
+        const first = events[0]!
+        if (events.some(event => event.platform !== first.platform)) return invalid()
+        const type = [...this.options.plugins()].find(plugin => plugin.id === first.pluginId && plugin.kind === 'communication' && this.options.enabled(plugin.id))
+        if (!type) return invalid()
+        const owners = type.getAgentIdentity?.().owners ?? []
+        const owner = first.source.kind === 'private' && events.every(event => event.source.senderRole === 'owner' && owners.includes(event.senderId) && event.senderId === event.targetId)
+        const scope: MemoryContext['scope'] = { kind: first.source.kind, platform: first.platform, accountId: first.accountId, targetId: first.targetId!, owner }
+        const captured = messages(events.map(event => ({ role: 'user', text: event.text, timestamp: event.receivedAt, senderId: event.senderId, senderRole: event.source.senderRole ?? 'user', ...(event.messageId !== undefined ? { messageId: event.messageId } : {}) })))
+        sources.push({ context: { agentId: input.agentId, agentTypeId: 'main', turnId: input.turnId, scope }, messages: captured,
+          label: label(scope, { pluginId: first.pluginId, instanceId: first.instanceId, conversationId: first.conversationId }) })
+      }
     } else {
-      scope = { kind: 'self', platform: '', accountId: '', targetId: '', owner: input.autonomous !== true }
-      captured = messages(input.messages ?? []).filter(message => message.role === 'user')
+      const scope = selfScope(input.autonomous !== true)
+      sources.push({ context: { agentId: input.agentId, agentTypeId: 'main', turnId: input.turnId, scope }, messages: messages(input.messages ?? []).filter(message => message.role === 'user'), label: label(scope) })
     }
-    const context: MemoryContext = { agentId: input.agentId, agentTypeId: 'main', turnId: input.turnId, scope }, abort = new AbortController()
-    const flight: Flight = { context, current: context, messages: captured, steering: [], abort }
+    const context = sources[0]!.context, abort = new AbortController()
+    const flight: Flight = { context, current: sources.length === 1 ? context : null, sources, steering: [], abort }
     this.flights.set(key, flight)
-    const query = (input.batch ? captured.map(message => message.text).join('\n') : input.query ?? captured.map(message => message.text).join('\n')).slice(0, 4000)
-    return this.recall(harnessId, key, flight, context, query, signal)
+    const results: MemoryRecallResult[] = []
+    for (const source of sources) {
+      if (abort.signal.aborted || signal?.aborted || this.flights.get(key) !== flight) break
+      const query = (!input.batch && input.query !== undefined ? input.query : source.messages.map(message => message.text).join('\n')).slice(0, 4000)
+      results.push(await this.recall(harnessId, key, flight, source.context, source.label, query, signal))
+    }
+    return this.flights.get(key) === flight && !abort.signal.aborted && !signal?.aborted ? merged(results) : empty()
   }
   private async append(harnessId: string, input: MemoryAppendInput, signal?: AbortSignal): Promise<MemoryRecallResult> {
     const key = this.key(harnessId, input.agentId), flight = this.flights.get(key)
     if (!flight || flight.context.turnId !== input.turnId || flight.abort.signal.aborted || !this.options.enabled(harnessId)) return empty()
     const additions = messages(input.messages).filter(message => message.role === 'user')
-    const seen = new Set([...flight.messages, ...flight.steering].flatMap(message => message.messageId ? [message.messageId] : []))
-    const fresh = additions.filter(message => !message.messageId || !seen.has(message.messageId))
+    const seen = new Set([...flight.sources.filter(source => source.context.scope.kind === 'self').flatMap(source => source.messages), ...flight.steering].flatMap(message => message.messageId ? [message.messageId] : []))
+    const fresh = additions.filter(message => { if (!message.messageId) return true; if (seen.has(message.messageId)) return false; seen.add(message.messageId); return true })
     if (!fresh.length) return empty()
-    flight.steering = messages([...flight.steering, ...fresh])
-    const context: MemoryContext = { ...flight.context, scope: { kind: 'self', platform: '', accountId: '', targetId: '', owner: true } }
-    flight.current = context
-    return this.recall(harnessId, key, flight, context, fresh.map(message => message.text).join('\n').slice(0, 4000), signal)
+    flight.steering.push(...fresh)
+    const context: MemoryContext = { ...flight.context, scope: selfScope(true) }
+    flight.current = flight.sources.length === 1 && flight.context.scope.kind === 'self' ? context : null
+    return this.recall(harnessId, key, flight, context, label(context.scope), fresh.map(message => message.text).join('\n').slice(0, 4000), signal)
   }
-  private async recall(harnessId: string, key: string, flight: Flight, context: MemoryContext, query: string, signal?: AbortSignal): Promise<MemoryRecallResult> {
+  private async recall(harnessId: string, key: string, flight: Flight, context: MemoryContext, sourceLabel: string, query: string, signal?: AbortSignal): Promise<MemoryRecallResult> {
     const providers = this.providers(), abort = flight.abort
     if (!providers.length || !query.trim()) return empty()
     const items: MemoryRecallResult['items'][number][] = [], blocks: string[] = [], errors: string[] = []
@@ -80,7 +115,7 @@ export class MemoryAccess {
       try {
         const result = await plugin.memory!.recall(context, query, AbortSignal.any([abort.signal, ...(signal ? [signal] : [])]))
         if (this.flights.get(key) !== flight || !this.options.enabled(plugin.id) || !this.options.enabled(harnessId) || abort.signal.aborted || signal?.aborted) continue
-        items.push(...result.items.slice(0, 12)); if (result.text) blocks.push(result.text.slice(0, 50000))
+        items.push(...result.items.slice(0, 12).map(item => ({ ...item, text: sourceLabel + '\n' + item.text }))); if (result.text) blocks.push(sourceLabel + '\n' + result.text.slice(0, 50000))
       } catch (error) { errors.push(error instanceof PlatformError ? error.code : 'MEMORY_RECALL_FAILED') }
     }
     return { text: blocks.join('\n\n').slice(0, 64000), items: items.slice(0, 20), ...(errors.length ? { errors } : {}) }
@@ -89,17 +124,27 @@ export class MemoryAccess {
     const key = this.key(harnessId, input.agentId), flight = this.flights.get(key)
     if (!flight || flight.context.turnId !== input.turnId || flight.abort.signal.aborted || !this.options.enabled(harnessId)) return
     if (typeof input.assistantText !== 'string' || input.assistantText.length > 32768 || !['completed', 'failed', 'cancelled'].includes(input.outcome) || !Array.isArray(input.actions) || input.actions.length > 128 || input.actions.some(action => !identifier(action.tool) || !['returned', 'succeeded', 'failed', 'unknown'].includes(action.outcome))) return invalid()
-    // Remove before asynchronous provider calls; late completions cannot clear a new context.
     this.flights.delete(key)
     const text = input.assistantText.trim(), assistant: MemoryMessage[] = text ? [{ role: 'assistant', text, timestamp: new Date().toISOString() }] : []
-    const mixed = flight.context.scope.kind !== 'self' && flight.steering.length > 0
-    const output = mixed ? [...flight.messages] : [...flight.messages, ...flight.steering, ...assistant]
+    const mixed = flight.sources.length > 1 || flight.context.scope.kind !== 'self' && flight.steering.length > 0
+    const captures = flight.sources.map(source => {
+      if (mixed) return { context: source.context, messages: [...source.messages], actions: [] }
+      const output = [...source.messages, ...flight.steering, ...assistant]
+      const isolated = source.context.scope.kind !== 'self' && segments(output).length > 1
+      return { context: source.context, messages: isolated ? [...source.messages] : output, actions: isolated ? [] : input.actions }
+    })
+    if (mixed && flight.steering.length) captures.push({ context: { ...flight.context, scope: selfScope(true) }, messages: [...flight.steering, ...assistant], actions: input.actions })
     const failures: unknown[] = []
     for (const plugin of this.providers()) {
-      try {
-        await plugin.memory!.capture({ context: flight.context, messages: output, actions: mixed ? [] : input.actions, outcome: input.outcome })
-        if (mixed) await plugin.memory!.capture({ context: { ...flight.current, turnId: flight.context.turnId + ':native' }, messages: [...flight.steering, ...assistant], actions: input.actions, outcome: input.outcome })
-      } catch (error) { failures.push(error) }
+      for (const [sourceIndex, capture] of captures.entries()) {
+        const parts = segments(capture.messages)
+        for (const [partIndex, part] of parts.entries()) {
+          const turnId = captures.length === 1 && parts.length === 1 ? capture.context.turnId : 'memory-' + createHash('sha256').update(JSON.stringify([flight.context.turnId, sourceIndex, partIndex])).digest('hex')
+          try {
+            await plugin.memory!.capture({ context: { ...capture.context, turnId }, messages: part, actions: partIndex === parts.length - 1 ? capture.actions : [], outcome: input.outcome })
+          } catch (error) { failures.push(error) }
+        }
+      }
     }
     if (failures.length) throw new AggregateError(failures, 'Memory capture failed')
   }

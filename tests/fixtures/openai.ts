@@ -21,6 +21,7 @@ export interface ModelFixtureBatch {
   readonly contextRef: string
   readonly agentTypeId: 'qq.private' | 'qq.group'
   readonly payload: JsonObject
+  readonly context: JsonObject
   readonly messageIndex: number
   readonly nativeParentId?: string
 }
@@ -36,13 +37,21 @@ export function readModelFixtureBatch(request: ModelFixtureRequest): ModelFixtur
     let payload: unknown
     try { payload = JSON.parse(native?.[2] ?? text) } catch { continue }
     if (!isJsonObject(payload) || !isJsonObject(payload.eating) || !isJsonObject(payload.context) || !Array.isArray(payload.events)) continue
-    const eating = payload.eating, context = payload.context
-    if (eating.protocolVersion !== 1 || !['qq.private', 'qq.group'].includes(String(context.agentTypeId))) continue
+    const eating = payload.eating
+    if (eating.protocolVersion !== 1) continue
     const kind = eating.magic === 'eating-harness-delivery' ? 'root' : 'child'
-    const contextRef = kind === 'root' ? eating.batchId : eating.contextRef
-    if (typeof contextRef !== 'string' || !/^[a-f0-9]{64}$/.test(contextRef) || context.contextRef !== contextRef
-      || kind === 'child' && eating.agentTypeId !== context.agentTypeId) continue
-    return { kind, contextRef, agentTypeId: context.agentTypeId as ModelFixtureBatch['agentTypeId'], payload, messageIndex, ...(native ? { nativeParentId: native[1]! } : {}) }
+    let context: JsonObject
+    if (kind === 'root') {
+      if (typeof eating.batchId !== 'string' || !/^[a-f0-9]{64}$/.test(eating.batchId) || payload.context.contextRef !== eating.batchId
+        || !Array.isArray(payload.context.conversations) || payload.context.conversations.length !== 1 || !isJsonObject(payload.context.conversations[0])) continue
+      context = payload.context.conversations[0]
+    } else context = payload.context
+    const contextRef = context.contextRef
+    if (typeof contextRef !== 'string' || !/^[a-f0-9]{64}$/.test(contextRef) || !['qq.private', 'qq.group'].includes(String(context.agentTypeId))
+      || context.agentTypeId !== `qq.${context.kind}` || !payload.events.length || payload.events.some(event => !isJsonObject(event) || !isJsonObject(event.source)
+        || event.source.trust !== 'external' || event.source.kind !== context.kind || ['pluginId', 'instanceId', 'platform', 'accountId', 'conversationId', 'targetId'].some(key => event[key] !== context[key]))
+      || kind === 'child' && (eating.contextRef !== contextRef || eating.agentTypeId !== context.agentTypeId)) continue
+    return { kind, contextRef, agentTypeId: context.agentTypeId as ModelFixtureBatch['agentTypeId'], payload, context, messageIndex, ...(native ? { nativeParentId: native[1]! } : {}) }
   }
   return null
 }

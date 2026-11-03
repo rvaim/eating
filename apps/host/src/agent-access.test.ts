@@ -59,6 +59,43 @@ async function setup() {
 }
 
 describe('Host scoped agent MCP and plugin prompt registry', () => {
+  it.each(['scope', 'policy'] as const)('enforces %s verify reads on real MCP calls and restores writes only with a fresh reply lease', async mode => {
+    const f = await setup(), binding = f.scope()
+    const original = await f.client(binding)
+    const policy = { toolNames: ['qq_get_message', 'qq_send_private_message'], active: () => true, ...(mode === 'policy' ? { readOnly: true } : {}) }
+    const verify = await f.client({ ...binding, ...(mode === 'scope' ? { readOnly: true } : {}) }, policy)
+    expect(verify.connection.toolNames).toEqual(['qq_get_message'])
+    expect((await verify.mcp.listTools()).tools.map(tool => tool.name)).toEqual(verify.connection.toolNames)
+    await expect(original.mcp.listTools()).rejects.toThrow()
+    expect(await verify.mcp.callTool({ name: 'qq_get_message', arguments: { message_id: '42' } })).toMatchObject({ isError: false })
+    const before = f.onebot.requests.length
+    const registry = Reflect.get(f.host, 'agentAccess'), lease = [...Reflect.get(registry, 'leases').values()].find(candidate => candidate.actor.scope.agentId === binding.agentId)
+    await expect(Reflect.get(registry, 'invoke').call(registry, lease, 'qq_send_private_message', { user_id: binding.targetId, message: 'Direct guard denied', request_id: 'verify-direct-denied' }, 'verify-direct-denied')).rejects.toMatchObject({ code: 'AGENT_SCOPE_VIOLATION', statusCode: 403, outcome: 'not-sent' })
+    expect(await verify.mcp.callTool({ name: 'qq_send_private_message', arguments: { user_id: binding.targetId, message: 'Denied verify send', request_id: 'verify-denied-send' } })).toMatchObject({ isError: true, structuredContent: { outcome: 'not-sent' } })
+    expect(f.onebot.requests).toHaveLength(before)
+    expect(() => f.services.getMcpConnection('qq', binding, { ...policy, toolNames: ['qq_send_group_message'] })).toThrow()
+    expect(await verify.mcp.callTool({ name: 'qq_get_message', arguments: { message_id: '42' } })).toMatchObject({ isError: false })
+    const reply = await f.client(binding)
+    await expect(verify.mcp.listTools()).rejects.toThrow()
+    expect(reply.connection.toolNames).toContain('qq_send_private_message')
+    expect(await reply.mcp.callTool({ name: 'qq_send_private_message', arguments: { user_id: binding.targetId, message: 'Restored reply fixture', request_id: 'verify-restored-reply' } })).toMatchObject({ isError: false })
+    expect(f.onebot.requests.filter(request => request.action === 'send_private_msg')).toHaveLength(1)
+  })
+
+  it('connects an empty verify MCP when the authorized type selection contains no reads', async () => {
+    const f = await setup(), binding = f.scope()
+    const first = await f.client(binding)
+    const verify = await f.client(binding, { toolNames: ['qq_send_private_message'], readOnly: true, active: () => true })
+    expect(verify.connection.toolNames).toEqual([])
+    expect((await verify.mcp.listTools()).tools).toEqual([])
+    await expect(first.mcp.listTools()).rejects.toThrow()
+    const before = f.onebot.requests.length
+    const registry = Reflect.get(f.host, 'agentAccess'), lease = [...Reflect.get(registry, 'leases').values()].find(candidate => candidate.actor.scope.agentId === binding.agentId)
+    await expect(Reflect.get(registry, 'invoke').call(registry, lease, 'qq_send_private_message', { user_id: binding.targetId, message: 'Direct guard denied', request_id: 'verify-direct-denied' }, 'verify-direct-denied')).rejects.toMatchObject({ code: 'AGENT_SCOPE_VIOLATION', statusCode: 403, outcome: 'not-sent' })
+    expect(await verify.mcp.callTool({ name: 'qq_send_private_message', arguments: { user_id: binding.targetId, message: 'Never sent', request_id: 'verify-empty-read' } })).toMatchObject({ isError: true, structuredContent: { outcome: 'not-sent' } })
+    expect(f.onebot.requests).toHaveLength(before)
+  })
+
   it('discovers real joined groups and applies object deny lists to an actual scoped MCP task and in-flight revocation', async () => {
     const f = await setup(), channel = f.services.readProactiveChannels!().find(channel => channel.kind === 'group')!
     const joined = await f.services.readProactiveContacts!('qq', { instanceId: channel.instanceId, accountId: channel.accountId, agentTypeId: channel.agentTypeId })
@@ -160,6 +197,96 @@ describe('Host scoped agent MCP and plugin prompt registry', () => {
     expect(await b.mcp.callTool({ name: 'qq_get_message', arguments: { message_id: messageId } })).toMatchObject({ isError: true })
     const database = new DatabaseSync(join(home, 'host', 'Eating.sqlite'), { readOnly: true })
     try { expect(database.prepare('SELECT request_id FROM actions').all()).toHaveLength(2) } finally { database.close() }
+  })
+
+  it.each([201, 301, 1000])('keeps all %i task message and resource references through lease rotation and a returned action', async count => {
+    const f = await setup(), initial = f.scope()
+    await f.client(initial)
+    const binding = { ...initial, messageIds: Array.from({ length: count }, (_, index) => String(10000 + index)), resourceIds: Array.from({ length: count }, (_, index) => `batch-image-${index}.jpg`) }
+    const { mcp } = await f.client(binding)
+    for (const index of [0, Math.floor(count / 2), count - 1]) {
+      expect(await mcp.callTool({ name: 'qq_get_message', arguments: { message_id: binding.messageIds[index] } })).toMatchObject({ isError: false })
+      expect(await mcp.callTool({ name: 'qq_get_image', arguments: { file: binding.resourceIds[index] } })).toMatchObject({ isError: false })
+    }
+    const sent = await mcp.callTool({ name: 'qq_send_private_message', arguments: { user_id: binding.targetId, message: 'Large scoped batch fixture', request_id: 'large-batch-action' } })
+    expect(sent.isError).toBe(false)
+    const messageId = String((f.services.readAgentActions!(binding.agentId)[0]!.result as JsonObject).message_id)
+    expect(await mcp.callTool({ name: 'qq_get_message', arguments: { message_id: binding.messageIds[0] } })).toMatchObject({ isError: false })
+    expect(await mcp.callTool({ name: 'qq_get_image', arguments: { file: binding.resourceIds[0] } })).toMatchObject({ isError: false })
+    expect(await mcp.callTool({ name: 'qq_get_message', arguments: { message_id: messageId } })).toMatchObject({ isError: false })
+    const before = f.onebot.requests.length
+    expect(await mcp.callTool({ name: 'qq_get_message', arguments: { message_id: '99999999' } })).toMatchObject({ isError: true })
+    expect(await mcp.callTool({ name: 'qq_get_image', arguments: { file: 'https://untrusted.invalid/ungranted.jpg' } })).toMatchObject({ isError: true })
+    expect(f.onebot.requests).toHaveLength(before)
+    f.services.revokeAgentAccess(binding.agentId)
+    await expect(mcp.callTool({ name: 'qq_get_message', arguments: { message_id: binding.messageIds[0] } })).rejects.toThrow()
+    expect(f.onebot.requests).toHaveLength(before)
+  })
+
+  it('accepts 100000 references per class and bounds inherited history independently of the current task', async () => {
+    const f = await setup(), initial = f.scope()
+    const binding = { ...initial, messageIds: Array.from({ length: 100000 }, (_, index) => String(10000 + index)), resourceIds: Array.from({ length: 100000 }, (_, index) => `capacity-image-${index}.jpg`) }
+    await f.client(initial)
+    const first = await f.client(binding)
+    expect(await first.mcp.callTool({ name: 'qq_get_message', arguments: { message_id: binding.messageIds[0] } })).toMatchObject({ isError: false })
+    expect(await first.mcp.callTool({ name: 'qq_get_image', arguments: { file: binding.resourceIds[0] } })).toMatchObject({ isError: false })
+    const next = await f.client(initial)
+    expect(await next.mcp.callTool({ name: 'qq_get_message', arguments: { message_id: binding.messageIds[0] } })).toMatchObject({ isError: true })
+    expect(await next.mcp.callTool({ name: 'qq_get_image', arguments: { file: binding.resourceIds[0] } })).toMatchObject({ isError: true })
+    expect(await next.mcp.callTool({ name: 'qq_get_message', arguments: { message_id: binding.messageIds.at(-256) } })).toMatchObject({ isError: false })
+    expect(await next.mcp.callTool({ name: 'qq_get_image', arguments: { file: binding.resourceIds.at(-256) } })).toMatchObject({ isError: false })
+    expect(await next.mcp.callTool({ name: 'qq_get_message', arguments: { message_id: binding.messageIds.at(-257) } })).toMatchObject({ isError: true })
+    expect(await next.mcp.callTool({ name: 'qq_get_image', arguments: { file: binding.resourceIds.at(-257) } })).toMatchObject({ isError: true })
+    expect(await next.mcp.callTool({ name: 'qq_get_message', arguments: { message_id: initial.messageIds[0] } })).toMatchObject({ isError: false })
+  })
+
+  it('bounds returned action references without evicting any current task input', async () => {
+    const f = await setup(), initial = f.scope()
+    const binding = { ...initial, messageIds: Array.from({ length: 1000 }, (_, index) => String(10000 + index)), resourceIds: Array.from({ length: 1000 }, (_, index) => `action-image-${index}.jpg`) }
+    const { mcp } = await f.client(binding)
+    const sentIds: string[] = []
+    for (let index = 0; index < 257; index++) {
+      const requestId = `bounded-action-${index}`
+      expect(await mcp.callTool({ name: 'qq_send_private_message', arguments: { user_id: binding.targetId, message: 'Bounded action history fixture', request_id: requestId } })).toMatchObject({ isError: false })
+      sentIds.push(String((f.services.readAgentActions!(binding.agentId).find(receipt => receipt.requestId === requestId)!.result as JsonObject).message_id))
+    }
+    expect(f.services.readAgentActions!(binding.agentId)).toHaveLength(100)
+    expect(await mcp.callTool({ name: 'qq_get_message', arguments: { message_id: sentIds[0] } })).toMatchObject({ isError: true })
+    expect(await mcp.callTool({ name: 'qq_get_message', arguments: { message_id: sentIds[1] } })).toMatchObject({ isError: false })
+    expect(await mcp.callTool({ name: 'qq_get_message', arguments: { message_id: sentIds.at(-1) } })).toMatchObject({ isError: false })
+    expect(await mcp.callTool({ name: 'qq_get_message', arguments: { message_id: binding.messageIds[0] } })).toMatchObject({ isError: false })
+    expect(await mcp.callTool({ name: 'qq_get_image', arguments: { file: binding.resourceIds[0] } })).toMatchObject({ isError: false })
+  })
+
+  it('rejects reference count, combined UTF8 byte and policy overflow without replacing the live actor or lease', async () => {
+    const f = await setup(), binding = f.scope(), { mcp } = await f.client(binding)
+    expect(await mcp.callTool({ name: 'qq_send_private_message', arguments: { user_id: binding.targetId, message: 'Preserve live lease fixture', request_id: 'preserve-live-lease' } })).toMatchObject({ isError: false })
+    const receipts = f.services.readAgentActions!(binding.agentId)
+    const wideReference = '图'.repeat(2048)
+    const rejected = [
+      { ...binding, messageIds: Array.from({ length: 100001 }, (_, index) => String(index)) },
+      { ...binding, resourceIds: Array.from({ length: 100001 }, (_, index) => `resource-${index}`) },
+      { ...binding, messageIds: Array(9000).fill(wideReference) as string[], resourceIds: Array(9000).fill(wideReference) as string[] },
+      { ...binding, messageIds: ['x'.repeat(2049)] },
+      { ...binding, resourceIds: ['invalid\nreference'] },
+    ]
+    for (const invalid of rejected) expect(() => f.services.getMcpConnection('qq', invalid)).toThrow(expect.objectContaining({ code: 'AGENT_SCOPE_VIOLATION', outcome: 'not-sent' }))
+    expect(() => f.services.getMcpConnection('qq', binding, { toolNames: ['qq_send_group_message'], active: () => true })).toThrow()
+    expect(f.services.readAgentActions!(binding.agentId)).toEqual(receipts)
+    expect(await mcp.callTool({ name: 'qq_get_message', arguments: { message_id: binding.messageIds[0] } })).toMatchObject({ isError: false })
+    expect(await mcp.callTool({ name: 'qq_get_image', arguments: { file: binding.resourceIds[0] } })).toMatchObject({ isError: false })
+    const sentId = String((receipts[0]!.result as JsonObject).message_id)
+    expect(await mcp.callTool({ name: 'qq_get_message', arguments: { message_id: sentId } })).toMatchObject({ isError: false })
+  })
+
+  it('rejects exact scope changes including conversation aliases while preserving the original lease', async () => {
+    const f = await setup(), binding = f.scope(), { mcp } = await f.client(binding)
+    const changes: ReadonlyArray<Partial<AgentInvocationScope>> = [
+      { pluginId: 'other-plugin' }, { instanceId: 'other-instance' }, { accountId: 'other-account' },
+      { conversationId: 'same-target-alias' }, { agentTypeId: 'qq.group' }, { kind: 'group' }, { targetId: '123456' },
+    ]
+    for (const change of changes) expect(() => f.services.getMcpConnection('qq', { ...binding, ...change })).toThrow()
+    expect(await mcp.callTool({ name: 'qq_get_message', arguments: { message_id: binding.messageIds[0] } })).toMatchObject({ isError: false })
   })
 
   it('starts a fresh receipt set for the next task while retaining authorized conversation references', async () => {

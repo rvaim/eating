@@ -258,10 +258,13 @@ test.describe('正式 QQ 平台与 OneBot v11', () => {
     }).toBe(0)
   })
 
-  test('设置侧栏分类保留草稿，保存后参数与存储方式实际生效', async ({ page }) => {
+  test('设置侧栏分类保留草稿，保存后参数与存储方式实际生效', async ({ page }, testInfo) => {
     await page.goto(`${url}/#overview`)
     await page.getByRole('link', { name: '设置', exact: true }).click()
     await expect(page.getByLabel('合并等待时间', { exact: true })).toHaveValue('500')
+    await expect(page.getByLabel('提前发送消息数', { exact: true })).toHaveValue('10')
+    await expect(page.getByLabel('提前发送目标大小', { exact: true })).toBeVisible()
+    await expect(page.getByText('AI 繁忙时消息留在队列；空闲且达到发送条件时，一次交接所有可用会话的待发送消息。', { exact: true })).toBeVisible()
     await page.getByLabel('合并等待时间', { exact: true }).fill('800')
     await page.getByLabel('最长等待时间', { exact: true }).fill('2500')
     const categories = page.getByRole('navigation', { name: '设置分类', exact: true })
@@ -281,6 +284,8 @@ test.describe('正式 QQ 平台与 OneBot v11', () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     await categories.getByRole('button', { name: '消息投递', exact: true }).click()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await expect(categories.getByRole('button', { name: '消息投递', exact: true })).toHaveAttribute('aria-current', 'page')
+    await page.screenshot({ path: testInfo.outputPath('整批交接设置-窄屏.png'), fullPage: true })
   })
 
   test('设置冲突保留原草稿，明确放弃后才能读取新版本，禁止隐式覆盖', async ({ page }) => {

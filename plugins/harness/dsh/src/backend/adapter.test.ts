@@ -6,8 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { validatedSessionEvent } from '@deepseek-ai/dsh-sdk-client'
 import type { DeepSeekHarnessOptions, RunResult } from '@deepseek-ai/dsh-sdk-client'
 import { analyzeTemplate, isJsonObject } from '@eating/plugin-sdk'
-import type { HarnessDeliveryBatch, HarnessMessageSink, HarnessOwnerConfiguration, HostPluginContext, JsonObject } from '@eating/plugin-sdk'
+import type { AgentInvocationScope, HarnessDeliveryBatch, HarnessMessageSink, HarnessOwnerConfiguration, HostPluginContext, JsonObject } from '@eating/plugin-sdk'
 import { DshPlugin, createRuntimeEnvironment } from './adapter'
+import { DshAgentControl } from './agent-control'
 import type { DshAdapterOptions, DshHarnessClient } from './adapter'
 import { DEFAULT_CONFIGURATION, DshSessionFile, readRestrictedJson, writeRestrictedJson } from './config'
 import type { SystemDshLocation } from './system-dsh'
@@ -19,6 +20,7 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+const admissionFetch = globalThis.fetch
 const cleanups: Array<() => Promise<void> | void> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
 
@@ -55,18 +57,25 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
   const context: HostPluginContext = {
     dataDirectory: directory,
     harness: { registerSink: vi.fn(sink => { registered = sink; return detach }), wake: vi.fn(), readOwnerConfiguration: () => owner,
-      readAgentActions: vi.fn(() => []), revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1/mcp/qq', headers: { Authorization: 'Bearer fixture-only-mcp-token' } })) },
+      readAgentActions: vi.fn(() => []), revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: vi.fn((_pluginId: string, scope: AgentInvocationScope) => ({ url: 'http://127.0.0.1:1/mcp/qq', headers: { Authorization: 'Bearer fixture-only-mcp-token' }, toolNames: owner.agentTypes.find(type => type.id === scope.agentTypeId)!.enabledTools })) },
     getSetting: vi.fn(() => null), setSetting: vi.fn(), recordEvent: vi.fn(() => { throw new Error('Adapter must not record a chat copy') }),
     listMessages: vi.fn(() => []), executeIdempotent: vi.fn(async () => { throw new Error('Adapter must never forward finalResponse') }),
   }
   const location: SystemDshLocation | null = options.missing ? null : { bin: '/fixture/system/dsh', version: '0.0.0-fixture', source: 'override' }
   const locateSystem = vi.fn(() => location)
-  const clients: Array<{ client: DshHarnessClient; launch: DeepSeekHarnessOptions; run: ReturnType<typeof deferred<RunResult>>; runInput: string | null; sessionCalls: number; resumeCalls: number; closeCalls: number }> = []
+  const clients: Array<{ client: DshHarnessClient; launch: DeepSeekHarnessOptions; run: ReturnType<typeof deferred<RunResult>>; runInput: string | null; sessionCalls: number; resumeCalls: number; closeCalls: number; reportAdmission: (phase: 'idle' | 'busy') => Promise<void> }> = []
   const factory = vi.fn((launch: DeepSeekHarnessOptions): DshHarnessClient => {
     const item = { client: undefined as DshHarnessClient | undefined, launch, run: deferred<RunResult>(), runInput: null as string | null, sessionCalls: 0, resumeCalls: 0, closeCalls: 0 }
     const nonce = launch.env!.EATING_DSH_BRIDGE_NONCE!
     const sessionId = launch.env!.EATING_DSH_SESSION_ID!
     const bridge = launch.env!.EATING_DSH_BRIDGE_DIRECTORY!
+    let sequence = 0
+    const reportAdmission = async (phase: 'idle' | 'busy') => {
+      const response = await admissionFetch(`${launch.env!.EATING_DSH_CONTROL_URL}/delivery-state`, { method: 'POST',
+        headers: { Authorization: `Bearer ${launch.env!.EATING_DSH_CONTROL_TOKEN}`, 'X-Eating-Runtime': nonce, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: sessionId, sequence: ++sequence, phase }) })
+      if (!response.ok) throw new Error('Fixture native admission failed')
+    }
     const session = { id: sessionId,
       getWorkingDirectory: vi.fn(async () => {
         writeRestrictedJson(join(bridge, 'session-ready.json'), { schemaVersion: 1, nonce, sessionId })
@@ -86,6 +95,7 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
         writeRestrictedJson(join(bridge, 'native-web-ready.json'), { schemaVersion: 1, nonce, sessionId, url: 'http://127.0.0.1:45678/?token=fixture-web-token' })
         writeRestrictedJson(join(bridge, 'ready.json'), { schemaVersion: 1, nonce, sessionId, toolsReady: true, durabilityAvailable: true,
           recovery: options.recovered ? 'persisted' : 'absent', ...(options.recovered && expected ? { batchId: expected.batchId! } : {}) })
+        await reportAdmission('idle')
       }),
       session: vi.fn(() => { item.sessionCalls++; return session }),
       resumeSession: vi.fn(async () => {
@@ -96,7 +106,7 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
       close: vi.fn(async () => { item.closeCalls++; item.run.reject(new Error('fixture closed')); await item.run.promise.catch(() => {}) }),
     }
     item.client = client
-    clients.push({ ...item, client })
+    clients.push({ ...item, client, reportAdmission })
     // Keep mutable counters on the same object seen by test assertions.
     Object.assign(clients[clients.length - 1]!, { get sessionCalls() { return item.sessionCalls }, get resumeCalls() { return item.resumeCalls }, get closeCalls() { return item.closeCalls } })
     Object.defineProperties(clients[clients.length - 1]!, {
@@ -296,6 +306,62 @@ describe('DSH isolated runtime lifecycle', () => {
 })
 
 describe('DSH reliable single-batch handoff', () => {
+  it('durably delivers all 101 targets once when the binding store already has 100 targets', async () => {
+    const setup = fixture()
+    await configure(setup.plugin)
+    await setup.plugin.connect()
+    const client = setup.clients[0]!, rootId = client.launch.env!.EATING_DSH_SESSION_ID!
+    const control = Reflect.get(setup.plugin, 'agentControl') as DshAgentControl
+    const original = batch(), events = Array.from({ length: 101 }, (_, index) => ({ ...original.events[0]!, eventId: `event-${index}`, targetId: String(200 + index), conversationId: `conversation-${index}`, messageId: `message-${index}` }))
+    control.bindBatch({ ...original, conversationId: null, events: events.slice(0, 100) }, rootId)
+    const delivery = { ...original, conversationId: null, events: [events[100]!, ...events.slice(0, 100)] }
+    expect(await setup.plugin.deliverBatch(delivery, new AbortController().signal)).toMatchObject({ accepted: true, durable: true })
+    const payload = JSON.parse(client.runInput!) as { context: { conversations: JsonObject[] }; events: unknown[] }
+    expect(payload.events).toEqual(delivery.events)
+    expect(payload.context.conversations).toHaveLength(101)
+    expect(payload.context.conversations[0]).toMatchObject({ targetId: '300', agentTypeId: 'qq.group', routingError: { code: 'AGENT_CAPACITY_REACHED' } })
+    expect(payload.context.conversations.slice(1).every(conversation => !conversation.routingError)).toBe(true)
+    const policy = readRestrictedJson(join(setup.directory, 'bridge', 'owner-policy.json'))!
+    expect(policy.bindings).toHaveLength(101)
+    expect((policy.bindings as JsonObject[])[0]).toEqual({ contextRef: payload.context.conversations[0]!.contextRef, routingError: payload.context.conversations[0]!.routingError })
+    expect(control.list()).toHaveLength(100)
+    client.run.resolve(result(client))
+    await vi.waitFor(() => expect(setup.plugin.isReady()).toBe(true))
+    expect(await setup.plugin.deliverBatch(delivery, new AbortController().signal)).toMatchObject({ accepted: true, durable: true })
+    const session = client.client.session(rootId)
+    expect(session.run).toHaveBeenCalledOnce()
+  })
+
+  it('delivers unavailable source identities and routing errors alongside routable groups', async () => {
+    const setup = fixture()
+    await configure(setup.plugin)
+    await setup.plugin.connect()
+    const original = batch(), events = [{ ...original.events[0]!, pluginId: 'missing-source', eventId: 'unavailable' }, original.events[0]!]
+    expect(await setup.plugin.deliverBatch({ ...original, conversationId: null, events }, new AbortController().signal)).toMatchObject({ accepted: true, durable: true })
+    const payload = JSON.parse(setup.clients[0]!.runInput!)
+    expect(payload.context.conversations[0]).toMatchObject({ pluginId: 'missing-source', agentTypeId: null, routingError: { code: 'AGENT_TYPE_UNAVAILABLE' } })
+    expect(payload.events).toEqual(events)
+    expect(payload.context.conversations[1].routingError).toBeUndefined()
+    setup.clients[0]!.run.resolve(result(setup.clients[0]!))
+  })
+
+  it('waits for native idle admission even when no SDK delivery is active', async () => {
+    const setup = fixture()
+    await configure(setup.plugin)
+    await setup.plugin.connect()
+    const client = setup.clients[0]!
+    expect(setup.plugin.isReady()).toBe(true)
+    await client.reportAdmission('busy')
+    expect(setup.plugin.isReady()).toBe(false)
+    expect(await setup.plugin.deliverBatch(batch(), new AbortController().signal)).toEqual({ accepted: false })
+    expect(client.runInput).toBeNull()
+    expect(existsSync(join(setup.directory, 'agent-bindings.json'))).toBe(false)
+    await client.reportAdmission('idle')
+    expect(setup.plugin.isReady()).toBe(true)
+    expect(await setup.plugin.deliverBatch(batch(), new AbortController().signal)).toMatchObject({ accepted: true, durable: true })
+    client.run.resolve(result(client))
+  })
+
   it('accepts only a matching durable ACK and retains capacity until the SDK run ends', async () => {
     const setup = fixture()
     await configure(setup.plugin)
@@ -401,7 +467,11 @@ describe('DSH reliable single-batch handoff', () => {
     expect(input.eating).toMatchObject({ magic: 'eating-harness-delivery', protocolVersion: 1, batchId: 'a'.repeat(64) })
     expect(Object.keys(input).sort()).toEqual(['context', 'eating', 'events'])
     expect(input.events).toEqual(batch(undefined, text).events)
-    expect(input.context).toMatchObject({ contextRef: 'a'.repeat(64), agentTypeId: 'qq.group', ownerRevision: 2 })
+    expect(input.context).toEqual({ contextRef: 'a'.repeat(64), createdAt: batch().createdAt, reason: batch().reason, ownerRevision: 2,
+      conversations: [{ contextRef: 'a'.repeat(64), agentTypeId: 'qq.group', pluginId: 'qq', platform: 'qq', accountId: '100', instanceId: 'fixture-instance', conversationId: batch().conversationId, kind: 'group', targetId: '200', createdAt: batch().createdAt, reason: batch().reason, ownerRevision: 2 }] })
+    expect(policy.contextRef).toBe('a'.repeat(64))
+    expect(policy.bindings).toEqual([{ contextRef: 'a'.repeat(64), agentId: expect.any(String), agentTypeId: 'qq.group', label: expect.any(String) }])
+    expect(policy).not.toHaveProperty('binding')
     expect(input.eating).toMatchObject({ digest: createHash('sha256').update(JSON.stringify({ context: input.context, events: input.events })).digest('hex') })
     setup.clients[0]!.run.resolve(result(setup.clients[0]!))
   })
@@ -421,16 +491,54 @@ describe('DSH reliable single-batch handoff', () => {
     setup.clients[0]!.run.resolve(result(setup.clients[0]!))
   })
 
-  it.each(['conversation', 'trust', 'kind', 'platform', 'plugin', 'instance', 'target', 'account'] as const)('rejects mixed or unverified %s context before preparing an Agent or SDK run', async mismatch => {
+  it('delivers more than 200 globally ordered events from different scopes in one complete SDK run', async () => {
+    const setup = fixture()
+    await configure(setup.plugin)
+    await setup.plugin.connect()
+    const original = batch(), first = original.events[0]!
+    const sources = [first, { ...first, targetId: '201' }, { ...first, accountId: '101' }, { ...first, source: { ...first.source, kind: 'private' as const } }]
+    const events = Array.from({ length: 245 }, (_, index) => ({ ...sources[index % sources.length]!, eventId: `event-${index}`, messageId: `message-${index}`, resourceIds: [`resource-${index}`], text: `raw-${index}`, content: [{ type: 'text', text: `raw-${index}` }], receivedAt: new Date(Date.parse(original.createdAt) + index).toISOString() }))
+    const incoming: HarnessDeliveryBatch = { ...original, conversationId: null, events }
+    expect(await setup.plugin.deliverBatch(incoming, new AbortController().signal)).toMatchObject({ accepted: true, durable: true })
+    const client = setup.clients[0]!, input = JSON.parse(client.runInput!) as JsonObject
+    const run = client.client.session(client.launch.env!.EATING_DSH_SESSION_ID!).run
+    expect(run).toHaveBeenCalledOnce()
+    expect(run).toHaveBeenCalledWith(client.runInput)
+    expect(input.events).toEqual(events)
+    const conversations = sources.map(event => ({ contextRef: createHash('sha256').update(JSON.stringify([incoming.batchId, event.pluginId, event.instanceId, event.accountId, event.conversationId, event.source.kind, event.targetId])).digest('hex'),
+      agentTypeId: `qq.${event.source.kind}`, pluginId: event.pluginId, platform: event.platform, accountId: event.accountId, instanceId: event.instanceId, conversationId: event.conversationId, kind: event.source.kind, targetId: event.targetId,
+      createdAt: incoming.createdAt, reason: incoming.reason, ownerRevision: 1 }))
+    expect(input.context).toEqual({ contextRef: incoming.batchId, createdAt: incoming.createdAt, reason: incoming.reason, ownerRevision: 1, conversations })
+    expect(new Set(conversations.map(context => context.contextRef)).size).toBe(sources.length)
+    const digest = createHash('sha256').update(JSON.stringify({ context: input.context, events })).digest('hex')
+    expect(input.eating).toMatchObject({ batchId: incoming.batchId, digest })
+    expect(readRestrictedJson(join(setup.directory, 'bridge', 'expected.json'))).toMatchObject({ batchId: incoming.batchId, digest })
+    expect(readRestrictedJson(join(setup.directory, 'bridge', `ack-${incoming.batchId}.json`))).toMatchObject({ batchId: incoming.batchId, digest })
+    const policy = readRestrictedJson(join(setup.directory, 'bridge', 'owner-policy.json'))!
+    expect(policy.contextRef).toBe(incoming.batchId)
+    expect(policy.bindings).toEqual(conversations.map(context => ({ contextRef: context.contextRef, agentId: expect.any(String), agentTypeId: context.agentTypeId, label: expect.any(String) })))
+    const bindings = readRestrictedJson(join(setup.directory, 'agent-bindings.json'))!.bindings as JsonObject[]
+    expect(new Set(bindings.map(binding => (binding.scope as JsonObject).agentId)).size).toBe(sources.length)
+    for (const [index, binding] of bindings.entries()) {
+      const selected = events.filter((_, eventIndex) => eventIndex % sources.length === index)
+      const source = sources[index]!
+      expect(binding.scope).toEqual({ pluginId: source.pluginId, instanceId: source.instanceId, accountId: source.accountId, conversationId: source.conversationId, targetId: source.targetId,
+        agentId: expect.any(String), agentTypeId: conversations[index]!.agentTypeId, kind: source.source.kind, messageIds: selected.map(event => event.messageId), resourceIds: selected.flatMap(event => event.resourceIds) })
+    }
+    client.run.resolve(result(client))
+  })
+
+  it.each(['conversation', 'trust', 'kind', 'plugin', 'instance', 'target', 'account', 'single-null'] as const)('rejects an inconsistent or unverified %s batch before preparing an Agent or SDK run', async mismatch => {
     const setup = fixture()
     await configure(setup.plugin)
     await setup.plugin.connect()
     const valid = batch(), first = valid.events[0]!
     const changed = mismatch === 'conversation' ? { ...first, conversationId: 'other-conversation' }
       : mismatch === 'trust' ? { ...first, source: { ...first.source, trust: 'owner' } }
-      : mismatch === 'kind' ? { ...first, source: { ...first.source, kind: 'private' } }
-      : { ...first, [{ platform: 'platform', plugin: 'pluginId', instance: 'instanceId', target: 'targetId', account: 'accountId' }[mismatch]]: 'other' }
-    const malformed: unknown = { ...valid, events: [first, changed] }
+      : mismatch === 'kind' ? { ...first, source: { ...first.source, kind: 'unknown' } }
+      : mismatch === 'single-null' ? first
+      : { ...first, [{ plugin: 'pluginId', instance: 'instanceId', target: 'targetId', account: 'accountId' }[mismatch]]: 'other' }
+    const malformed: unknown = { ...valid, ...(mismatch === 'single-null' ? { conversationId: null } : {}), events: [first, changed] }
     expect(await setup.plugin.deliverBatch(malformed as HarnessDeliveryBatch, new AbortController().signal)).toEqual({ accepted: false })
     expect(setup.clients[0]!.runInput).toBeNull()
     expect(existsSync(join(setup.directory, 'agent-bindings.json'))).toBe(false)

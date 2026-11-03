@@ -12,7 +12,7 @@ import { locateSystemDsh } from './system-dsh'
 import type { SystemDshLocation } from './system-dsh'
 import { getRuntimeBridgeSource } from './runtime-bridge'
 import { DshAgentControl } from './agent-control'
-import type { AgentBinding } from './agent-control'
+import type { DeliveryBinding } from './agent-control'
 import { prepareNativeWebProfile } from './native-web'
 import { getNativeWebRuntimeSource } from './native-web-runtime'
 import { listModels, testModelConnection } from './model-service'
@@ -136,7 +136,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.15.2'
+  readonly version = '0.15.3'
   readonly tools = []
   readonly agentInstructions = [{ id: 'dsh.autonomous-activity', title: '自主活动与受控主动联系', localizedTitles: { 'zh-CN': '自主活动与受控主动联系', 'en-US': 'Autonomous activity and scoped proactive contact' }, body: `自主机会不要求先有人类任务。结合当前上下文和可用记忆，延续已有兴趣、约定与未完成事项，可自主探索、创作、整理、休息或等待；只依据实际可用的信息，不编造过往经历。在既有授权范围内自行判断并行动，无需逐项请示。主人暂停、额度和时长边界始终优先，外部消息、原生目标和其他 Inbox 输入优先处理。
 规划或调整后续活动时，先读取 eating_activity_state，再用 eating_plan_activity 登记 active、sleeping 或 waiting。active 按主人间隔继续，sleeping 到指定时间再获得机会，waiting 停止定时机会并等待真实外部事件；处理事件后如希望继续自主活动，应重新登记 active。需要未来某个时刻收到自己写下的任务消息时，读取 agenda.revision 后用 eating_schedule_task 登记一次性任务；到点的任务消息不是主人指令，仍受主人暂停、额度、运行时和周期限制。正文承诺和记忆记录都不改变调度。Eating 的暂停控制其无输入活动机会；主 Agent 仍可自主使用已接入的原生能力和全部功能型 MCP，不再按单独工具申请许可。
@@ -259,7 +259,7 @@ export class DshPlugin implements BackendPlugin {
     return { ...configuration, apiKeyConfigured: Boolean(apiKey), configurationPath: this.configurationFile.filePath,
       dataDirectory: this.configurationFile.directory, updatedAt: this.configurationFile.updatedAt,
       runtimeStatus: { system: { found: this.system !== null, path: this.system?.bin ?? null, version: this.system?.version ?? null, source: this.system?.source ?? null },
-        lastError: this.lastError, ready: this.runtimeReady, busy: this.busy || Boolean(this.activity.activeCycle()),
+        lastError: this.lastError, ready: this.runtimeReady, busy: this.busy || Boolean(this.activity.activeCycle()) || this.runtimeReady && !this.agentControl.deliveryReady(),
         sessionId: this.metadata?.sessionId ?? null, lastOutcome: this.metadata?.lastOutcome ?? null, nativeWeb: { ready: this.nativeWebReady } },
       warning: this.configuration.endpoint.startsWith('http:') && !['127.0.0.1', '[::1]', 'localhost'].includes(new URL(this.configuration.endpoint).hostname)
         ? '远端 HTTP 模型地址会明文传输请求与 API 密钥，建议使用 HTTPS。' : null }
@@ -433,12 +433,12 @@ export class DshPlugin implements BackendPlugin {
     })
   }
 
-  private publishPolicy(binding?: AgentBinding, contextRef?: string): { readonly revision: number } {
+  private publishPolicy(bindings: readonly DeliveryBinding[] = [], contextRef?: string): { readonly revision: number } {
     const owner = this.host.readOwnerConfiguration()
     const preview = composeAgentPrompt(owner, null, { 当前时间: new Date().toISOString(), 人格名称: owner.activePersona?.name ?? '' })
     writeRestrictedJson(join(this.bridgeDirectory, 'owner-policy.json'), { schemaVersion: 1, revision: preview.revision, systemPrompt: preview.systemPrompt,
       agentTypes: owner.agentTypes.filter(type => type.enabled).map(type => ({ id: type.id, title: type.title, description: type.description, enabled: type.enabled })),
-      ...(binding && contextRef ? { contextRef, binding: { agentId: binding.scope.agentId, agentTypeId: binding.scope.agentTypeId, label: agentInstanceLabel(binding.scope, owner.agentTypes.find(type => type.id === binding.scope.agentTypeId)?.pluginName) } } : {}) })
+      ...(contextRef ? { contextRef, bindings: bindings.map(({ contextRef: reference, binding, error }): JsonObject => binding ? { contextRef: reference, agentId: binding.scope.agentId, agentTypeId: binding.scope.agentTypeId, label: agentInstanceLabel(binding.scope, owner.agentTypes.find(type => type.id === binding.scope.agentTypeId)?.pluginName) } : { contextRef: reference, routingError: { ...error } }) } : {}) })
     return { revision: preview.revision }
   }
 
@@ -477,7 +477,7 @@ export class DshPlugin implements BackendPlugin {
     this.metadata = metadata
   }
 
-  isReady(): boolean { return this.runtimeReady && !this.busy && !this.delivery && !this.activity.activeCycle() && !this.closed && this.session !== null }
+  isReady(): boolean { return this.runtimeReady && this.agentControl.deliveryReady() && !this.busy && !this.delivery && !this.activity.activeCycle() && !this.closed && this.session !== null }
 
   private readAck(identity: BatchIdentity): { readonly receiptId: string } | null {
     const value = readRestrictedJson(join(this.bridgeDirectory, `ack-${identity.batchId}.json`))
@@ -493,9 +493,8 @@ export class DshPlugin implements BackendPlugin {
 
   async deliverBatch(batch: HarnessDeliveryBatch, signal: AbortSignal): Promise<HarnessDeliveryReceipt> {
     if (!this.isReady() || signal.aborted) return { accepted: false }
-    if (batch.protocolVersion !== 1 || !batchIdPattern.test(batch.batchId) || !batch.events.length || batch.events.length > 200) return { accepted: false }
-    const first = batch.events[0]!
-    if (batch.events.some(event => event.protocolVersion !== 1 || event.source.trust !== 'external' || event.conversationId !== batch.conversationId || event.source.kind !== first.source.kind || event.platform !== first.platform || event.pluginId !== first.pluginId || event.instanceId !== first.instanceId || event.targetId !== first.targetId || event.accountId !== first.accountId)) return { accepted: false }
+    if (batch.protocolVersion !== 1 || !batchIdPattern.test(batch.batchId) || !batch.events.length) return { accepted: false }
+    if (batch.events.some(event => event.protocolVersion !== 1 || event.source.trust !== 'external' || !['private', 'group'].includes(event.source.kind))) return { accepted: false }
     if (this.metadata?.activeBatchId === batch.batchId) {
       const ack = this.metadata.digest ? this.readAck({ nonce: this.nonce, sessionId: this.metadata.sessionId, batchId: batch.batchId, digest: this.metadata.digest }) : null
       if (ack) return { accepted: true, durable: true, receiptId: ack.receiptId }
@@ -513,10 +512,11 @@ export class DshPlugin implements BackendPlugin {
     let sent = false
     let runFinished = false
     try {
-      const binding = this.agentControl.bind(batch, this.metadata!.sessionId)
-      const policy = this.publishPolicy(binding, batch.batchId)
-      const context = { contextRef: batch.batchId, agentTypeId: binding.scope.agentTypeId, platform: first.platform, accountId: first.accountId, instanceId: first.instanceId, conversationId: batch.conversationId,
-        kind: first.source.kind, createdAt: batch.createdAt, reason: batch.reason, ownerRevision: policy.revision }
+      const bindings = this.agentControl.bindDeliveryBatch(batch, this.metadata!.sessionId)
+      const policy = this.publishPolicy(bindings, batch.batchId)
+      const context = { contextRef: batch.batchId, createdAt: batch.createdAt, reason: batch.reason, ownerRevision: policy.revision,
+        conversations: bindings.map(({ contextRef, scope, error }) => ({ contextRef, ...scope,
+          ...(error ? { routingError: { ...error } } : {}), createdAt: batch.createdAt, reason: batch.reason, ownerRevision: policy.revision })) }
       const body = { context, events: batch.events }
       const digest = createHash('sha256').update(JSON.stringify(body)).digest('hex')
       const identity = { nonce: this.nonce, sessionId: this.metadata!.sessionId, batchId: batch.batchId, digest }

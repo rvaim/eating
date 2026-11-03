@@ -43,7 +43,7 @@ function expectMainSystem(f: Awaited<ReturnType<typeof fixture>>) {
     expect(system).toContain('OWNER-MARKER-A。你是Eating，当前人格人格乙。自主选择子代理并核对结果。')
     expect(system).toContain(trustedPersona)
     expect(system).toContain('主 Agent 负责整体安排、轻量分流与必要协调')
-    expect(system).toContain('eating_handle_conversation，只传真实 context_ref')
+    expect(system).toContain('eating_handle_conversation，先判断事实是否充分，再传真实 context_ref、显式 mode 和必要的 context_notes')
     expect(system).toContain('main 不先撰写完整回复')
     expect(system).toContain('所有功能型 MCP 的全部工具默认向所有 Agent 开放')
     expect(system).toContain('新增来源、工具和 Agent 类型也默认开放')
@@ -122,7 +122,7 @@ async function fixture({ withholdSend = false, autonomyEnabled = true, scheduled
         const last = [...messages].reverse().find(message => message.role === 'tool')!
         const listed = object(JSON.parse(String(last.content))), target = (listed.targets as JsonObject[]).find(row => row.targetId === targetId && row.agentTypeId === 'qq.private')
         if (!target) throw new Error('Current contact policy did not return the approved private target')
-        tool('eating_contact_target', { target_id: target.id, task: 'Send the isolated loopback contact message to the approved target and report the real receipt.' })
+        tool('eating_contact_target', { mode: 'reply', target_id: target.id, task: 'Send the isolated loopback contact message to the approved target and report the real receipt.' })
       }
       else if (autonomyEnabled && stage === 2) tool('eating_activity_state', {})
       else if (autonomyEnabled && stage === 3) {
@@ -222,7 +222,7 @@ async function expectOrdinaryContact(f: Awaited<ReturnType<typeof fixture>>, { g
   expect(calls.map(call => object(call.function).name)).toEqual([...(groupScopeFirst ? ['eating_delegate_task'] : []), 'eating_list_contact_targets', 'eating_contact_target'])
   const contactCalls = calls.slice(Number(groupScopeFirst))
   expect(JSON.parse(String(object(contactCalls[0]!.function).arguments))).toEqual({})
-  expect(Object.keys(object(JSON.parse(String(object(contactCalls[1]!.function).arguments)))).sort()).toEqual(['target_id', 'task'])
+  expect(Object.keys(object(JSON.parse(String(object(contactCalls[1]!.function).arguments)))).sort()).toEqual(['mode', 'target_id', 'task'])
   expect(f.plugin.autonomy.snapshot()).toMatchObject({ configuration: { enabled: false }, state: { ownerPaused: true, active: null, cycles: 0, lastOutcome: null, history: [] } })
   expect(f.modelErrors).toEqual([])
   const childInput = children[0]!.messages.find(message => message.role === 'user' && typeof message.content === 'string' && message.content.includes('eating-contact'))!
@@ -242,7 +242,7 @@ describe.runIf(Boolean(systemBin))('native main contact with real scoped Host an
     expect(f.host.harness.getStatus()).toMatchObject({ accepted: 1, queueMessages: 0 })
     const rootInput = f.requests.find(request => request.main)!.messages.find(message => message.role === 'user' && typeof message.content === 'string' && message.content.includes(text))!
     const incoming = object(JSON.parse(String(rootInput.content)))
-    expect(incoming).toMatchObject({ context: { agentTypeId: 'qq.group' }, events: [{ targetId: '123456', messageId: '2101', source: { kind: 'group' } }] })
+    expect(incoming).toMatchObject({ context: { conversations: [{ agentTypeId: 'qq.group' }] }, events: [{ targetId: '123456', messageId: '2101', source: { kind: 'group' } }] })
     expect(object(child.eating).contextRef).not.toBe(object(incoming.eating).batchId)
     expect(JSON.stringify(child)).not.toContain(text)
   }, 60000)

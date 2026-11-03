@@ -137,6 +137,66 @@ const scope = { agentId: 'main-fixture', agentTypeId: 'main' }
 const stdioArgs = [fileURLToPath(new URL('../../../tests/fixtures/direct-mcp-stdio.mjs', import.meta.url))]
 
 describe('capability MCP and cross-plugin sticker resources', () => {
+  it.each(['scope', 'source'] as const)('limits %s verify capabilities to read tools under default all and restores reply writes', async mode => {
+    const calls: string[] = []
+    const entry: BackendPluginEntry = { id: 'verify-source', kind: 'capability', storageDirectory: 'verify-source', create: () => ({
+      id: 'verify-source', kind: 'capability', name: 'Verify fixture', version: '1', capabilities: [],
+      tools: ['memory_read', 'memory_write', 'image_generate'].map(name => ({ name, title: name, description: name, readOnly: name === 'memory_read', destructive: false, resultFormat: 'json' as const, inputSchema: { type: 'object', properties: { request_id: { type: 'string' } } } })),
+      getStatus: () => ({ state: 'connected', accountId: null, accountName: null, lastError: null, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 }),
+      getPublicConfiguration: () => ({}), updateConfiguration: async () => ({}), connect: async () => {}, disconnect: async () => {}, dispose: async () => {}, invoke: async () => null,
+      invokeCapability: async (name, _input, _request, scope) => { calls.push(name); return { readOnly: scope.readOnly === true || scope.source?.readOnly === true } },
+    }) }
+    const f = await fixture({ extraEntries: [entry] }), base = { agentId: 'verify-agent', agentTypeId: 'future.type' }
+    const reply = await f.client(base, 'plugin.verify-source')
+    const source: AgentInvocationScope = { ...base, pluginId: 'qq', instanceId: 'fixture', accountId: 'fixture', conversationId: 'fixture', kind: 'private', targetId: 'fixture', messageIds: [], resourceIds: [], readOnly: true }
+    const verification = { ...base, ...(mode === 'scope' ? { readOnly: true } : { source }) }
+    const verify = await f.client(verification, 'plugin.verify-source')
+    await expect(reply.listTools()).rejects.toThrow()
+    expect((await verify.listTools()).tools.map(tool => tool.name)).toEqual(['memory_read'])
+    expect(await verify.callTool({ name: 'memory_read', arguments: {} })).toMatchObject({ isError: false, structuredContent: { result: { readOnly: true } } })
+    for (const name of ['memory_write', 'image_generate']) expect(await verify.callTool({ name, arguments: { request_id: 'verify-capability-denied' } })).toMatchObject({ isError: true, structuredContent: { code: 'CAPABILITY_ACCESS_DENIED', outcome: 'not-sent' } })
+    const access = Reflect.get(f.host, 'capabilityAccess'), leases = [...Reflect.get(access, 'leases').values()], lease = leases.find(candidate => candidate.scope.agentId === base.agentId && candidate.sourceId === 'plugin.verify-source')
+    await expect(Reflect.get(access, 'invoke').call(access, lease, 'memory_write', { request_id: 'verify-direct-denied' })).rejects.toMatchObject({ statusCode: 403, outcome: 'not-sent' })
+    expect(access.activePermission(base, 'plugin.verify-source', 'memory_write')).toBe(false)
+    expect(calls).toEqual(['memory_read'])
+    const restored = await f.client(base, 'plugin.verify-source')
+    await expect(verify.listTools()).rejects.toThrow()
+    await expect(Reflect.get(access, 'invoke').call(access, lease, 'memory_read', {})).rejects.toMatchObject({ statusCode: 403 })
+    expect(await restored.callTool({ name: 'memory_write', arguments: { request_id: 'reply-capability-write' } })).toMatchObject({ isError: false })
+    expect(calls).toEqual(['memory_read', 'memory_write'])
+    expect(f.host.store.getSetting('host:mcp-access-policies')).toBeNull()
+  })
+
+  it('filters direct unknown read metadata during verify and restores the reply write envelope', async () => {
+    const f = await fixture(), directory = await f.api('/mcp')
+    const saved = await f.api('/mcp', { operation: 'save', input: { expectedRevision: directory.revision, name: 'Verify direct fixture', transport: 'stdio', command: process.execPath, args: stdioArgs, autoConnect: false } })
+    const id = saved.services.find((item: JsonObject) => item.transport === 'stdio').id
+    await f.api('/mcp', { operation: 'connect', input: { id } })
+    const base = { agentId: 'direct-verify', agentTypeId: 'future.type' }
+    const original = await f.client(base, id), verify = await f.client({ ...base, readOnly: true }, id)
+    await expect(original.listTools()).rejects.toThrow()
+    expect((await verify.listTools()).tools.map(tool => tool.name)).toEqual(['fixture_echo'])
+    expect(await verify.callTool({ name: 'fixture_echo', arguments: { value: 'verify read' } })).toMatchObject({ structuredContent: { args: { value: 'verify read' } } })
+    for (const name of ['fixture_image', 'fixture_hang', 'fixture_error']) expect(await verify.callTool({ name, arguments: { arguments: {}, request_id: 'direct-verify-denied' } })).toMatchObject({ isError: true, structuredContent: { code: 'CAPABILITY_ACCESS_DENIED', outcome: 'not-sent' } })
+    const restored = await f.client(base, id)
+    await expect(verify.listTools()).rejects.toThrow()
+    expect((await restored.callTool({ name: 'fixture_image', arguments: { arguments: {}, request_id: 'direct-reply-restored' } })).isError).toBeFalsy()
+  })
+
+  it('retires old capability leases even when a verify stage has no readable tools from their source', async () => {
+    const f = await fixture(), upstream = await changingDirectFixture(), directory = await f.api('/mcp')
+    const saved = await f.api('/mcp', { operation: 'save', input: { expectedRevision: directory.revision, name: 'Write only verify fixture', transport: 'streamable-http', url: upstream.url, autoConnect: false } })
+    const id = saved.services.find((item: JsonObject) => item.transport === 'streamable-http').id
+    await f.api('/mcp', { operation: 'connect', input: { id } })
+    const base = { agentId: 'write-only-verify', agentTypeId: 'main' }, original = await f.client(base, id)
+    const access = Reflect.get(f.host, 'capabilityAccess'), lease = [...Reflect.get(access, 'leases').values()].find(candidate => candidate.scope.agentId === base.agentId && candidate.sourceId === id)
+    expect(f.services.getCapabilityMcpConnections({ ...base, readOnly: true }).some(connection => connection.id === id)).toBe(false)
+    await expect(original.listTools()).rejects.toThrow()
+    await expect(Reflect.get(access, 'invoke').call(access, lease, 'write', { arguments: {}, request_id: 'old-lease-write' })).rejects.toMatchObject({ statusCode: 403, outcome: 'not-sent' })
+    expect(upstream.calls).toEqual([])
+    await f.host.close()
+  })
+
   it.each([undefined, JSON.stringify({ schemaVersion: 1, revision: 91, grants: { 'plugin.stickers': { agentTypeIds: [], toolNames: [] } } }), '{preserved-unused-configuration'])('opens every current plugin tool by default without reading or changing saved grant rows: %s', async storedGrants => {
     const f = await fixture({ storedGrants })
     const image = createImageFixturePng().toString('base64')
@@ -628,6 +688,31 @@ describe('capability MCP and cross-plugin sticker resources', () => {
     await f.host.close()
     const db = await readFile(join(f.home, 'host/Eating.sqlite'))
     expect(db.includes(Buffer.from(image))).toBe(false)
+  })
+
+  it('rejects ambiguous main memory context before invoking a provider with self fallback', async () => {
+    const home = await temporaryHome(), direct = new DirectMcpConnections(home)
+    stops.push(() => direct.close())
+    let invoked = 0
+    const plugin: BackendPlugin = { id: 'memory', kind: 'capability', name: 'Memory fixture', version: '1.0.0', capabilities: [],
+      tools: [{ name: 'memory_search', title: 'Memory', description: 'Memory', inputSchema: { type: 'object' }, readOnly: true, destructive: false, resultFormat: 'json' }],
+      memory: { recall: async () => ({ text: '', items: [] }), capture: async () => {} },
+      getStatus: () => ({ state: 'connected', accountId: null, accountName: null, lastError: null, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 }),
+      getPublicConfiguration: () => ({}), updateConfiguration: async () => ({}), connect: async () => {}, disconnect: async () => {}, invoke: async () => null,
+      invokeCapability: async () => { invoked++; return null }, dispose: async () => {}, }
+    const store = new HostStore(join(home, 'fixture.sqlite'))
+    stops.push(() => store.close())
+    let context: null | undefined = null
+    const access = new CapabilityAccess({ store, direct, plugins: () => [plugin], enabled: () => true, memoryContext: () => context,
+      executeIdempotent: async () => { throw new Error('Unused action') } })
+    stops.push(() => access.close())
+    access.connections('fixture-harness', { agentId: 'main', agentTypeId: 'main' }, 'http://127.0.0.1:1')
+    const lease = Reflect.get(access, 'leases').values().next().value
+    await expect(Reflect.get(access, 'invoke').call(access, lease, 'memory_search', {})).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_AMBIGUOUS', outcome: 'not-sent' })
+    expect(invoked).toBe(0)
+    context = undefined
+    await Reflect.get(access, 'invoke').call(access, lease, 'memory_search', {})
+    expect(invoked).toBe(1)
   })
 
   it('includes new plugin sources and tools on remount and omits unavailable sources for every Agent type', async () => {

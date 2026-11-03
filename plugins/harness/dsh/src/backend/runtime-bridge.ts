@@ -47,6 +47,7 @@ export function apply(ctx) {
   let acknowledgedBatch;
   let activeAck;
   let sessionBarrier;
+  let restoredDelivery;
   const releases = [];
   const initialization = new AbortController();
 
@@ -151,6 +152,24 @@ export function apply(ctx) {
     const digest = createHash('sha256').update(JSON.stringify({ context: payload.context, events: payload.events })).digest('hex');
     return digest === expected.digest ? { messageId: message.id } : undefined;
   }
+  function identifyCurrentDelivery(message, expected) {
+    return identifyMessage(message, expected, false) || (restoredDelivery?.batchId === expected.batchId && restoredDelivery.messageId === message.id ? identifyMessage(message, expected, true) : undefined);
+  }
+  async function restorePendingDelivery(agent) {
+    const expected = readExpected();
+    if (!expected || restoredDelivery?.batchId !== expected.batchId) return;
+    const message = [...agent.inbox.nextTurn, ...agent.inbox.nextStep].find(candidate => candidate.id === restoredDelivery.messageId && identifyMessage(candidate, expected, true));
+    if (!message) return;
+    if (typeof agent.send !== 'function' || typeof agent.inbox.remove !== 'function') throw bridgeError('NATIVE_AGENT_API_UNAVAILABLE');
+    const payload = JSON.parse(message.content.map(block => block.text).join(''));
+    const restored = await control('restore-delivery', { agentId: sessionId, payload }, AbortSignal.any([initialization.signal, AbortSignal.timeout(10000)]));
+    if (disposed || failed || initialization.signal.aborted || ctx.agents.get(sessionId) !== agent || !sameExpected(expected, readExpected()) || !Array.isArray(restored.bindings)) throw bridgeError('SESSION_RECOVERY_FAILED');
+    atomicJson('owner-policy.json', { ...readValidatedOwnerPolicy(), contextRef: expected.batchId, bindings: restored.bindings });
+    const Llm = await loadModule('@deepseek-ai/dsh-llm');
+    const sentinel = Llm.createUserMessage({ content: [{ type: 'text', text: 'Resume the verified unclaimed inbox.' }], source: { kind: 'plugin:eating-recovery' } });
+    agent.send(sentinel, 'next-step', true);
+    agent.inbox.remove(sentinel.id);
+  }
   async function classifyDelivery({ agent }, next) {
     const decision = await next();
     if (disposed || failed || agent.id !== sessionId || decision.kind !== 'enter') return decision;
@@ -158,9 +177,11 @@ export function apply(ctx) {
     if (!expected) return decision;
     // The SDK transport always enqueues kind=user. Attribute only the verified
     // external batch at the public admission boundary, preserving its receipt ID.
-    return { ...decision, messages: decision.messages.map(message => identifyMessage(message, expected, false)
-      ? { ...message, source: { kind: 'eating-external', batchId: expected.batchId } }
-      : message) };
+    return { ...decision, messages: decision.messages.map(message => {
+      if (!identifyCurrentDelivery(message, expected)) return message;
+      acceptContext(message, expected);
+      return { ...message, source: { kind: 'eating-external', batchId: expected.batchId } };
+    }) };
   }
   function matchEvent(event, expected, restoring) {
     if (!record(event) || event.type !== 'agent/inbox/spliced' || !Number.isSafeInteger(event.seq) || event.seq < 0 || !record(event.data) || !Array.isArray(event.data.inserted)) return undefined;
@@ -198,8 +219,6 @@ export function apply(ctx) {
       found = matchEvent(event, expected, false);
     } catch (error) { fail(failureCode(error, 'BRIDGE_FILE_FAILED')); return; }
     if (!found) return;
-    try { for (const message of event.data.inserted) acceptContext(message, expected); }
-    catch (error) { fail(failureCode(error, 'OWNER_POLICY_INVALID')); return; }
     activeAck = (async () => {
       // Every other synchronous session/event observer gets to enqueue this append first.
       await Promise.resolve();
@@ -238,6 +257,7 @@ export function apply(ctx) {
       if (!disposed && !failed) {
         atomicJson('session-ready.json', { schemaVersion: 1, nonce, sessionId });
         if (recovered && sameExpected(expected, readExpected())) {
+          restoredDelivery = { batchId: expected.batchId, messageId: recovered.messageId };
           writeAck(expected, recovered);
           return { recovery: 'persisted', batchId: expected.batchId };
         }

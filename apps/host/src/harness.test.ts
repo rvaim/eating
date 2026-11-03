@@ -39,13 +39,13 @@ function fixture(settings: Partial<DeliverySettings> = {}) {
     rmSync(target, { recursive: true })
   })
   let sequence = 0
-  const record = (text = 'hello', conversationId = 'test:private:one', kind: 'private' | 'group' = 'private') => {
+  const record = (text = 'hello', conversationId = 'test:private:one', kind: 'private' | 'group' = 'private', overrides: Partial<HarnessEvent> = {}) => {
     const event: HarnessEvent = {
       protocolVersion: 1, eventId: 'replaced-by-store', pluginId: 'test-platform', instanceId: 'test-instance-one',
       platform: 'test', accountId: 'account-one', conversationId, senderId: 'sender-one', receivedAt: '2026-10-26T12:00:00.000Z',
-      source: { trust: 'external', kind }, content: { text }, text,
+      source: { trust: 'external', kind }, content: { text }, text, ...overrides,
     }
-    const { eventId } = store.recordEvent('test-platform', `incoming-${++sequence}`, { raw_message: text }, event)
+    const { eventId } = store.recordEvent(event.pluginId, `incoming-${++sequence}`, { raw_message: text }, event)
     return { ...event, eventId }
   }
   return { gateway, store, record, configure }
@@ -143,10 +143,12 @@ describe('HarnessGateway bounded aggregation and delivery', () => {
   it('acknowledges the complete active batch before pausing later batches when readiness changes', async () => {
     const { gateway, store, record } = fixture({ maxBatchMessages: 2 })
     const handedOff = [record('first'), record('second')]
-    const waiting = record('next batch')
     let ready = true
     const harness = { ...batchSink('busy-after-batch', async () => { ready = false; return reliableReceipt() }), isReady: () => ready }
     gateway.register(harness)
+    await vi.advanceTimersByTimeAsync(0)
+    const waiting = record('arrived while busy')
+    gateway.notify()
     await vi.advanceTimersByTimeAsync(500)
     expect(harness.deliverBatch).toHaveBeenCalledOnce()
     expect(harness.deliverBatch.mock.calls[0]?.[0].events).toEqual(handedOff)
@@ -183,6 +185,7 @@ describe('HarnessGateway bounded aggregation and delivery', () => {
   it.each(['persistent', 'memory'] as const)('commits a pending %s local acknowledgement while receiver readiness stays false', async storageMode => {
     const { gateway, store, record } = fixture({ storageMode, maxBatchMessages: 1, retryIntervalMs: 100 })
     record('reliably handed off')
+    record('another handed-off conversation', 'other:private')
     let ready = true
     const harness = { ...batchSink('local-only', async () => {
       ready = false
@@ -193,13 +196,14 @@ describe('HarnessGateway bounded aggregation and delivery', () => {
     await vi.advanceTimersByTimeAsync(0)
     const second = record('waiting for model readiness')
     gateway.notify()
-    expect(gateway.getStatus()).toMatchObject({ waitingForLocalCommit: true, delivering: 1, pending: 1 })
+    expect(harness.deliverBatch.mock.calls[0]?.[0].conversationId).toBeNull()
+    expect(gateway.getStatus()).toMatchObject({ waitingForLocalCommit: true, delivering: 2, pending: 1 })
     expect(vi.getTimerCount()).toBe(1)
     executeSql(store, 'DROP TRIGGER fail_ack')
     await vi.advanceTimersByTimeAsync(100)
     expect(harness.deliverBatch).toHaveBeenCalledOnce()
     expect(store.getQueuedHarnessEvents()).toMatchObject([{ event: second, status: 'pending', attempts: 0 }])
-    expect(gateway.getStatus()).toMatchObject({ waitingForLocalCommit: false, accepted: 1, delivering: 0 })
+    expect(gateway.getStatus()).toMatchObject({ waitingForLocalCommit: false, accepted: 2, delivering: 0 })
     expect(vi.getTimerCount()).toBe(0)
   })
 
@@ -286,19 +290,16 @@ describe('HarnessGateway bounded aggregation and delivery', () => {
     expect(harness.deliverBatch.mock.calls[0]?.[0]).toMatchObject({ reason: 'max-wait', events })
   })
 
-  it('delivers immediately at the message threshold and drains consecutive full batches without a fixed pause', async () => {
+  it('uses the message threshold to deliver the entire eligible queue immediately without truncation', async () => {
     const { gateway, record, store } = fixture({ maxBatchMessages: 2 })
     const events = Array.from({ length: 5 }, (_, index) => record(`event-${index}`))
     const harness = batchSink()
     gateway.register(harness)
     await vi.advanceTimersByTimeAsync(0)
-    expect(harness.deliverBatch).toHaveBeenCalledTimes(2)
-    expect(harness.deliverBatch.mock.calls.map(([batch]) => batch.events)).toEqual([events.slice(0, 2), events.slice(2, 4)])
-    expect(harness.deliverBatch.mock.calls.every(([batch]) => batch.reason === 'max-messages')).toBe(true)
-    expect(store.harnessSummary()).toMatchObject({ accepted: 4, pending: 1 })
-    await vi.advanceTimersByTimeAsync(500)
-    expect(harness.deliverBatch).toHaveBeenCalledTimes(3)
-    expect(harness.deliverBatch.mock.calls[2]?.[0]).toMatchObject({ reason: 'quiet-window', events: events.slice(4) })
+    expect(harness.deliverBatch).toHaveBeenCalledOnce()
+    expect(harness.deliverBatch.mock.calls[0]?.[0]).toMatchObject({ reason: 'max-messages', events })
+    expect(store.harnessSummary()).toMatchObject({ accepted: 5, pending: 0 })
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('uses UTF-8 serialized event bytes to trigger an immediate batch at its soft target', async () => {
@@ -314,15 +315,14 @@ describe('HarnessGateway bounded aggregation and delivery', () => {
     expect(harness.deliverBatch.mock.calls[0]?.[0]).toMatchObject({ reason: 'target-bytes', events })
   })
 
-  it('keeps an oversized event whole and in its own batch', async () => {
+  it('keeps oversized events and surrounding arrivals together beyond the byte trigger', async () => {
     const { gateway, record } = fixture({ batchTargetBytes: 1024 })
-    const small = record('small')
-    const oversized = record('large'.repeat(500))
+    const events = [record('small'), record('large'.repeat(500)), record('after target')]
     const harness = batchSink()
     gateway.register(harness)
     await vi.advanceTimersByTimeAsync(0)
-    expect(harness.deliverBatch.mock.calls.map(([batch]) => batch.events)).toEqual([[small], [oversized]])
-    expect(harness.deliverBatch.mock.calls[1]?.[0].reason).toBe('target-bytes')
+    expect(harness.deliverBatch).toHaveBeenCalledOnce()
+    expect(harness.deliverBatch.mock.calls[0]?.[0]).toMatchObject({ reason: 'target-bytes', events })
   })
 
   it('does not deliver a message rejected by the hard queue capacity even if the batch target is soft', async () => {
@@ -337,7 +337,7 @@ describe('HarnessGateway bounded aggregation and delivery', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('isolates conversation buckets, preserves event order, and chooses the oldest ready conversation first', async () => {
+  it('combines ready conversations in global queue order with a stable ordered batch id', async () => {
     const { gateway, record } = fixture()
     const first = record('group first', 'test:group:one', 'group')
     await vi.advanceTimersByTimeAsync(100)
@@ -347,11 +347,116 @@ describe('HarnessGateway bounded aggregation and delivery', () => {
     const harness = batchSink()
     gateway.register(harness)
     await vi.advanceTimersByTimeAsync(0)
-    expect(harness.deliverBatch).toHaveBeenCalledTimes(2)
-    const batches = harness.deliverBatch.mock.calls.map(([batch]) => batch)
-    expect(batches[0]).toMatchObject({ conversationId: first.conversationId, events: [first, groupSecond], batchId: orderedBatchId([first.eventId, groupSecond.eventId]) })
-    expect(batches[1]).toMatchObject({ conversationId: privateEvent.conversationId, events: [privateEvent], batchId: orderedBatchId([privateEvent.eventId]) })
-    expect(batches[0]?.batchId).not.toBe(orderedBatchId([groupSecond.eventId, first.eventId]))
+    const events = [first, privateEvent, groupSecond]
+    expect(harness.deliverBatch).toHaveBeenCalledOnce()
+    expect(harness.deliverBatch.mock.calls[0]?.[0]).toMatchObject({ conversationId: null, events, batchId: orderedBatchId(events.map(event => event.eventId)) })
+    expect(harness.deliverBatch.mock.calls[0]?.[0].batchId).not.toBe(orderedBatchId([first.eventId, groupSecond.eventId, privateEvent.eventId]))
+  })
+
+  it.each(['quiet-window', 'max-wait', 'max-messages', 'target-bytes'] as const)('collects younger conversations when one identity reaches %s', async reason => {
+    const { gateway, record, store } = fixture({ quietWindowMs: 500, maxWaitMs: 600,
+      maxBatchMessages: reason === 'max-messages' ? 2 : 100, batchTargetBytes: reason === 'target-bytes' ? 1024 : 32768 })
+    const events = [record('first group event', 'shared:group', 'group')]
+    const harness = batchSink()
+    gateway.register(harness)
+    await vi.advanceTimersByTimeAsync(400)
+    events.push(record('younger private event', 'other:private'))
+    if (reason !== 'quiet-window') events.push(record(reason === 'target-bytes' ? '字'.repeat(1000) : 'second group event', 'shared:group', 'group'))
+    gateway.notify()
+    await vi.advanceTimersByTimeAsync(reason === 'quiet-window' ? 100 : reason === 'max-wait' ? 200 : 0)
+    expect(harness.deliverBatch).toHaveBeenCalledOnce()
+    expect(harness.deliverBatch.mock.calls[0]?.[0]).toMatchObject({ reason, conversationId: null, events })
+    expect(store.harnessSummary()).toMatchObject({ accepted: events.length, pending: 0 })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('reselects the entire queue on wake after busy arrivals without spending attempts', async () => {
+    const { gateway, record, store } = fixture({ maxBatchMessages: 2, batchTargetBytes: 1024 })
+    let ready = false
+    const harness = { ...batchSink('busy-cross-conversation'), isReady: () => ready }
+    gateway.register(harness)
+    const events = [record('first', 'group:one', 'group'), record('second', 'private:one'), record('字'.repeat(1000), 'group:one', 'group')]
+    gateway.notify()
+    await vi.advanceTimersByTimeAsync(60000)
+    events.push(record('fresh at wake', 'private:two'))
+    gateway.notify()
+    expect(store.getQueuedHarnessEvents().map(item => [item.status, item.attempts])).toEqual(events.map(() => ['pending', 0]))
+    expect(harness.deliverBatch).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+    ready = true
+    gateway.notify()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.deliverBatch).toHaveBeenCalledOnce()
+    expect(harness.deliverBatch.mock.calls[0]?.[0]).toMatchObject({ conversationId: null, events })
+    expect(store.harnessSummary()).toMatchObject({ accepted: 4, pending: 0, uncertain: 0 })
+  })
+
+  it.each([
+    { pluginId: 'different-plugin' }, { instanceId: 'different-instance' }, { accountId: 'different-account' },
+    { conversationId: 'different-conversation' }, { source: { trust: 'external', kind: 'group' } }, { targetId: 'different-target' },
+  ] satisfies Partial<HarnessEvent>[])('treats changed identity fields as a mixed batch: %j', async overrides => {
+    const { gateway, record } = fixture({ maxBatchMessages: 1 })
+    const events = [record('first'), record('different identity', undefined, undefined, overrides)]
+    const harness = batchSink()
+    gateway.register(harness)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.deliverBatch).toHaveBeenCalledOnce()
+    expect(harness.deliverBatch.mock.calls[0]?.[0]).toMatchObject({ conversationId: null, events })
+  })
+
+  it.each([
+    { pluginId: 'different-plugin' }, { instanceId: 'different-instance' }, { accountId: 'different-account' },
+    { conversationId: 'different-conversation' }, { source: { trust: 'external', kind: 'group' } }, { targetId: 'different-target' },
+  ] satisfies Partial<HarnessEvent>[])('does not let a cooling identity block another identity: %j', async overrides => {
+    const { gateway, record, store } = fixture({ maxBatchMessages: 1, retryIntervalMs: 1000 })
+    const head = record('cooling head')
+    store.markHarnessDeliveryBatch([head.eventId], 'pending', 'cooldown', Date.now() + 1000)
+    const blocked = record('same identity behind head')
+    const other = record('independent identity', undefined, undefined, overrides)
+    const harness = batchSink()
+    gateway.register(harness)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.deliverBatch).toHaveBeenCalledOnce()
+    expect(harness.deliverBatch.mock.calls[0]?.[0]).toMatchObject({ conversationId: other.conversationId, events: [other] })
+    expect(store.getQueuedHarnessEvents()).toMatchObject([
+      { event: head, status: 'pending', attempts: 0 }, { event: blocked, status: 'pending', attempts: 0 },
+    ])
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(harness.deliverBatch.mock.calls[1]?.[0]).toMatchObject({ conversationId: head.conversationId, events: [head, blocked] })
+    expect(store.harnessSummary()).toMatchObject({ accepted: 3, pending: 0 })
+  })
+
+  it('takes only each eligible prefix without bypassing a later cooling item', async () => {
+    const { gateway, record, store } = fixture({ maxBatchMessages: 1, retryIntervalMs: 1000 })
+    const first = record('eligible prefix')
+    const cooling = record('cooling middle')
+    const other = record('other conversation', 'other:private')
+    const blocked = record('behind cooling middle')
+    store.markHarnessDeliveryBatch([cooling.eventId], 'pending', 'cooldown', Date.now() + 1000)
+    const harness = batchSink()
+    gateway.register(harness)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.deliverBatch).toHaveBeenCalledOnce()
+    expect(harness.deliverBatch.mock.calls[0]?.[0]).toMatchObject({ conversationId: null, events: [first, other] })
+    expect(store.getQueuedHarnessEvents()).toMatchObject([
+      { event: cooling, status: 'pending', attempts: 0 }, { event: blocked, status: 'pending', attempts: 0 },
+    ])
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(harness.deliverBatch.mock.calls[1]?.[0].events).toEqual([cooling, blocked])
+    expect(store.harnessSummary()).toMatchObject({ accepted: 4, pending: 0 })
+  })
+
+  it('uses unambiguous identity keys when identifiers contain separators', async () => {
+    const { gateway, record, store } = fixture({ maxBatchMessages: 1, retryIntervalMs: 1000 })
+    const head = record('cooling', undefined, undefined, { pluginId: 'plugin:instance', instanceId: 'one' })
+    const other = record('independent', undefined, undefined, { pluginId: 'plugin', instanceId: 'instance:one' })
+    store.markHarnessDeliveryBatch([head.eventId], 'pending', 'cooldown', Date.now() + 1000)
+    const harness = batchSink()
+    gateway.register(harness)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.deliverBatch).toHaveBeenCalledOnce()
+    expect(harness.deliverBatch.mock.calls[0]?.[0].events).toEqual([other])
+    expect(store.getQueuedHarnessEvents()).toMatchObject([{ event: head, status: 'pending', attempts: 0 }])
   })
 
   it('rejects single-event-only registrations without calling them or consuming queued attempts', async () => {
@@ -460,13 +565,14 @@ describe('HarnessGateway bounded aggregation and delivery', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('records a synchronous receiver exception as uncertain without replay or body deletion', async () => {
+  it('keeps the entire cross-conversation batch uncertain after a synchronous exception without replay or body deletion', async () => {
     const { gateway, store, record } = fixture()
-    const event = record()
+    const events = [record('private'), record('group', 'group:one', 'group'), record('next private')]
     const harness = batchSink('throwing', () => { throw new Error('failure') })
     gateway.register(harness)
     await vi.advanceTimersByTimeAsync(500)
-    expect(store.getQueuedHarnessEvents()[0]).toMatchObject({ event, status: 'uncertain', attempts: 1 })
+    expect(harness.deliverBatch.mock.calls[0]?.[0]).toMatchObject({ conversationId: null, events })
+    expect(store.getQueuedHarnessEvents()).toMatchObject(events.map(event => ({ event, status: 'uncertain', attempts: 1 })))
     gateway.notify()
     await vi.advanceTimersByTimeAsync(60000)
     expect(harness.deliverBatch).toHaveBeenCalledOnce()
@@ -522,12 +628,12 @@ describe('HarnessGateway bounded aggregation and delivery', () => {
   it('immediately replaces an in-flight registration without losing the wake or accepting the old late receipt', async () => {
     const { gateway, store, record } = fixture({ maxBatchMessages: 1 })
     const first = record('old in flight')
-    const second = record('next for replacement')
     const late = deferred<HarnessDeliveryReceipt>()
     const old = batchSink('old', async () => late.promise)
     const acknowledge = vi.spyOn(store, 'acknowledgeHarnessBatch')
     const unregister = gateway.register(old)
     await vi.advanceTimersByTimeAsync(0)
+    const second = record('arrived for replacement')
     unregister()
     const replacement = batchSink('replacement')
     gateway.register(replacement)
@@ -544,12 +650,15 @@ describe('HarnessGateway bounded aggregation and delivery', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('retries a rejected batch together and keeps later messages behind its cooldown', async () => {
+  it('retries a rejected batch together with later messages once its cooldown ends', async () => {
     const { gateway, store, record } = fixture({ maxBatchMessages: 2 })
-    const events = [record('declined first'), record('declined second'), record('next batch')]
+    const events = [record('declined first'), record('declined second')]
     const harness = batchSink('batch-cooldown', async () => ({ accepted: false }))
     const acknowledge = vi.spyOn(store, 'acknowledgeHarnessBatch')
     gateway.register(harness)
+    await vi.advanceTimersByTimeAsync(0)
+    events.push(record('arrived during cooldown'))
+    gateway.notify()
     await vi.advanceTimersByTimeAsync(500)
     expect(harness.deliverBatch).toHaveBeenCalledOnce()
     expect(harness.deliverBatch.mock.calls[0]?.[0].events).toEqual(events.slice(0, 2))
@@ -560,19 +669,21 @@ describe('HarnessGateway bounded aggregation and delivery', () => {
     ])
     harness.deliverBatch.mockImplementation(async () => reliableReceipt('accepted-retry'))
     await vi.advanceTimersByTimeAsync(9500)
-    expect(harness.deliverBatch.mock.calls.map(([batch]) => batch.events)).toEqual([events.slice(0, 2), events.slice(0, 2), events.slice(2)])
-    expect(acknowledge.mock.calls).toEqual([[events.slice(0, 2).map(event => event.eventId), 'accepted-retry'], [[events[2]!.eventId], 'accepted-retry']])
+    expect(harness.deliverBatch.mock.calls.map(([batch]) => batch.events)).toEqual([events.slice(0, 2), events])
+    expect(acknowledge.mock.calls).toEqual([[events.map(event => event.eventId), 'accepted-retry']])
     expect(store.getQueuedHarnessEvents()).toEqual([])
     expect(store.harnessSummary()).toMatchObject({ accepted: 3 })
   })
 
   it('protects the entire in-flight batch while overflow discards only pending messages from later batches', async () => {
     const { gateway, store, record } = fixture({ maxQueuedMessages: 4, maxBatchMessages: 2, overflowPolicy: 'drop-oldest' })
-    const events = [record('active first'), record('active second'), record('discarded third'), record('discarded fourth')]
+    const events = [record('active first'), record('active second')]
     const receipt = deferred<HarnessDeliveryReceipt>()
     const harness = batchSink('in-flight-capacity', async batch => batch.events[0]?.eventId === events[0]!.eventId ? receipt.promise : reliableReceipt())
     gateway.register(harness)
     await vi.advanceTimersByTimeAsync(0)
+    record('discarded third')
+    record('discarded fourth')
     const next = [record('fifth'), record('sixth')]
     gateway.notify()
     expect(store.getQueuedHarnessEvents().map(item => [item.event.eventId, item.status, item.attempts])).toEqual([
@@ -586,13 +697,15 @@ describe('HarnessGateway bounded aggregation and delivery', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('unregister makes the full in-flight batch uncertain and leaves the next batch unattempted', async () => {
-    const { gateway, store, record } = fixture({ maxBatchMessages: 2 })
-    const events = [record('active first'), record('active second'), record('not sent')]
+  it('unregister makes the full cross-conversation batch uncertain and leaves later arrivals unattempted', async () => {
+    const { gateway, store, record } = fixture({ maxBatchMessages: 1 })
+    const events = [record('active first'), record('active second', 'other:private')]
     const receipt = deferred<HarnessDeliveryReceipt>()
     const harness = batchSink('detached-batch', async () => receipt.promise)
     const unregister = gateway.register(harness)
     await vi.advanceTimersByTimeAsync(0)
+    events.push(record('arrived after handoff'))
+    gateway.notify()
     unregister()
     await vi.advanceTimersByTimeAsync(0)
     expect(harness.deliverBatch).toHaveBeenCalledOnce()
@@ -841,9 +954,9 @@ describe('HarnessGateway bounded aggregation and delivery', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('close finishes despite both local writes failing and the next Store startup retains an uncertain body', async () => {
+  it('recovers every cross-conversation body as uncertain after close with both local writes failing', async () => {
     const { gateway, store, record } = fixture({ maxBatchMessages: 1, retryIntervalMs: 100 })
-    const event = record()
+    const events = [record('private'), record('group', 'group:one', 'group')]
     const harness = batchSink('closing-local-failure', async () => {
       executeSql(store, `${failAck}; ${failState}`)
       return reliableReceipt()
@@ -852,14 +965,15 @@ describe('HarnessGateway bounded aggregation and delivery', () => {
     await vi.advanceTimersByTimeAsync(0)
     await gateway.close()
     expect(harness.deliverBatch).toHaveBeenCalledOnce()
+    expect(harness.deliverBatch.mock.calls[0]?.[0]).toMatchObject({ conversationId: null, events })
     expect(gateway.getStatus()).toMatchObject({ state: 'not-attached', busy: false, waitingForLocalCommit: false, accepted: 0 })
-    expect(store.getQueuedHarnessEvents()[0]).toMatchObject({ event, status: 'delivering', attempts: 1 })
+    expect(store.getQueuedHarnessEvents()).toMatchObject(events.map(event => ({ event, status: 'delivering', attempts: 1 })))
     expect(vi.getTimerCount()).toBe(0)
     executeSql(store, 'DROP TRIGGER fail_ack; DROP TRIGGER fail_state')
     const reopened = new HostStore(store.databasePath)
     try {
-      expect(reopened.getQueuedHarnessEvents()[0]).toMatchObject({ event, status: 'uncertain', attempts: 1 })
-      expect(reopened.harnessSummary()).toMatchObject({ accepted: 0, uncertain: 1, delivering: 0 })
+      expect(reopened.getQueuedHarnessEvents()).toMatchObject(events.map(event => ({ event, status: 'uncertain', attempts: 1 })))
+      expect(reopened.harnessSummary()).toMatchObject({ accepted: 0, uncertain: 2, delivering: 0 })
     } finally { reopened.close() }
   })
 

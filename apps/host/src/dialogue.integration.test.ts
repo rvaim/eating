@@ -93,7 +93,7 @@ async function fixture(kind: 'chat' | 'image') {
       expect(names(request).filter(name => name.startsWith('eating_') || name.startsWith('mcp__'))).toEqual([...mainTools, ...(kind === 'image' ? imageTools : [])].sort())
       expect(names(request).filter(name => !name.startsWith('eating_') && !name.startsWith('mcp__'))).toEqual([])
       expect(names(request).some(name => name.startsWith('mcp__qq__'))).toBe(false)
-      if (turns.length === 0) return { name: 'eating_handle_conversation', arguments: { context_ref: current.contextRef } }
+      if (turns.length === 0) return { name: 'eating_handle_conversation', arguments: { context_ref: current.contextRef, mode: 'reply' } }
       expect(turns).toHaveLength(1)
       expect(turns[0]!.name).toBe('eating_handle_conversation')
       expect(result(turns[0]!)).toMatchObject({ status: 'completed', actions: [expect.objectContaining({ outcome: 'succeeded' }), ...(kind === 'image' ? [expect.objectContaining({ outcome: 'succeeded' })] : [])] })
@@ -227,8 +227,9 @@ async function expectCompletedHandoff(f: Awaited<ReturnType<typeof fixture>>) {
   const incoming = batch(roots[0]!), current = batch(children[0]!)
   expect(incoming.agentTypeId).toBe('qq.private')
   expect(current.contextRef).toBe(incoming.contextRef)
-  expect(current.payload.context).toEqual(incoming.payload.context)
+  expect(current.payload.context).toEqual(incoming.context)
   expect(current.payload.events).toEqual(incoming.payload.events)
+  expect(current.payload.coordination).toEqual({ mode: 'reply', context_notes: '' })
   expect(current.event).toMatchObject({ pluginId: 'qq', instanceId: f.qq.instanceId, accountId: String(selfId), conversationId: `qq:${selfId}:private:${userId}`, senderId: String(userId), targetId: String(userId), messageId: String(f.messageId), source: { trust: 'external', kind: 'private', senderRole: 'user' }, content: f.originalMessage, text: f.originalText, resourceIds: [] })
   const task = String(current.payload.task)
   expect(task).toContain('独立理解原始 events 中的用户原话')
@@ -243,8 +244,8 @@ async function expectCompletedHandoff(f: Awaited<ReturnType<typeof fixture>>) {
     expect(names(request).some(name => name.startsWith('mcp__qq__'))).toBe(false)
     const handler = request.tools!.find(tool => tool.function?.name === 'eating_handle_conversation')!.function!
     const schema = object(handler.parameters)
-    expect(schema).toMatchObject({ type: 'object', required: ['context_ref'], additionalProperties: false })
-    expect(Object.keys(object(schema.properties))).toEqual(['context_ref'])
+    expect(schema).toMatchObject({ type: 'object', required: ['context_ref', 'mode'], additionalProperties: false })
+    expect(object(schema.properties)).toEqual({ context_ref: { type: 'string', pattern: '^[a-f0-9]{64}$' }, mode: { type: 'string', enum: ['reply', 'verify'] }, context_notes: { type: 'string', maxLength: 8000 } })
     const prompt = system(request)
     expect(prompt.startsWith(f.ownerSystem + '\n\n')).toBe(true)
     for (const text of [commonMarker, mainMarker, persona, '轻量分流', 'eating_handle_conversation', 'eating_delegate_task', 'eating_contact_target', '不先撰写完整回复']) expect(prompt).toContain(text)
@@ -260,7 +261,7 @@ async function expectCompletedHandoff(f: Awaited<ReturnType<typeof fixture>>) {
   }
   const turns = fixtureToolTurns(roots[1]!)
   expect(turns.map(turn => turn.name)).toEqual(['eating_handle_conversation'])
-  expect(turns[0]!.arguments).toEqual({ context_ref: incoming.contextRef })
+  expect(turns[0]!.arguments).toEqual({ context_ref: incoming.contextRef, mode: 'reply' })
   const receipt = result(turns[0]!)
   expect(receipt).toMatchObject({ childId: f.qqScopes[0]!.agentId, status: 'completed' })
   expect(f.actionReads).toContainEqual({ agentId: receipt.childId, actions: receipt.actions })

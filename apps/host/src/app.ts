@@ -21,6 +21,8 @@ import { persistedEnabledIds } from './discovery'
 import { failedPlugin } from './failed-plugin'
 import { createPluginMcpHandler } from './mcp'
 import { servePluginLogStream } from './plugin-log-stream'
+import { createOwnerTokenVerifier, OWNER_ACCESS_COOKIE, ownerAccessCookie, validateServerAccess } from './server-access'
+import type { ServerAccessOptions } from './server-access'
 import { SESSION_COOKIE, getBearer, json, readJson, requireSession, safeError, sameSecret, secret, validateLocalRequest } from './security'
 
 function immutableConfiguration<T>(value: T): T {
@@ -31,7 +33,7 @@ function immutableConfiguration<T>(value: T): T {
   return value
 }
 
-export interface HostOptions {
+export interface HostOptions extends ServerAccessOptions {
   readonly dataDirectory: string
   readonly entries: readonly BackendPluginEntry[]
   readonly port?: number
@@ -83,7 +85,19 @@ export class EatingHost {
   private url = ''
   private closed = false
 
-  constructor(private readonly options: HostOptions) {
+  private readonly options: Omit<HostOptions, 'ownerToken'>
+  private readonly listenHost: '127.0.0.1' | '0.0.0.0'
+  private readonly verifyOwnerToken?: (candidate: string | null) => boolean
+  private readonly ownerAccessSession = secret()
+  private readonly secureCookies: boolean
+
+  constructor(options: HostOptions) {
+    const access = validateServerAccess(options)
+    this.listenHost = access.listenHost
+    this.verifyOwnerToken = access.ownerToken ? createOwnerTokenVerifier(access.ownerToken) : undefined
+    this.secureCookies = access.publicOrigin?.startsWith('https:') ?? false
+    const { ownerToken: _ownerToken, ...configuration } = options
+    this.options = configuration
     this.releaseLock = options.workspaceLock ?? acquireWorkspaceLock(resolve(options.dataDirectory, 'host'))
     let openedStore: HostStore | undefined
     try {
@@ -103,6 +117,7 @@ export class EatingHost {
       this.packageManager = new PluginPackageManager(options.dataDirectory, { deactivate: id => this.deactivateInstalled(id), activate: installed => this.activateInstalled(installed) })
       for (const entry of options.entries) this.registerEntry(entry, enabledIds.includes(entry.id))
       this.allowedOrigins = new Set(options.allowedUiOrigins ?? ['http://127.0.0.1:5180', 'http://localhost:5180', 'http://127.0.0.1:4180'])
+      if (access.publicOrigin) this.allowedOrigins.add(access.publicOrigin)
       for (const origin of this.allowedOrigins) this.allowedHosts.add(new URL(origin).host)
       this.server = createServer((request, response) => { void this.route(request, response) })
     } catch (error) { openedStore?.close(); this.releaseLock(); throw error }
@@ -296,7 +311,7 @@ export class EatingHost {
   async listen(): Promise<string> {
     await new Promise<void>((resolveListen, reject) => {
       this.server.once('error', reject)
-      this.server.listen(this.options.port ?? 5181, '127.0.0.1', () => { this.server.off('error', reject); resolveListen() })
+      this.server.listen(this.options.port ?? 5181, this.listenHost, () => { this.server.off('error', reject); resolveListen() })
     })
     const address = this.server.address()
     if (!address || typeof address === 'string') throw new Error('Host 未取得监听地址。')
@@ -328,7 +343,10 @@ export class EatingHost {
         throw new PlatformError('HOST_STOPPED', 'Host 正在停止。', 503)
       }
       validateLocalRequest(request, this.allowedHosts, this.allowedOrigins)
-      const pathname = new URL(request.url ?? '/', this.url || 'http://127.0.0.1').pathname
+      const requestTarget = request.url ?? '/'
+      if (!requestTarget.startsWith('/') || requestTarget.startsWith('//') || requestTarget.includes('\\')) throw new PlatformError('INVALID_PATH', '非法请求路径。', 403, 'not-sent')
+      const requestUrl = new URL(requestTarget, this.url || 'http://127.0.0.1')
+      const pathname = requestUrl.pathname
       if (pathname.startsWith('/mcp-services/')) {
         const id = decodeURIComponent(pathname.slice('/mcp-services/'.length))
         await this.capabilityAccess.handle(id, getBearer(request) ?? '', request, response, request.method === 'POST' ? await readJson(request, 8 * 1024 * 1024) : undefined)
@@ -349,9 +367,22 @@ export class EatingHost {
         await handler.handle(request, response, request.method === 'POST' ? await readJson(request, 1024 * 1024) : undefined)
         return
       }
+      response.setHeader('Referrer-Policy', 'no-referrer')
+      if (this.verifyOwnerToken) {
+        if (requestUrl.searchParams.has('token')) {
+          const tokens = requestUrl.searchParams.getAll('token')
+          if (request.method !== 'GET' || !requestTarget.startsWith('/?') || pathname !== '/' || tokens.length !== 1 || !this.verifyOwnerToken(tokens[0]!)) throw new PlatformError('OWNER_AUTHENTICATION_REQUIRED', '需要有效的主人访问入口。', 401, 'not-sent')
+          requestUrl.searchParams.delete('token')
+          response.setHeader('Set-Cookie', `${OWNER_ACCESS_COOKIE}=${this.ownerAccessSession}; HttpOnly; SameSite=Strict; Path=/${this.secureCookies ? '; Secure' : ''}`)
+          response.writeHead(303, { Location: '/' + requestUrl.search, 'Cache-Control': 'no-store' })
+          response.end()
+          return
+        }
+        if (!sameSecret(ownerAccessCookie(request), this.ownerAccessSession)) throw new PlatformError('OWNER_AUTHENTICATION_REQUIRED', '需要有效的主人访问入口。', 401, 'not-sent')
+      }
       if (request.method === 'GET' && pathname.startsWith('/plugins/')) { await this.servePluginAsset(pathname, response); return }
       if (pathname === '/api/bootstrap' && request.method === 'GET') {
-        response.setHeader('Set-Cookie', `${SESSION_COOKIE}=${this.ownerSession}; HttpOnly; SameSite=Strict; Path=/api`)
+        response.setHeader('Set-Cookie', `${SESSION_COOKIE}=${this.ownerSession}; HttpOnly; SameSite=Strict; Path=/api${this.secureCookies ? '; Secure' : ''}`)
         json(response, 200, { protocolVersion: 1, csrfToken: this.csrf })
         return
       }

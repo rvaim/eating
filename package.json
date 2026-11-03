@@ -1,6 +1,6 @@
 {
   "name": "Eating",
-  "version": "0.17.3",
+  "version": "0.17.4",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.28.5",

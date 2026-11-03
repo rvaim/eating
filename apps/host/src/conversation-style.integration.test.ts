@@ -266,6 +266,9 @@ function expectSystemPolicies(f: Awaited<ReturnType<typeof fixture>>) {
     expect(prompt).toContain('普通短聊的两句话之间不要插大空行')
     expect(prompt).toContain('不必每条末尾都加')
     expect(prompt).not.toContain('一条讲清一个意思')
+    for (const text of ['结合真实 @、引用对象、说话人和上下文判断', '先读本批实际提供的消息和主的协作事实', '选择不回应不等于没读或可以丢掉其他任务', '有相关内容可以自然加入，不必等点名', '只会复述附和时可以安静', '记忆只在当下自然相关且当前允许披露时提起', '旧消息不能自动当成刚发生', '不为显得像人而故意答错']) expect(prompt).toContain(text)
+    expect(prompt).not.toContain('默认 1~10 字')
+    expect(prompt).not.toContain('普通对话默认 1 条，最多 2 条')
     expect(prompt.split(SHARED_CONVERSATION_POLICY)).toHaveLength(2)
     if (current.kind === 'root') {
       expect(prompt.startsWith(f.ownerSystem + '\n\n')).toBe(true)

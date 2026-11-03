@@ -56,6 +56,11 @@ describe('QQ agent identity and permission policy', () => {
       expect(role.defaultPrompt).not.toMatch(/那只手|只能照抄/)
       expect(role.defaultPrompt).not.toMatch(/\{\{(?:消息列表|消息内容|发送者列表)\}\}/)
     }
+    const groupPrompt = qqAgentTypes(policy).find(role => role.id === 'qq.group')!.defaultPrompt
+    expect(groupPrompt).toContain('判断这句话在对谁说')
+    expect(groupPrompt).toContain('有相关内容可以主动加入，不必等点名')
+    expect(groupPrompt).toContain('不当主持人、气氛组或每场争执的调解人')
+    expect(groupPrompt).toContain('有真实关联才提获准记忆')
     const instructions = qqAgentInstructions.map(instruction => instruction.body).join('\n')
     expect(analyzeTemplate(instructions, 'plugin').valid).toBe(true)
     expect(instructions).toContain('先决定实际执行目标')

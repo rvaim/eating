@@ -1,6 +1,6 @@
 # Eating
 
-服务器本轮采用明确授权的HTTP公网直连，默认本机 `127.0.0.1` 保持；显式 `0.0.0.0` 必须配置publicOrigin及随机32至256字符URLsafe ownerToken。只用根GET `?token=<OWNER_TOKEN>`（已有query用 `&token=`）交换入口Cookie、303去Token，随后沿用bootstrap／session／CSRF，无登录表单或账号密码；MCP仍独立Bearer，官方DSH Web保持。HTTP传输不加密。本轮目标应用／Host／Web0.17.4、QQ0.13.6、DSH插件0.15.3；源码实现验证中，云端尚未启动服务，不预填部署完成。见[ADR-0043](docs/decisions/ADR-0043-公网Token入口与Git发布部署.md)、[变更](docs/changes/2026-11-03-公网Token入口与Git发布部署.md)及[部署说明](docs/operations/服务器部署与更新.md)。
+服务器本轮采用明确授权的HTTP公网直连，默认本机 `127.0.0.1` 保持；显式 `0.0.0.0` 必须配置publicOrigin及随机32至256字符URLsafe ownerToken。只用根GET `?token=<OWNER_TOKEN>`（已有query用 `&token=`）交换入口Cookie、303去Token，随后沿用bootstrap／session／CSRF，无登录表单或账号密码；MCP仍独立Bearer，官方DSH Web保持。HTTP传输不加密。本轮应用／Host／Web0.17.4已完成源码、隔离及实际服务器部署验证，运行release为本地修复验证并push后云端GitHub拉取的 `6afda68`；QQ0.13.6、DSH插件0.15.3及记忆0.2.0等五插件已安装，仅表情connected，其余unconfigured，未迁本机资料或连接真实QQ／模型。实际IPv4公网监听及Token／session／CSRF检查通过；用户仍需自行放行防火墙并配置所需插件，未证明WAN直连已打通。证据见[报告](docs/reports/2026-11-03-服务器Git拉取与Token入口部署验证报告.md)。见[ADR-0043](docs/decisions/ADR-0043-公网Token入口与Git发布部署.md)、[变更](docs/changes/2026-11-03-公网Token入口与Git发布部署.md)及[部署说明](docs/operations/服务器部署与更新.md)。
 
 代码和通用脚本必须本地验证、commit／push后由云端GitHub拉取对应commit构建；缺少依赖先说明并询问安装，真实目标／端口／路径／Token及最终用户链接留在项目外。不增加HTTPS、证书或网关，不操作防火墙，只管理用户级Eating托管服务和新数据五插件，不迁本机真实AI数据。已批准保留应用专用Node24.22.0／pnpm11.28.5／DSH0.2.1-rc.5并安装仓库锁定依赖；此前先安装事实及新确认流程见部署说明。新服务器记忆0.2.0未配置、不连接，本机0.1.1保持。下方前轮描述保留当时事实，最终发布及live证据由本轮报告收口。
 
@@ -140,7 +140,7 @@ plugins/capabilities/stickers 表情包能力插件
 docs                      当前规范、决策与历史验证
 ```
 
-当前源码为主应用／Host／Web0.17.4、plugin-sdk4.7.0、ui-sdk4.2.0、plugin-core4.0.0、QQ0.13.6、DSH0.15.3、表情包0.1.1、生图0.2.0、记忆源码0.2.0，插件API4；本轮公网Token入口源码验证中，云端未起服务，Git及live结果另行收口。前轮应用0.17.3隔离验证与实际本机部署完成、五插件connected和DSH ready／nativeWeb就绪为当时事实，不能作为新服务器状态。以下保留前轮交付事实：以main `bfc381f`为基线落实会话自主处理与默认开放可配置，修复f611adb已合并main并push，完整验证与本地清理完成，原5180／5181管理页已更新；详细[本轮报告](docs/reports/2026-11-02-会话代理自主处理与默认开放可配置验证清理报告.md)记录1522项测试及38项相关浏览器验证。真实记忆保持0.1.1，不安装0.2.0或远端部署；自定义提示词／人格、配置、资源与账本保留。主人现已授权删除Eating本地主／子会话，精确白名单与混合字段清理已由父代理执行并独立复核，数量与保留证据见报告；前轮清理后的停止只为当时交付状态，当前QQ／DSH／记忆已正常connected；本轮不再清真实会话或操作云端。浏览器localStorage草稿及OS快照未覆盖，不声称全机抹除。工具必填resultFormat，清单必填assets；DSH通过launch/dsh-system.mjs转交系统dsh启动。各存储schema独立编号，无旧格式自动迁移。
+当前源码为主应用／Host／Web0.17.4、plugin-sdk4.7.0、ui-sdk4.2.0、plugin-core4.0.0、QQ0.13.6、DSH0.15.3、表情包0.1.1、生图0.2.0、记忆源码0.2.0，插件API4；本轮公网Token入口源码、隔离及实际服务器部署验证完成，当前运行release `6afda68`；五插件已安装，仅表情connected，其余unconfigured，未迁本机资料或连接真实QQ／模型，剩余用户防火墙放行与插件配置，未证明WAN直连已通。前轮应用0.17.3隔离验证与实际本机部署完成、五插件connected和DSH ready／nativeWeb就绪为当时事实，不能作为新服务器状态。以下保留前轮交付事实：以main `bfc381f`为基线落实会话自主处理与默认开放可配置，修复f611adb已合并main并push，完整验证与本地清理完成，原5180／5181管理页已更新；详细[本轮报告](docs/reports/2026-11-02-会话代理自主处理与默认开放可配置验证清理报告.md)记录1522项测试及38项相关浏览器验证。真实记忆保持0.1.1，不安装0.2.0或远端部署；自定义提示词／人格、配置、资源与账本保留。主人现已授权删除Eating本地主／子会话，精确白名单与混合字段清理已由父代理执行并独立复核，数量与保留证据见报告；前轮清理后的停止只为当时交付状态，当前QQ／DSH／记忆已正常connected；本轮不再清真实会话或操作云端。浏览器localStorage草稿及OS快照未覆盖，不声称全机抹除。工具必填resultFormat，清单必填assets；DSH通过launch/dsh-system.mjs转交系统dsh启动。各存储schema独立编号，无旧格式自动迁移。
 
 ## 文档
 

@@ -1,5 +1,20 @@
 import { PlatformError, isJsonObject } from './index.js'
-import type { ImageAssetReference, ImageResource } from './capabilities.js'
+import type { ImageAssetReference, ImageMimeType, ImageResource } from './capabilities.js'
+
+export const MAX_IMAGE_RESOURCE_BYTES = 5 * 1024 * 1024
+
+export function checkedImageBytes(value: unknown, mimeType: unknown): Uint8Array {
+  const invalid = (): never => { throw new PlatformError('INVALID_IMAGE_RESOURCE', '插件未返回有效、有界的图片资源。', 502, 'not-sent') }
+  if (!(value instanceof Uint8Array) || value.byteLength < 1 || value.byteLength > MAX_IMAGE_RESOURCE_BYTES) return invalid()
+  const prefix = (...expected: number[]) => expected.every((byte, index) => value[index] === byte)
+  const ascii = (start: number, end: number) => String.fromCharCode(...value.subarray(start, end))
+  const detected: ImageMimeType | null = prefix(137, 80, 78, 71, 13, 10, 26, 10) ? 'image/png'
+    : prefix(255, 216, 255) ? 'image/jpeg'
+      : ['GIF87a', 'GIF89a'].includes(ascii(0, 6)) ? 'image/gif'
+        : ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP' ? 'image/webp' : null
+  if (!detected || mimeType !== detected) return invalid()
+  return new Uint8Array(value)
+}
 
 export function parseImageAssetUri(value: string): ImageAssetReference | null {
   if (!value.startsWith('eating-asset:')) return null

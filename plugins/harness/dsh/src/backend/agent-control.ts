@@ -381,6 +381,11 @@ export class DshAgentControl {
     if ((agentId !== this.rootId() && !this.capabilityAgents.has(agentId)) || !opaque(turnId) || !turnId.startsWith(this.nonce + ':' + agentId + ':')) fail('MEMORY_CONTEXT_INVALID', '记忆请求不属于当前主会话。')
     const empty = { text: '', items: [] }
     if (!this.host.memory) return operation === 'start' ? empty : { accepted: false }
+    if (operation === 'flush') {
+      if (agentId !== this.rootId() || Object.keys(body).length !== 3 || !['compaction', 'session-end'].includes(String(body.reason))) fail('MEMORY_CONTEXT_INVALID', '记忆提取触发不属于当前主会话生命周期。')
+      await this.host.memory.flush({ agentId, reason: body.reason as 'compaction' | 'session-end' })
+      return { accepted: true }
+    }
     if (operation === 'start') {
       if (Object.keys(body).some(key => !['agentId', 'turnId', 'contextRef', 'messages', 'autonomous', 'query'].includes(key))) fail('MEMORY_CONTEXT_INVALID', '记忆请求字段无效。')
       const batch = body.contextRef === undefined ? undefined : this.memoryBatch

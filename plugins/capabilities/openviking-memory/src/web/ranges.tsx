@@ -45,7 +45,7 @@ export function Ranges({ prefix, draft, errors, locked, expanded, setExpanded, q
   }
   const filtered = settings.rules.filter(rule => `${rule.label} ${rule.platform} ${rule.accountId} ${rule.targetId} ${rule.kind}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
   const hasProcessingError = numericSettings.some(key => Boolean(errors[key]))
-  const archiveHint = t('ranges.archiveHint', { min: formatNumber(settingBounds.archiveMaxMiB[0]), max: formatNumber(settingBounds.archiveMaxMiB[1]), default: formatNumber(DEFAULT_SETTINGS.archiveMaxMiB) })
+  const commitHint = t('ranges.commitHint', { min: formatNumber(settingBounds.commitTokenThreshold[0]), max: formatNumber(settingBounds.commitTokenThreshold[1]), default: formatNumber(DEFAULT_SETTINGS.commitTokenThreshold) })
   return <>
     <div className="ov-section-heading"><h3>{t('ranges.title')}</h3><p>{t('ranges.description')}</p></div>
     <div className="ov-permission-list">{check('enabled')}{check('autoCapture')}{check('autoRecall')}{check('globalMemory')}{check('ownerCrossSession')}</div>
@@ -91,9 +91,10 @@ export function Ranges({ prefix, draft, errors, locked, expanded, setExpanded, q
     </section>
     <section className="ov-section" aria-labelledby={`${prefix}-processing`}>
       <div className="ov-section-heading"><h3 id={`${prefix}-processing`}>{t('ranges.processing')}</h3><p>{t('ranges.processingHint')}</p></div>
+      <div className="ov-permission-list">{check('autoCommit')}</div>
       <details className="ov-disclosure" open={processingOpen || hasProcessingError} onToggle={event => setProcessingOpen(event.currentTarget.open)}>
         <summary>{t('ranges.processingAdvanced')}</summary><div className="ov-disclosure-body">
-          {numericSettings.map(name => <TextField key={name} prefix={prefix} name={name} label={t(`ranges.${name}`)} hint={name === 'archiveMaxMiB' ? archiveHint : undefined} issue={errors[name]} value={settings[name]}
+          {numericSettings.map(name => <TextField key={name} prefix={prefix} name={name} label={t(`ranges.${name}`)} hint={name === 'commitTokenThreshold' ? commitHint : undefined} issue={errors[name]} value={settings[name]}
             inputMode={name === 'scoreThreshold' ? 'decimal' : 'numeric'} disabled={locked} onChange={value => update(name, value)} onBlur={() => onBlur(name)} />)}
         </div>
       </details>

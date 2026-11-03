@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { constants, closeSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { constants, closeSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
-import type { ImageResource, JsonObject } from '@eating/plugin-sdk'
+import type { ImageResource, JsonObject, PluginImageAsset } from '@eating/plugin-sdk'
 import { STICKER_LIMITS } from '../types'
 import type { StickerItem, StickerList, StickerPreview, StickerTags } from '../types'
 import { decodeStickerImage, imageMime } from './image'
@@ -144,12 +144,31 @@ export class StickerLibrary {
     this.assertDirectories(true)
     this.atomic(this.indexPath, bytes)
   }
-  private readImage(item: StickerItem): ImageResource {
+  private readImageBytes(item: StickerItem): { bytes: Buffer; path: string } {
     try {
-      const bytes = readRegular(this.blobPath(item.assetId), STICKER_LIMITS.imageBytes)
+      this.assertDirectories()
+      const path = this.blobPath(item.assetId)
+      if (realpathSync(this.blobs) !== join(realpathSync(this.directory), 'blobs') || realpathSync(path) !== join(realpathSync(this.blobs), item.assetId)) corrupt()
+      const bytes = readRegular(path, STICKER_LIMITS.imageBytes)
       if (bytes.length !== item.bytes || createHash('sha256').update(bytes).digest('hex') !== item.assetId || imageMime(bytes) !== item.mimeType) corrupt()
-      return { mimeType: item.mimeType, data: bytes.toString('base64') }
+      return { bytes, path: realpathSync(path) }
     } catch { corrupt() }
+  }
+  private readImage(item: StickerItem): ImageResource {
+    return { mimeType: item.mimeType, data: this.readImageBytes(item).bytes.toString('base64') }
+  }
+  async getAsset(assetId: string): Promise<PluginImageAsset> {
+    stickerAssetId(assetId)
+    const current = () => {
+      const item = this.load().items.find(item => item.assetId === assetId)
+      if (!item) throw new PlatformError('STICKER_NOT_FOUND', '此表情已不存在，请重新读取列表。', 404, 'not-sent')
+      return { item, ...this.readImageBytes(item) }
+    }
+    const { item } = await this.serialize(current)
+    return Object.freeze({ mimeType: item.mimeType, byteLength: item.bytes, sha256: item.assetId,
+      readBytes: async () => (await this.serialize(current)).bytes,
+      localFile: async () => (await this.serialize(current)).path,
+    })
   }
   private removeOrphans(index: Index): number {
     if (!existsSync(this.blobs)) return 0

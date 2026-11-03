@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { readModelCapabilities, readModels, readModelTest, readNativeWebLaunch, readNativeWebStatus } from './panel-data'
+import { readModelCapabilities, readModels, readModelTest, readNativeWebLaunch, readNativeWebStatus, readSystemDsh } from './panel-data'
 
 describe('Harness 面板响应校验', () => {
+  it('安装检测保留未取得版本的已找到命令，不误判为缺失或损坏响应', () => {
+    const found = { found: true, path: '/fixture/bin/dsh', version: null, source: 'path' }
+    expect(readSystemDsh(found)).toEqual(found)
+    expect(readSystemDsh({ ...found, version: '0.2.1-rc.5' }).version).toBe('0.2.1-rc.5')
+    expect(readSystemDsh({ found: false, path: null, version: null, source: null }).found).toBe(false)
+    for (const value of [{ ...found, path: null }, { ...found, version: '' }, { ...found, version: undefined }, { ...found, source: null }, { ...found, found: false }, { ...found, runnable: false }]) {
+      expect(() => readSystemDsh(value)).toThrowError(expect.objectContaining({ code: 'INVALID_HOST_RESPONSE' }))
+    }
+  })
 
   it('独立能力必须已经读取完整当前版本，不用 false 补造失败读取', () => {
     expect(readModelCapabilities({ schemaVersion: 1, revision: 0, imageInput: false })).toEqual({ schemaVersion: 1, revision: 0, imageInput: false })

@@ -1,5 +1,9 @@
 # Eating
 
+2026-11-04当前源码已实现，整体验证进行中，服务器尚未更新：记忆改用官方Session消息批量追加／commit／Task API，逐轮synced只表示已同步，提交才归档提取；严格schema3、autoCommit默认true、待处理Token阈值默认20000，压缩／正常结束尊重自动开关，手动可提交，unknown不重发。图片公开PluginImageAsset与Host lease核验来源／scope／字节／SHA-256／MIME，QQ只对主人确认且逐图验证的共享映射用file，否则发送前选Base64；AI仍只见opaque引用。生图单次size覆盖保存默认，空串省略用服务默认，最终支持由provider决定，不换尺寸付费重试；DSH区分服务器尚未检测／未安装／版本未知并给官方安装说明，QQ明确需OneBot端先登录，生图Key可选。
+
+当前应用／Host／Web0.18.0、plugin-sdk4.8.0、ui-sdk4.2.1、plugin-core4.0.0，QQ0.14.0、DSH0.16.0、生图0.3.0、记忆0.3.0、表情0.2.0，插件API4，无新依赖、锁文件workspace links保持。用户已明确批准修复及云端Eating更新；先本地验证commit／push，再云端GitHub拉取对应提交，停Eating备份后仅对已核验empty schema2记忆配置／状态作一次性显式转换，保Key／身份／规则，生产无自动迁移。本机记忆0.1.1不动，不配置或重启真实OpenViking服务、不装额外依赖、不加TLS／网关／防火墙，真实服务器值留项目外。当前决策见[ADR-0045](docs/decisions/ADR-0045-官方记忆接口与插件部署提示.md)、[ADR-0046](docs/decisions/ADR-0046-可信图片传输与生图尺寸.md)与[变更](docs/changes/2026-11-04-官方记忆与可信图片发送.md)；最终验证及部署由父代理创建的[本轮报告](docs/reports/2026-11-04-官方记忆与插件能力更新验证报告.md)收口，下方前轮版本／状态／数字保留历史事实。
+
 本轮修复公网 HTTP 的 QQ 面板 `crypto.randomUUID is not a function`：真实非安全上下文缺少该 API，前次 localhost 隧道的 `isSecureContext === true` 掩盖问题。按[ADR-0044](docs/decisions/ADR-0044-HTTP前端安全请求标识.md)，公开 UI SDK `createRequestId()` 始终用 `crypto.getRandomValues` 生成16字节 RFC UUIDv4，统一 workspace／QQ／生图／DSH原生能力／记忆范围前端；同一意图复用原号，unknown 不换号重发，Node后台UUID保持。源码应用／Host／Web0.17.5、ui-sdk4.2.1、QQ0.13.7、DSH0.15.4、生图与记忆源码0.2.1，表情0.1.2功能保持，仅共享SDK产物字节变化按封存规则升级。源码验证与实际云端保留数据更新完成：修复提交 `ab19cbb` 已本地commit／push并由云端GitHub取同提交构建更新；完整构建／类型、最终全量1743项通过／8跳过，最后4项浏览器通过。真实公网HTTP secure=false、randomUUID不可用时QQ配置可见、UUIDv4 ID切页签复用且零页面异常；12受保护文件哈希、Host设置／数据库、插件配置摘要及ownerToken保持。用户用原Token链接重新进入并刷新即可，无需重装，端口与Token不变。证据见[本轮报告](docs/reports/2026-11-03-公网HTTP面板修复与保留数据更新验证报告.md)；见[变更](docs/changes/2026-11-03-HTTP前端安全请求标识.md)。修复当前 HTTP 平台契约，不移除安全随机或强制HTTPS；不加依赖／网关／防火墙，真实连接值留项目外。下方前轮发布版本、运行状态和数字保留当时事实。
 
 服务器本轮采用明确授权的HTTP公网直连，默认本机 `127.0.0.1` 保持；显式 `0.0.0.0` 必须配置publicOrigin及随机32至256字符URLsafe ownerToken。只用根GET `?token=<OWNER_TOKEN>`（已有query用 `&token=`）交换入口Cookie、303去Token，随后沿用bootstrap／session／CSRF，无登录表单或账号密码；MCP仍独立Bearer，官方DSH Web保持。HTTP传输不加密。本轮应用／Host／Web0.17.4已完成源码、隔离及实际服务器部署验证，运行release为本地修复验证并push后云端GitHub拉取的 `6afda68`；QQ0.13.6、DSH插件0.15.3及记忆0.2.0等五插件已安装，仅表情connected，其余unconfigured，未迁本机资料或连接真实QQ／模型。实际IPv4公网监听及Token／session／CSRF检查通过；用户仍需自行放行防火墙并配置所需插件，未证明WAN直连已打通。证据见[报告](docs/reports/2026-11-03-服务器Git拉取与Token入口部署验证报告.md)。见[ADR-0043](docs/decisions/ADR-0043-公网Token入口与Git发布部署.md)、[变更](docs/changes/2026-11-03-公网Token入口与Git发布部署.md)及[部署说明](docs/operations/服务器部署与更新.md)。
@@ -30,8 +34,8 @@ Eating 是一个独立管理应用，用于连接通讯平台和用户选择的 
 
 - **插件管理**：通讯、Harness、能力三类插件统一安装、更新、启停和卸载，左侧固定插件目录、右侧当前单项面板，顶部右侧返回管理列表。当前支持本机可信构建目录，先预览同份代码快照再确认，卸载保留数据。
 - **MCP 管理**：左侧固定服务目录，右侧一次查看／编辑一个服务，工具目录可搜索并独立滚动。直接配置stdio／Streamable HTTP，或使用插件服务；已启用且connected的功能型MCP新来源默认all，全部当前及未来工具／Agent类型自动开放；主人可保存custom精确类型／工具例外并恢复all。连接状态、工具发现和实际挂载分别显示，秘密不回显；通讯权限仍由来源插件按账号／目标／资源范围管理。
-- **生图插件**：配置独立的OpenAI Images Base URL、Key、模型、尺寸／质量及超时。支持文生图、单图编辑、MCP提交任务／查询／取图和独立资源库；编辑可本地上传参考图，或由AI引用当前会话已授权图片／已有生成图。稳定请求ID和来源哈希防重复计费，未知结果不自动重发。详见[生图插件](docs/operations/生图插件.md)。
-- **OpenViking 记忆**：独立服务配置和可读平台/账号/私聊/群聊Peer；全局记忆默认开启，主Agent自动召回与回合采集，不依赖保存工具、不设每日提取上限。群聊按群开启并可设置成员黑白名单，主人私聊可跨会话查阅；配套扩展将每轮及时增量提取与历史按体积分段分开，普通提取不创建archive；固定会话、原始记录与长期记忆保留。详见[记忆插件](docs/operations/OpenViking记忆插件.md)。
+- **生图插件**：配置独立的OpenAI Images Base URL、模型、可选Key、默认尺寸／质量及超时。单次size优先，省略沿用保存值，空串用服务默认，支持由提供商决定，不自动换尺寸重试。支持文生图、受控单图编辑、MCP任务／查询／取图和独立资源库；稳定请求ID和来源哈希防重复计费，未知结果不自动重发。详见[生图插件](docs/operations/生图插件.md)。
+- **OpenViking 记忆**：独立服务配置和可读平台／账号／私聊／群聊Peer，全局记忆默认开启，主Agent自动召回与回合采集，不依赖保存工具、不设每日提取上限。使用官方API逐轮同步，autoCommit开启时按待处理Token阈值、压缩或正常结束提交，主人可手动提交；synced与官方提取完成分别展示。固定eating-standard会话及旧记录保留，不要求服务端扩展；群成员过滤、主人显式跨会话和unknown不重发保持。详见[记忆插件](docs/operations/OpenViking记忆插件.md)。
 - **表情包库**：手动添加或由 AI 从当前获准消息收藏，带描述／标签／去重和版本保护；描述关键词、标签AND筛选及有界分页。AI先读元数据，选中后取图或把资源引用交给QQ发送，不依赖QQ原生收藏接口。完整操作见[使用说明](docs/operations/MCP插件与表情包.md)。
 
 - **QQ 连接与工具**：使用已登录的 OneBot v11 服务，保留39项标准 JSON 工具，另提供受控“查看本会话图片”扩展，共40项。多个主人／管理员与私聊、群聊工具授权均由后台核验。
@@ -103,7 +107,7 @@ Host默认在 <http://127.0.0.1:5181/> 同源提供界面、API、插件资源�
 2. 可获取模型列表；选择只写入草稿，保存才生效。测试模型连接会向已保存的服务发出一次最小真实请求，可能产生提供商费用。
 3. 检测到系统 DSH 后启动 Harness。模型 API 测试、运行时就绪和实际任务成功是不同状态。模型错误会显示脱敏后的提供商原因；`RATE_LIMIT`／HTTP 429 表示模型服务限流，请按提供商提示等待或选择其他可用模型，重启 DSH 不会恢复提供商额度。
 4. 在“提示词管理”和“人格管理”调整AI规则。主系统使用通用前置、主规则、启用插件说明和统一人格，运行时必需分流／联系／自主规则合入主唯一complete系统组合；子会话自主规则合入子唯一complete，保类型规则和同一人格。升级不自动reset自定义正文。提示词显示跟随默认或自定义，可预览并恢复当前默认；“人格管理→新增人格→从模板新建”可填入AI女儿草稿，填写名称后保存，再手动启用。模板更新不改已保存人格。
-5. “系统 DSH”卡片显示检测到的命令路径和版本；未检测到时先安装 DeepSeek Harness，再点“重新检测”。启动就绪后点击“打开 DSH Web”，在新页签查看同一个 Eating 实例的官方会话页面。复用系统已有组件，无需额外安装 Web 或 DSH 运行时；原自有会话看板已移除。关闭页面不停止消息处理，停止 Harness 后 Web 服务一起停止。
+5. 面板顶部和“系统 DSH”卡片区分正在检测／尚未确认、服务器未安装、找到命令但版本未知及实际运行错误；version为null不等于未安装。检测的是运行Eating的机器，按官方链接在该机器手动安装DeepSeek Harness后再点“重新检测”，不根据浏览器OS判断或自动安装。启动就绪后点击“打开 DSH Web”，在新页签查看同一个 Eating 实例的官方会话页面。复用系统已有组件，无需额外安装 Web 或 DSH 运行时；原自有会话看板已移除。关闭页面不停止消息处理，停止 Harness 后 Web 服务一起停止。
 6. 模型名称下的“模型能力”自动读取当前服务声明，支持图片时直接采用；仅服务未声明时才展开“手动补充”，先停止Harness再独立保存。QQ图片读取仍需在“代理与权限”授权“查看本会话图片”。换模型／服务后重新读取能力，原每次输出上限和连接密钥不会自动改变。
 7. 默认时间来自原生 `time-context`。手写系统规则若仍引用 `{{当前时间}}` 会主动引入动态前缀；需要稳定缓存时应使用运行时读数。
 8. 在“原生能力与插件”选择原生功能及允许使用的代理，编辑模块参数并独立保存；停止状态也能读取真实目录，无需先配置模型。DSH 插件可检查来源后确认安装、启停、配置和卸载；main与所有Agent功能型native MCP默认开放，每个全局tool可保存自动／自定义覆盖；其他子非MCP工具仍按精确名称／指纹选择。保存后启动检查真实挂载，目录变化同步更新scope限制。详见[原生管理说明](docs/operations/DSH原生能力与插件.md)。
@@ -142,7 +146,7 @@ plugins/capabilities/stickers 表情包能力插件
 docs                      当前规范、决策与历史验证
 ```
 
-当前源码为主应用／Host／Web0.17.5、plugin-sdk4.7.0、ui-sdk4.2.1、plugin-core4.0.0、QQ0.13.7、DSH0.15.4、表情包0.1.2、生图0.2.1、记忆源码0.2.1，插件API4；HTTP前端安全请求标识源码验证与云端保留数据更新完成，运行修复提交为 `ab19cbb`，最终全量1743项通过／8跳过，最后4项浏览器通过，详细证据见本轮报告。以下公网Token入口源码、隔离及实际服务器部署验证完成为前轮事实，当前运行release `6afda68`；五插件已安装，仅表情connected，其余unconfigured，未迁本机资料或连接真实QQ／模型，剩余用户防火墙放行与插件配置，未证明WAN直连已通。前轮应用0.17.3隔离验证与实际本机部署完成、五插件connected和DSH ready／nativeWeb就绪为当时事实，不能作为新服务器状态。以下保留前轮交付事实：以main `bfc381f`为基线落实会话自主处理与默认开放可配置，修复f611adb已合并main并push，完整验证与本地清理完成，原5180／5181管理页已更新；详细[本轮报告](docs/reports/2026-11-02-会话代理自主处理与默认开放可配置验证清理报告.md)记录1522项测试及38项相关浏览器验证。真实记忆保持0.1.1，不安装0.2.0或远端部署；自定义提示词／人格、配置、资源与账本保留。主人现已授权删除Eating本地主／子会话，精确白名单与混合字段清理已由父代理执行并独立复核，数量与保留证据见报告；前轮清理后的停止只为当时交付状态，当前QQ／DSH／记忆已正常connected；本轮不再清真实会话或操作云端。浏览器localStorage草稿及OS快照未覆盖，不声称全机抹除。工具必填resultFormat，清单必填assets；DSH通过launch/dsh-system.mjs转交系统dsh启动。各存储schema独立编号，无旧格式自动迁移。
+以下为前轮历史：应用／Host／Web0.17.5、plugin-sdk4.7.0、ui-sdk4.2.1、plugin-core4.0.0、QQ0.13.7、DSH0.15.4、表情包0.1.2、生图0.2.1、记忆源码0.2.1，插件API4；当时HTTP前端安全请求标识源码验证与云端保留数据更新完成，运行修复提交为 `ab19cbb`，最终全量1743项通过／8跳过，最后4项浏览器通过，详细证据见本轮报告。以下公网Token入口源码、隔离及实际服务器部署验证完成为前轮事实，当前运行release `6afda68`；五插件已安装，仅表情connected，其余unconfigured，未迁本机资料或连接真实QQ／模型，剩余用户防火墙放行与插件配置，未证明WAN直连已通。前轮应用0.17.3隔离验证与实际本机部署完成、五插件connected和DSH ready／nativeWeb就绪为当时事实，不能作为新服务器状态。以下保留前轮交付事实：以main `bfc381f`为基线落实会话自主处理与默认开放可配置，修复f611adb已合并main并push，完整验证与本地清理完成，原5180／5181管理页已更新；详细[本轮报告](docs/reports/2026-11-02-会话代理自主处理与默认开放可配置验证清理报告.md)记录1522项测试及38项相关浏览器验证。真实记忆保持0.1.1，不安装0.2.0或远端部署；自定义提示词／人格、配置、资源与账本保留。主人现已授权删除Eating本地主／子会话，精确白名单与混合字段清理已由父代理执行并独立复核，数量与保留证据见报告；前轮清理后的停止只为当时交付状态，当前QQ／DSH／记忆已正常connected；本轮不再清真实会话或操作云端。浏览器localStorage草稿及OS快照未覆盖，不声称全机抹除。工具必填resultFormat，清单必填assets；DSH通过launch/dsh-system.mjs转交系统dsh启动。各存储schema独立编号，无旧格式自动迁移。
 
 ## 文档
 
@@ -157,7 +161,7 @@ docs                      当前规范、决策与历史验证
 
 ## MCP 与插件能力
 
-Eating0.17.0／plugin-sdk4.7.0只加载API4插件。已启用且connected的功能来源默认all，当前／未来类型与工具自动开放；主人可在MCP页保存custom精确例外并恢复all，新source仍默认all。accessPolicy返回策略、自管来源null，grant是当前有效摘要；通讯仍由机器人权限页和真实账号／目标／资源scope管理。save-grants接受严格all/custom DTO，direct save只收连接／秘密，文件仍严格schema2。新host:mcp-access-policies严格schema1／revision／policies，CAS为direct＋policy；旧host:capability-grants不读／不写／不迁移／不删。策略、连接及目录变化使用一次性重挂：只恢复原connected且同一实例／启用的Harness，owner stop优先，不重放unknown。direct在途撤权可能中断transport并使source error，需主人显式connect。详见[当前接口](docs/technical/接口契约.md)。
+Eating0.18.0／plugin-sdk4.8.0只加载API4插件。已启用且connected的功能来源默认all，当前／未来类型与工具自动开放；主人可在MCP页保存custom精确例外并恢复all，新source仍默认all。accessPolicy返回策略、自管来源null，grant是当前有效摘要；通讯仍由机器人权限页和真实账号／目标／资源scope管理。save-grants接受严格all/custom DTO，direct save只收连接／秘密，文件仍严格schema2。新host:mcp-access-policies严格schema1／revision／policies，CAS为direct＋policy；旧host:capability-grants不读／不写／不迁移／不删。策略、连接及目录变化使用一次性重挂：只恢复原connected且同一实例／启用的Harness，owner stop优先，不重放unknown。direct在途撤权可能中断transport并使source error，需主人显式connect。详见[当前接口](docs/technical/接口契约.md)。
 
 表情包列表默认20条、最多50条，只返回描述、标签等元数据；不为浏览目录逐张调用识图。库上限1000张／256MiB，单图5MiB，支持PNG/JPEG/GIF/WebP，描述必填。AI收藏须有当前会话图片引用与相应工具权限，图片预览还需模型图像输入支持；收藏、检索和发送是分别可核对的动作。
 

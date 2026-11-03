@@ -1,15 +1,15 @@
 import { createHash } from 'node:crypto'
 import type { Message } from '@openviking/sdk'
 import type { CapabilityInvocationScope, MemoryCaptureInput, MemoryContext, MemoryProvider, MemoryRecallResult, MemoryScope } from '@eating/plugin-sdk'
-import type { RuntimeSnapshot } from '../types'
+import { PlatformError } from '@eating/plugin-sdk'
+import type { CommitTrigger, RuntimeSnapshot } from '../types'
 import { MemoryClient } from './client'
 import { configured, configurationKey, ConfigurationStore } from './config'
 import type { PrivateConfiguration } from './config'
 import { allowedLocation, crossSession, parsePeer, peerId, policy, scope, SELF_SCOPE } from './scopes'
 import { localDay, StateStore } from './state'
 import type { RequestKey, StoredJob } from './state'
-import type { IncrementalReceipt } from './incremental'
-import { bool, checkSignal, error, errorCode, identifier, LIMITS, object, schema, text, timestamp } from './validation'
+import { bool, checkSignal, error, errorCode, identifier, LIMITS, object, text, timestamp } from './validation'
 
 interface PendingBody { messages: Message[]; bytes: number }
 interface Worker { controller: AbortController; done: Promise<void> }
@@ -27,6 +27,8 @@ export class MemoryRuntime implements MemoryProvider {
   private readonly workers = new Map<string, Worker>()
   private retryTimer?: ReturnType<typeof setTimeout>
   private readonly pausedJobs = new Set<string>()
+  private readonly inspectedSessions = new Set<string>()
+  private readonly commitRequests = new Map<string, CommitTrigger>()
   private lastConnectedAt: string | null = null
   constructor(readonly configuration: ConfigurationStore, readonly store: StateStore) {}
   get ready(): boolean { const config = this.configuration.snapshot(); return !this.closed && this.connected && config.settings.enabled && configured(config) && !this.lifetime.signal.aborted }
@@ -47,7 +49,7 @@ export class MemoryRuntime implements MemoryProvider {
         await new MemoryClient(config, lifetime.signal).identity()
         checkSignal(lifetime.signal)
         if (this.lifetime !== lifetime) throw error('MEMORY_CANCELLED', 409)
-        this.connected = true; this.pausedJobs.clear(); this.lastConnectedAt = new Date().toISOString(); this.store.value.lastErrorCode = null; this.store.save(); this.pump()
+        this.connected = true; this.pausedJobs.clear(); this.inspectedSessions.clear(); this.lastConnectedAt = new Date().toISOString(); this.store.value.lastErrorCode = null; this.store.save(); this.pump()
       } catch (cause) { if (this.lifetime === lifetime) { this.connected = false; this.report(cause) }; throw cause }
     })()
     this.connectionAttempt = attempt
@@ -64,13 +66,15 @@ export class MemoryRuntime implements MemoryProvider {
     this.connected = false; this.lastConnectedAt = null
     this.lifetime.abort()
     if (this.retryTimer) clearTimeout(this.retryTimer)
-    this.retryTimer = undefined; this.pausedJobs.clear()
+    this.retryTimer = undefined; this.pausedJobs.clear(); this.commitRequests.clear(); this.inspectedSessions.clear()
     this.bodies.clear()
     for (const worker of this.workers.values()) worker.controller.abort()
     for (const job of this.store.value.jobs) {
-      if (job.status === 'queued') { job.status = 'failed'; job.errorCode = code }
-      else if (job.status === 'submitting') { job.status = job.submissionAttempted ? 'unknown' : 'failed'; job.errorCode = job.submissionAttempted ? 'MEMORY_SUBMISSION_UNKNOWN' : code }
-      else if (job.status === 'processing' || job.status === 'unknown') job.errorCode = code
+      if (job.status === 'queued' || job.status === 'syncing' || job.status === 'committing') {
+        const status = job.mutation ? 'unknown' : 'failed', errorCode = job.mutation ? 'MEMORY_SUBMISSION_UNKNOWN' : code
+        if (job.kind === 'commit') this.store.settle(job, { status, errorCode })
+        else this.store.update(job, { status, errorCode })
+      }
     }
     for (const item of this.store.value.scopes) item.bufferedMessages = 0
     this.store.save()
@@ -161,42 +165,57 @@ export class MemoryRuntime implements MemoryProvider {
     this.assertReady(signal)
     const peer = peerId(current), bytes = Buffer.byteLength(JSON.stringify(messages))
     if (bytes > LIMITS.jobBytes || [...this.bodies.values()].reduce((count, item) => count + item.bytes, 0) + bytes > LIMITS.bufferedBytes) throw error('MEMORY_CAPACITY', 409)
-    const job = this.store.create(peer, configurationKey(this.configuration.snapshot()), global)
-    this.bodies.set(job.id, { messages, bytes }); job.messages = messages.length; job.requests.push(key)
+    const job = this.store.create(peer, configurationKey(this.configuration.snapshot()), global, key)
+    this.bodies.set(job.id, { messages, bytes }); job.messages = messages.length
     this.touch(current); this.store.save(); return job
   }
-  async flush(peer?: string): Promise<void> {
+  async flush(reason: 'manual' | 'compaction' | 'session-end' = 'manual'): Promise<void> { await this.flushScope(undefined, reason) }
+  async flushScope(peer?: string, reason: 'manual' | 'compaction' | 'session-end' = 'manual'): Promise<void> {
     this.assertReady()
     if (peer !== undefined) parsePeer(peer)
-    // Sync is already immediate. This action only resumes pending work/receipt reads.
-    for (const job of this.store.value.jobs) if (peer === undefined || job.peerId === peer) this.pausedJobs.delete(job.id)
+    if (reason !== 'manual' && !this.configuration.snapshot().settings.autoCommit) return
+    const key = configurationKey(this.configuration.snapshot()), trigger: CommitTrigger = reason === 'session-end' ? 'shutdown' : reason
+    const sessions = new Set(this.store.value.jobs.filter(job => job.configurationKey === key && (peer === undefined || job.peerId === peer) && job.kind === 'append' && !job.commitId && ['queued', 'syncing', 'synced'].includes(job.status)).map(job => job.sessionId))
+    for (const session of sessions) this.commitRequests.set(session, trigger)
     this.pump()
+    while (this.ready) {
+      const active = [...this.workers].filter(([id]) => { const job = this.store.value.jobs.find(job => job.id === id); return job && sessions.has(job.sessionId) && (job.kind === 'append' && job.status === 'syncing' || job.kind === 'commit' && ['queued', 'committing'].includes(job.status)) }).map(([, worker]) => worker.done)
+      if (!active.length) break
+      await Promise.allSettled(active); this.pump()
+    }
   }
-  async retryExtraction(value: unknown): Promise<void> {
-    this.assertReady()
-    const id = identifier(value, 64), job = this.store.value.jobs.find(item => item.id === id)
-    if (!job || job.configurationKey !== configurationKey(this.configuration.snapshot()) || job.status !== 'failed' || !job.submissionAttempted || job.taskId === null) throw error('MEMORY_RETRY_DENIED', 409)
-    const client = this.client(parsePeer(job.peerId))
-    const existing = await client.incrementalReceipt(job.sessionId, job.id)
-    if (existing === null || existing.status !== 'failed') throw error('MEMORY_RETRY_DENIED', 409)
-    this.store.update(job, { status: 'unknown', errorCode: 'MEMORY_SUBMISSION_UNKNOWN' })
-    try {
-      this.applyReceipt(job, await client.retryIncremental(job.sessionId, job.id))
-      this.pausedJobs.delete(job.id); this.pump()
-    } catch (cause) { this.retry(job); this.report(cause); throw cause }
+  private scheduleCommits(): void {
+    const key = configurationKey(this.configuration.snapshot())
+    for (const [session, trigger] of this.commitRequests) {
+      const jobs = this.store.value.jobs.filter(job => job.configurationKey === key && job.sessionId === session)
+      if (jobs.some(job => job.status === 'unknown')) { this.commitRequests.delete(session); continue }
+      if (jobs.some(job => this.workers.has(job.id) || job.status === 'queued' || job.status === 'syncing' || job.status === 'committing')) continue
+      const pending = jobs.filter(job => job.kind === 'append' && job.status === 'synced' && !job.commitId)
+      this.commitRequests.delete(session)
+      if (!pending.length) continue
+      const first = pending[0]!, commit = this.store.create(first.peerId, key, first.global, undefined, trigger)
+      commit.messages = pending.reduce((sum, job) => sum + job.syncedMessages, 0); commit.syncedMessages = commit.messages
+      for (const job of pending) job.commitId = commit.id
+      this.store.save()
+    }
   }
   private pump(): void {
     if (!this.ready) return
-    const key = configurationKey(this.configuration.snapshot())
+    try { this.scheduleCommits() } catch (cause) { this.report(cause) }
+    const key = configurationKey(this.configuration.snapshot()), autoCommit = this.configuration.snapshot().settings.autoCommit
     for (const job of this.store.value.jobs) {
       if (this.workers.size >= LIMITS.concurrent) break
-      if (job.configurationKey !== key || this.workers.has(job.id) || this.pausedJobs.has(job.id) || terminal(job) || job.status === 'submitting') continue
+      if (job.configurationKey !== key || this.workers.has(job.id) || this.pausedJobs.has(job.id) || terminal(job)) continue
+      const polling = job.kind === 'commit' && job.taskId !== null && (job.status === 'processing' || job.status === 'unknown')
+      const inspecting = autoCommit && job.kind === 'append' && job.status === 'synced' && !job.commitId && !this.inspectedSessions.has(job.sessionId)
+      if (!polling && !inspecting && job.status !== 'queued') continue
       const sameSession = this.store.value.jobs.filter(other => other.configurationKey === key && other.sessionId === job.sessionId && other.id !== job.id)
-      if (sameSession.some(other => this.workers.has(other.id) || other.status === 'submitting' || other.status === 'unknown' || other.status === 'failed' && other.submissionAttempted && other.taskId !== null)) continue
+      if (sameSession.some(other => this.workers.has(other.id)) || !polling && sameSession.some(other => other.status === 'unknown')) continue
+      if (inspecting) this.inspectedSessions.add(job.sessionId)
       const controller = new AbortController(), signal = AbortSignal.any([this.lifetime.signal, controller.signal])
       const worker: Worker = { controller, done: Promise.resolve() }
       this.workers.set(job.id, worker)
-      worker.done = this.run(job, signal).catch(cause => { if (!signal.aborted) this.report(cause) }).finally(() => { this.workers.delete(job.id); this.bodies.delete(job.id); this.touch(parsePeer(job.peerId)); this.pump() })
+      worker.done = this.run(job, signal, inspecting).catch(cause => { if (!signal.aborted) this.report(cause) }).finally(() => { this.workers.delete(job.id); if (!inspecting) this.bodies.delete(job.id); this.touch(parsePeer(job.peerId)); this.pump() })
     }
   }
   private retry(job: StoredJob): void {
@@ -204,47 +223,61 @@ export class MemoryRuntime implements MemoryProvider {
     if (this.retryTimer || !this.ready) return
     this.retryTimer = setTimeout(() => { this.retryTimer = undefined; this.pausedJobs.clear(); this.pump() }, 1000); this.retryTimer.unref()
   }
-  private applyReceipt(job: StoredJob, receipt: IncrementalReceipt): void {
-    schema(job.sequence === null || receipt.from_sequence === job.sequence)
-    schema(receipt.to_sequence - receipt.from_sequence === job.messages)
-    schema(job.taskId === null || receipt.task_id === job.taskId)
-    const status = receipt.status === 'accepted' || receipt.status === 'processing' ? 'processing' : receipt.status
-    this.store.update(job, { taskId: receipt.task_id, sequence: receipt.from_sequence, submissionAttempted: true,
-      status, changes: receipt.changes, archiveUri: receipt.archive_uris.at(-1) ?? null,
-      errorCode: receipt.error_code ?? (status === 'failed' ? 'MEMORY_EXTRACTION_FAILED' : status === 'unknown' ? 'MEMORY_SUBMISSION_UNKNOWN' : null) })
-    if (terminal(job)) { this.store.value.lastErrorCode = job.errorCode; this.store.save() }
+  private threshold(job: StoredJob, pendingTokens: number): void {
+    this.inspectedSessions.add(job.sessionId)
+    if (this.configuration.snapshot().settings.autoCommit && pendingTokens >= this.configuration.snapshot().settings.commitTokenThreshold && !this.commitRequests.has(job.sessionId)) this.commitRequests.set(job.sessionId, 'threshold')
   }
-  private async run(job: StoredJob, signal: AbortSignal): Promise<void> {
+  private async run(job: StoredJob, signal: AbortSignal, inspecting: boolean): Promise<void> {
     try {
       const client = this.client(parsePeer(job.peerId), signal)
-      if (job.status === 'queued') {
-        const body = this.bodies.get(job.id)
-        if (!body) throw error('MEMORY_BUFFER_LOST', 409)
-        checkSignal(signal)
-        this.store.update(job, { status: 'submitting', errorCode: null })
-        await client.create(job.sessionId, job.global)
-        const state = await client.incrementalState(job.sessionId)
-        checkSignal(signal)
-        this.store.update(job, { sequence: state.next_sequence, submissionAttempted: true })
-        // One server transaction owns idempotent append and incremental scheduling.
-        // A lost reply is recovered only by reading this request's durable receipt.
-        const receipt = await client.submitIncremental(job.sessionId, job.id, state.next_sequence, body.messages)
-        checkSignal(signal); this.applyReceipt(job, receipt); this.bodies.delete(job.id)
-        // A pending extractor must not hold the transport slot or delay the next upload.
-        if (!terminal(job)) this.retry(job)
+      if (inspecting) {
+        const metadata = await client.session(job.sessionId, job.global)
+        checkSignal(signal); this.store.update(job, { pendingTokens: metadata.pendingTokens, errorCode: null }); this.threshold(job, metadata.pendingTokens)
         return
       }
+      if (job.kind === 'commit' && job.taskId) {
+        const task = await client.task(job.taskId, job.sessionId)
+        checkSignal(signal)
+        const status = task === null ? 'unknown' : task.status === 'completed' ? 'completed' : task.status === 'failed' || task.status === 'cancelled' ? 'failed' : 'processing'
+        this.store.settle(job, { status, errorCode: status === 'unknown' ? 'MEMORY_TASK_UNKNOWN' : status === 'failed' ? 'MEMORY_EXTRACTION_FAILED' : null })
+        if (!terminal(job)) this.retry(job)
+        else { this.store.value.lastErrorCode = job.errorCode; this.store.save() }
+        return
+      }
+      if (job.kind === 'append') {
+        const body = this.bodies.get(job.id)
+        if (!body) throw error('MEMORY_BUFFER_LOST', 409)
+        this.store.update(job, { status: 'syncing', errorCode: null })
+        await client.ensure(job.sessionId, job.global, () => { checkSignal(signal); this.store.update(job, { mutation: 'create' }) })
+        this.store.update(job, { mutation: null })
+        for (let offset = job.syncedMessages; offset < body.messages.length; offset += 100) {
+          checkSignal(signal)
+          const messages = body.messages.slice(offset, offset + 100)
+          this.store.update(job, { mutation: 'append' })
+          const metadata = await client.append(job.sessionId, messages)
+          checkSignal(signal); this.store.update(job, { syncedMessages: offset + messages.length, pendingTokens: metadata.pendingTokens, mutation: null })
+        }
+        this.store.update(job, { status: 'synced', errorCode: null }); this.threshold(job, job.pendingTokens!)
+        return
+      }
+      this.store.settle(job, { status: 'committing', errorCode: null })
+      const metadata = await client.session(job.sessionId, job.global)
       checkSignal(signal)
-      const receipt = await client.incrementalReceipt(job.sessionId, job.id)
-      checkSignal(signal)
-      if (receipt === null) this.store.update(job, { status: 'unknown', errorCode: 'MEMORY_SUBMISSION_UNKNOWN' })
-      else this.applyReceipt(job, receipt)
-      if (!terminal(job)) this.retry(job)
+      if (metadata.messageCount === 0) throw error('MEMORY_SESSION_CHANGED', 409)
+      this.store.update(job, { pendingTokens: metadata.pendingTokens, mutation: 'commit' })
+      const receipt = await client.commit(job.sessionId)
+      checkSignal(signal); this.store.settle(job, { taskId: receipt.taskId, archiveUri: receipt.archiveUri, status: 'processing', mutation: null, errorCode: null }); this.retry(job)
     } catch (cause) {
-      if (!terminal(job)) {
-        const uncertain = job.submissionAttempted
-        this.store.update(job, { status: uncertain ? job.taskId ? 'processing' : 'unknown' : 'failed', errorCode: uncertain ? 'MEMORY_SUBMISSION_UNKNOWN' : errorCode(cause) })
-        if (uncertain && !signal.aborted) this.retry(job)
+      if (inspecting) {
+        this.inspectedSessions.delete(job.sessionId)
+        this.store.update(job, { errorCode: errorCode(cause) }); if (!signal.aborted) this.retry(job)
+      } else if (!terminal(job)) {
+        const rejected = cause instanceof PlatformError && cause.statusCode >= 400 && cause.statusCode < 500 && cause.outcome === 'failed'
+        const status = job.taskId ? 'processing' : job.mutation && !rejected ? 'unknown' : 'failed'
+        const patch = { status, errorCode: status === 'unknown' ? 'MEMORY_SUBMISSION_UNKNOWN' : errorCode(cause) } as const
+        if (job.kind === 'commit') this.store.settle(job, patch)
+        else this.store.update(job, patch)
+        if (job.taskId && !signal.aborted) this.retry(job)
       }
       if (!signal.aborted) this.report(cause)
     }
@@ -291,8 +324,7 @@ export class MemoryRuntime implements MemoryProvider {
     if (this.closed) return
     this.closing = true
     if (this.ready) {
-      await this.flush()
-      const drain = async () => { while (this.workers.size) await Promise.allSettled([...this.workers.values()].map(worker => worker.done)) }
+      const drain = async () => { await this.flush('session-end'); while (this.workers.size) await Promise.allSettled([...this.workers.values()].map(worker => worker.done)) }
       let timer: ReturnType<typeof setTimeout> | undefined
       try { await Promise.race([drain(), new Promise<void>(resolve => { timer = setTimeout(resolve, Math.min(this.configuration.snapshot().timeoutMs, 30000)) })]) }
       finally { if (timer) clearTimeout(timer) }

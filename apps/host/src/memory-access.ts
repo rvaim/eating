@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { groupHarnessEvents, PlatformError } from '@eating/plugin-sdk'
-import type { BackendPlugin, HarnessMemoryServices, MemoryAppendInput, MemoryBeginInput, MemoryContext, MemoryFinishInput, MemoryMessage, MemoryRecallResult } from '@eating/plugin-sdk'
+import type { BackendPlugin, HarnessMemoryServices, MemoryAppendInput, MemoryBeginInput, MemoryContext, MemoryFinishInput, MemoryFlushInput, MemoryMessage, MemoryRecallResult } from '@eating/plugin-sdk'
 
 interface Source { readonly context: MemoryContext; readonly messages: readonly MemoryMessage[]; readonly label: string }
 interface Flight { readonly context: MemoryContext; current: MemoryContext | null; readonly sources: readonly Source[]; steering: MemoryMessage[]; readonly abort: AbortController }
@@ -49,7 +49,7 @@ export class MemoryAccess {
     return flight && !flight.abort.signal.aborted ? structuredClone(flight.current) : undefined
   }
   services(harnessId: string): HarnessMemoryServices {
-    return { begin: (input, signal) => this.begin(harnessId, input, signal), append: (input, signal) => this.append(harnessId, input, signal), finish: input => this.finish(harnessId, input), end: (agentId, turnId) => this.end(harnessId, agentId, turnId) }
+    return { begin: (input, signal) => this.begin(harnessId, input, signal), append: (input, signal) => this.append(harnessId, input, signal), finish: input => this.finish(harnessId, input), flush: input => this.flush(harnessId, input), end: (agentId, turnId) => this.end(harnessId, agentId, turnId) }
   }
   private async begin(harnessId: string, input: MemoryBeginInput, signal?: AbortSignal): Promise<MemoryRecallResult> {
     if (!this.options.enabled(harnessId) || !identifier(input.agentId) || input.agentTypeId !== 'main' || !identifier(input.turnId)) return invalid()
@@ -147,6 +147,14 @@ export class MemoryAccess {
       }
     }
     if (failures.length) throw new AggregateError(failures, 'Memory capture failed')
+  }
+  private async flush(harnessId: string, input: MemoryFlushInput): Promise<void> {
+    if (!this.options.enabled(harnessId) || !identifier(input.agentId) || !['compaction', 'session-end'].includes(input.reason)) return invalid()
+    const failures: unknown[] = []
+    for (const plugin of this.providers()) {
+      try { await plugin.memory!.flush?.(input.reason) } catch (error) { failures.push(error) }
+    }
+    if (failures.length) throw new AggregateError(failures, 'Memory flush failed')
   }
   private end(harnessId: string, agentId: string, turnId: string): void {
     const key = this.key(harnessId, agentId), flight = this.flights.get(key)

@@ -1,6 +1,6 @@
 # Eating QQ 配置与功能测试
 
-Eating 使用 QQ OneBot v11 插件，需要已登录QQ并开启OneBot的协议端，不实现QQ登录。当前应用／Host／Web0.17.2、SDK4.7.0、UI4.2.0、core4.0.0、QQ0.13.5、DSH0.15.2，仅API4。保留38公开API＋1框架quick共39项标准工具，另有qq_view_received_image受控扩展，共40项；子通讯只用当前类型可范围化已选集合。普通会话自主处理和功能默认开放可配置见[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)，标准目录见[OneBot覆盖清单](../technical/OneBot标准功能覆盖.md)，官方Web与图片操作遵循当前架构。
+Eating 使用 QQ OneBot v11 插件，需要先在协议端登录真实QQ并启用OneBot，Eating不实现QQ登录或自动安装协议端；连接页顶部明确提示这一前提。当前应用／Host／Web0.18.0、SDK4.8.0、UI4.2.1、core4.0.0、QQ0.14.0、DSH0.16.0，仅API4。部署提示与可信图片发送按[ADR-0045](../decisions/ADR-0045-官方记忆接口与插件部署提示.md)及[ADR-0046](../decisions/ADR-0046-可信图片传输与生图尺寸.md)实现，整体验证进行中、服务器尚未更新，最终证据见父代理创建的[本轮报告](../reports/2026-11-04-官方记忆与插件能力更新验证报告.md)。保留38公开API＋1框架quick共39项标准工具，另有qq_view_received_image受控扩展，共40项；子通讯只用当前类型可范围化已选集合。普通会话自主处理和功能默认开放可配置见[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)，标准目录见[OneBot覆盖清单](../technical/OneBot标准功能覆盖.md)，官方Web与图片操作遵循当前架构。
 
 ## 构建、安装与启动
 
@@ -140,7 +140,15 @@ Cookies、CSRF Token和QQ接口凭据只在主动查询后显示，不加入普�
 
 “MCP能力 → 查看MCP配置”仅在主动点击后获取QQ专属StreamableHTTP地址与独立Bearer，离开页签隐藏；不回显OneBot令牌，不自动修改其他Harness。新增未知可执行扩展仍需主人批准；本轮标准QQ工具已由用户授权加入。
 
-授权插件图片发送使用eating-asset引用：后台readAsset授权且checked后才计算实际Base64额外预算，模型不能传预算或借此读取任意URL／路径。单图仍5MiB，每次最多4张／10MiB原图；普通wire扣该Base64后≤1MiB，额外≤14MiB，全JSON≤15MiB。普通JSON／文本／模型输入和入站／响应／ws1MiB保持，不对普通Base64开放额外空间。OneBot retcode100仍failed；unknown先查回执，不换request_id重发。普通入站unknown只拦原context或原task，新入站新call可由同child处理；pending仍串行，主动联系另受自身防重及每小时6次限制。额度错误可读contactLimit的used／resetAt，activity_state读取成功不表示额度恢复。见[ADR-0037](../decisions/ADR-0037-未知委派隔离与受控图片发送预算.md)与[本轮报告](../reports/2026-11-03-未知委派隔离与受控图片发送验证报告.md)。
+授权插件图片发送使用 `eating-asset` 引用：后台getAsset取得当前授权lease，核验真实字节、大小、SHA-256和MIME；AI预览仍readAsset，不为发送先展开Base64预览。单图仍5MiB，每次最多4张／10MiB原图；只有最终选择Base64的可信资源才计算额外预算，普通wire扣该字节后≤1MiB、额外≤14MiB、全JSON≤15MiB。模型不能传预算或借此读任意URL／路径，普通JSON／文本／模型输入与入站／响应／ws仍1MiB。OneBot retcode100仍failed，unknown保原request_id核对，不换传输重发。普通入站unknown只拦原context或原task，新入站新call可由同child处理，pending仍串行；主动联系仍按主人实际保存的小时额度。额度错误读contactLimit的used／resetAt，activity_state读取成功不表示额度恢复。发送预算承接[ADR-0037](../decisions/ADR-0037-未知委派隔离与受控图片发送预算.md)，当前资源契约见[ADR-0046](../decisions/ADR-0046-可信图片传输与生图尺寸.md)。
+
+## 插件图片传输设置
+
+QQ面板独立提供图片传输设置，仅主人可读取／保存，使用revision／CAS；配置存本账号数据目录的 `media-transport.json`，严格schema1，与代码包和原连接配置分开。默认auto，无可信映射时发送前选Base64。共享目录模式需要sourceRoot、hostMappingRoot、onebotRoot及ownerConfirmed；先连接真实OneBot账号，主人确认映射关系后保存，绑定当前endpoint／账号。切换真实连接后须重新核对。
+
+来源插件只从自己固定blobs返回本机文件能力。Host可见的源根／映射根和逐图目标须可验证、无越界或符号链接，字节数、MIME和SHA-256与原资源相同，才构造OneBot标准file://；条件不满足时在真正发送前选择Base64。主人需自行保证OneBot挂载和路径可读，本地校验不代表OneBot已自动远端实测；标准get_image不能探测任意localfile，Eating不虚构探测成功。
+
+AI只见opaque资源引用，不能填写目录、任意路径或传输模式。该功能不新建公开URL路由或无认证媒体服务，不自动挂载／登录远端；用户手工OneBot标准file／URL／Base64仍按原协议处理。真正发送只执行一次，failed或unknown后不自动切另一种传输再发；共享目录可读性与最终QQ动作按真实回执分别核验。
 
 ## 查看本会话图片
 

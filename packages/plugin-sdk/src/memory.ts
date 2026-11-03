@@ -40,10 +40,11 @@ export interface MemoryCaptureInput {
   readonly outcome: 'completed' | 'failed' | 'cancelled'
   readonly immediate?: boolean
 }
+export type MemoryFlushReason = 'manual' | 'compaction' | 'session-end'
 export interface MemoryProvider {
   recall(context: MemoryContext, query: string, signal?: AbortSignal): Promise<MemoryRecallResult>
   capture(input: MemoryCaptureInput): Promise<void>
-  flush?(): Promise<void>
+  flush?(reason?: MemoryFlushReason): Promise<void>
 }
 export interface MemoryBeginInput {
   readonly agentId: string
@@ -66,9 +67,14 @@ export interface MemoryFinishInput {
   readonly actions: readonly MemoryAction[]
   readonly outcome: 'completed' | 'failed' | 'cancelled'
 }
+export interface MemoryFlushInput {
+  readonly agentId: string
+  readonly reason: 'compaction' | 'session-end'
+}
 export interface HarnessMemoryServices {
   begin(input: MemoryBeginInput, signal?: AbortSignal): Promise<MemoryRecallResult>
   append(input: MemoryAppendInput, signal?: AbortSignal): Promise<MemoryRecallResult>
   finish(input: MemoryFinishInput): Promise<void>
+  flush(input: MemoryFlushInput): Promise<void>
   end(agentId: string, turnId: string): void
 }

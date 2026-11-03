@@ -8,9 +8,10 @@ export function revealTarget(target: HTMLElement, block: 'center' | 'nearest' = 
   target.scrollIntoView(options)
 }
 export function focusAndReveal(getTarget: () => HTMLElement | null): void {
+  const origin = document.activeElement
   requestAnimationFrame(() => {
-    const target = getTarget()
-    if (!target?.isConnected || !target.getClientRects().length) return
+    const target = getTarget(), active = document.activeElement
+    if (!target?.isConnected || !target.getClientRects().length || active !== origin && active !== document.body && active !== target) return
     target.focus({ preventScroll: true })
     // ResizeObserver measures wrapped sticky controls before the next frame reveals the target.
     requestAnimationFrame(() => {

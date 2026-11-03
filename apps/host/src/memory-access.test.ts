@@ -4,7 +4,7 @@ import { MemoryAccess } from './memory-access'
 
 function fixture() {
   const enabled = new Set(['harness', 'qq', 'memory'])
-  const provider: MemoryProvider = { recall: vi.fn(async () => ({ text: 'Historical context only', items: [{ uri: 'viking://~/memories/example.md', text: 'Preference', score: 0.8 }] })), capture: vi.fn(async () => {}) }
+  const provider: MemoryProvider = { recall: vi.fn(async () => ({ text: 'Historical context only', items: [{ uri: 'viking://~/memories/example.md', text: 'Preference', score: 0.8 }] })), capture: vi.fn(async () => {}), flush: vi.fn(async () => {}) }
   const qq = { id: 'qq', kind: 'communication', getAgentIdentity: () => ({ owners: ['200'], administrators: [] }) } as unknown as BackendPlugin
   const plugin = { id: 'memory', kind: 'capability', memory: provider, getStatus: () => ({ state: 'connected' }) } as unknown as BackendPlugin
   const plugins = [qq, plugin]
@@ -17,6 +17,16 @@ function fixture() {
 }
 
 describe('trusted current-turn memory coordination', () => {
+  it('forwards native lifecycle commit boundaries only to connected enabled providers', async () => {
+    const f = fixture()
+    await f.memory.flush({ agentId: 'root', reason: 'compaction' })
+    expect(f.provider.flush).toHaveBeenCalledExactlyOnceWith('compaction')
+    f.enabled.delete('memory')
+    await f.memory.flush({ agentId: 'root', reason: 'session-end' })
+    expect(f.provider.flush).toHaveBeenCalledOnce()
+    f.enabled.delete('harness')
+    await expect(f.memory.flush({ agentId: 'root', reason: 'compaction' })).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_INVALID' })
+  })
   it('unboxes a verified external batch and supplies the current owner scope without capturing recalled text', async () => {
     const f = fixture()
     expect(await f.begin()).toMatchObject({ text: expect.stringContaining('Historical context only') })

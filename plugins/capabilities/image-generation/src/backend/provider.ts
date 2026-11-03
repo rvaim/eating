@@ -9,6 +9,7 @@ import type { ImageGenerationParameters } from '../types'
 import type { PrivateImageConfiguration } from './config'
 import { base64Image, imageBytes } from './image'
 import type { GeneratedImageBytes } from './image'
+import { imageSize } from './validation'
 
 export interface ImageEditSource { readonly mimeType: ImageMimeType; readonly bytes: Buffer }
 function failure(code: string, message: string, outcome: 'failed' | 'unknown' = 'unknown'): PlatformError { return new PlatformError(code, message, 502, outcome) }
@@ -38,7 +39,7 @@ function requestBytes(url: URL, signal: AbortSignal, maximum: number, body?: Buf
     if (signal.aborted) { abort(); return }
     try {
       request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, { method: body ? 'POST' : 'GET', agent: false,
-        headers: body ? { Authorization: 'Bearer ' + apiKey!, 'Content-Type': contentType, 'Content-Length': body.length, Accept: 'application/json', 'Accept-Encoding': 'identity' }
+        headers: body ? { ...(apiKey ? { Authorization: 'Bearer ' + apiKey } : {}), 'Content-Type': contentType, 'Content-Length': body.length, Accept: 'application/json', 'Accept-Encoding': 'identity' }
           : { Accept: 'image/png,image/jpeg,image/webp,image/gif', 'Accept-Encoding': 'identity' } }, incoming => {
         response = incoming
         const status = incoming.statusCode ?? 0
@@ -69,7 +70,7 @@ export async function generateImage(configuration: PrivateImageConfiguration, in
   const timeout = new AbortController(), combined = AbortSignal.any([signal, timeout.signal])
   const timer = setTimeout(() => timeout.abort(), configuration.timeoutMs)
   try {
-    const size = input.size ?? configuration.size, quality = input.quality ?? configuration.quality, format = input.response_format ?? configuration.responseFormat
+    const size = imageSize(input.size ?? configuration.size), quality = input.quality ?? configuration.quality, format = input.response_format ?? configuration.responseFormat
     let body: Buffer, contentType = 'application/json'
     if (editSource) {
       const fields: Array<readonly [string, string]> = [['model', configuration.model], ['prompt', input.prompt], ['n', '1'],

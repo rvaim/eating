@@ -12,6 +12,7 @@ import { capabilityDescription, capabilityTitle, parameterDescription, parameter
 import type { QQMessage, QQTranslationKey } from './i18n'
 import { LiveLogs } from './live-logs'
 import { ImageResult, readImagePreview } from './ImageResult'
+import { MediaTransportFields } from './media-transport'
 import type { ImagePreviewResult } from './ImageResult'
 import { AgentPolicyFields, agentPolicyDraft } from './agent-policy-fields'
 import { isJsonObject } from '@eating/plugin-sdk'
@@ -295,6 +296,7 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
     {refreshFailure && !plugin && <ActionButton reasonCode="busy" className="button button-secondary" type="button" onClick={() => void refreshWorkspace()}>{t('action.reload')}</ActionButton>}
     <div className="qq-tabs workspace-rail" role="tablist" aria-label={t('tabs.label')}>{tabs.map((item, index) => <ActionButton reasonCode="busy" key={item.id} type="button" role="tab" id={`${prefix}-tab-${item.id}`} aria-selected={tab === item.id} aria-controls={`${prefix}-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1} onClick={() => setTab(item.id)} onKeyDown={event => switchTab(event, index)}>{t(item.title)}</ActionButton>)}</div>
     {loading && <p className="qq-loading" role="status">{t('loading.configuration')}</p>}
+    {plugin?.status.state === 'unconfigured' && !configurationReadFailure && <p className="qq-help" role="status">{t('config.prerequisite')}</p>}
     <section hidden={tab !== 'configuration'} role="tabpanel" id={`${prefix}-panel-configuration`} aria-labelledby={`${prefix}-tab-configuration`}>
       <div className="section-heading"><h3>{t('tabs.configuration')}</h3><p>{t('config.description')}</p></div>
       {draft && saved && !configurationReadFailure && <form className="form-fields" noValidate onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); void mutate('save') }}>
@@ -325,6 +327,7 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
       {configurationResult && <p className="qq-operation-result" role="status"><Check size={15} aria-hidden="true" />{t(configurationResult.key, { state: configurationResult.state ? t(`connection.${configurationResult.state}`) : undefined })}</p>}
       <ErrorNotice failure={configurationReadFailure} />
       <ErrorNotice failure={configurationFailure} />
+      {plugin && <MediaTransportFields active={tab === 'configuration'} enabled={plugin.enabled} busy={busy} connectionKey={`${saved?.endpoint ?? ''}:${plugin.status.accountId ?? ''}`} actionLock={actionLock} onBusy={setPolicySaving} onFeedback={onFeedback} />}
       {saved && (saved.instanceId || saved.configurationPath || saved.dataDirectory) && <details className="qq-location-details"><summary>{t('config.locations')}</summary><dl className="qq-paths">{saved.instanceId && <div><dt>{t('config.instance')}</dt><dd>{saved.instanceId}</dd></div>}{saved.configurationPath && <div><dt>{t('config.configurationPath')}</dt><dd>{saved.configurationPath}</dd></div>}{saved.dataDirectory && <div><dt>{t('config.dataDirectory')}</dt><dd>{saved.dataDirectory}</dd></div>}</dl></details>}
     </section>
     <section hidden={tab !== 'agent-policy'} role="tabpanel" id={`${prefix}-panel-agent-policy`} aria-labelledby={`${prefix}-tab-agent-policy`}>

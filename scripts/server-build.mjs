@@ -44,7 +44,7 @@ export function buildServer(configuration, root = repository) {
     console.log(JSON.stringify({ stage: 'locked-project-dependencies-ready', ok: true }))
     run([resolve(root, 'scripts/build.mjs')], 900000)
     console.log(JSON.stringify({ stage: 'linux-production-build-ready', ok: true }))
-    run([resolve(root, 'node_modules/vitest/vitest.mjs'), 'run', 'apps/host/src/harness.test.ts', 'apps/host/src/memory-access.test.ts', 'apps/host/src/agent-access.test.ts', 'apps/host/src/capability-access.test.ts', 'plugins/harness/dsh/src/backend/agent-control.test.ts', '--maxWorkers=1'], 300000)
+    run([resolve(root, 'node_modules/vitest/vitest.mjs'), 'run', 'apps/host/src/harness.test.ts', 'apps/host/src/memory-access.test.ts', 'apps/host/src/agent-access.test.ts', 'apps/host/src/capability-access.test.ts', 'apps/host/src/media-assets.test.ts', 'apps/host/src/media-resource-services.test.ts', 'apps/host/src/capability-revocation.test.ts', 'plugins/harness/dsh/src/backend/agent-control.test.ts', 'plugins/capabilities/openviking-memory/src/backend/memory.test.ts', 'plugins/capabilities/image-generation/src/backend/size.test.ts', 'plugins/communication/qq/src/server-image-assets.test.ts', '--maxWorkers=1'], 300000)
     console.log(JSON.stringify({ stage: 'linux-host-control-regression-ready', ok: true }))
   } finally { closeSync(log) }
 }

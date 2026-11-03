@@ -17,11 +17,21 @@ async function fixture() {
     return call(0)
   }
   function event(type: string, data: Json) { for (const listener of listeners.get('session/event') ?? []) listener({ id: 'root' }, { type, data }) }
-  return { ctx, control, agent, mount, dispatch, event }
+  const dispose = () => Promise.all((listeners.get('agent/disposed') ?? []).map(listener => listener({ agent })))
+  return { ctx, control, agent, mount, dispatch, event, dispose }
 }
 const human = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'Actual native input' }] }
 
 describe('native memory admission and capture boundaries', () => {
+  it('flushes synchronized memory at compaction and normal session disposal without capturing synthetic events', async () => {
+    const f = await fixture(); await f.mount(f.agent)
+    f.event('compaction/start', {})
+    await vi.waitFor(() => expect(f.control).toHaveBeenCalledExactlyOnceWith('memory-flush', { agentId: 'root', turnId: 'nonce:root:lifecycle', reason: 'compaction' }, expect.any(AbortSignal)))
+    await f.dispose()
+    expect(f.control).toHaveBeenLastCalledWith('memory-flush', { agentId: 'root', turnId: 'nonce:root:lifecycle', reason: 'session-end' }, expect.any(AbortSignal))
+    expect(f.control).toHaveBeenCalledTimes(2)
+    expect(f.control.mock.calls.filter(call => call[0] === 'memory-finish')).toHaveLength(0)
+  })
   it('waits for a downstream rejection and never wakes a rejected autonomous opportunity with recalled content', async () => {
     const f = await fixture()
     f.ctx.on('agent/pre-step', async () => ({ kind: 'reject' }))

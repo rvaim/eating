@@ -6,6 +6,7 @@
 .qq-image-parts > p { max-width: 75ch; white-space: pre-wrap; font-size: 13px; }
 .qq-result-image { display: block; max-width: 100%; max-height: min(600px, 65dvh); width: auto; height: auto; object-fit: contain; object-position: left top; border: 1px solid var(--color-line); border-radius: 5px; }
 .qq-image-metadata { margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-muted); font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.qq-media-transport { margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--color-line); }
 .qq-panel { display: contents; }
 .qq-panel > * { max-width: var(--panel-content-max); min-width: 0; }
 .qq-panel p { overflow-wrap: anywhere; }

@@ -50,11 +50,16 @@ async function fixture() {
   } }
   const wrappedStickers: BackendPluginEntry = { ...stickersEntry, create(context) {
     stickerPlugin = stickersEntry.create(context)
-    return new Proxy(stickerPlugin, { get(target, property) {
-      if (property === 'media') return { ...target.media!, readAsset: async (id: string) => {
+    const originalMedia = stickerPlugin.media!
+    const media = { ...originalMedia, getAsset: async (id: string) => {
+      const asset = await originalMedia.getAsset(id)
+      return { ...asset, readBytes: async () => {
         if (assetGate) { assetGate.entered.resolve(); await assetGate.release.promise }
-        return target.media!.readAsset(id)
+        return asset.readBytes()
       } }
+    } }
+    return new Proxy(stickerPlugin, { get(target, property) {
+      if (property === 'media') return media
       if (property === 'invokeCapability') return async (...args: Parameters<NonNullable<BackendPlugin['invokeCapability']>>) => {
         try { const result = await target.invokeCapability!(...args); stickerSettled.resolve(result); return result }
         catch (error) { stickerSettled.resolve(error); throw error }

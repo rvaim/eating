@@ -27,9 +27,9 @@ export function readSystemDsh(value: unknown): SystemDshStatus {
     if (value.path !== null || value.version !== null || value.source !== null) return invalid()
     return { found: false, path: null, version: null, source: null }
   }
-  if (!text(value.path, 2048) || !value.path || !text(value.version, 64) || !value.version
+  if (!text(value.path, 2048) || !value.path || value.version !== null && (!text(value.version, 64) || !value.version)
     || !['override', 'path', 'common', 'application'].includes(String(value.source))) return invalid()
-  return { found: true, path: value.path, version: value.version, source: value.source as SystemDshStatus['source'] }
+  return { found: true, path: value.path, version: value.version as string | null, source: value.source as SystemDshStatus['source'] }
 }
 
 /** The host only reports whether the official Web is ready; the authenticated URL is never part of it. */

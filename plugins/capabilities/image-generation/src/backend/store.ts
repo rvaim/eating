@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { lstatSync } from 'node:fs'
-import { join } from 'node:path'
+import { lstatSync, realpathSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
+import type { PluginImageAsset } from '@eating/plugin-sdk'
 import { IMAGE_GENERATION_LIMITS } from '../types'
 import type { GeneratedImageItem, ImageGenerationJob, ImageGenerationJobError, ImageGenerationPage, ImageGenerationPreview, ImageGenerationSourceSummary } from '../types'
 import { ImageStorageError, jsonBytes, prepareDirectory, readBytes, removeOwnBlob, writeBytes } from './files'
@@ -129,13 +130,29 @@ export class ImageGenerationStore {
       throw error
     }
   }
-  get(assetId: string): ImageGenerationPreview {
+  private assetBytes(assetId: string): { item: GeneratedImageItem; bytes: Buffer; path: string } {
     assetIdentifier(assetId)
     const item = this.value.images.find(item => item.assetId === assetId)
     if (!item) throw new PlatformError('IMAGE_GENERATION_IMAGE_NOT_FOUND', '生成图片不存在。', 404, 'not-sent')
-    const bytes = readBytes(join(this.blobs, assetId), IMAGE_GENERATION_LIMITS.imageBytes)
-    if (!bytes || createHash('sha256').update(bytes).digest('hex') !== assetId) corrupt()
-    imageBytes(bytes, item.mimeType)
+    try {
+      const root = dirname(this.blobs), path = join(this.blobs, assetId)
+      if (lstatSync(root).isSymbolicLink() || lstatSync(this.blobs).isSymbolicLink() || !lstatSync(this.blobs).isDirectory()
+        || realpathSync(this.blobs) !== join(realpathSync(root), 'blobs') || realpathSync(path) !== join(realpathSync(this.blobs), assetId)) corrupt()
+      const bytes = readBytes(path, IMAGE_GENERATION_LIMITS.imageBytes)
+      if (!bytes || bytes.length !== item.bytes || createHash('sha256').update(bytes).digest('hex') !== assetId) corrupt()
+      imageBytes(bytes, item.mimeType)
+      return { item, bytes, path: realpathSync(path) }
+    } catch { corrupt() }
+  }
+  getAsset(assetId: string): PluginImageAsset {
+    const { item } = this.assetBytes(assetId)
+    return Object.freeze({ mimeType: item.mimeType, byteLength: item.bytes, sha256: item.assetId,
+      readBytes: async () => this.assetBytes(assetId).bytes,
+      localFile: async () => this.assetBytes(assetId).path,
+    })
+  }
+  get(assetId: string): ImageGenerationPreview {
+    const { item, bytes } = this.assetBytes(assetId)
     return { item: structuredClone(item), image: { mimeType: item.mimeType, data: bytes.toString('base64') }, sendable: { type: 'image', data: { file: 'eating-asset://image-generation/' + assetId } } }
   }
   private page<T>(items: readonly T[], input: unknown): ImageGenerationPage<T> {

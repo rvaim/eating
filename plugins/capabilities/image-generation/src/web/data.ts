@@ -123,6 +123,7 @@ export async function manage(operation: 'generate' | 'job' | 'jobs' | 'list' | '
 
 const errorKeys: Readonly<Record<string, ImageGenerationTranslationKey>> = {
   IMAGE_GENERATION_INVALID_INPUT: 'error.invalidInput',
+  IMAGE_GENERATION_INVALID_SIZE: 'error.invalidSize',
   IMAGE_GENERATION_INVALID_CONFIGURATION: 'error.invalidConfiguration',
   IMAGE_GENERATION_CONFIGURATION_CONFLICT: 'error.configConflict',
   IMAGE_GENERATION_CONFIGURATION_CORRUPTED: 'error.configCorrupted',

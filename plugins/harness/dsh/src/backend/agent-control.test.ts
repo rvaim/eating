@@ -47,7 +47,7 @@ describe('trusted native Agent control boundary', () => {
     const control = new DshAgentControl(f.directory, f.host); stops.push(() => control.close())
     const activity = new DshAutonomy(f.directory, () => true, () => {}, () => {})
     control.setAutonomy(activity, () => parentId, () => true)
-    const memory = { begin: vi.fn(async () => ({ text: '', items: [] })), append: vi.fn(async () => ({ text: '', items: [] })), finish: vi.fn(async () => {}), end: vi.fn() }
+    const memory = { begin: vi.fn(async () => ({ text: '', items: [] })), append: vi.fn(async () => ({ text: '', items: [] })), finish: vi.fn(async () => {}), flush: vi.fn(async () => {}), end: vi.fn() }
     Object.assign(f.host, { memory, wake: vi.fn() })
     const capabilities = vi.spyOn(f.host, 'getCapabilityMcpConnections')
     await control.start('restored-runtime-nonce')
@@ -541,9 +541,25 @@ describe('trusted native Agent control boundary', () => {
     for (const input of [secondInput, firstInput]) expect((await f.post('/finish-task', { agentId: input.agentId, contextRef: input.contextRef, taskId: input.taskId, status: 'completed' })).status).toBe(200)
   })
 
+  it('accepts current root lifecycle flushes without an active turn and rejects forged or child boundaries', async () => {
+    const f = fixture()
+    const flush = vi.fn(async () => {})
+    Object.assign(f.host, { memory: { flush } })
+    f.control.setAutonomy(new DshAutonomy(f.directory, () => true, () => {}, () => {}), () => parentId, () => true)
+    const child = f.control.bind(f.batch, parentId)
+    await f.control.start('fixture-runtime-nonce')
+    const input = { agentId: parentId, turnId: `fixture-runtime-nonce:${parentId}:lifecycle`, reason: 'compaction' }
+    expect((await f.post('/memory-flush', input)).status).toBe(200)
+    expect(flush).toHaveBeenCalledExactlyOnceWith({ agentId: parentId, reason: 'compaction' })
+    expect((await f.post('/memory-flush', { ...input, turnId: `old-nonce:${parentId}:lifecycle` })).status).toBe(409)
+    expect((await f.post('/memory-flush', { ...input, reason: 'manual' })).status).toBe(409)
+    expect((await f.post('/memory-flush', { ...input, agentId: child.scope.agentId, turnId: `fixture-runtime-nonce:${child.scope.agentId}:lifecycle` })).status).toBe(409)
+    expect(flush).toHaveBeenCalledOnce()
+  })
+
   it('retains one root memory batch with all ordered events while delegation uses group context references', async () => {
     const f = fixture()
-    const memory = { begin: vi.fn(async () => ({ text: '', items: [] })), append: vi.fn(async () => ({ text: '', items: [] })), finish: vi.fn(async () => {}), end: vi.fn() }
+    const memory = { begin: vi.fn(async () => ({ text: '', items: [] })), append: vi.fn(async () => ({ text: '', items: [] })), finish: vi.fn(async () => {}), flush: vi.fn(async () => {}), end: vi.fn() }
     Object.assign(f.host, { memory })
     f.control.setAutonomy(new DshAutonomy(f.directory, () => true, () => {}, () => {}), () => parentId, () => true)
     await f.control.start('fixture-runtime-nonce')
@@ -644,7 +660,7 @@ describe('trusted native Agent control boundary', () => {
     const payload = { eating: { magic: 'eating-harness-delivery', protocolVersion: 1, nonce: 'previous-nonce', sessionId: parentId, batchId: batch.batchId, digest }, context, events: batch.events }
     await f.control.close()
     const control = new DshAgentControl(f.directory, f.host); stops.push(() => control.close())
-    const memory = { begin: vi.fn(async () => ({ text: '', items: [] })), append: vi.fn(async () => ({ text: '', items: [] })), finish: vi.fn(async () => {}), end: vi.fn() }
+    const memory = { begin: vi.fn(async () => ({ text: '', items: [] })), append: vi.fn(async () => ({ text: '', items: [] })), finish: vi.fn(async () => {}), flush: vi.fn(async () => {}), end: vi.fn() }
     Object.assign(f.host, { memory })
     control.setAutonomy(new DshAutonomy(f.directory, () => true, () => {}, () => {}), () => parentId, () => true)
     await control.start('fixture-runtime-nonce')

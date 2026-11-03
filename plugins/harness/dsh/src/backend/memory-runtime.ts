@@ -38,8 +38,13 @@ export function getMemoryRuntimeSource(): string {
       } catch (error) { report(error); return decision; }
     }, { prepend: true }));
     releases.push(ctx.on('session/event', (session, event) => {
+      if (session.id !== agent.id) return;
+      if (event.type === 'compaction/start' && agent.id === sessionId) {
+        settlement = settlement.then(() => memoryRequest('flush', { turnId: nonce + ':' + agent.id + ':lifecycle', reason: 'compaction' })).then(() => {}, report);
+        return settlement;
+      }
       const current = flight;
-      if (session.id !== agent.id || !current) return;
+      if (!current) return;
       if (event.type === 'assistant/message') {
         const text = lastText(event.data.message?.content);
         if (text && current.assistant.join('\n').length < 32768) current.assistant.push(text);
@@ -70,9 +75,13 @@ export function getMemoryRuntimeSource(): string {
       }
     }));
     releases.push(ctx.on('agent/disposed', ({ agent: caller }) => {
-      if (caller !== agent || !flight) return;
-      const turnId = flight.turnId; flight = undefined;
-      void memoryRequest('end', { turnId }).catch(report);
+      if (caller !== agent) return;
+      if (flight) {
+        const turnId = flight.turnId; flight = undefined;
+        settlement = settlement.then(() => memoryRequest('end', { turnId })).then(() => {}, report);
+      }
+      if (agent.id === sessionId) settlement = settlement.then(() => memoryRequest('flush', { turnId: nonce + ':' + agent.id + ':lifecycle', reason: 'session-end' })).then(() => {}, report);
+      return settlement;
     }));
   }
 `;

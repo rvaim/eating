@@ -1,6 +1,6 @@
 import type { OneBotConfig } from './config'
 import { createHash } from 'node:crypto'
-import { PlatformError, isJsonObject, parseImageAssetUri, checkedImageResource } from '@eating/plugin-sdk'
+import { PlatformError, isJsonObject, checkedImageResource } from '@eating/plugin-sdk'
 import type { AgentInvocationScope, BackendPlugin, BackendPluginEntry, ConnectionStatus, ImageResource, ReceivedImageReference, HarnessEvent, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { assertQQAgentInvocation, createDefaultAgentPolicy, parseQQAgentPolicy, parseQQAgentPolicySave, qqAgentInstructions, qqAgentTypes, qqMessageResourceIds, qqSenderRole } from './backend/agent-policy'
 import { OneBotClient } from './backend/onebot'
@@ -9,6 +9,8 @@ import { QQConfigurationFile, readConfiguration } from './backend/config-file'
 import { QQAccountRegistry } from './backend/accounts'
 import { LiveLogChannel } from './backend/live-logs'
 import { downloadQQImage, qqViewReceivedImageTool, readQQReceivedImage } from './backend/media'
+import { QQMediaTransportConfiguration } from './backend/media-transport-config'
+import { containsQQImageAssets, resolveQQImageAssets } from './backend/media-transport'
 
 type Configuration = OneBotConfig
 
@@ -62,7 +64,7 @@ class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly kind = 'communication' as const
   readonly name = 'QQ'
-  readonly version = '0.13.7'
+  readonly version = '0.14.0'
   readonly logs = new LiveLogChannel()
   readonly tools = [...qqTools, qqViewReceivedImageTool]
   readonly capabilities = [
@@ -98,6 +100,7 @@ class QQPlugin implements BackendPlugin {
   getAgentIdentity() { return { owners: [...this.configuration.owners], administrators: [...this.configuration.administrators] } }
   private configuration: Configuration
   private readonly file: QQConfigurationFile
+  private readonly mediaTransport: QQMediaTransportConfiguration
   private readonly accounts: QQAccountRegistry
   private readonly instanceId: string
   private readonly client: OneBotClient
@@ -106,6 +109,7 @@ class QQPlugin implements BackendPlugin {
     this.accounts = new QQAccountRegistry(context.dataDirectory)
     this.instanceId = this.accounts.defaultInstanceId
     this.file = new QQConfigurationFile(this.accounts.directoryFor(this.instanceId))
+    this.mediaTransport = new QQMediaTransportConfiguration(this.file.directory)
     this.configuration = this.file.read() ?? createDefaultConfiguration()
     this.client = new OneBotClient({ onEvent: event => this.receiveEvent(event) })
   }
@@ -131,6 +135,11 @@ class QQPlugin implements BackendPlugin {
   }
 
   async manage(operation: string, input: unknown): Promise<JsonValue> {
+    if (operation === 'media-transport') {
+      if (!isJsonObject(input) || Object.keys(input).length) throw new PlatformError('QQ_MEDIA_CONFIGURATION_INVALID', '读取图片传输设置仅接受空对象。', 400, 'not-sent')
+      return this.mediaTransport.snapshot(this.mediaConnection()) as unknown as JsonObject
+    }
+    if (operation === 'save-media-transport') return this.mediaTransport.save(input, this.mediaConnection()) as unknown as JsonObject
     if (operation !== 'save-agent-policy') throw new PlatformError('UNKNOWN_MANAGEMENT_OPERATION', '此 QQ 管理操作未提供。', 404, 'not-sent')
     const policy = parseQQAgentPolicySave(input, this.configuration)
     const next = { ...this.configuration, ...policy }
@@ -178,7 +187,9 @@ class QQPlugin implements BackendPlugin {
     const execute = async () => {
       if (scope?.signal?.aborted) throw new PlatformError('AGENT_SCOPE_VIOLATION', '当前调用授权已撤销，未发送。', 403, 'not-sent')
       const account = this.client.getStatus().accountId
-      const wire = await this.resolveAssets(forwarded, scope)
+      const transport = containsQQImageAssets(forwarded) ? this.mediaTransport.snapshot(this.mediaConnection()) : null
+      const wire = transport ? await resolveQQImageAssets(forwarded, this.context.resources, transport, scope ? { agentId: scope.agentId, agentTypeId: scope.agentTypeId, source: scope } : undefined) : { params: forwarded, imageBase64Bytes: 0 }
+      if (transport && this.mediaTransport.snapshot(this.mediaConnection()).revision !== transport.revision) throw new PlatformError('QQ_MEDIA_CONFIGURATION_CHANGED', '资源读取期间图片传输设置已变化，未发送。', 409, 'not-sent')
       if (scope?.signal?.aborted) throw new PlatformError('AGENT_SCOPE_VIOLATION', '资源读取期间任务已撤销，未发送。', 403, 'not-sent')
       if (scope) assertQQAgentInvocation(name, params, scope, this.configuration, { instanceId: this.instanceId, accountId: this.client.getStatus().accountId })
       if (this.client.getStatus().accountId !== account) throw new PlatformError('ACCOUNT_CHANGED', '资源读取期间账号已变化，未发送。', 409, 'not-sent')
@@ -199,29 +210,9 @@ class QQPlugin implements BackendPlugin {
     return checkedImageResource({ mimeType: image.mimeType ?? null, data: image.data ?? null })
   }
 
-  private async resolveAssets(params: JsonObject, scope?: AgentInvocationScope): Promise<{ params: JsonObject; imageBase64Bytes: number }> {
-    let count = 0, totalBytes = 0, imageBase64Bytes = 0
-    const resolveMessage = async (value: JsonValue): Promise<JsonValue> => {
-      if (Array.isArray(value)) return Promise.all(value.map(resolveMessage))
-      if (!isJsonObject(value) || !isJsonObject(value.data)) return value
-      if (value.type === 'image' && typeof value.data.file === 'string') {
-        const reference = parseImageAssetUri(value.data.file)
-        if (!reference) return value
-        if (++count > 4) throw new PlatformError('MEDIA_ASSET_LIMIT', '单次发送最多解析4张插件图片。', 400, 'not-sent')
-        if (!this.context.resources) throw new PlatformError('MEDIA_RESOURCE_SERVICE_UNAVAILABLE', '宿主未提供图片资源服务。', 503, 'not-sent')
-        const image = checkedImageResource(await this.context.resources.readAsset(reference, scope ? { agentId: scope.agentId, agentTypeId: scope.agentTypeId, source: scope } : undefined))
-        totalBytes += Buffer.byteLength(image.data, 'base64')
-        if (totalBytes > 10 * 1024 * 1024) throw new PlatformError('MEDIA_ASSET_LIMIT', '单次发送的插件图片总大小不能超过10MiB。', 400, 'not-sent')
-        imageBase64Bytes += image.data.length
-        return { ...value, data: { ...value.data, file: 'base64://' + image.data } }
-      }
-      if (value.type === 'node' && value.data.content !== undefined) return { ...value, data: { ...value.data, content: await resolveMessage(value.data.content) } }
-      return value
-    }
-    const result = { ...params }
-    if (result.message !== undefined) result.message = await resolveMessage(result.message)
-    if (isJsonObject(result.operation) && result.operation.reply !== undefined) result.operation = { ...result.operation, reply: await resolveMessage(result.operation.reply) }
-    return { params: result, imageBase64Bytes }
+  private mediaConnection() {
+    const status = this.client.getStatus()
+    return { endpoint: this.configuration.endpoint, accountId: status.state === 'connected' ? status.accountId : null }
   }
 
   private async viewReceivedImage(params: JsonObject, scope?: AgentInvocationScope): Promise<JsonObject> {

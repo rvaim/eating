@@ -2,6 +2,7 @@ import { isJsonObject } from '@eating/plugin-sdk'
 import type { JsonObject, MemoryHit, MemoryScope } from '@eating/plugin-sdk'
 import { HostApiError, hostRequest } from '@eating/ui-sdk'
 import type { MemoryConfiguration, MemoryConfigurationInput, MemoryJob, MemorySettings, RuntimeSnapshot, ScopeRule, ScopeSummary } from '../types'
+import { DEFAULT_SETTINGS } from '../types'
 import type { MemoryTranslationKey } from './i18n'
 
 const text = (value: unknown, max = 4096): value is string => typeof value === 'string' && value.length <= max && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value)
@@ -21,39 +22,36 @@ function readRule(value: unknown): ScopeRule {
     memberMode: value.memberMode as ScopeRule['memberMode'], memberIds: [...value.memberIds] as string[] }
 }
 export function readSettings(value: unknown): MemorySettings {
-  if (!isJsonObject(value) || !flags(value, ['enabled', 'autoCapture', 'autoRecall', 'globalMemory', 'ownerCrossSession', 'privateCapture', 'privateRecall', 'groupCapture', 'groupRecall'])
-    || !integer(value.archiveMaxMiB) || value.archiveMaxMiB < 1 || value.archiveMaxMiB > 64
+  if (!isJsonObject(value) || Object.keys(value).some(key => !Object.hasOwn(DEFAULT_SETTINGS, key)) || !flags(value, ['enabled', 'autoCapture', 'autoRecall', 'globalMemory', 'ownerCrossSession', 'privateCapture', 'privateRecall', 'groupCapture', 'groupRecall', 'autoCommit'])
+    || !integer(value.commitTokenThreshold) || value.commitTokenThreshold < 1 || value.commitTokenThreshold > 1000000
     || !['recallLimit', 'recallMaxChars'].every(key => integer(value[key]))
     || typeof value.scoreThreshold !== 'number' || !Number.isFinite(value.scoreThreshold) || value.scoreThreshold < 0 || value.scoreThreshold > 1
     || !Array.isArray(value.rules) || value.rules.length > 1000) return invalid()
   return { enabled: value.enabled as boolean, autoCapture: value.autoCapture as boolean, autoRecall: value.autoRecall as boolean,
     globalMemory: value.globalMemory as boolean, ownerCrossSession: value.ownerCrossSession as boolean, privateCapture: value.privateCapture as boolean,
     privateRecall: value.privateRecall as boolean, groupCapture: value.groupCapture as boolean, groupRecall: value.groupRecall as boolean,
-    archiveMaxMiB: value.archiveMaxMiB, recallLimit: value.recallLimit as number,
+    autoCommit: value.autoCommit as boolean, commitTokenThreshold: value.commitTokenThreshold, recallLimit: value.recallLimit as number,
     recallMaxChars: value.recallMaxChars as number, scoreThreshold: value.scoreThreshold, rules: value.rules.map(readRule) }
 }
 export function readConfiguration(value: unknown): MemoryConfiguration {
-  if (isJsonObject(value) && value.schemaVersion !== 2) throw new HostApiError('MEMORY_CONFIGURATION_CORRUPTED', '', 'failed')
+  if (isJsonObject(value) && value.schemaVersion !== 3) throw new HostApiError('MEMORY_CONFIGURATION_CORRUPTED', '', 'failed')
   if (!isJsonObject(value) || !integer(value.revision) || !text(value.endpoint) || !text(value.account)
     || !text(value.user) || !integer(value.timeoutMs) || !flags(value, ['apiKeyConfigured', 'autoConnect', 'ready'])
     || 'apiKey' in value) return invalid()
-  return { schemaVersion: 2, revision: value.revision, endpoint: value.endpoint, account: value.account, user: value.user,
+  return { schemaVersion: 3, revision: value.revision, endpoint: value.endpoint, account: value.account, user: value.user,
     apiKeyConfigured: value.apiKeyConfigured as boolean, autoConnect: value.autoConnect as boolean, timeoutMs: value.timeoutMs,
     ready: value.ready as boolean, settings: readSettings(value.settings) }
 }
 function readJob(value: unknown): MemoryJob {
   if (!isJsonObject(value) || !['id', 'peerId', 'sessionId'].every(key => text(value[key]))
-    || !['taskId', 'archiveUri', 'errorCode'].every(key => nullableText(value[key]))
-    || !['queued', 'submitting', 'processing', 'completed', 'failed', 'unknown'].includes(String(value.status))
-    || !date(value.createdAt) || !date(value.updatedAt) || !integer(value.messages)) return invalid()
-  let changes: MemoryJob['changes'] = null
-  if (value.changes !== null) {
-    if (!isJsonObject(value.changes) || !integer(value.changes.added) || !integer(value.changes.updated) || !integer(value.changes.deleted)) return invalid()
-    changes = { added: value.changes.added, updated: value.changes.updated, deleted: value.changes.deleted }
-  }
-  return { id: value.id as string, peerId: value.peerId as string, sessionId: value.sessionId as string,
-    taskId: value.taskId as string | null, archiveUri: value.archiveUri as string | null, errorCode: value.errorCode as string | null,
-    status: value.status as MemoryJob['status'], createdAt: value.createdAt, updatedAt: value.updatedAt, messages: value.messages, changes }
+    || !['commitId', 'taskId', 'archiveUri', 'errorCode'].every(key => nullableText(value[key]))
+    || !['append', 'commit'].includes(String(value.kind)) || value.trigger !== null && !['threshold', 'manual', 'compaction', 'shutdown'].includes(String(value.trigger))
+    || !['queued', 'syncing', 'synced', 'committing', 'processing', 'completed', 'failed', 'unknown'].includes(String(value.status))
+    || !date(value.createdAt) || !date(value.updatedAt) || !integer(value.messages) || !integer(value.syncedMessages) || value.syncedMessages > value.messages
+    || value.pendingTokens !== null && !integer(value.pendingTokens)) return invalid()
+  return { id: value.id as string, kind: value.kind as MemoryJob['kind'], trigger: value.trigger as MemoryJob['trigger'], peerId: value.peerId as string, sessionId: value.sessionId as string,
+    commitId: value.commitId as string | null, taskId: value.taskId as string | null, archiveUri: value.archiveUri as string | null, errorCode: value.errorCode as string | null,
+    status: value.status as MemoryJob['status'], createdAt: value.createdAt, updatedAt: value.updatedAt, messages: value.messages, syncedMessages: value.syncedMessages, pendingTokens: value.pendingTokens as number | null }
 }
 function readScope(value: unknown): ScopeSummary {
   if (!isJsonObject(value) || !text(value.peerId) || !text(value.label) || !flags(value, ['capture', 'recall'])
@@ -90,7 +88,7 @@ export async function fetchConfiguration(signal?: AbortSignal): Promise<MemoryCo
 export async function updateConfiguration(input: MemoryConfigurationInput, signal?: AbortSignal): Promise<MemoryConfiguration> {
   return readConfiguration(await hostRequest<unknown>('/plugins/openviking-memory/configuration', { method: 'POST', body: input, signal }))
 }
-export function manage(operation: 'snapshot' | 'test-connection' | 'flush' | 'retry' | 'search' | 'read' | 'delete', input: JsonObject, signal?: AbortSignal): Promise<unknown> {
+export function manage(operation: 'snapshot' | 'test-connection' | 'flush' | 'search' | 'read' | 'delete', input: JsonObject, signal?: AbortSignal): Promise<unknown> {
   return hostRequest<unknown>('/plugins/openviking-memory/manage', { method: 'POST', body: { operation, input }, signal })
 }
 export function connect(signal?: AbortSignal): Promise<unknown> { return hostRequest('/plugins/openviking-memory/connect', { method: 'POST', body: {}, signal }) }
@@ -103,7 +101,6 @@ export function failure(error: unknown, fallback: MemoryTranslationKey = 'error.
 const knownErrors: Readonly<Record<string, MemoryTranslationKey>> = {
   MEMORY_AUTH_FAILED: 'error.auth', MEMORY_IDENTITY_MISMATCH: 'error.auth', MEMORY_ACCESS_DENIED: 'error.denied',
   MEMORY_REDIRECT_DENIED: 'error.redirect', MEMORY_UNSUPPORTED_SERVER: 'error.response', MEMORY_RESPONSE_TOO_LARGE: 'error.response',
-  MEMORY_INCREMENTAL_UNSUPPORTED: 'error.incrementalUnsupported',
   MEMORY_SERVER_NOT_READY: 'error.notReady', MEMORY_NOT_CONFIGURED: 'error.notReady', MEMORY_NOT_READY: 'error.notReady',
   MEMORY_CAPACITY: 'error.capacity', MEMORY_EXTRACTION_FAILED: 'error.extraction', MEMORY_BUFFER_LOST: 'error.bufferLost',
   MEMORY_TASK_PENDING: 'error.taskPending', MEMORY_TASK_UNKNOWN: 'error.unknown', MEMORY_SUBMISSION_UNKNOWN: 'error.unknown',

@@ -1,7 +1,7 @@
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { JsonObject } from '@eating/plugin-sdk'
 
-export const LIMITS = { jobs: 100, scopes: 500, bufferedBytes: 2 * 1024 * 1024, jobBytes: 512 * 1024, messages: 1000, concurrent: 2, responseBytes: 2 * 1024 * 1024, query: 4000, save: 32000 } as const
+export const LIMITS = { jobs: 200, appendJobs: 100, scopes: 500, bufferedBytes: 2 * 1024 * 1024, jobBytes: 512 * 1024, messages: 1000, concurrent: 2, responseBytes: 2 * 1024 * 1024, query: 4000, save: 32000 } as const
 export function error(code: string, status = 400, outcome: 'not-sent' | 'failed' | 'unknown' = 'not-sent'): PlatformError {
   return new PlatformError(code, code, status, outcome)
 }

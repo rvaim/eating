@@ -3,7 +3,7 @@ import type { MemoryConfiguration, ScopeRule } from '../types'
 import { DEFAULT_SETTINGS } from '../types'
 import { configurationInput, isDirty, makeDraft, rulePath, selfPath, validateDraft } from './draft'
 
-const config = (): MemoryConfiguration => ({ schemaVersion: 2, revision: 7, endpoint: 'http://127.0.0.1:1933', account: '', user: 'owner_1',
+const config = (): MemoryConfiguration => ({ schemaVersion: 3, revision: 7, endpoint: 'http://127.0.0.1:1933', account: '', user: 'owner_1',
   apiKeyConfigured: true, autoConnect: false, timeoutMs: 15000, ready: false, settings: { ...DEFAULT_SETTINGS, rules: [] } })
 const rule = (patch: Partial<ScopeRule> = {}): ScopeRule => ({ id: 'rule-1', label: 'Private conversation', platform: 'qq', accountId: '10001',
   kind: 'private', targetId: '20002', capture: true, recall: true, memberMode: 'all', memberIds: [], ...patch })
@@ -62,28 +62,30 @@ describe('OpenViking configuration drafts', () => {
     draft.settings.rules[0]!.memberIdsText = '123\n456-7'
     expect(validateDraft(draft)['rule-rule-1-memberIdsText']?.key).toBe('validation.members')
   })
-  it('keeps archive volume drafts exact and validates the current MiB boundaries', () => {
+  it('keeps token threshold drafts exact, validates agreed bounds and preserves the explicit autoCommit switch', () => {
     const draft = makeDraft(config())
-    expect(draft.settings.archiveMaxMiB).toBe('8')
-    for (const value of ['', '0', '65', '8.5', 'NaN', 'Infinity']) {
-      draft.settings.archiveMaxMiB = value
-      expect(validateDraft(draft).archiveMaxMiB).toEqual({ key: 'validation.number', min: 1, max: 64 })
-      expect(draft.settings.archiveMaxMiB).toBe(value)
+    expect(draft.settings.commitTokenThreshold).toBe('20000')
+    for (const value of ['', '0', '1000001', '8.5', 'NaN', 'Infinity']) {
+      draft.settings.commitTokenThreshold = value
+      expect(validateDraft(draft).commitTokenThreshold).toEqual({ key: 'validation.number', min: 1, max: 1000000 })
+      expect(draft.settings.commitTokenThreshold).toBe(value)
     }
-    for (const value of ['1', '8', '64']) {
-      draft.settings.archiveMaxMiB = value
-      expect(validateDraft(draft).archiveMaxMiB).toBeUndefined()
-      expect(configurationInput(draft, 7).settings.archiveMaxMiB).toBe(Number(value))
+    for (const value of ['1', '20000', '1000000']) {
+      draft.settings.commitTokenThreshold = value
+      expect(validateDraft(draft).commitTokenThreshold).toBeUndefined()
+      expect(configurationInput(draft, 7).settings.commitTokenThreshold).toBe(Number(value))
     }
+    draft.settings.autoCommit = false
+    expect(configurationInput(draft, 7).settings.autoCommit).toBe(false)
     expect(Object.keys(configurationInput(draft, 7).settings)).toEqual(Object.keys(DEFAULT_SETTINGS))
   })
   it('validates service shape and agreed numeric boundaries without a daily cap', () => {
     const draft = makeDraft(config())
     draft.endpoint = 'https://user:password@example.test/api?key=secret'
-    draft.user = 'owner/other'; draft.timeoutMs = '120001'; draft.settings.archiveMaxMiB = '65'; draft.settings.scoreThreshold = '1.1'
-    expect(Object.keys(validateDraft(draft)).sort()).toEqual(['archiveMaxMiB', 'endpoint', 'scoreThreshold', 'timeoutMs', 'user'])
+    draft.user = 'owner/other'; draft.timeoutMs = '120001'; draft.settings.commitTokenThreshold = '1000001'; draft.settings.scoreThreshold = '1.1'
+    expect(Object.keys(validateDraft(draft)).sort()).toEqual(['commitTokenThreshold', 'endpoint', 'scoreThreshold', 'timeoutMs', 'user'])
     draft.endpoint = 'https://example.test/api'; draft.user = 'owner'; draft.timeoutMs = '120000'
-    draft.settings.archiveMaxMiB = '64'; draft.settings.scoreThreshold = '0'
+    draft.settings.commitTokenThreshold = '1000000'; draft.settings.scoreThreshold = '0'
     expect(validateDraft(draft)).toEqual({})
     expect(Object.keys(configurationInput(draft, 7).settings).some(key => /daily|cap/i.test(key) && key !== 'autoCapture' && key !== 'privateCapture' && key !== 'groupCapture')).toBe(false)
   })

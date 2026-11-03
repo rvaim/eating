@@ -1,5 +1,7 @@
 # OpenViking 实时增量记忆扩展
 
+> 历史方案：本目录保留记忆0.2.x的扩展实现与当时证据，不再是当前安装前提。openviking-memory0.3.0按[ADR-0045](../../docs/decisions/ADR-0045-官方记忆接口与插件部署提示.md)使用官方Session消息批量追加、commit与Task API；当前操作见[记忆插件说明](../../docs/operations/OpenViking记忆插件.md)。以下协议、安装命令和验证结论只描述旧方案，不要求为本轮Eating更新安装或重启真实OpenViking服务。
+
 这是 Eating 的独立 Python 服务端扩展，安装包名 `eating-openviking-incremental`，导入名 `eating_openviking_incremental`。唯一支持的服务依赖是 **`openviking==0.5.2.1`**；源代码核对基于官方提交 `f5e6203033a13469c3d9a937f2ca39492ea69c51`。
 
 本目录提供可评审的代码与临时数据测试。没有连接用户服务器，没有远程 SSH／HTTP，没有部署或写入真实资料，也没有修改官方源码。

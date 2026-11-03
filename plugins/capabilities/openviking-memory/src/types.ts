@@ -23,14 +23,15 @@ export interface MemorySettings {
   privateRecall: boolean
   groupCapture: boolean
   groupRecall: boolean
-  archiveMaxMiB: number
+  autoCommit: boolean
+  commitTokenThreshold: number
   recallLimit: number
   recallMaxChars: number
   scoreThreshold: number
   rules: ScopeRule[]
 }
 export interface MemoryConfiguration {
-  schemaVersion: 2
+  schemaVersion: 3
   revision: number
   endpoint: string
   account: string
@@ -52,18 +53,23 @@ export interface MemoryConfigurationInput {
   timeoutMs: number
   settings: MemorySettings
 }
-export type ExtractionStatus = 'queued' | 'submitting' | 'processing' | 'completed' | 'failed' | 'unknown'
+export type ExtractionStatus = 'queued' | 'syncing' | 'synced' | 'committing' | 'processing' | 'completed' | 'failed' | 'unknown'
+export type CommitTrigger = 'threshold' | 'manual' | 'compaction' | 'shutdown'
 export interface MemoryJob {
   id: string
+  kind: 'append' | 'commit'
+  trigger: CommitTrigger | null
   peerId: string
   sessionId: string
+  commitId: string | null
   taskId: string | null
   archiveUri: string | null
   status: ExtractionStatus
   createdAt: string
   updatedAt: string
   messages: number
-  changes: { added: number; updated: number; deleted: number } | null
+  syncedMessages: number
+  pendingTokens: number | null
   errorCode: string | null
 }
 export interface ScopeSummary {
@@ -88,5 +94,5 @@ export interface RuntimeSnapshot {
 export const DEFAULT_SETTINGS: MemorySettings = {
   enabled: true, autoCapture: true, autoRecall: true, globalMemory: true, ownerCrossSession: true,
   privateCapture: true, privateRecall: true, groupCapture: false, groupRecall: true,
-  archiveMaxMiB: 8, recallLimit: 6, recallMaxChars: 4800, scoreThreshold: 0.35, rules: [],
+  autoCommit: true, commitTokenThreshold: 20000, recallLimit: 6, recallMaxChars: 4800, scoreThreshold: 0.35, rules: [],
 }

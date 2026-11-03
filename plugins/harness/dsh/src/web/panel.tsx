@@ -379,26 +379,30 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
   const describedBy = (name: string) => `${id(name)}-hint${fieldErrors[name] ? ` ${id(name)}-error` : ''}`
   const processing = t(active && runtime?.ready ? runtime.busy ? 'processing.busy' : 'processing.idle' : starting ? 'processing.starting' : 'processing.stopped')
   const systemFound = runtime?.system.found === true
-  const runtimeLabel = t(systemFound ? 'system.detected' : 'system.missing')
-  const runtimeHelp = t(systemFound ? configured ? 'system.help.configured' : 'system.help.unconfigured' : 'system.help.missing')
+  const systemChecking = loading || operation === 'detect'
+  const systemUnconfirmed = refreshFailure !== null || !runtime
+  const systemRuntimeError = systemFound && Boolean(plugin?.status.lastError || runtime?.lastError)
+  const runtimeLabel = t(systemChecking ? 'system.checking' : systemUnconfirmed ? 'system.unknown' : systemRuntimeError ? 'system.runtimeError' : systemFound ? 'system.detected' : 'system.missing')
+  const runtimeHelp = t(systemChecking ? 'system.help.checking' : systemUnconfirmed ? 'system.help.unknown' : systemRuntimeError ? 'system.help.runtimeError' : systemFound ? configured ? 'system.help.configured' : 'system.help.unconfigured' : 'system.help.missing')
   const outcomeKey = runtime?.lastOutcome ? outcomeKeys[runtime.lastOutcome] : undefined
   const statusLabel = plugin ? refreshFailure ? t('state.unconfirmed') : t(stateKeys[plugin.status.state]) : t('state.loading')
 
   return <div className="dsh-panel">
     <div className="dsh-status-strip"><div><strong>{statusLabel}</strong>{runtime && processing !== statusLabel && <span>{processing}</span>}</div><div className="dsh-status-actions"><ActionButton reasonCode="busy" type="button" className="text-button" disabled={operation !== null || modelOperation !== null || reading || !visible} onClick={() => void refreshWorkspace()}><RefreshCw size={14} aria-hidden="true" />{t(reading ? 'action.refreshing' : 'action.refresh')}</ActionButton><NativeWebButton enabled={plugin?.enabled === true} ready={active && runtime?.ready === true && runtime?.nativeWeb.ready === true} blocked={operation !== null || modelOperation !== null || capabilitySaving || starting || refreshFailure !== null || uncertain !== null} visible={visible} /></div></div>
+    <section className="dsh-runtime" aria-labelledby={id('runtime-title')}>
+      <div className="dsh-runtime-heading"><div><h3 id={id('runtime-title')}>{t('system.title')}</h3><p role="status">{runtime?.system.version && !systemChecking && !systemUnconfirmed ? t('system.versionedStatus', { status: runtimeLabel, version: runtime.system.version }) : runtimeLabel}</p></div><ActionButton reasonCode="busy" type="button" className="button button-secondary" disabled={blocked || !plugin?.enabled || operation !== null || loading} onClick={() => void detectSystem()}><RefreshCw size={16} aria-hidden="true" />{t(operation === 'detect' ? 'action.detecting' : 'action.detect')}</ActionButton></div>
+      <p className="dsh-help">{runtimeHelp}</p>
+      {runtime?.system.path && <p className="dsh-help"><code>{runtime.system.path}</code></p>}
+      {systemFound && !runtime?.system.version && !systemChecking && !systemUnconfirmed && <p className="dsh-help">{t('system.help.versionUnknown')}</p>}
+      {!systemFound && !systemChecking && !systemUnconfirmed && <div className="dsh-notice"><Info size={16} aria-hidden="true" /><div><p>{t('system.installGuide')} <a className="text-button" href="https://www.deepseek.com/en/harness/" target="_blank" rel="noreferrer">{t('system.installLink')}</a></p><p className="dsh-help">{t('system.installCommand')}</p><p className="dsh-help"><code>npm install -g @deepseek-ai/dsh</code></p></div></div>}
+      {runtime?.lastError && runtime.lastError !== plugin?.status.lastError && <ErrorNotice failure={runtimeFailure('HARNESS_RUNTIME_ERROR', runtime.lastError)} />}
+    </section>
     <ErrorNotice failure={refreshFailure} />
     {plugin?.status.lastError && <ErrorNotice failure={runtimeFailure('HARNESS_STATUS_ERROR', plugin.status.lastError)} />}
     {loading && <p className="dsh-loading" role="status">{t('loading.configuration')}</p>}
     {!plugin && !loading && <ActionButton reasonCode="busy" type="button" className="button button-secondary" disabled={reading} onClick={() => void refreshWorkspace()}>{t('action.reload')}</ActionButton>}
     <div className="dsh-tabs workspace-rail" role="tablist" aria-label={nativeT('tabs.label')}>{(['connection', 'native'] as const).map((tab, index) => <ActionButton reasonCode="busy" key={tab} type="button" role="tab" id={`${prefix}-tab-${tab}`} aria-selected={panelTab === tab} aria-controls={`${prefix}-panel-${tab}`} tabIndex={panelTab === tab ? 0 : -1} onClick={() => setPanelTab(tab)} onKeyDown={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const next = event.key === 'Home' ? 'connection' : event.key === 'End' ? 'native' : index === 0 ? 'native' : 'connection'; setPanelTab(next); document.getElementById(`${prefix}-tab-${next}`)?.focus() } }}>{nativeT(`tabs.${tab}`)}</ActionButton>)}</div>
     <div className="dsh-settings-page" role="tabpanel" id={`${prefix}-panel-connection`} aria-labelledby={`${prefix}-tab-connection`} hidden={panelTab !== 'connection'}>
-    {saved && runtime && <section className="dsh-runtime" aria-labelledby={id('runtime-title')}>
-      <div className="dsh-runtime-heading"><div><h3 id={id('runtime-title')}>{t('system.title')}</h3><p>{runtime.system.version ? t('system.versionedStatus', { status: runtimeLabel, version: runtime.system.version }) : runtimeLabel}</p></div><ActionButton reasonCode="busy" type="button" className="button button-secondary" disabled={blocked || !plugin?.enabled || operation !== null} onClick={() => void detectSystem()}><RefreshCw size={16} aria-hidden="true" />{t(operation === 'detect' ? 'action.detecting' : 'action.detect')}</ActionButton></div>
-      <p className="dsh-help">{runtimeHelp}</p>
-      {runtime.system.path && <p className="dsh-help"><code>{runtime.system.path}</code></p>}
-      {!systemFound && <div className="dsh-notice"><Info size={16} aria-hidden="true" /><p>{t('system.installGuide')}</p></div>}
-      {runtime.lastError && runtime.lastError !== plugin?.status.lastError && <ErrorNotice failure={runtimeFailure('HARNESS_RUNTIME_ERROR', runtime.lastError)} />}
-    </section>}
     {draft && <section aria-labelledby={id('configuration-title')}>
       <div className="section-heading"><h3 id={id('configuration-title')}>{t('configuration.title')}</h3><p>{t('configuration.description')}</p></div>
       {saved?.warning && <div className="dsh-notice"><Info size={16} aria-hidden="true" /><p>{t('notice.httpWarning')}</p></div>}
@@ -435,6 +439,6 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
     {(saved?.dataDirectory || saved?.configurationPath) && <details className="dsh-file-details"><summary>{t('details.files')}</summary><dl className="dsh-details">{saved.dataDirectory && <div><dt>{t('details.dataDirectory')}</dt><dd>{saved.dataDirectory}</dd></div>}{saved.configurationPath && <div><dt>{t('details.configurationPath')}</dt><dd>{saved.configurationPath}</dd></div>}</dl></details>}
     <div className="dsh-notice dsh-boundary"><Info size={16} aria-hidden="true" /><p>{t('notice.authentication')}</p></div>
     </div>
-    <div className="dsh-settings-page" role="tabpanel" id={`${prefix}-panel-native`} aria-labelledby={`${prefix}-tab-native`} hidden={panelTab !== 'native'}><NativeCapabilitiesSettings active={visible && panelTab === 'native'} enabled={plugin?.enabled === true} runtimeActive={active || starting || runtime?.ready === true || runtime?.busy === true} busy={operation !== null || modelOperation !== null || refreshFailure !== null || uncertain !== null} actionLock={actionLock} onBusy={setCapabilitySaving} /></div>
+    <div className="dsh-settings-page" role="tabpanel" id={`${prefix}-panel-native`} aria-labelledby={`${prefix}-tab-native`} hidden={panelTab !== 'native'}><NativeCapabilitiesSettings active={visible && panelTab === 'native' && systemFound && !systemUnconfirmed} enabled={plugin?.enabled === true} runtimeActive={active || starting || runtime?.ready === true || runtime?.busy === true} busy={operation !== null || modelOperation !== null || refreshFailure !== null || uncertain !== null} actionLock={actionLock} onBusy={setCapabilitySaving} /></div>
   </div>
 }

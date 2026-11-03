@@ -4,7 +4,7 @@ import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import { IMAGE_GENERATION_LIMITS } from '../types'
 import type { ImageGenerationConfiguration, ImageGenerationResponseFormat } from '../types'
 import { ImageStorageError, jsonBytes, prepareDirectory, readBytes, writeBytes } from './files'
-import { object, safeInteger, text } from './validation'
+import { imageSize, object, safeInteger, text } from './validation'
 
 export interface PrivateImageConfiguration {
   readonly schemaVersion: 1
@@ -33,9 +33,9 @@ function configuration(value: unknown): PrivateImageConfiguration {
   if (/[\r\n]/.test(key) || !['', 'b64_json', 'url'].includes(String(value.responseFormat))) throw new ImageStorageError()
   return { schemaVersion: 1, revision: safeInteger(value.revision, 0, Number.MAX_SAFE_INTEGER), baseUrl: baseUrl(value.baseUrl), apiKey: key,
     model: text(value.model, 160), timeoutMs: safeInteger(value.timeoutMs, IMAGE_GENERATION_LIMITS.minimumTimeoutMs, IMAGE_GENERATION_LIMITS.maximumTimeoutMs),
-    size: text(value.size, 64), quality: text(value.quality, 64), responseFormat: value.responseFormat as ImageGenerationResponseFormat }
+    size: imageSize(value.size), quality: text(value.quality, 64), responseFormat: value.responseFormat as ImageGenerationResponseFormat }
 }
-export function configured(value: PrivateImageConfiguration): boolean { return Boolean(value.baseUrl && value.apiKey && value.model) }
+export function configured(value: PrivateImageConfiguration): boolean { return Boolean(value.baseUrl && value.model) }
 
 export class ImageConfigurationStore {
   private value: PrivateImageConfiguration

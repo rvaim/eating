@@ -153,7 +153,7 @@ async function fixture(handleConversations = false, captureMemory = false) {
   if (!address || typeof address === 'string') throw new Error('Missing isolated model port')
   const databasePath = join(home, 'host', 'host.sqlite'), dataDirectory = join(home, 'harness', 'dsh')
   let store!: HostStore, gateway!: HarnessGateway, plugin!: DshPlugin, running = false
-  const memory = { begin: vi.fn(async (_input: MemoryBeginInput) => ({ text: '', items: [] })), append: vi.fn(async () => ({ text: '', items: [] })), finish: vi.fn(async () => {}), end: vi.fn() }
+  const memory = { begin: vi.fn(async (_input: MemoryBeginInput) => ({ text: '', items: [] })), append: vi.fn(async () => ({ text: '', items: [] })), finish: vi.fn(async () => {}), flush: vi.fn(async () => {}), end: vi.fn() }
   const wake = vi.fn(() => gateway.notify())
   const forbidden = (name: string) => vi.fn(() => { throw new Error(`Forbidden isolated fixture action: ${name}`) })
   const start = async (configure = false) => {

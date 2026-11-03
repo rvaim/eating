@@ -8,6 +8,7 @@ import { PlatformError, checkedImageResource, composeAgentPrompt, isJsonObject, 
 import { AgentAccessRegistry, collectAgentContributions } from './agent-access'
 import { CapabilityAccess } from './capability-access'
 import { MemoryAccess } from './memory-access'
+import { verifiedImageAsset } from './media-assets'
 import { DirectMcpConnections } from './mcp-connections'
 import { PluginPackageManager } from './plugin-manager'
 import type { InstalledPluginPackage } from './plugin-installation'
@@ -177,6 +178,20 @@ export class EatingHost {
         requireCaller(); this.requirePlugin(source.id, true)
         if (!allowed()) throw new PlatformError('ASSET_ACCESS_DENIED', '图片读取期间授权已撤销。', 403, 'not-sent')
         return image
+      },
+      getAsset: async (reference, scope) => {
+        const caller = requireCaller(), source = this.requirePlugin(reference.pluginId, true), media = source.media
+        if (!media || !source.tools.some(tool => tool.name === media.readTool)) throw new PlatformError('ASSET_UNAVAILABLE', '来源插件没有提供该图片资源。', 409, 'not-sent')
+        const assertAllowed = () => {
+          if (this.closed || requireCaller() !== caller || this.requirePlugin(source.id, true) !== source || source.media !== media || source.getStatus().state !== 'connected'
+            || scope && (scope.signal?.aborted || scope.source?.signal?.aborted || !this.capabilityAccess.activePermission(scope, 'plugin.' + source.id, media.readTool))) {
+            throw new PlatformError('ASSET_ACCESS_DENIED', '图片发送资源授权已撤销，未发送。', 403, 'not-sent')
+          }
+        }
+        assertAllowed()
+        const asset = await media.getAsset(reference.assetId)
+        assertAllowed()
+        return verifiedImageAsset(asset, assertAllowed)
       },
     }
   }
@@ -600,6 +615,7 @@ export class EatingHost {
         begin: (input: import('@eating/plugin-sdk').MemoryBeginInput, signal?: AbortSignal) => { this.requireHarnessAccess(id); return memory.begin(input, signal) },
         append: (input: import('@eating/plugin-sdk').MemoryAppendInput, signal?: AbortSignal) => { this.requireHarnessAccess(id); return memory.append(input, signal) },
         finish: (input: import('@eating/plugin-sdk').MemoryFinishInput) => { this.requireHarnessAccess(id); return memory.finish(input) },
+        flush: (input: import('@eating/plugin-sdk').MemoryFlushInput) => { this.requireHarnessAccess(id); return memory.flush(input) },
         end: (agentId: string, turnId: string) => memory.end(agentId, turnId),
       }),
       registerSink: (sink: HarnessMessageSink) => {

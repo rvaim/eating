@@ -22,14 +22,29 @@ export interface CapabilityInvocationScope {
   readonly source?: AgentInvocationScope
   readonly memory?: import('./memory.js').MemoryContext
 }
+export interface ImageAssetMetadata {
+  readonly mimeType: ImageMimeType
+  readonly byteLength: number
+  readonly sha256: string
+}
+export interface PluginImageAsset extends ImageAssetMetadata {
+  readBytes(): Promise<Uint8Array>
+  readonly localFile?: () => Promise<string>
+}
+export interface ImageAssetLease extends PluginImageAsset {
+  assertActive(): Promise<void>
+  assertCurrent(): void
+}
 export interface PluginResourceServices {
   readReceivedImage(scope: AgentInvocationScope, reference: ReceivedImageReference): Promise<ImageResource>
   readAsset(reference: ImageAssetReference, scope?: CapabilityInvocationScope): Promise<ImageResource>
+  getAsset(reference: ImageAssetReference, scope?: CapabilityInvocationScope): Promise<ImageAssetLease>
 }
 export interface PluginMediaProvider {
   /** Tool authorization required when another plugin resolves one of this plugin's assets. */
   readonly readTool: string
   readAsset(assetId: string): Promise<ImageResource>
+  getAsset(assetId: string): Promise<PluginImageAsset>
 }
 
 /** Owner-selected functional MCP access. New sources use all, including future types and tools. */

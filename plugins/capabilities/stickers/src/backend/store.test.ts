@@ -41,6 +41,28 @@ describe('sticker content-addressed collection', () => {
     expect(JSON.stringify(list)).not.toContain('eating-asset:')
   })
 
+  it('provides byte and local-file leases without preview encoding and rejects deletion or symlink replacement on later reads', async () => {
+    const { library } = fixture(), added = await library.add(fixtureImage(), input), asset = await library.getAsset(added.item.assetId)
+    expect(asset).toMatchObject({ mimeType: 'image/png', byteLength: fixturePng().length, sha256: added.item.assetId })
+    expect(Buffer.from(await asset.readBytes())).toEqual(fixturePng())
+    const path = await asset.localFile!()
+    expect(path).toBe(join(library.directory, 'blobs', added.item.assetId))
+    expect(JSON.stringify(asset)).not.toContain(library.directory)
+    const target = realpathSync(path)
+    if (target !== path || dirname(target) !== join(library.directory, 'blobs')) throw new Error('Unsafe sticker blob replacement')
+    rmSync(target)
+    symlinkSync(library.indexPath, target)
+    await expect(asset.readBytes()).rejects.toMatchObject({ code: 'STICKER_LIBRARY_CORRUPTED' })
+    await expect(asset.localFile!()).rejects.toMatchObject({ code: 'STICKER_LIBRARY_CORRUPTED' })
+  })
+
+  it('revokes a previously returned media source after the sticker is deleted', async () => {
+    const { library } = fixture(), added = await library.add(fixtureImage(), input), asset = await library.getAsset(added.item.assetId)
+    await library.delete({ assetId: added.item.assetId, expectedRevision: added.revision })
+    await expect(asset.readBytes()).rejects.toMatchObject({ code: 'STICKER_NOT_FOUND' })
+    await expect(asset.localFile!()).rejects.toMatchObject({ code: 'STICKER_NOT_FOUND' })
+  })
+
   it('deduplicates identical bytes without replacing the saved description, tags, revision or timestamps', async () => {
     const { library } = fixture()
     const first = await library.add(fixtureImage(), input)

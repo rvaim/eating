@@ -1,5 +1,6 @@
 import { Languages } from 'lucide-react'
 import { SUPPORTED_LOCALES, useI18n } from '@eating/ui-sdk'
+import { applicationVersion } from '../version'
 import './LanguageSelector.css'
 
 export function LanguageSelector() {
@@ -12,6 +13,6 @@ export function LanguageSelector() {
     }}>
       {SUPPORTED_LOCALES.map(language => <option key={language} value={language}>{t(`language.${language}`)}</option>)}
     </select>
-    <small className="language-selector-version">Eating 0.17</small>
+    <small className="language-selector-version">Eating {applicationVersion}</small>
   </footer>
 }

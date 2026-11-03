@@ -3,6 +3,7 @@ import { getErrorMessage, useI18n } from '@eating/ui-sdk'
 import '../i18n/app'
 import type { WorkspaceSnapshot } from '../state/workspace'
 import { PlatformStatus } from '../components/PlatformStatus'
+import { applicationVersion } from '../version'
 
 function messageCount(snapshot: WorkspaceSnapshot, key: string): number {
   const value = snapshot.harness[key]
@@ -58,7 +59,7 @@ export function Overview({ snapshot, onRobots, onRegister }: {
         {deliveryError && <p className="subtle" role="alert">{getErrorMessage(deliveryError, t('overview.deliveryError'))}</p>}
         <a className="text-button" href="#settings/queue">{t('overview.manageQueue')}<ArrowRight size={14} /></a>
       </section>
-      <aside className="version-note"><h3>{t('overview.processingTitle')}</h3><p>{t('overview.acceptedDescription')}</p><p>{t('overview.processingDescription')}</p><span>Eating 0.17</span></aside>
+      <aside className="version-note"><h3>{t('overview.processingTitle')}</h3><p>{t('overview.acceptedDescription')}</p><p>{t('overview.processingDescription')}</p><span>Eating {applicationVersion}</span></aside>
     </div>
   </main>
 }

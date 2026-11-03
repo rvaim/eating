@@ -1,12 +1,15 @@
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 const repositoryRoot = fileURLToPath(new URL('../../', import.meta.url))
+const applicationVersion = (JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string }).version
 
 export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
   plugins: [react()],
+  define: { __EATING_APP_VERSION__: JSON.stringify(applicationVersion) },
   resolve: {
     alias: {
       '@eating/plugin-core': fileURLToPath(new URL('../../packages/plugin-core/src/index.ts', import.meta.url)),

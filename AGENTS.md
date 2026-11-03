@@ -16,7 +16,7 @@
 
 负责人于2026-11-03进一步明确：功能型插件默认开放，不代表Harness内置功能默认全开。按[ADR-0036](docs/decisions/ADR-0036-功能插件与Harness原生功能默认边界.md)，新Harness只开启time，其他原生feature保留配置、按需启用；既存主人选择不自动覆盖。现场revision5的time＋web由主人明确保存，部署须保持。
 
-负责人于2026-11-03明确公网HTTP面板修复按[ADR-0044](docs/decisions/ADR-0044-HTTP前端安全请求标识.md)：公网非安全上下文没有randomUUID，localhost隧道secure=true不能替代真实HTTP回归。前端统一公开UI SDK `createRequestId()`，始终getRandomValues16字节构造RFC UUIDv4，无randomUUID分支或Math.random／时间／计数器；同意图与unknown保原ID，不自动换号重发。Node后台UUID保持；表情包功能保持，仅共享SDK导出使压缩UI产物字节变化，按封存不可变规则升0.1.2，不加依赖／HTTPS／网关／防火墙。当前源码验证中；本轮父代理负责既存云端数据保留更新，前轮“不操作云端”不撤回本次明确授权，本机真实记忆0.1.1不动。真实服务器值与别名仍只存项目外，缺依赖仍先询问安装；最终证据见[本轮报告](docs/reports/2026-11-03-公网HTTP面板修复与保留数据更新验证报告.md)，未验证不写完成。
+负责人于2026-11-03明确公网HTTP面板修复按[ADR-0044](docs/decisions/ADR-0044-HTTP前端安全请求标识.md)：公网非安全上下文没有randomUUID，localhost隧道secure=true不能替代真实HTTP回归。前端统一公开UI SDK `createRequestId()`，始终getRandomValues16字节构造RFC UUIDv4，无randomUUID分支或Math.random／时间／计数器；同意图与unknown保原ID，不自动换号重发。Node后台UUID保持；表情包功能保持，仅共享SDK导出使压缩UI产物字节变化，按封存不可变规则升0.1.2，不加依赖／HTTPS／网关／防火墙。本轮源码验证与既存云端数据保留更新已完成，修复提交 `ab19cbb` 已本地commit／push并由云端GitHub取同提交构建运行；最终全量1743项通过／8跳过、最后4项浏览器通过，真实公网HTTP非secure下QQ面板与UUIDv4原号复用正常，12受保护文件哈希、Host设置／数据库、插件配置摘要与ownerToken保持。前轮“不操作云端”不撤回本次明确授权，本机真实记忆0.1.1不动。真实服务器值与别名仍只存项目外，缺依赖仍先询问安装；最终证据见[本轮报告](docs/reports/2026-11-03-公网HTTP面板修复与保留数据更新验证报告.md)，未验证不写完成。
 
 ## 项目不变量
 

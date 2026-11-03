@@ -1,4 +1,5 @@
 export * from './api.js'
+export * from './request-id.js'
 export * from './i18n.js'
 export * from './action-button.js'
 export type { ManagedPlugin, CommunicationPlugin, HarnessPlugin, CapabilityPlugin, ConfigurationValidation, PluginPanelProps, WorkspaceActionResult } from './contract.js'

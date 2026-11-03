@@ -1,7 +1,7 @@
 import type { ActivityEntry, PluginConfiguration, SavedConfiguration } from '@eating/plugin-core'
 import type { ConnectionStatus, JsonObject } from '@eating/plugin-sdk'
 import type { ManagedPlugin, WorkspaceActionResult } from '@eating/ui-sdk'
-import { getErrorMessage, hostRequest, translate } from '@eating/ui-sdk'
+import { createRequestId, getErrorMessage, hostRequest, translate } from '@eating/ui-sdk'
 import '../i18n/app'
 import type { InstalledFrontendContribution } from '../plugins/catalog'
 
@@ -92,7 +92,7 @@ export class PlatformWorkspace {
     try {
       await this.request(`/plugins/${encodeURIComponent(id)}/${operation}`, { method: 'POST', body })
       const plugin = this.catalog.find(entry => entry.id === id)!
-      const entry: ActivityEntry = { id: crypto.randomUUID(), pluginId: id,
+      const entry: ActivityEntry = { id: createRequestId(), pluginId: id,
         get label() { return translate('app', `workspace.activity.${operation}`, { name: plugin.name }) }, at: new Date().toISOString() }
       this.publish({ ...this.snapshot, activity: [entry, ...this.snapshot.activity].slice(0, 20) })
       await this.refresh()

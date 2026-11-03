@@ -30,17 +30,21 @@ describe('独立QQ插件产物', () => {
     const home = await temporary(), source = join(await temporary(), 'qq')
     await cp(fileURLToPath(new URL('../../../plugins/communication/qq/dist/', import.meta.url)), source, { recursive: true })
     await installPluginPackage(home, source)
-    const versionFile = join(source, 'server.mjs')
-    const compiled = await readFile(versionFile, 'utf8')
-    expect(compiled).toContain('version = "0.13.6"')
-    await writeFile(versionFile, compiled.replace('version = "0.13.6"', 'version = "0.13.7"'))
     const manifestPath = join(source, 'eating-plugin.json')
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { version: string; integrity: Record<string, string> }
-    manifest.version = '0.13.7'
+    const currentVersion = manifest.version
+    const [major, minor, patch] = currentVersion.split('.').map(Number)
+    const upgradedVersion = `${major}.${minor}.${patch! + 1}`
+    const versionFile = join(source, 'server.mjs')
+    const compiled = await readFile(versionFile, 'utf8')
+    expect(compiled).toContain(`version = "${currentVersion}"`)
+    await writeFile(versionFile, compiled.replace(`version = "${currentVersion}"`, `version = "${upgradedVersion}"`))
+    manifest.version = upgradedVersion
     manifest.integrity['server.mjs'] = createHash('sha256').update(await readFile(versionFile)).digest('hex')
     const uiPath = join(source, 'ui/index.js')
     const ui = await readFile(uiPath, 'utf8')
-    await writeFile(uiPath, ui.replace('version:"0.13.6"', 'version:"0.13.7"'))
+    expect(ui).toContain(`version:"${currentVersion}"`)
+    await writeFile(uiPath, ui.replace(`version:"${currentVersion}"`, `version:"${upgradedVersion}"`))
     manifest.integrity['ui/index.js'] = createHash('sha256').update(await readFile(uiPath)).digest('hex')
     await writeFile(manifestPath, JSON.stringify(manifest))
     const fixture = await startOneBotFixture()
@@ -72,7 +76,7 @@ describe('独立QQ插件产物', () => {
     if (await realpath(source) !== source || dirname(source) !== roots[1]) throw new Error('Unsafe source cleanup')
     await rm(source, { recursive: true })
     host = await createInstalledHost({ dataDirectory: home, port: 0, allowedUiOrigins: [] })
-    expect(host.getWorkspace()).toMatchObject({ plugins: [{ id: 'qq', version: '0.13.7' }] })
+    expect(host.getWorkspace()).toMatchObject({ plugins: [{ id: 'qq', version: upgradedVersion }] })
     expect(await readFile(indexPath, 'utf8')).toBe(originalIndex)
     expect(await readFile(configPath, 'utf8')).toBe(originalConfig)
     url = await host.listen(); bootstrap = await fetch(url + '/api/bootstrap'); csrf = (await bootstrap.json() as { csrfToken: string }).csrfToken; cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!

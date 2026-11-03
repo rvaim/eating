@@ -3,7 +3,7 @@
   "id": "image-generation",
   "name": "生图",
   "description": "通过主人配置的 OpenAI Images API 创建异步生图或单图编辑任务，查询任务及读取图片资源。",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "kind": "capability",
   "apiVersion": 4,
   "assets": [],

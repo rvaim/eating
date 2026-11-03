@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import type { Page, Route } from '@playwright/test'
-import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -205,7 +205,8 @@ test.describe('插件真实安装与表情库（临时 Host，无路由桩）', 
     await page.getByRole('button', { name: '安装或更新', exact: true }).click()
     await page.locator('#plugins-source').fill(stickersDirectory)
     await page.getByRole('button', { name: '预览', exact: true }).click()
-    await expect(page.getByText('表情包 · v0.1.1', { exact: true })).toBeVisible()
+    const packageVersion = (JSON.parse(await readFile(join(stickersDirectory, 'eating-plugin.json'), 'utf8')) as { version: string }).version
+    await expect(page.getByText(`表情包 · v${packageVersion}`, { exact: true })).toBeVisible()
     await page.getByRole('button', { name: '确认安装', exact: true }).click()
     await expect(row(page, '表情包')).toBeVisible()
   }

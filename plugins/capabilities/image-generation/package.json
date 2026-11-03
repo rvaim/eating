@@ -1,6 +1,6 @@
 {
   "name": "@eating/plugin-image-generation",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "Eating 独立 OpenAI Images API 生图与单图编辑插件，提供异步任务和受控图片资源。",
   "files": ["dist"],

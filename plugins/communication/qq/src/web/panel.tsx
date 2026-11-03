@@ -2,7 +2,7 @@ import type { OneBotConfig } from '../config'
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent, MutableRefObject, ReactNode } from 'react'
 import { AlertCircle, Check, Copy, RefreshCw } from 'lucide-react'
-import { ActionButton, formatNumber, getErrorMessage, HostApiError, hostRequest, translate, useI18n } from '@eating/ui-sdk'
+import { ActionButton, createRequestId, formatNumber, getErrorMessage, HostApiError, hostRequest, translate, useI18n } from '@eating/ui-sdk'
 import type { PluginPanelProps } from '@eating/ui-sdk'
 import { enumValue, parseToolArguments, schemaFields } from './tool-fields'
 import type { FieldFormat } from './tool-fields'
@@ -354,7 +354,7 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
   const fields = useMemo(() => schemaFields(tool), [tool])
   const [values, setValues] = useState<Record<string, string>>({})
   const [formats, setFormats] = useState<Record<string, FieldFormat>>({})
-  const [requestId, setRequestId] = useState(() => crypto.randomUUID())
+  const [requestId, setRequestId] = useState(() => createRequestId())
   const [confirmed, setConfirmed] = useState(false)
   const [unknownReviewed, setUnknownReviewed] = useState(false)
   const [pending, setPending] = useState(false)
@@ -415,7 +415,7 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
     : tool?.name === 'qq_send_private_message' || tool?.name === 'qq_send_group_message' ? 'confirmSend' : 'confirmAction'
 
   function invalidateConfirmation() {
-    setRequestId(crypto.randomUUID()); setConfirmed(false); setSchemaError(undefined); setValidationFailure(null)
+    setRequestId(createRequestId()); setConfirmed(false); setSchemaError(undefined); setValidationFailure(null)
   }
   function updateField(key: string, value: string) {
     if (blocked) return
@@ -460,14 +460,14 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
         setImagePreview(readImagePreview(response.result))
         setExecution({ ...run, pending: false, contentResult: true })
       } else setExecution({ ...run, pending: false, result: response.result })
-      setRequestId(crypto.randomUUID())
+      setRequestId(createRequestId())
       onFeedback(t('tests.completeFeedback'))
     } catch (error) {
       if (!alive.current || currentGeneration !== generation.current || controller.signal.aborted || selected.resultFormat === 'content' && (!availability.current || document.hidden)) return
       const failure = selected.resultFormat === 'content' && error instanceof HostApiError && error.code === 'INVALID_HOST_RESPONSE'
         ? localFailure('INVALID_HOST_RESPONSE', 'image.invalid') : failureFrom(error)
       setExecution({ ...run, pending: false, failure })
-      if (failure.outcome !== 'unknown') setRequestId(crypto.randomUUID())
+      if (failure.outcome !== 'unknown') setRequestId(createRequestId())
     } finally {
       if (currentGeneration === generation.current && controllerRef.current === controller) {
         controllerRef.current = null; pendingSensitive.current = false; actionLock.current = false

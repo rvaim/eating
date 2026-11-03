@@ -16,6 +16,8 @@
 
 负责人于2026-11-03进一步明确：功能型插件默认开放，不代表Harness内置功能默认全开。按[ADR-0036](docs/decisions/ADR-0036-功能插件与Harness原生功能默认边界.md)，新Harness只开启time，其他原生feature保留配置、按需启用；既存主人选择不自动覆盖。现场revision5的time＋web由主人明确保存，部署须保持。
 
+负责人于2026-11-03明确公网HTTP面板修复按[ADR-0044](docs/decisions/ADR-0044-HTTP前端安全请求标识.md)：公网非安全上下文没有randomUUID，localhost隧道secure=true不能替代真实HTTP回归。前端统一公开UI SDK `createRequestId()`，始终getRandomValues16字节构造RFC UUIDv4，无randomUUID分支或Math.random／时间／计数器；同意图与unknown保原ID，不自动换号重发。Node后台UUID保持；表情包功能保持，仅共享SDK导出使压缩UI产物字节变化，按封存不可变规则升0.1.2，不加依赖／HTTPS／网关／防火墙。当前源码验证中；本轮父代理负责既存云端数据保留更新，前轮“不操作云端”不撤回本次明确授权，本机真实记忆0.1.1不动。真实服务器值与别名仍只存项目外，缺依赖仍先询问安装；最终证据见[本轮报告](docs/reports/2026-11-03-公网HTTP面板修复与保留数据更新验证报告.md)，未验证不写完成。
+
 ## 项目不变量
 
 1. 同一 AI 身份、共享核心人格；主 Agent 负责整体安排，子 Agent 自主处理绑定会话的理解、对话与工具决策。用户选择的 Harness 承担认知与行动，DSH 是首个适配，不是永久唯一引擎。
@@ -37,7 +39,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`。
 
-当前源码应用／Host／Web0.17.4，plugin-sdk4.7.0、ui-sdk4.2.0、plugin-core4.0.0，QQ0.13.6、DSH0.15.3、表情包0.1.1、生图0.2.0、记忆源码0.2.0（本机已有安装0.1.1保持，全新独立实例可安装0.2.0）；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前源码应用／Host／Web0.17.5，plugin-sdk4.7.0、ui-sdk4.2.1、plugin-core4.0.0，QQ0.13.7、DSH0.15.4、表情包0.1.2、生图0.2.1、记忆源码0.2.1（本机已有安装0.1.1保持，全新独立实例可安装0.2.1）；插件唯一 API4。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -143,10 +145,10 @@ README 用中文作为标准入口；其他文档标题／文件名中文，技�
 
 ## 外部记忆插件（OpenViking）
 
-openviking-memory@0.2.0按[ADR-0030](docs/decisions/ADR-0030-增量记忆提取与历史分段解耦.md)逐轮及时同步并增量提取，服务端扩展精确依赖OpenViking0.5.2.1，复用官方提取/合并/隔离框架。Eating只负责可信来源、范围、传输与回执，不建另一记忆引擎。Session固定eating-live-<peer>，全局关闭固定-local策略根；不调用commit或deleteSession，提取与归档解耦，成功处理原文达到archiveMaxMiB才分段且不重复提取。原始记录保留。POST结果未知只查原request_id持久回执；应用窗口不确定不盲目重放，证明未进入应用的失败才允许主人显式重试。缺协议1扩展明确不支持，不回退旧提交；配置/状态严格schema2，旧文件拒绝而保留，不自动迁移。用户最新要求只写代码供审查，不再远端访问或部署、不替换现有安装。无每日/小时提取额度；功能MCP默认开放，群成员过滤、主人显式跨会话和原生DSH Web约束保持。
+openviking-memory@0.2.1按[ADR-0030](docs/decisions/ADR-0030-增量记忆提取与历史分段解耦.md)逐轮及时同步并增量提取，服务端扩展精确依赖OpenViking0.5.2.1，复用官方提取/合并/隔离框架。Eating只负责可信来源、范围、传输与回执，不建另一记忆引擎。Session固定eating-live-<peer>，全局关闭固定-local策略根；不调用commit或deleteSession，提取与归档解耦，成功处理原文达到archiveMaxMiB才分段且不重复提取。原始记录保留。POST结果未知只查原request_id持久回执；应用窗口不确定不盲目重放，证明未进入应用的失败才允许主人显式重试。缺协议1扩展明确不支持，不回退旧提交；配置/状态严格schema2，旧文件拒绝而保留，不自动迁移。用户最新要求只写代码供审查，不再远端访问或部署、不替换现有安装。无每日/小时提取额度；功能MCP默认开放，群成员过滤、主人显式跨会话和原生DSH Web约束保持。
 
 ## 生图插件（OpenAI Images）
 
-独立image-generation@0.2.0、API4；不改OneBot路径或发送。配置Base URL/Key/model，可选size/quality/responseFormat；无参考图追加/images/generations，有参考图走OpenAI Images /images/edits，固定n1，无聊天/Responses回退，不猜模型支持。保存/connect只本地检查，不真实试生成；真实请求由主人明确生成或已获默认功能MCP授权的Agent发起，仍报告可能计费及真实结果。
+独立image-generation@0.2.1、API4；不改OneBot路径或发送。配置Base URL/Key/model，可选size/quality/responseFormat；无参考图追加/images/generations，有参考图走OpenAI Images /images/edits，固定n1，无聊天/Responses回退，不猜模型支持。保存/connect只本地检查，不真实试生成；真实请求由主人明确生成或已获默认功能MCP授权的Agent发起，仍报告可能计费及真实结果。
 
 异步image_generate返回jobId，image_job_get查询最终状态，image_jobs/image_list分页元数据，image_get才实际图。生成提交回执不是生成成功，稳定request_id防重复计费，queued/running重启转unknown不重发。单图编辑只接受三种来源：主人面板本机上传、当前会话已授权消息的{messageId,imageId}、本插件已有assetId；不接受任意路径/URL或其它插件私有图片，来源哈希计入幂等。提交前检查调用signal；已接受后台任务由插件持有，普通Agent结束不丢已付费结果，停用/dispose取消为unknown，后续读取仍须当前授权。owner离页只停UI轮询；隐藏清Key、参考图和Blob，locale不请求。私有配置和资源schema1，500任务/500图/256MiB及公开单图5MiB保持，满在请求前拒绝。错误不回显提供商原body、Key、签名URL，URL结果不传认证下载。无真实Key时不声称付费服务验证。见[ADR-0020](docs/decisions/ADR-0020-独立OpenAI生图能力.md)与[ADR-0026](docs/decisions/ADR-0026-生图单图编辑与受控图片来源.md)。

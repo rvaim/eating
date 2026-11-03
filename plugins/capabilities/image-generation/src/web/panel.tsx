@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { AlertCircle, Check, ChevronLeft, ChevronRight, ImageOff, ImagePlus, LoaderCircle, RefreshCw } from 'lucide-react'
 import type { JsonObject } from '@eating/plugin-sdk'
-import { ActionButton, formatNumber, useI18n } from '@eating/ui-sdk'
+import { ActionButton, createRequestId, formatNumber, useI18n } from '@eating/ui-sdk'
 import type { PluginPanelProps } from '@eating/ui-sdk'
 import type {
   GeneratedImageItem, ImageGenerationConfiguration, ImageGenerationJob, ImageGenerationPage,
@@ -308,7 +308,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
     if (!config?.ready || configDirty || hasActive || generating || !prompt.trim()) return
     if ([...prompt.trim()].length > IMAGE_GENERATION_LIMITS.prompt) { setGenerateFailure(it('generate.promptTooLong', { max: formatNumber(IMAGE_GENERATION_LIMITS.prompt) })); return }
     const key = JSON.stringify([prompt.trim(), overrideSize.trim(), overrideQuality.trim(), overrideFormat, source?.key ?? null])
-    if (requestIdentity.current?.key !== key) requestIdentity.current = { key, id: crypto.randomUUID() }
+    if (requestIdentity.current?.key !== key) requestIdentity.current = { key, id: createRequestId() }
     const identity = requestIdentity.current
     setGenerating(true); setGenerateFailure(null)
     const controller = new AbortController(); generateController.current = controller

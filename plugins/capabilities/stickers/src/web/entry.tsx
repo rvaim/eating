@@ -5,7 +5,7 @@ import { StickersPanel } from './panel'
 
 const plugin: CapabilityPlugin = {
   id: 'stickers', get name() { return st('plugin.name') }, get description() { return st('plugin.description') },
-  version: '0.1.1', apiVersion: 4, kind: 'capability', order: 30,
+  version: '0.1.2', apiVersion: 4, kind: 'capability', order: 30,
   icon: Images, brandColor: 'var(--color-primary)', defaultRegistered: false, initialValues: {},
   validate: () => ({ valid: true, errors: {} }), summary: () => st('plugin.summary'), Panel: StickersPanel,
 }

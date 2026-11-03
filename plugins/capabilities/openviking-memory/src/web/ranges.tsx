@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { ChevronDown, ChevronUp, Plus, Trash2, Undo2 } from 'lucide-react'
-import { ActionButton, useI18n } from '@eating/ui-sdk'
+import { ActionButton, createRequestId, useI18n } from '@eating/ui-sdk'
 import type { MemorySettings, ScopeRule } from '../types'
 import { DEFAULT_SETTINGS } from '../types'
 import type { ConfigurationDraft, FieldIssues, RuleDraft, SettingsDraft } from './draft'
@@ -23,7 +23,7 @@ export function Ranges({ prefix, draft, errors, locked, expanded, setExpanded, q
   function focus(name: string) { focusAndReveal(() => document.getElementById(fieldId(prefix, name))) }
   function add(kind: ScopeRule['kind']) {
     if (locked || settings.rules.length >= 500) return
-    const rule: RuleDraft = { id: crypto.randomUUID(), label: t(kind === 'private' ? 'rules.newPrivate' : 'rules.newGroup'), platform: 'qq',
+    const rule: RuleDraft = { id: createRequestId(), label: t(kind === 'private' ? 'rules.newPrivate' : 'rules.newGroup'), platform: 'qq',
       accountId: '', kind, targetId: '', capture: kind === 'private' ? settings.privateCapture : settings.groupCapture,
       recall: kind === 'private' ? settings.privateRecall : settings.groupRecall, memberMode: 'all', memberIdsText: '' }
     update('rules', [...settings.rules, rule]); setQuery(''); setExpanded(rule.id); focus(`rule-${rule.id}-label`)

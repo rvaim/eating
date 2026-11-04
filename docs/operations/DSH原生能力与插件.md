@@ -1,5 +1,7 @@
 # DSH 原生能力与插件
 
+2026-11-04 本轮适用本地源码 DSH 插件0.17.0／Eating0.18.0／API4，新增第三个“历史会话”页签，契约见[ADR-0048](../decisions/ADR-0048-Harness历史会话清理.md)。**本地验证完成，发布部署进行中**；用户已明确要求部署，由主代理独立完成GitHub发布与保留数据更新，仅部署功能、不执行真实清理。完整构建／严格类型、最终1871项通过／8项条件跳过及历史页9项浏览器通过。独立示例预览已扫描1主2子一致并读图，确认区取消按钮优先获焦、未勾选时禁用确认、取消未发出清理请求，页面异常0。仅在独立临时数据上验证，不清真实历史、不动用户主 DSH 或当前 GUI；完整证据见父代理[本轮报告](../reports/2026-11-04-Harness历史会话清理验证报告.md)。下方0.16.0部署描述与旧清理状态仅为前轮事实。
+
 适用：DSH插件0.16.0、Eating0.18.0／API4；当前默认与主人配置按[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)。入口：**Harness → DeepSeek Harness → 原生能力与插件**。本轮部署提示按[ADR-0045](../decisions/ADR-0045-官方记忆接口与插件部署提示.md)实现，已完成本地和云端验证并部署更新（DSH0.16.0 connected、ready／nativeWeb ready）；完整证据见[本轮报告](../reports/2026-11-04-官方记忆与插件能力更新验证报告.md)。
 
 ## 系统 DSH 安装状态
@@ -54,6 +56,16 @@
 原生配置保持schema1，toolAccessOverrides缺省沿用默认、不补写；保存省略保持当前例外，[]恢复全部自动。feature的启用／代理范围／参数保持独立。Host capability／direct来源则到“MCP”页选择all/custom并保存，custom不自动纳入后续新类型／新工具，可恢复all；QQ通讯仍由来源权限页管理。
 
 普通入站委派遇unknown时先核对原任务及Host回执，不换call重放原context；新入站context＋新call可继续使用同child，pending仍拒并发。旧unknown／迟到回调不会撤新scope，动作账本保持。联系额度错误按code及used／resetAt判断，读取activity_state或安排active不会重置主人保存的小时联系额度；409须结合outcome判断，不一律视为unknown。见[ADR-0037](../decisions/ADR-0037-未知委派隔离与受控图片发送预算.md)。当前服务正常connected，前轮清理后保持停止只描述历史状态，该前轮交付以[报告](../reports/2026-11-03-未知委派隔离与受控图片发送验证报告.md)为准。
+
+## 历史会话
+
+入口为 **Harness → DeepSeek Harness → 历史会话**。先完全停止 Harness，确认本实例全部 SDK、子运行时、原生 Web 与管理 helper 真正退出，且 Host 无待交接消息，再点击“扫描历史会话”。按实际 v4 session header 统计总／主／子会话，不凭当前绑定猜数量；预览有效 5 分钟。核对显式确认区、勾选确认复选框，再点击“确认清理 N 个会话”；取消不删除，过期或文件变化后重新扫描。
+
+清理本实例全部原生主／子日志、同 Session generation、对应原生附件与派生缓存、桥接正文和绑定元数据；workspace 混合文件仅过滤 session 关联数组，保留 workspace 实体、路径、标题和其他字段。配置、Key、人格、Host queue／actions、业务图片和外部 OpenViking 数据保持，用户主 DSH 不在范围内；不承诺 OS forensic 抹除。
+
+这是带外文件维护：官方 rc.5 的 SessionController／sessionPersistence 无删除 API；离线计划只操作固定 Eating 专属根，逐项核对目录／stat／hash，拒绝符号链接、越界、过期与变化。POSIX 的 `session.lock` 停止后会保留空文件，应原样保留，不能据此认定会话仍活动。不启动可能由官方 schedule host timer 恢复冷会话的完整 Web helper。若原生定时任务引用目标会话，须先由主人在官方 Web 删除相关提醒，已停用的提醒也须删除，再停止并重扫；仅停用不能解除目标引用阻断，清理不自动删除调度策略。Goal 仅随 Session 日志与 projection 清理，不另造清理文件。
+
+仅主人管理 API `preview-session-history`／`clear-session-history` 可操作，模型没有对应 MCP 工具。执行使用稳定 `requestId` 和持久回执；结果 unknown 或中断时核对原请求，不换号重发。取消未提交的确认不清理，关闭页面也不能撤回已提交操作。本地实现与验证已完成，预览保留3个示例会话供主人查看；隔离测试与示例预览不表示真实历史已清理或已部署。
 
 ## 草稿、隐藏和错误
 

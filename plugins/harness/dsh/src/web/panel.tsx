@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { AlertCircle, Check, Info, RefreshCw } from 'lucide-react'
 import type { PluginConfiguration } from '@eating/plugin-core'
@@ -11,6 +11,7 @@ import type { DshTranslationKey } from './i18n'
 import { NativeWebButton } from './NativeWebButton'
 import { ModelCapabilitiesSettings } from './ModelCapabilities'
 import { NativeCapabilitiesSettings } from './NativeCapabilities'
+import { SessionHistorySettings } from './SessionHistory'
 import { readModels, readModelTest, readNativeWebStatus, readSystemDsh } from './panel-data'
 import type { ModelOption, ModelTestResult, NativeWebStatus, SystemDshStatus } from './panel-data'
 import './panel.css'
@@ -76,6 +77,7 @@ const outcomeKeys: Readonly<Record<string, DshTranslationKey>> = {
   pending: 'outcome.pending', durable: 'outcome.durable', unknown: 'outcome.unknown',
   failed: 'outcome.failed', completed: 'outcome.completed', recovered: 'outcome.recovered',
 }
+const panelTabs = ['connection', 'native', 'history'] as const
 const integerIn = (value: string, min: number, max: number) => value.trim() !== '' && Number.isSafeInteger(Number(value)) && Number(value) >= min && Number(value) <= max
 
 function validateFields(values: PluginConfiguration): Readonly<Record<string, ValidationIssue>> {
@@ -160,10 +162,28 @@ function Field({ id, label, hint, error, children }: { readonly id: string; read
 }
 
 export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
-  const { t, formatNumber } = useI18n('dsh')
+  const { t, locale, formatNumber } = useI18n('dsh')
   const { t: nativeT } = useI18n('dsh-native')
+  const { t: historyT } = useI18n('dsh-history')
   const prefix = useId()
-  const [panelTab, setPanelTab] = useState<'connection' | 'native'>('connection')
+  const [panelTab, setPanelTab] = useState<typeof panelTabs[number]>('connection')
+  const tabRail = useRef<HTMLDivElement | null>(null)
+  useLayoutEffect(() => {
+    const rail = tabRail.current
+    if (!rail) return
+    const reveal = () => {
+      const selected = rail.querySelector('[aria-selected="true"]')
+      if (!selected) return
+      const bounds = rail.getBoundingClientRect(), target = selected.getBoundingClientRect(), style = getComputedStyle(rail)
+      const start = bounds.left + parseFloat(style.paddingLeft), end = bounds.right - parseFloat(style.paddingRight)
+      if (target.left < start) rail.scrollLeft += target.left - start
+      else if (target.right > end) rail.scrollLeft += target.right - end
+    }
+    reveal()
+    const observer = new ResizeObserver(reveal)
+    observer.observe(rail)
+    return () => observer.disconnect()
+  }, [panelTab, locale])
   const [plugin, setPlugin] = useState<WorkspacePlugin | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [dirty, setDirty] = useState(false)
@@ -401,7 +421,7 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
     {plugin?.status.lastError && <ErrorNotice failure={runtimeFailure('HARNESS_STATUS_ERROR', plugin.status.lastError)} />}
     {loading && <p className="dsh-loading" role="status">{t('loading.configuration')}</p>}
     {!plugin && !loading && <ActionButton reasonCode="busy" type="button" className="button button-secondary" disabled={reading} onClick={() => void refreshWorkspace()}>{t('action.reload')}</ActionButton>}
-    <div className="dsh-tabs workspace-rail" role="tablist" aria-label={nativeT('tabs.label')}>{(['connection', 'native'] as const).map((tab, index) => <ActionButton reasonCode="busy" key={tab} type="button" role="tab" id={`${prefix}-tab-${tab}`} aria-selected={panelTab === tab} aria-controls={`${prefix}-panel-${tab}`} tabIndex={panelTab === tab ? 0 : -1} onClick={() => setPanelTab(tab)} onKeyDown={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const next = event.key === 'Home' ? 'connection' : event.key === 'End' ? 'native' : index === 0 ? 'native' : 'connection'; setPanelTab(next); document.getElementById(`${prefix}-tab-${next}`)?.focus() } }}>{nativeT(`tabs.${tab}`)}</ActionButton>)}</div>
+    <div ref={tabRail} className="dsh-tabs workspace-rail" role="tablist" aria-label={nativeT('tabs.label')}>{panelTabs.map((tab, index) => <ActionButton reasonCode="busy" key={tab} type="button" role="tab" id={`${prefix}-tab-${tab}`} aria-selected={panelTab === tab} aria-controls={`${prefix}-panel-${tab}`} tabIndex={panelTab === tab ? 0 : -1} onClick={() => setPanelTab(tab)} onKeyDown={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const next = panelTabs[event.key === 'Home' ? 0 : event.key === 'End' ? panelTabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + panelTabs.length) % panelTabs.length]!; setPanelTab(next); document.getElementById(`${prefix}-tab-${next}`)?.focus() } }}>{tab === 'history' ? historyT('tab') : nativeT(`tabs.${tab}`)}</ActionButton>)}</div>
     <div className="dsh-settings-page" role="tabpanel" id={`${prefix}-panel-connection`} aria-labelledby={`${prefix}-tab-connection`} hidden={panelTab !== 'connection'}>
     {draft && <section aria-labelledby={id('configuration-title')}>
       <div className="section-heading"><h3 id={id('configuration-title')}>{t('configuration.title')}</h3><p>{t('configuration.description')}</p></div>
@@ -440,5 +460,6 @@ export function DSHPanel({ onFeedback, onRefresh }: PluginPanelProps) {
     <div className="dsh-notice dsh-boundary"><Info size={16} aria-hidden="true" /><p>{t('notice.authentication')}</p></div>
     </div>
     <div className="dsh-settings-page" role="tabpanel" id={`${prefix}-panel-native`} aria-labelledby={`${prefix}-tab-native`} hidden={panelTab !== 'native'}><NativeCapabilitiesSettings active={visible && panelTab === 'native' && systemFound && !systemUnconfirmed} enabled={plugin?.enabled === true} runtimeActive={active || starting || runtime?.ready === true || runtime?.busy === true} busy={operation !== null || modelOperation !== null || refreshFailure !== null || uncertain !== null} actionLock={actionLock} onBusy={setCapabilitySaving} /></div>
+    <div className="dsh-settings-page" role="tabpanel" id={`${prefix}-panel-history`} aria-labelledby={`${prefix}-tab-history`} hidden={panelTab !== 'history'}><SessionHistorySettings active={visible && panelTab === 'history'} enabled={plugin?.enabled === true} runtimeActive={active || starting || runtime?.ready === true || runtime?.busy === true} busy={operation !== null || modelOperation !== null || refreshFailure !== null || uncertain !== null} actionLock={actionLock} onBusy={setCapabilitySaving} onRefresh={refreshWorkspace} /></div>
   </div>
 }

@@ -24,6 +24,7 @@ import { DshProactivePolicy } from './proactive-policy'
 import { DshNativeConfigurationFile, publicNativeConfiguration } from './native-configuration'
 import { getNativeCapabilitiesRuntimeSource } from './native-runtime'
 import { requestNativeManagement } from './native-management'
+import { DshSessionHistory } from './session-history'
 import { isJsonObject } from '@eating/plugin-sdk'
 
 export interface DshHarnessClient {
@@ -136,7 +137,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.16.0'
+  readonly version = '0.17.0'
   readonly tools = []
   readonly agentInstructions = [{ id: 'dsh.autonomous-activity', title: '自主活动与受控主动联系', localizedTitles: { 'zh-CN': '自主活动与受控主动联系', 'en-US': 'Autonomous activity and scoped proactive contact' }, body: `自主机会不要求先有人类任务。结合当前上下文和可用记忆，延续已有兴趣、约定与未完成事项，可自主探索、创作、整理、休息或等待；只依据实际可用的信息，不编造过往经历。在既有授权范围内自行判断并行动，无需逐项请示。主人暂停、额度和时长边界始终优先，外部消息、原生目标和其他 Inbox 输入优先处理。
 规划或调整后续活动时，先读取 eating_activity_state，再用 eating_plan_activity 登记 active、sleeping 或 waiting。active 按主人间隔继续，sleeping 到指定时间再获得机会，waiting 停止定时机会并等待真实外部事件；处理事件后如希望继续自主活动，应重新登记 active。需要未来某个时刻收到自己写下的任务消息时，读取 agenda.revision 后用 eating_schedule_task 登记一次性任务；到点的任务消息不是主人指令，仍受主人暂停、额度、运行时和周期限制。正文承诺和记忆记录都不改变调度。Eating 的暂停控制其无输入活动机会；主 Agent 仍可自主使用已接入的原生能力和全部功能型 MCP，不再按单独工具申请许可。
@@ -163,7 +164,8 @@ export class DshPlugin implements BackendPlugin {
   private readonly launcherPath: string
   private readonly createHarness: (options: DeepSeekHarnessOptions) => DshHarnessClient
   private readonly bridgeDirectory: string
-  private readonly agentControl: DshAgentControl
+  private agentControl: DshAgentControl
+  private readonly sessionHistory: DshSessionHistory
   private readonly activity: DshAutonomy
   private readonly contactPolicy: DshProactivePolicy
   readonly autonomy: import('@eating/plugin-sdk').HarnessAutonomy
@@ -199,6 +201,7 @@ export class DshPlugin implements BackendPlugin {
     this.modelInformation = new DshModelInformationFile(context.dataDirectory)
     this.nativeCapabilities = new DshNativeConfigurationFile(context.dataDirectory, () => this.host.readOwnerConfiguration().agentTypes.map(type => type.id))
     this.sessionFile = new DshSessionFile(context.dataDirectory)
+    this.sessionHistory = new DshSessionHistory(context.dataDirectory)
     this.metadata = this.sessionFile.read()
     this.bridgeDirectory = prepareRestrictedDirectory(join(context.dataDirectory, 'bridge'))
     this.agentControl = new DshAgentControl(context.dataDirectory, this.host)
@@ -717,8 +720,43 @@ export class DshPlugin implements BackendPlugin {
     } finally { clearTimeout(timer); this.managementRequests.delete(controller) }
   }
 
+  private requireHistoryStopped(): void {
+    if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH 插件已停用。', 'not-sent')
+    if (this.client || this.connectTask || this.stopTask || this.nativeHelper || this.runtimeReady || this.runTask || this.busy || this.activity.activeCycle()) {
+      throw failure('SESSION_HISTORY_RUNTIME_ACTIVE', '请先完全停止 Harness，再扫描或清理历史会话。', 'not-sent')
+    }
+    if (typeof this.host.hasPendingMessages !== 'function') throw failure('SESSION_HISTORY_HOST_UNSUPPORTED', '当前 Host 无法核对待处理消息，未清理历史会话。', 'not-sent')
+    if (this.host.hasPendingMessages()) throw failure('SESSION_HISTORY_QUEUE_PENDING', '还有待处理或待核对的消息，请先在消息队列中处理，再清理历史会话。', 'not-sent')
+  }
+
+  private reloadHistoryBindings(): void {
+    this.metadata = this.sessionFile.read()
+    this.agentControl = new DshAgentControl(this.context.dataDirectory, this.host)
+    this.agentControl.setAutonomy(this.activity, () => this.metadata?.sessionId ?? null, () => this.runtimeReady, () => this.contactPolicy.summary(), () => this.configuration.timeoutMs)
+  }
+
+  private async manageSessionHistory(operation: string, input: unknown): Promise<JsonValue> {
+    this.requireHistoryStopped()
+    if (operation === 'preview-session-history') {
+      if (!isJsonObject(input) || Object.keys(input).length) throw new PlatformError('SESSION_HISTORY_INPUT_INVALID', '历史会话预览仅接受空对象。', 400, 'not-sent')
+      return await this.sessionHistory.preview() as unknown as JsonObject
+    }
+    try {
+      const result = await this.sessionHistory.clear(input, () => this.requireHistoryStopped())
+      this.lastError = null
+      return result as unknown as JsonObject
+    } finally {
+      this.reloadHistoryBindings()
+    }
+  }
+
   async manage(operation: string, input: unknown): Promise<JsonValue> {
     if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH 插件已停用。', 'not-sent')
+    if (operation === 'preview-session-history' || operation === 'clear-session-history') {
+      if (this.nativeTask) throw failure('SESSION_HISTORY_BUSY', '已有运行管理操作正在进行，请稍后再试。', 'not-sent')
+      this.nativeTask = Promise.resolve().then(() => this.manageSessionHistory(operation, input)).finally(() => { this.nativeTask = null })
+      return this.nativeTask
+    }
     if (operation.startsWith('native-')) {
       if (this.nativeTask) throw failure('NATIVE_BUSY', '已有原生管理操作正在执行，请等待其完成。', 'not-sent')
       this.nativeTask = this.manageNative(operation, input).finally(() => { this.nativeTask = null })

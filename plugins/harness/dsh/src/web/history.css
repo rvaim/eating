@@ -1,0 +1,27 @@
+.dsh-history-settings { margin-bottom: 28px; }
+.dsh-history-heading { margin-bottom: 22px; }
+.dsh-history-description { max-width: 72ch; margin-top: 10px; color: var(--color-muted); font-size: 13px; }
+.dsh-history-settings h4 { margin: 0; color: var(--color-ink); font-size: 13px; font-weight: 600; }
+.dsh-history-scope { padding-block: 18px; border-block: 1px solid var(--color-line); }
+.dsh-history-scope p { max-width: 72ch; margin-top: 8px; color: var(--color-muted); font-size: 12px; }
+.dsh-history-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 20px; }
+.dsh-history-actions .button { min-height: 44px; }
+.dsh-history-clear { color: var(--color-danger-ink); }
+.dsh-history-initial, .dsh-history-progress { max-width: 72ch; margin-top: 14px; color: var(--color-muted); font-size: 12px; }
+.dsh-history-preview { margin-top: 28px; }
+.dsh-history-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: 540px; gap: 16px; margin: 16px 0; padding-block: 14px; border-block: 1px solid var(--color-line); }
+.dsh-history-counts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+.dsh-history-counts dt { color: var(--color-muted); font-size: 12px; }
+.dsh-history-counts dd { margin: 0; color: var(--color-ink); font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.dsh-history-expiry { max-width: 72ch; color: var(--color-muted); font-size: 12px; }
+.dsh-history-confirm { margin-top: 20px; max-width: 760px; padding: 18px; border: 1px solid var(--color-line-warm); border-radius: var(--radius); background: var(--color-danger-surface); }
+.dsh-history-confirm > p { max-width: 72ch; margin-top: 10px; color: var(--color-danger-ink); font-size: 13px; }
+.dsh-history-acknowledge { display: flex; align-items: flex-start; gap: 10px; min-height: 44px; margin-top: 16px; color: var(--color-ink); font-size: 12px; cursor: pointer; }
+.dsh-history-acknowledge input { width: 16px; height: 16px; flex-shrink: 0; margin: 2px 0 0; accent-color: var(--color-primary); }
+@media (max-width: 600px) {
+  .dsh-history-counts { grid-template-columns: 1fr; gap: 10px; }
+  .dsh-history-confirm { padding: 15px; }
+  .dsh-history-confirm .dsh-history-actions { align-items: stretch; }
+  .dsh-history-confirm .dsh-history-actions > :last-child { flex: 1; }
+  .dsh-history-confirm .dsh-history-actions .button { width: 100%; }
+}

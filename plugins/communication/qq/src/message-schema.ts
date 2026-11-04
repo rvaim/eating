@@ -56,7 +56,7 @@ const booleanParameter: JsonObject = {
   ],
 }
 const mediaProperties: JsonObject = {
-  file: { type: 'string', minLength: 1, maxLength: 1048576, description: 'OneBot 文件名、file://、http(s)://、base64://，或获准插件返回的 eating-asset:// 资源引用。资源引用由 Eating 转换为标准图片数据；不读取任意本机文件。' },
+  file: { type: 'string', minLength: 1, maxLength: 1048576, description: 'OneBot 文件名、file://、http(s)://、base64://，或获准插件返回的 eating-asset:// 资源引用。插件图片引用放入 type:"image" 消息段的 data.file，消息段对象／数组直接作为 message 传入，不要 JSON.stringify 或放进 text 段。资源引用由 Eating 转换为标准图片数据；不读取任意本机文件。' },
   cache: { ...booleanParameter, default: '1' },
   proxy: { ...booleanParameter, default: '1' },
   timeout: numberParameter,
@@ -113,5 +113,6 @@ export const oneBotMessageDefinitions: JsonObject = {
 
 export const oneBotMessageSchema: JsonObject = {
   $ref: '#/$defs/oneBotMessage',
-  description: '字符串、消息段数组或单个消息段对象。字符串默认按纯文本发送；显式 auto_escape=false 时解析 CQ 码。',
+  description: '字符串、消息段数组或单个消息段对象。图片发送时 message 必须直接传消息段对象或数组，例如 [{"type":"image","data":{"file":"eating-asset://image-generation/<assetId>"}}]，file 使用工具返回的真实引用。不能 JSON.stringify，也不能把 URI／图片 JSON 作为普通字符串或 text 段发送；字符串不会被当成 JSON 消息段解析。用户要求重发已有图片时复用已有图片资源，不重新生图；生成成功不等于发送成功，文字发送的 message_id 不能证明图片已发送。字符串默认按纯文本发送；显式 auto_escape=false 时解析 CQ 码，不能将其用作解析图片 JSON 的开关。',
+  examples: [[{ type: 'image', data: { file: 'eating-asset://image-generation/<assetId>' } }]],
 }

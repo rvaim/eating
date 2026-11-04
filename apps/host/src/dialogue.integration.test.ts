@@ -57,6 +57,13 @@ function system(request: ModelFixtureRequest): string {
   expect(messages).toHaveLength(1)
   return fixtureText(messages[0]!.content)
 }
+function expectImageSendingRules(text: string) {
+  expect(text).toContain('eating-asset://')
+  expect(text).toMatch(/message[^。\n]*直接传[^。\n]*消息段对象或数组/)
+  expect(text).toMatch(/不能[^。\n]*JSON\.stringify/)
+  expect(text).toMatch(/复用[^。\n]*已有图片|已有图片[^。\n]*复用/)
+  expect(text).toMatch(/生成成功[^。\n]*不等于[^。\n]*发送成功/)
+}
 async function temporaryHome() {
   const parent = await realpath(tmpdir()), home = await realpath(await mkdtemp(join(parent, 'Eating_dialogue_integration_')))
   stops.push(async () => {
@@ -183,7 +190,7 @@ async function fixture(kind: 'chat' | 'image') {
   const snapshot = host.authoring.getSnapshot()
   for (const [id, marker] of [['common', commonMarker], ['main', mainMarker], ['subagent', childMarker], ['agent:qq.private', typeMarker]] as const) {
     const prompt = snapshot.prompts.find(prompt => prompt.id === id)!
-    host.authoring.updatePrompt(id, marker + '\n' + prompt.body, prompt.revision)
+    host.authoring.updatePrompt(id, kind === 'chat' && id === 'agent:qq.private' ? marker : marker + '\n' + prompt.body, prompt.revision)
   }
   const created = host.authoring.createPersona('小绿', persona)
   host.authoring.setPersonaEnabled(created.persona.id, true, created.snapshot.revision)
@@ -248,6 +255,12 @@ async function expectCompletedHandoff(f: Awaited<ReturnType<typeof fixture>>) {
     expect(object(schema.properties)).toEqual({ context_ref: { type: 'string', pattern: '^[a-f0-9]{64}$' }, mode: { type: 'string', enum: ['reply', 'verify'] }, context_notes: { type: 'string', maxLength: 8000 } })
     const prompt = system(request)
     expect(prompt.startsWith(f.ownerSystem + '\n\n')).toBe(true)
+    expect(prompt).toContain('图片发送')
+    expectImageSendingRules(prompt)
+    if (f.provider) {
+      expect(prompt).toContain('image_job_get')
+      expect(prompt).toMatch(/image_get 返回的 sendable[^。\n]*image 消息段/)
+    }
     for (const text of [commonMarker, mainMarker, persona, '轻量分流', 'eating_handle_conversation', 'eating_delegate_task', 'eating_contact_target', '不先撰写完整回复']) expect(prompt).toContain(text)
     for (const text of [childMarker, 'DIALOGUE-TYPE-SCOPE', f.originalText]) expect(prompt).not.toContain(text)
   }
@@ -258,6 +271,20 @@ async function expectCompletedHandoff(f: Awaited<ReturnType<typeof fixture>>) {
     expect(prompt).not.toContain(mainMarker)
     expect(prompt).not.toContain(f.originalText)
     expect(batch(request).payload.events).toEqual(incoming.payload.events)
+    const sender = request.tools!.find(tool => tool.function?.name === 'mcp__qq__qq_send_private_message')!.function!
+    const message = object(object(object(sender.parameters).properties).message)
+    expectImageSendingRules(String(message.description))
+    expect(message.$ref).toBe('#/$defs/oneBotMessage')
+    expect(message.examples).toEqual(expect.arrayContaining([expect.arrayContaining([
+      expect.objectContaining({ type: 'image', data: { file: expect.stringMatching(/^eating-asset:\/\/image-generation\//) } }),
+    ])]))
+    if (f.provider) {
+      expect(prompt).toContain('图片发送')
+      expectImageSendingRules(prompt)
+      const reader = object(request.tools!.find(tool => tool.function?.name === imagePrefix + 'image_get')!.function)
+      expectImageSendingRules(String(reader.description))
+      expect(reader.description).toContain('sendable')
+    }
   }
   const turns = fixtureToolTurns(roots[1]!)
   expect(turns.map(turn => turn.name)).toEqual(['eating_handle_conversation'])
@@ -283,6 +310,8 @@ describe.runIf(enabled)('system DSH conversation ownership with real Host and is
     expect(f.model.requests).toEqual([])
     f.emit()
     const { children, receipt } = await expectCompletedHandoff(f)
+    expect(f.host.authoring.getSnapshot().prompts.find(prompt => prompt.id === 'agent:qq.private')!.body).toBe(typeMarker)
+    expect(f.host.authoring.readOwnerConfiguration().activePersona?.body).toBe(persona)
     expect(f.model.requests.map(request => batch(request).kind)).toEqual(['root', 'child', 'child', 'root'])
     expect(children).toHaveLength(2)
     expect(f.model.actions.filter(action => typeof action !== 'string').map(action => action.name)).toEqual(['eating_handle_conversation', 'mcp__qq__qq_send_private_message'])

@@ -1,6 +1,6 @@
 # Eating 开发规则
 
-2026-11-04 Harness 历史会话清理最新授权：**本地验证完成，发布部署进行中**。用户在独立预览后明确要求“部署到服务器上”，授权本轮commit／push、云端GitHub拉取构建和Eating更新，由主代理独立完成，不再启动子代理。仅部署功能，不执行真实历史清理，不动主 DSH 或当前 GUI。按[ADR-0048](docs/decisions/ADR-0048-Harness历史会话清理.md)实现主人专用“历史会话”页签及离线扫描／确认清理，全部 SDK、子运行时、原生 Web／helper 真正退出且 Host 无待交接消息才可维护；API 不注册为 MCP 工具。应用0.18.0、QQ0.14.1、生图0.3.1保持，本地 DSH 插件从前轮云端0.16.0升至0.17.0，SDK等保持、无新依赖。本地实现与验证完成：完整构建／严格类型、最终1871项通过／8项条件跳过及9项历史页浏览器通过；独立预览已扫描1主2子示例，未点击清理。完整证据见父代理维护的[本轮报告](docs/reports/2026-11-04-Harness历史会话清理验证报告.md)；下方发布与真实清理记录仅为前轮历史事实。
+2026-11-04 Harness 历史会话清理最新授权：**本地验证及云端发布部署完成**。用户在独立预览后明确要求“部署到服务器上”，授权本轮commit／push、云端GitHub拉取构建和Eating更新，由主代理独立完成，不再启动子代理。仅部署功能，不执行真实历史清理，不动主 DSH 或当前 GUI。按[ADR-0048](docs/decisions/ADR-0048-Harness历史会话清理.md)实现主人专用“历史会话”页签及离线扫描／确认清理，全部 SDK、子运行时、原生 Web／helper 真正退出且 Host 无待交接消息才可维护；API 不注册为 MCP 工具。应用0.18.0、QQ0.14.1、生图0.3.1保持，本地 DSH 插件从前轮云端0.16.0升至0.17.0，SDK等保持、无新依赖。本地实现与验证完成：完整构建／严格类型、最终1871项通过／8项条件跳过及9项历史页浏览器通过；独立预览已扫描1主2子示例，未点击清理。源码 `29387f9` 已commit／push，服务器从GitHub拉取同提交完整构建和Linux14文件410项回归通过后，私有全量备份并同data更新DSH0.17.0。公网历史页和运行中拒绝扫描已核验，五插件connected、DSH／nativeWeb ready、异常重启0；配置、图片、3份原生日志前缀、会话身份、账本、17条记忆任务身份和Token保留。未调用真实清理接口；记忆范围仅lastSeenAt动态时间变化，设置不变。完整证据见[本轮报告](docs/reports/2026-11-04-Harness历史会话清理验证报告.md)；下方旧发布与真实清理记录保留历史事实。
 
 2026-11-04 本轮最新授权：**本地验证及云端发布部署完成**。用户初期“先修改提示词吧”阶段仅本地修复，随后明确“push 发到服务器上”，授权本轮Git发布与云端Eating更新，替代此前云端只读限制。按[ADR-0047](docs/decisions/ADR-0047-图片消息结构提示.md)明确 `message` 为 image 段对象／数组，不 `JSON.stringify` 或把 URI／图片 JSON 当 text；复用已有图片，实际 image 调用及成功回执才可称发送成功，unknown 不重发。只调整 QQ 共享规则、默认私聊／群聊及主插件说明、消息 schema 的 description／examples、生图使用说明与取图描述；不新增图片工具／后端拦截／回执字段／环境自动检测，保留 `eating-asset`、参数校验、权限与 file／Base64 选择，不覆盖人格／自定义正文。QQ0.14.1、生图0.3.1各四处版本同步，其他版本保持；不真实QQ试发／付费生图。本地完整构建／严格类型、378项相关测试（0跳过）及7项浏览器通过，未重跑全量；源码 `f8b0d51` 已commit／push，云端从GitHub拉取同提交，完整构建／严格类型及Linux363项通过后，只停Eating并私有全量备份，同data安装QQ0.14.1／生图0.3.1。正式四提示／主bridge及工具description／数组examples已更新；五插件connected、DSH／nativeWeb ready、service active／enabled、异常restart0、队列0，保存配置／人格／业务数据保持，公网页面与工具示例实读通过。完整证据见父代理维护的[本轮报告](docs/reports/2026-11-04-图片资源发送提示词验证报告.md)，不将提示指引宣称为代码强制防漏保证；下方旧阶段授权与证据保留历史事实。
 
@@ -49,7 +49,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`。
 
-当前源码应用／Host／Web0.18.0，plugin-sdk4.8.0、ui-sdk4.2.1、plugin-core4.0.0，QQ0.14.0、DSH0.16.0、表情包0.2.0、生图0.3.0、记忆源码0.3.0（本机已有安装0.1.1保持）；插件唯一 API4。无新UI SDK API，无新增依赖，锁文件workspace links零差异；五插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前源码应用／Host／Web0.18.0，plugin-sdk4.8.0、ui-sdk4.2.1、plugin-core4.0.0，QQ0.14.1、DSH0.17.0、表情包0.2.0、生图0.3.1、记忆源码0.3.0（本机已有安装0.1.1保持）；插件唯一 API4。无新UI SDK API，无新增依赖，锁文件workspace links零差异；五插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 

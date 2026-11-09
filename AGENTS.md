@@ -1,6 +1,6 @@
 # Eating 开发规则
 
-2026-11-09 本轮最新授权：主人明确要求“给我修改提示词，然后 push，部署到服务器上”，由主代理独立完成。按[ADR-0049](docs/decisions/ADR-0049-自然聊天与自主活动提示词.md)统一接话／围观／收尾、自然短消息和自主社交与sleeping／waiting指引；仅修改提示词和description，不改调度／权限／额度。应用0.18.1、QQ0.14.2、DSH0.17.1，其他版本／依赖保持。云端common自定义部分只按当前授权通过正式CAS定点修改相关表达要求和精确匹配旧默认尾段，保其余正文／人格。已开启且未暂停的既存waiting可通过现有wake给同一主Agent一次重新规划机会。本地完整构建／严格类型、全量1868项通过／11项条件跳过、14项相关浏览器验证通过；当前部署结果以[本轮报告](docs/reports/2026-11-09-自然聊天与自主提示词部署验证报告.md)为准，不提前称完成。
+2026-11-09 自然聊天与自主活动提示词：**本地验证、Git发布及云端保留数据部署完成**。应用0.18.1、QQ0.14.2、DSH0.17.1，源码`551e4af`已push并由云端GitHub取同提交构建。区分正常接话／围观／收尾，普通聊天先回应当下，自主机会明确真实社交选择与sleeping／waiting。现场common按正式CAS从revision1升至2，仅修改相关表达要求和匹配旧默认尾段，其余自定义正文／人格保留。调度、权限、额度、其他插件及依赖保持。主人已明确授权本轮修改、push与部署，由主代理独立完成。全量1868项通过／11项条件跳过、14项浏览器验证通过；云端591项回归及构建／类型通过，私有全量备份后更新，五插件connected、DSH／nativeWeb ready、异常重启0。原配置、会话与3份原生日志前缀核验通过，未清历史。自主运行原已开启且未暂停，本轮通过既有wake给同一主Agent一次重新规划机会，最终安排与证据见[本轮报告](docs/reports/2026-11-09-自然聊天与自主提示词部署验证报告.md)及[ADR-0049](docs/decisions/ADR-0049-自然聊天与自主活动提示词.md)。 既有wake后的自主轮次已完成，AI自行选择sleeping并登记下次唤醒，未暂停、无错误。
 
 2026-11-04 Harness 历史会话清理最新授权：**本地验证及云端发布部署完成**。用户在独立预览后明确要求“部署到服务器上”，授权本轮commit／push、云端GitHub拉取构建和Eating更新，由主代理独立完成，不再启动子代理。仅部署功能，不执行真实历史清理，不动主 DSH 或当前 GUI。按[ADR-0048](docs/decisions/ADR-0048-Harness历史会话清理.md)实现主人专用“历史会话”页签及离线扫描／确认清理，全部 SDK、子运行时、原生 Web／helper 真正退出且 Host 无待交接消息才可维护；API 不注册为 MCP 工具。应用0.18.0、QQ0.14.1、生图0.3.1保持，本地 DSH 插件从前轮云端0.16.0升至0.17.0，SDK等保持、无新依赖。本地实现与验证完成：完整构建／严格类型、最终1871项通过／8项条件跳过及9项历史页浏览器通过；独立预览已扫描1主2子示例，未点击清理。源码 `29387f9` 已commit／push，服务器从GitHub拉取同提交完整构建和Linux14文件410项回归通过后，私有全量备份并同data更新DSH0.17.0。公网历史页和运行中拒绝扫描已核验，五插件connected、DSH／nativeWeb ready、异常重启0；配置、图片、3份原生日志前缀、会话身份、账本、17条记忆任务身份和Token保留。未调用真实清理接口；记忆范围仅lastSeenAt动态时间变化，设置不变。完整证据见[本轮报告](docs/reports/2026-11-04-Harness历史会话清理验证报告.md)；下方旧发布与真实清理记录保留历史事实。
 
@@ -51,7 +51,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`。
 
-当前源码应用／Host／Web0.18.0，plugin-sdk4.8.0、ui-sdk4.2.1、plugin-core4.0.0，QQ0.14.1、DSH0.17.0、表情包0.2.0、生图0.3.1、记忆源码0.3.0（本机已有安装0.1.1保持）；插件唯一 API4。无新UI SDK API，无新增依赖，锁文件workspace links零差异；五插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前源码应用／Host／Web0.18.1，plugin-sdk4.8.0、ui-sdk4.2.1、plugin-core4.0.0，QQ0.14.2、DSH0.17.1、表情包0.2.0、生图0.3.1、记忆源码0.3.0（本机已有安装0.1.1保持）；插件唯一 API4。无新UI SDK API，无新增依赖，锁文件workspace links零差异；五插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 

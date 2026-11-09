@@ -9,6 +9,7 @@ import { AgentAccessRegistry, collectAgentContributions } from './agent-access'
 import { CapabilityAccess } from './capability-access'
 import { MemoryAccess } from './memory-access'
 import { verifiedAudioAsset, verifiedImageAsset } from './media-assets'
+import { ImageLimitsService } from './image-limits'
 import { DirectMcpConnections } from './mcp-connections'
 import { PluginPackageManager } from './plugin-manager'
 import type { InstalledPluginPackage } from './plugin-installation'
@@ -56,6 +57,7 @@ class TopologyOperationError extends PlatformError {
 
 export class EatingHost {
   readonly store: HostStore
+  readonly imageLimits: ImageLimitsService
   readonly harness: HarnessGateway
   readonly authoring: AuthoringService
   private readonly server: Server
@@ -103,6 +105,7 @@ export class EatingHost {
     let openedStore: HostStore | undefined
     try {
       this.store = openedStore = new HostStore(resolve(options.dataDirectory, 'host', 'Eating.sqlite'))
+      this.imageLimits = new ImageLimitsService(this.store)
       this.harness = new HarnessGateway(this.store)
       this.agentAccess = new AgentAccessRegistry(id => this.requirePlugin(id, true), id => !this.closed && this.enabled.has(id))
       this.authoring = new AuthoringService(this.store, () => collectAgentContributions(this.plugins.values(), this.enabled))
@@ -113,6 +116,7 @@ export class EatingHost {
       })
       this.memoryAccess = new MemoryAccess({ plugins: () => this.plugins.values(), enabled: id => !this.closed && this.enabled.has(id) })
       this.capabilityAccess = new CapabilityAccess({ store: this.store, direct: this.directMcp, plugins: () => this.plugins.values(), enabled: id => !this.closed && this.enabled.has(id),
+        imageLimits: () => this.imageLimits.snapshot(),
         memoryContext: (harnessId, agentId) => this.memoryAccess.context(harnessId, agentId),
         executeIdempotent: (pluginId, action, params, requestId, execute) => this.store.executeIdempotent(pluginId, action, params, requestId, execute) })
       this.packageManager = new PluginPackageManager(options.dataDirectory, { deactivate: id => this.deactivateInstalled(id), activate: installed => this.activateInstalled(installed) })
@@ -135,6 +139,7 @@ export class EatingHost {
     this.entries.set(entry.id, entry)
     if (enabled) this.enabled.add(entry.id)
     const context: HostPluginContext = {
+      imageLimits: () => this.imageLimits.snapshot(),
       ...(kind === 'harness' ? { harness: this.harnessServices(entry.id) } : {}),
       resources: this.resourceServices(entry.id),
       dataDirectory: resolve(this.options.dataDirectory, kind === 'harness' ? 'harness' : kind === 'communication' ? 'bot' : 'capabilities', entry.storageDirectory),
@@ -175,7 +180,7 @@ export class EatingHost {
         if (!active()) throw new PlatformError('ASSET_ACCESS_DENIED', '当前图片收藏调用已失效。', 403, 'not-sent')
         const source = this.requirePlugin(scope.pluginId, true)
         if (source.kind !== 'communication' || !source.readReceivedImage) throw new PlatformError('RECEIVED_IMAGE_UNAVAILABLE', '来源插件没有提供当前会话图片资源。', 409, 'not-sent')
-        const image = checkedImageResource(await source.readReceivedImage(reference, scope))
+        const image = checkedImageResource(await source.readReceivedImage(reference, scope), this.imageLimits.snapshot().imageBytes)
         requireCaller(); this.requirePlugin(scope.pluginId, true)
         if (!active()) throw new PlatformError('ASSET_ACCESS_DENIED', '图片读取期间任务授权已撤销。', 403, 'not-sent')
         return image
@@ -186,16 +191,17 @@ export class EatingHost {
         if (!source.media || !source.tools.some(tool => tool.name === source.media!.readTool)) throw new PlatformError('ASSET_UNAVAILABLE', '来源插件没有提供该图片资源。', 409, 'not-sent')
         const allowed = () => !scope || !scope.signal?.aborted && !scope.source?.signal?.aborted && this.capabilityAccess.activePermission(scope, 'plugin.' + source.id, source.media!.readTool)
         if (!allowed()) throw new PlatformError('ASSET_ACCESS_DENIED', '当前代理未获准读取此插件的图片。', 403, 'not-sent')
-        const image = checkedImageResource(await source.media.readAsset(reference.assetId))
+        const image = checkedImageResource(await source.media.readAsset(reference.assetId), this.imageLimits.snapshot().imageBytes)
         requireCaller(); this.requirePlugin(source.id, true)
         if (!allowed()) throw new PlatformError('ASSET_ACCESS_DENIED', '图片读取期间授权已撤销。', 403, 'not-sent')
         return image
       },
       getAsset: async (reference, scope) => {
+        const limits = this.imageLimits.snapshot()
         const caller = requireCaller(), source = this.requirePlugin(reference.pluginId, true), media = source.media
         if (!media || !source.tools.some(tool => tool.name === media.readTool)) throw new PlatformError('ASSET_UNAVAILABLE', '来源插件没有提供该图片资源。', 409, 'not-sent')
         const assertAllowed = () => {
-          if (this.closed || requireCaller() !== caller || this.requirePlugin(source.id, true) !== source || source.media !== media || source.getStatus().state !== 'connected'
+          if (this.closed || this.imageLimits.snapshot().revision !== limits.revision || requireCaller() !== caller || this.requirePlugin(source.id, true) !== source || source.media !== media || source.getStatus().state !== 'connected'
             || scope && (scope.signal?.aborted || scope.source?.signal?.aborted || !this.capabilityAccess.activePermission(scope, 'plugin.' + source.id, media.readTool))) {
             throw new PlatformError('ASSET_ACCESS_DENIED', '图片发送资源授权已撤销，未发送。', 403, 'not-sent')
           }
@@ -203,7 +209,7 @@ export class EatingHost {
         assertAllowed()
         const asset = await media.getAsset(reference.assetId)
         assertAllowed()
-        return verifiedImageAsset(asset, assertAllowed)
+        return verifiedImageAsset(asset, assertAllowed, limits.imageBytes)
       },
     }
   }
@@ -390,7 +396,7 @@ export class EatingHost {
         }
         if (!sameSecret(bearer, this.getMcpToken(id))) throw new PlatformError('MCP_UNAUTHENTICATED', 'MCP 访问令牌无效。', 401)
         let handler = this.mcp.get(id)
-        if (!handler) { handler = createPluginMcpHandler(plugin); this.mcp.set(id, handler) }
+        if (!handler) { handler = createPluginMcpHandler(plugin, () => this.imageLimits.snapshot()); this.mcp.set(id, handler) }
         await handler.handle(request, response, request.method === 'POST' ? await readJson(request, 1024 * 1024) : undefined)
         return
       }
@@ -459,6 +465,11 @@ export class EatingHost {
         if (pathname === '/api/authoring') {
           if (request.method !== 'GET') throw new PlatformError('METHOD_NOT_ALLOWED', '配置目录仅支持 GET。', 405)
           json(response, 200, this.authoring.getSnapshot()); return
+        }
+        if (pathname === '/api/image-limits') {
+          if (request.method === 'GET') { json(response, 200, this.imageLimits.snapshot()); return }
+          if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '图片大小设置只支持GET或POST。', 405)
+          json(response, 200, this.imageLimits.save(await readJson(request))); return
         }
         if (pathname === '/api/authoring/preview') {
           if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '提示词预览需使用 POST。', 405)
@@ -566,7 +577,7 @@ export class EatingHost {
           await this.automaticHarnessOperations.get(id)?.catch(() => {})
         }
         if (this.packageMutation && !(plugin.kind === 'harness' && (operation === 'disconnect' || operation === 'disable'))) throw new PlatformError('PLUGIN_BUSY', '插件安装或卸载正在执行，请稍后重试。', 409, 'not-sent')
-        const body = await readJson(request, operation === 'invoke' ? 1024 * 1024 : operation === 'manage' ? 8 * 1024 * 1024 : undefined)
+        const body = await readJson(request, operation === 'invoke' ? 1024 * 1024 : operation === 'manage' ? this.imageLimits.snapshot().uploadBytes : undefined)
         if (plugin.kind === 'capability' && ['connect', 'disconnect', 'enable', 'disable'].includes(operation)) {
           this.capabilityAccess.revokeSource('plugin.' + id)
           const { value, ...report } = await this.changeCapabilityTopology(() => this.mutatePlugin(id, operation, async () => {

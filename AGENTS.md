@@ -1,5 +1,9 @@
 # Eating 开发规则
 
+2026-11-10 发布授权：主人明确要求“push 部署到服务器上”，授权本轮图片大小配置与已本地提交的语音插件一并提交／push，并由云端从GitHub拉取同一提交构建、备份和保留数据更新。当前发布处理中，完成以本轮部署报告的实际结果为准。
+
+2026-11-10 图片大小：主人要求把 Eating 本地 5 MiB 限制改为可配置、默认 10 MiB。按[ADR-0052](docs/decisions/ADR-0052-统一可配置图片大小.md)，Host 独立 `host:image-limits` 严格 schema1／CAS，通过 `context.imageLimits()` 实时提供 1–50 MiB 单图上限，批次 2 倍／最多 4 张，可信 Base64／wire／上传预算统一计算。内置生图、表情、QQ 和预览共用；存储验证独立 50 MiB，调低保原图与索引，旧发送 lease 撤销，已接受生图沿用提交时上限。本地修改验证完成，本轮已授权提交／push／部署，发布处理中；前轮语音已本地提交 `66f01c0`。证据见[本轮报告](docs/reports/2026-11-10-图片大小配置验证报告.md)。
+
 2026-11-09 OpenAI云端语音插件：主人已授权开始开发，本地开发与验证完成，本轮已授权本地提交，未push／部署。新增text-to-speech0.1.0，主人保存音色，会话子Agent按次选择delivery，不提供全局语气字段；官方Realtime单次合成、受控音频lease与QQ record发送，未知不重放。应用0.20.0、plugin-sdk4.10.0、QQ0.15.0，其他SDK产物消费者按封存规则补丁升级；锁文件仅新增workspace链接，无新外部版本。未调用真实Key／付费服务或真人QQ，最终实数和限制见[本轮报告](docs/reports/2026-11-09-OpenAI语音插件本地开发验证报告.md)。 完整构建／严格类型、全量1902项通过／11项条件跳过、11项相关浏览器及最终补充语音12项通过；真实Key音质与真人QQ播放未验证。
 
 2026-11-09 自主调度边界：**实现、可行性验证、Git发布及云端保留数据部署完成**。源码`585a52e`由云端从GitHub拉取构建，应用0.19.0、plugin-sdk4.9.0、DSH0.18.0，API4及其他插件／依赖保持。新增主人可配置maxRestMinutes，默认15分钟，sleeping／waiting均到期重新考虑，暂停／忙碌／额度优先，不强制发言。主人同意修改并要求先完成实现再展示可行性，沿用会话内已有push部署授权。自主文件严格schema2；本次停Eating、私有全量备份与原SHA核对后，由GitHub独立工具显式转换schema1→2，保其余配置、note、历史、计数、暂停及错误状态。旧次日10:00长休息缩短到当日22:29:41，原人格／自定义正文／Host settings／数据库行数与schema／会话身份／3份原生日志前缀／Token保持，五插件connected、DSH／nativeWeb ready、异常restart0。本地1881项通过／11项条件跳过、21项相关浏览器通过，云端551项通过；未清历史，不改主DSH或官方Web。证据见[可行性与部署报告](docs/reports/2026-11-09-自主调度边界与可行性验证报告.md)与[ADR-0050](docs/decisions/ADR-0050-自主思考休息上限.md)。
@@ -55,11 +59,11 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`、`plugins/capabilities/text-to-speech`。
 
-当前源码应用／Host／Web0.20.0，plugin-sdk4.10.0、ui-sdk4.2.1、plugin-core4.0.0，QQ0.15.0、DSH0.18.1、表情包0.2.1、生图0.3.2、记忆源码0.3.1、语音text-to-speech0.1.0（本机已有安装0.1.1保持）；插件唯一 API4。无新UI SDK API，无新增外部依赖版本，锁文件仅新增语音插件workspace importer及现有锁定链接；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前源码应用／Host／Web0.21.0，plugin-sdk4.11.0、ui-sdk4.2.1、plugin-core4.0.0，QQ0.16.0、DSH0.18.2、表情包0.3.0、生图0.4.0、记忆源码0.3.2、语音text-to-speech0.1.1（本机原记忆安装0.1.1保持）；插件唯一 API4。无新UI SDK API、无新增依赖，本轮锁文件零差异；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
-QQ授权资源通过getAsset取得Host lease，读前后复核同source／callerlease／scope／signal及实际字节／SHA-256／MIME；AI预览仍走Base64读取，发送不先展开预览。主人确认且逐图验证共享映射后可用标准file，否则发送前选Base64；未知不换传输重发。仅最终可信Base64计算额外预算：扣除该字节wire≤1MiB、额外≤14MiB、全JSON≤15MiB，单图5MiB／4张10MiB及入站／响应／ws1MiB保持，模型不能提供预算、任意路径或映射。独立media-transport.json/schema1在账号data、owner-only get/save，不新增public媒体服务。autonomy按code区分额度／暂停／禁用／stale／CAS／输入，contactLimit只读派生，签lease前及计数时核验，保持主人实际小时额度；控制层保真实statusCode／outcome及脱敏details，不按409猜unknown。
+QQ授权资源通过getAsset取得Host lease，读前后复核同source／callerlease／scope／signal／图片设置revision及实际字节／SHA-256／MIME；AI预览仍走Base64读取，发送不先展开预览。主人确认且逐图验证共享映射后可用标准file，否则发送前选Base64；未知不换传输重发。仅最终可信Base64计算额外预算：单图默认10MiB／可配1–50MiB，批次2倍／最多4张，Base64及wire按ADR-0052派生；扣媒体后普通wire≤1MiB，入站／响应／ws1MiB保持，模型不能提供预算、任意路径或映射。独立media-transport.json/schema1在账号data、owner-only get/save，不新增public媒体服务。autonomy按code区分额度／暂停／禁用／stale／CAS／输入，contactLimit只读派生，签lease前及计数时核验，保持主人实际小时额度；控制层保真实statusCode／outcome及脱敏details，不按409猜unknown。
 
 跨进程输入有协议版本、严格形状校验、超时、来源与关联标识。错误区分不支持、未发送、失败、未知和成功；未知外部动作不盲重做。不得吞异常或把缺必要接口当成默认成功。
 
@@ -87,7 +91,7 @@ DSH主提供会话处理／列类型／明确任务委派、活动状态／安�
 
 QQ保留39项标准JSON工具，另有qq_view_received_image内容扩展，共40项。手动副作用需确认和稳定request_id；子只用当前类型可范围化的已选集合，每次核对账号、目标及消息／图片引用配对，异步查询和下载后复查权限。保存读取不自动给已保存权限补新工具；本次显式部署的必要许可更新使用完整字段＋CAS且保留其他选择。
 
-MCP scope、Prompt、Preset不等于远端资源或OS沙箱。标准OneBot文件／URL／Base64仍交协议端处理；仅受控图片扩展取得真实收到段的图片URL，解析与路由交给系统网络栈（兼容TUN／Fake-IP、系统代理与局域网部署），禁重定向／凭据传播，5MiB／10秒与格式校验，不接受任意URL／路径，不读磁盘或猜远端下载端点。MCP图片通过原生附件，可随原生会话持久化；Eating不新建媒体聊天库。凭据及图片payload不进普通UI执行记录，临时Blob在隐藏／离开／停用／取消时撤销；不声称全链路不落盘。
+MCP scope、Prompt、Preset不等于远端资源或OS沙箱。标准OneBot文件／URL／Base64仍交协议端处理；仅受控图片扩展取得真实收到段的图片URL，解析与路由交给系统网络栈（兼容TUN／Fake-IP、系统代理与局域网部署），禁重定向／凭据传播，当前图片设置／10秒与格式校验，不接受任意URL／路径，不读磁盘或猜远端下载端点。MCP图片通过原生附件，可随原生会话持久化；Eating不新建媒体聊天库。凭据及图片payload不进普通UI执行记录，临时Blob在隐藏／离开／停用／取消时撤销；不声称全链路不落盘。
 
 模型列表／最小真实连接测试使用已保存配置；选择只改草稿。按[ADR-0022](docs/decisions/ADR-0022-服务声明模型能力与就地展示.md)，模型能力紧邻模型名称自动读取服务声明，图片输入及容量元数据自动采用；未知不猜，只有服务未声明时才在同区折叠手动补充。人工图片声明保持独立schema1＋CAS，默认false，仅停止Harness可保存，换endpoint／model失效；模型目录独立schema1，以服务／Key摘要和精确模型绑定。每次输出上限不自动扩大。声明不等于提供商已验证，API连通、运行时就绪与任务成功分别报告。
 
@@ -161,10 +165,10 @@ README 用中文作为标准入口；其他文档标题／文件名中文，技�
 
 ## 外部记忆插件（OpenViking）
 
-openviking-memory@0.3.0按[ADR-0045](docs/decisions/ADR-0045-官方记忆接口与插件部署提示.md)逐轮通过官方messages/batch同步，synced只表示已同步未提取；commit归档原始记录并异步提取，官方Task completed才表示该任务完成，不伪造记忆增删改数量。配置／状态严格schema3，autoCommit默认true、commitTokenThreshold1～1000000默认20000，移除archiveMaxMiB。阈值、压缩和正常结束尊重autoCommit，主人手动提交可强制；固定eating-standard-<peer>[-local]，不接管旧eating-live，不删除远端记录。未知append／commit阻塞同Session且不换号重发，已知taskId只GET原任务恢复，不提供扩展retry／私有durable receipt承诺。Eating只负责可信来源、范围、传输与回执，无每日／小时提取额度；功能MCP all／custom、群成员过滤、主人显式跨会话和原生Web来源保持。旧ADR-0030／报告保历史，integrations扩展README顶部标历史，当前安装不必需。本轮云端Eating更新已授权，schema2空状态转换仅独立停机工具按前述精确范围执行，生产无自动迁移；本机真实0.1.1不动，不配置或重启真实OV服务端。
+openviking-memory@0.3.2按[ADR-0045](docs/decisions/ADR-0045-官方记忆接口与插件部署提示.md)逐轮通过官方messages/batch同步，synced只表示已同步未提取；commit归档原始记录并异步提取，官方Task completed才表示该任务完成，不伪造记忆增删改数量。配置／状态严格schema3，autoCommit默认true、commitTokenThreshold1～1000000默认20000，移除archiveMaxMiB。阈值、压缩和正常结束尊重autoCommit，主人手动提交可强制；固定eating-standard-<peer>[-local]，不接管旧eating-live，不删除远端记录。未知append／commit阻塞同Session且不换号重发，已知taskId只GET原任务恢复，不提供扩展retry／私有durable receipt承诺。Eating只负责可信来源、范围、传输与回执，无每日／小时提取额度；功能MCP all／custom、群成员过滤、主人显式跨会话和原生Web来源保持。旧ADR-0030／报告保历史，integrations扩展README顶部标历史，当前安装不必需。本轮云端Eating更新已授权，schema2空状态转换仅独立停机工具按前述精确范围执行，生产无自动迁移；本机真实0.1.1不动，不配置或重启真实OV服务端。
 
 ## 生图插件（OpenAI Images）
 
-独立image-generation@0.3.0、API4。配置Base URL／model及可选Key，允许不要求Key的服务；单次size优先于保存默认，省略沿用默认、空串不传并用服务默认。尺寸接受WIDTHxHEIGHT或service native identifier／auto，实际支持由provider决定，不自动换尺寸付费重试。无参考图追加/images/generations，有参考图走/images/edits，固定n1，无聊天／Responses回退。保存／connect只本地检查，不真实试生成；请求仍报告可能计费及真实结果。可信asset发送按[ADR-0046](docs/decisions/ADR-0046-可信图片传输与生图尺寸.md)，模型只见opaque资源引用，生图成功与QQ发送分别核对。
+独立image-generation@0.4.0、API4。配置Base URL／model及可选Key，允许不要求Key的服务；单次size优先于保存默认，省略沿用默认、空串不传并用服务默认。尺寸接受WIDTHxHEIGHT或service native identifier／auto，实际支持由provider决定，不自动换尺寸付费重试。无参考图追加/images/generations，有参考图走/images/edits，固定n1，无聊天／Responses回退。保存／connect只本地检查，不真实试生成；请求仍报告可能计费及真实结果。可信asset发送按[ADR-0046](docs/decisions/ADR-0046-可信图片传输与生图尺寸.md)，模型只见opaque资源引用，生图成功与QQ发送分别核对。
 
-异步image_generate返回jobId，image_job_get查询最终状态，image_jobs/image_list分页元数据，image_get才实际图。生成提交回执不是生成成功，稳定request_id防重复计费，queued/running重启转unknown不重发。单图编辑只接受三种来源：主人面板本机上传、当前会话已授权消息的{messageId,imageId}、本插件已有assetId；不接受任意路径/URL或其它插件私有图片，来源哈希计入幂等。提交前检查调用signal；已接受后台任务由插件持有，普通Agent结束不丢已付费结果，停用/dispose取消为unknown，后续读取仍须当前授权。owner离页只停UI轮询；隐藏清Key、参考图和Blob，locale不请求。私有配置和资源schema1，500任务/500图/256MiB及公开单图5MiB保持，满在请求前拒绝。错误不回显提供商原body、Key、签名URL，URL结果不传认证下载。无真实Key时不声称付费服务验证。见[ADR-0020](docs/decisions/ADR-0020-独立OpenAI生图能力.md)与[ADR-0026](docs/decisions/ADR-0026-生图单图编辑与受控图片来源.md)。
+异步image_generate返回jobId，image_job_get查询最终状态，image_jobs/image_list分页元数据，image_get才实际图。生成提交回执不是生成成功，稳定request_id防重复计费，queued/running重启转unknown不重发。单图编辑只接受三种来源：主人面板本机上传、当前会话已授权消息的{messageId,imageId}、本插件已有assetId；不接受任意路径/URL或其它插件私有图片，来源哈希计入幂等。提交前检查调用signal；已接受后台任务由插件持有，普通Agent结束不丢已付费结果，停用/dispose取消为unknown，后续读取仍须当前授权。owner离页只停UI轮询；隐藏清Key、参考图和Blob，locale不请求。私有配置和资源schema1，500任务/500图/256MiB保持；单图使用主人图片设置，存储格式支持50MiB，调低不清原图，满在请求前拒绝。错误不回显提供商原body、Key、签名URL，URL结果不传认证下载。无真实Key时不声称付费服务验证。见[ADR-0020](docs/decisions/ADR-0020-独立OpenAI生图能力.md)与[ADR-0026](docs/decisions/ADR-0026-生图单图编辑与受控图片来源.md)。

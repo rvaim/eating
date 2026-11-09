@@ -1,3 +1,4 @@
+import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -164,7 +165,7 @@ async function fixture(handleConversations = false, captureMemory = false) {
       store.updateDeliverySettings({ ...snapshot.values, storageMode: 'persistent', quietWindowMs: 20, maxWaitMs: 100, maxBatchMessages: 200, batchTargetBytes: 4 * 1024 * 1024, retryIntervalMs: 100 }, snapshot.revision)
     }
     gateway = new HarnessGateway(store)
-    const context: HostPluginContext = {
+    const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS,
       dataDirectory, getSetting: key => store.getSetting(key), setSetting: (key, value) => store.setSetting(key, value),
       recordEvent: forbidden('recordEvent'), listMessages: () => [], executeIdempotent: forbidden('executeIdempotent'),
       harness: { ...(captureMemory ? { memory } : {}), registerSink: sink => gateway.register(sink), wake, readOwnerConfiguration: owner, readAgentActions: () => [], revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: (pluginId, scope) => {

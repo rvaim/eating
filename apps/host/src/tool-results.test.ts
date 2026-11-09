@@ -28,7 +28,7 @@ describe('explicit MCP content results', () => {
     expect(() => toolResult(definition('content'), value, 'r')).toThrow('工具返回的内容格式无效或超过允许大小。')
   })
   it('rejects an image above the decoding budget before accepting the MCP result', () => {
-    const bytes = Buffer.alloc(5 * 1024 * 1024 + 1)
+    const bytes = Buffer.alloc(10 * 1024 * 1024 + 1)
     Buffer.from([137,80,78,71,13,10,26,10]).copy(bytes)
     expect(() => toolResult(definition('content'), { content: [{ type: 'image', mimeType: 'image/png', data: bytes.toString('base64') }] }, 'r')).toThrow()
   })

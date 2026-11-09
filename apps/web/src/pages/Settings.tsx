@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Activity, Check, ChevronRight, Database, Info, Send, Trash2 } from 'lucide-react'
+import { Activity, Check, ChevronRight, Database, Images, Info, Send, Trash2 } from 'lucide-react'
 import { validateDeliverySettings } from '@eating/plugin-sdk'
 import type { DeliveryQueueStats, DeliverySettings, DeliverySettingsSnapshot } from '@eating/plugin-sdk'
 import { ActionButton, HostApiError, formatNumber, getErrorMessage, hostRequest, translate, useI18n } from '@eating/ui-sdk'
 import '../i18n/settings'
 import './Settings.css'
 import { AutonomySettings } from './AutonomySettings'
+import { ImageLimitsSettings } from './ImageLimitsSettings'
 
-export type SettingsSection = 'delivery' | 'queue' | 'autonomy'
+export type SettingsSection = 'delivery' | 'queue' | 'autonomy' | 'images'
 type NumericKey = Exclude<keyof DeliverySettings, 'storageMode' | 'overflowPolicy'>
 type SettingsDraft = Record<NumericKey, string> & Pick<DeliverySettings, 'storageMode' | 'overflowPolicy'>
 type FieldErrors = Partial<Record<keyof DeliverySettings, string>>
@@ -289,6 +290,7 @@ export function Settings({ section, onSectionChange, onFeedback }: {
     <aside className="platform-sidebar settings-sidebar">
       <p className="platform-nav-heading">{t('nav.heading')}</p>
       <nav aria-label={t('nav.heading')}>
+        <ActionButton reasonCode="busy" type="button" className={`platform-nav-item${section === 'images' ? ' is-selected' : ''}`} aria-current={section === 'images' ? 'page' : undefined} onClick={() => onSectionChange('images')}><Images size={18} aria-hidden="true" /><span>{t('nav.images')}</span>{section === 'images' && <ChevronRight size={15} className="nav-chevron" aria-hidden="true" />}</ActionButton>
         <ActionButton reasonCode="busy" type="button" className={`platform-nav-item${section === 'delivery' ? ' is-selected' : ''}`} aria-current={section === 'delivery' ? 'page' : undefined} onClick={() => onSectionChange('delivery')}><Send size={18} aria-hidden="true" /><span>{t('nav.delivery')}</span>{section === 'delivery' && <ChevronRight size={15} className="nav-chevron" aria-hidden="true" />}</ActionButton>
         <ActionButton reasonCode="busy" type="button" className={`platform-nav-item${section === 'queue' ? ' is-selected' : ''}`} aria-current={section === 'queue' ? 'page' : undefined} onClick={() => onSectionChange('queue')}><Database size={18} aria-hidden="true" /><span>{t('nav.queue')}</span>{section === 'queue' && <ChevronRight size={15} className="nav-chevron" aria-hidden="true" />}</ActionButton>
         <ActionButton reasonCode="busy" type="button" className={`platform-nav-item${section === 'autonomy' ? ' is-selected' : ''}`} aria-current={section === 'autonomy' ? 'page' : undefined} onClick={() => onSectionChange('autonomy')}><Activity size={18} aria-hidden="true" /><span>{t('nav.autonomy')}</span>{section === 'autonomy' && <ChevronRight size={15} className="nav-chevron" aria-hidden="true" />}</ActionButton>
@@ -296,7 +298,8 @@ export function Settings({ section, onSectionChange, onFeedback }: {
     </aside>
     <main id="main-content" className="robot-content settings-content" aria-busy={busy}>
       <div hidden={section !== 'autonomy'}><AutonomySettings active={section === 'autonomy'} /></div>
-      <div hidden={section === 'autonomy'}>
+      <div hidden={section !== 'images'}><ImageLimitsSettings active={section === 'images'} /></div>
+      <div hidden={section === 'autonomy' || section === 'images'}>
       <div className="settings-title-row">
         <div><h2>{t(`nav.${section}`)}</h2><p className="panel-description">{t(`description.${section}`)}</p></div>
         <ActionButton reasonCode="busy" ref={readTrigger} type="button" className="button button-secondary settings-read-button" disabled={busy} aria-expanded={confirmRead} aria-controls="settings-read-confirmation" onClick={() => { void readSettings() }}>{t(operation === 'read' ? 'action.reading' : 'action.read')}</ActionButton>

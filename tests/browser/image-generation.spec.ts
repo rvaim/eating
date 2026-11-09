@@ -117,7 +117,8 @@ test.describe('生图插件真实临时 Host', () => {
     await expect(footer.getByRole('button', { name: '启用', exact: true })).toBeVisible()
     await footer.getByRole('button', { name: '启用', exact: true }).click()
     await expect(page.getByLabel('Base URL', { exact: true })).toBeVisible()
-    await expect(page.locator('.image-notice')).toHaveCount(0)
+    await expect(page.locator('.image-notice[role="alert"]')).toHaveCount(0)
+    await expect(page.getByText('生图尚未就绪：请填写并保存图片模型名称。', { exact: true }).first()).toBeVisible()
   })
 
   test('无配置禁生成，保存 key/model 后确认计费生成，预览/刷新/语言/隐藏/重启状态正确', async ({ page }, info) => {

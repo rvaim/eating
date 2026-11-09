@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket, { WebSocketServer } from 'ws'
 import type { VerifyClientCallbackAsync } from 'ws'
-import { PlatformError } from '@eating/plugin-sdk'
+import { DEFAULT_IMAGE_LIMITS, PlatformError } from '@eating/plugin-sdk'
 import type { ConnectionStatus, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { OneBotClient } from './onebot.ts'
 
@@ -562,13 +562,13 @@ describe('OneBotClient forward unified WebSocket', () => {
     const remote = await fixture()
     const value = client()
     await value.connect(config(remote.endpoint))
-    for (const resolvedImageBase64Bytes of [-1, 0.5, NaN, 14 * 1024 * 1024 + 1]) {
+    for (const resolvedImageBase64Bytes of [-1, 0.5, NaN, DEFAULT_IMAGE_LIMITS.encodedBytes + 1]) {
       expect(await errorFrom(value.call('send_msg', {}, { resolvedImageBase64Bytes }))).toMatchObject({ code: 'onebot_payload_too_large', outcome: 'not-sent' })
     }
     // Extra image space cannot absorb unrelated JSON beyond the original 1 MiB.
     expect(await errorFrom(value.call('send_msg', { message: 'x'.repeat(1024 * 1024 + 4) }, { resolvedImageBase64Bytes: 4 })))
       .toMatchObject({ code: 'onebot_payload_too_large', outcome: 'not-sent' })
-    expect(await errorFrom(value.call('send_msg', { message: 'x'.repeat(15 * 1024 * 1024) }, { resolvedImageBase64Bytes: 14 * 1024 * 1024 })))
+    expect(await errorFrom(value.call('send_msg', { message: 'x'.repeat(DEFAULT_IMAGE_LIMITS.wireBytes) }, { resolvedImageBase64Bytes: DEFAULT_IMAGE_LIMITS.encodedBytes })))
       .toMatchObject({ code: 'onebot_payload_too_large', outcome: 'not-sent' })
     expect(remote.requests).toHaveLength(2)
     expect(value.getStatus().state).toBe('connected')

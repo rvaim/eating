@@ -4,7 +4,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js'
-import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
+import { DEFAULT_IMAGE_LIMITS, isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { AgentActionReceipt, BackendPlugin, CapabilityInvocationScope, HarnessCapabilityConnection, JsonObject, JsonValue, McpAccessPolicy, McpDirectorySnapshot, McpGrant, McpServiceSummary, PluginToolDefinition } from '@eating/plugin-sdk'
 import { DirectMcpConnections } from './mcp-connections'
 import type { HostStore } from './store'
@@ -12,6 +12,7 @@ import { secret, sameSecret } from './security'
 import { toolResult } from './tool-results'
 
 interface Options {
+  readonly imageLimits?: () => import('@eating/plugin-sdk').ImageLimits
   readonly store: Pick<HostStore, 'getSetting' | 'setSetting'>
   readonly direct: DirectMcpConnections
   readonly plugins: () => Iterable<BackendPlugin>
@@ -210,7 +211,7 @@ export class CapabilityAccess {
       if (memory === null) throw new PlatformError('MEMORY_CONTEXT_AMBIGUOUS', '当前轮次包含多个会话来源，请由对应会话子代理在其真实范围内查询记忆。', 409, 'not-sent')
       const result = await plugin.invokeCapability(name, args, key, { ...structuredClone(lease.scope), memory, signal: lease.abort.signal })
       if (!this.allowed(lease.scope, lease.sourceId, name)) return deny()
-      return toolResult(tool, result, key)
+      return toolResult(tool, result, key, this.options.imageLimits?.() ?? DEFAULT_IMAGE_LIMITS)
     }
     if (tool.readOnly) return this.options.direct.call(lease.sourceId, name, input, lease.abort.signal)
     if (!requestId(input.request_id) || !isJsonObject(input.arguments) || Object.keys(input).some(key => !['request_id', 'arguments'].includes(key))) throw new PlatformError('INVALID_MCP_ARGUMENTS', '外部写入工具需要 arguments 对象和稳定 request_id。', 400, 'not-sent')

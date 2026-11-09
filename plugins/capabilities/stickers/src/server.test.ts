@@ -1,3 +1,4 @@
+import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { basename, dirname, join } from 'node:path'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -27,7 +28,7 @@ function fixture(withResources = true) {
     if (previous) return previous.result
     const result = await execute(); cached.set(key, { params: fingerprint, result }); return result
   })
-  const context: HostPluginContext = { dataDirectory: directory, ...(withResources ? { resources } : {}), executeIdempotent, getSetting: () => null, setSetting: () => {}, listMessages: () => [], recordEvent: () => ({ inserted: true, eventId: 'fixture' }) }
+  const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS, dataDirectory: directory, ...(withResources ? { resources } : {}), executeIdempotent, getSetting: () => null, setSetting: () => {}, listMessages: () => [], recordEvent: () => ({ inserted: true, eventId: 'fixture' }) }
   const plugin = entry.create(context); plugins.push(plugin)
   const add = () => plugin.manage!('add', { ...fixtureImage(), description: '开心挥手', tags: ['问候'] })
   return { plugin, resources, executeIdempotent, add }

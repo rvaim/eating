@@ -1,3 +1,4 @@
+import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { createServer } from 'node:http'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -27,7 +28,7 @@ async function pluginFixture() {
     if (target !== resolve(directory) || dirname(target) !== parent || !basename(target).startsWith('eating-image-size-')) throw new Error('Unsafe image size fixture cleanup')
     await rm(target, { recursive: true })
   })
-  const context: HostPluginContext = { dataDirectory: directory, getSetting: () => null, setSetting: () => {}, recordEvent: () => ({ inserted: true, eventId: 'size-event' }), listMessages: () => [], executeIdempotent: async (_plugin, _action, _parameters, _requestId, run) => run() }
+  const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS, dataDirectory: directory, getSetting: () => null, setSetting: () => {}, recordEvent: () => ({ inserted: true, eventId: 'size-event' }), listMessages: () => [], executeIdempotent: async (_plugin, _action, _parameters, _requestId, run) => run() }
   const plugin = new ImageGenerationPlugin(context)
   cleanups.push(() => plugin.dispose())
   return plugin

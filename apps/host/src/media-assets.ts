@@ -22,15 +22,15 @@ export async function verifiedAudioAsset(value: PluginAudioAsset, assertAllowed:
   return Object.freeze({ mimeType, byteLength, sha256, durationMs, readBytes, assertCurrent: assertAllowed, assertActive: async () => { await readBytes(); assertAllowed() } })
 }
 
-export async function verifiedImageAsset(value: PluginImageAsset, assertAllowed: () => void): Promise<ImageAssetLease> {
+export async function verifiedImageAsset(value: PluginImageAsset, assertAllowed: () => void, maximum = 10 * 1024 * 1024): Promise<ImageAssetLease> {
   assertAllowed()
-  if (!value || typeof value !== 'object' || !Number.isSafeInteger(value.byteLength) || value.byteLength < 1 || value.byteLength > MAX_IMAGE_RESOURCE_BYTES
+  if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > MAX_IMAGE_RESOURCE_BYTES || !value || typeof value !== 'object' || !Number.isSafeInteger(value.byteLength) || value.byteLength < 1 || value.byteLength > maximum
     || typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.sha256) || typeof value.readBytes !== 'function'
     || value.localFile !== undefined && typeof value.localFile !== 'function') invalid()
   const { mimeType, byteLength, sha256 } = value
   const readBytes = async (): Promise<Uint8Array> => {
     assertAllowed()
-    const bytes = checkedImageBytes(await value.readBytes(), mimeType)
+    const bytes = checkedImageBytes(await value.readBytes(), mimeType, maximum)
     assertAllowed()
     if (bytes.byteLength !== byteLength || createHash('sha256').update(bytes).digest('hex') !== sha256) invalid()
     return bytes

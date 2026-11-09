@@ -1,9 +1,7 @@
-import { PlatformError, isJsonObject, isJsonValue } from '@eating/plugin-sdk'
-import type { JsonValue, PluginToolDefinition } from '@eating/plugin-sdk'
+import { DEFAULT_IMAGE_LIMITS, PlatformError, isJsonObject, isJsonValue } from '@eating/plugin-sdk'
+import type { ImageLimits, JsonValue, PluginToolDefinition } from '@eating/plugin-sdk'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 
-const maxImageBytes = 5 * 1024 * 1024
-const maxBatchBytes = 10 * 1024 * 1024
 const mediaTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
 const exactKeys = (value: object, required: readonly string[], optional: readonly string[] = []) => required.every(key => Object.hasOwn(value, key)) && Object.keys(value).every(key => required.includes(key) || optional.includes(key))
 
@@ -19,7 +17,8 @@ function imageType(bytes: Buffer): string | null {
 }
 
 /** A declared content tool yields real MCP blocks; ordinary JSON is never reinterpreted. */
-export function toolResult(tool: PluginToolDefinition, result: JsonValue, requestId: string): CallToolResult {
+export function toolResult(tool: PluginToolDefinition, result: JsonValue, requestId: string, limits: ImageLimits = DEFAULT_IMAGE_LIMITS): CallToolResult {
+  const maxImageBytes = limits.imageBytes, maxBatchBytes = limits.batchBytes
   assertToolResultFormat(tool)
   const invalid = (): never => { throw new PlatformError('INVALID_TOOL_RESULT', '工具返回的内容格式无效或超过允许大小。', 502, tool.readOnly ? 'failed' : 'unknown') }
   if (!isJsonValue(result)) return invalid()

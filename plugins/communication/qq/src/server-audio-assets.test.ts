@@ -1,3 +1,4 @@
+import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { createHash } from 'node:crypto'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
@@ -22,7 +23,7 @@ async function fixture(unknown = false) {
   const active = () => { if (revoked || abort.signal.aborted) throw new PlatformError('ASSET_ACCESS_DENIED', 'Revoked fixture lease', 403, 'not-sent') }
   const lease: AudioAssetLease = { mimeType: 'audio/wav', byteLength: bytes.length, durationMs: 30000, sha256: createHash('sha256').update(bytes).digest('hex'), readBytes: async () => corrupt ? wav(Buffer.alloc(48)) : bytes, assertCurrent: active, assertActive: async () => { active() } }
   const store = new HostStore(join(root, 'ledger.sqlite')); stops.push(() => store.close())
-  const context: HostPluginContext = { dataDirectory: root, getSetting: () => null, setSetting: () => {}, recordEvent: () => ({ inserted: false, eventId: 'fixture' }), listMessages: () => [], executeIdempotent: (...args) => store.executeIdempotent(...args),
+  const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS, dataDirectory: root, getSetting: () => null, setSetting: () => {}, recordEvent: () => ({ inserted: false, eventId: 'fixture' }), listMessages: () => [], executeIdempotent: (...args) => store.executeIdempotent(...args),
     resources: { getAudioAsset: async () => lease, getAsset: async () => { throw new Error('No images') }, readAsset: async () => { throw new Error('No images') }, readReceivedImage: async () => { throw new Error('No images') } } }
   const plugin = qqEntry.create(context); stops.push(() => plugin.dispose())
   await plugin.updateConfiguration({ endpoint: remote.endpoint, autoConnect: false, timeoutMs: 1000 }); await plugin.connect()

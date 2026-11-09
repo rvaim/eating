@@ -1,8 +1,9 @@
+import { readImageLimits } from '@eating/plugin-sdk'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { AlertCircle, Check, ChevronLeft, ChevronRight, ImageOff, ImagePlus, LoaderCircle, RefreshCw } from 'lucide-react'
 import type { JsonObject } from '@eating/plugin-sdk'
-import { ActionButton, createRequestId, formatNumber, useI18n } from '@eating/ui-sdk'
+import { ActionButton, createRequestId, formatNumber, hostRequest, useI18n } from '@eating/ui-sdk'
 import type { PluginPanelProps } from '@eating/ui-sdk'
 import type {
   GeneratedImageItem, ImageGenerationConfiguration, ImageGenerationJob, ImageGenerationPage,
@@ -90,6 +91,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
   const assetsGeneration = useRef(0)
   const previewUrl = useRef<string | null>(null)
   const sourcePreviewUrl = useRef<string | null>(null)
+  const sourceReadController = useRef<AbortController | null>(null)
   const sourceInput = useRef<HTMLInputElement | null>(null)
   const assetsOffsetRef = useRef(0)
   const activeJobs = useRef<ReadonlySet<string>>(new Set())
@@ -98,6 +100,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
   feedback.current = onFeedback
 
   const cancelAll = useCallback(() => {
+    sourceReadController.current?.abort(); sourceReadController.current = null
     configController.current?.abort(); configController.current = null
     jobsController.current?.abort(); jobsController.current = null
     assetsController.current?.abort(); assetsController.current = null
@@ -290,17 +293,20 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
 
   async function chooseSource(file: File | undefined) {
     if (!file) return
+    sourceReadController.current?.abort()
+    const controller = new AbortController(); sourceReadController.current = controller
     try {
-      const image = await localImage(file)
-      if (!mounted.current) return
+      const limits = readImageLimits(await hostRequest<unknown>('/image-limits', { signal: controller.signal }))
+      const image = await localImage(file, limits.imageBytes)
+      if (!mounted.current || controller.signal.aborted || document.hidden) return
       if (sourcePreviewUrl.current) URL.revokeObjectURL(sourcePreviewUrl.current)
       sourcePreviewUrl.current = URL.createObjectURL(file)
       setSource({ image, name: file.name, bytes: file.size, key: `${file.name}:${file.size}:${file.lastModified}` })
       setSourceFailure(null)
       resetRequestIdentity()
     } catch (error) {
-      if (mounted.current) setSourceFailure(errorTextFrom(error, it('generate.sourceInvalid')))
-    }
+      if (mounted.current && !controller.signal.aborted) setSourceFailure(errorTextFrom(error, it('generate.sourceInvalid')))
+    } finally { if (sourceReadController.current === controller) sourceReadController.current = null }
   }
 
   function resetRequestIdentity() { requestIdentity.current = null; setConfirming(false); setGenerateFailure(null) }
@@ -366,7 +372,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
       {configDirty && <p className="image-hint">{t('generate.dirtyConfig')}</p>}
       <div className="image-field"><label htmlFor={`${prefix}-source`}>{t('generate.source')}</label><div>
         <input ref={sourceInput} id={`${prefix}-source`} type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={event => void chooseSource(event.target.files?.[0])} />
-        <p className="image-hint">{t('generate.sourceHint', { max: formatNumber(IMAGE_GENERATION_LIMITS.imageBytes / 1024 / 1024) })}</p>
+        <p className="image-hint">{t('generate.sourceHint')}</p>
         {sourceFailure && <p className="image-error" role="alert">{sourceFailure}</p>}
         {source && sourcePreviewUrl.current && <div className="image-source-preview"><img src={sourcePreviewUrl.current} alt={t('generate.sourcePreviewAlt')} /><div className="image-source-copy"><strong dir="auto">{source.name}</strong><small>{bytesLabel(source.bytes)}</small><ActionButton reasonCode="busy" type="button" className="text-button" onClick={() => { clearSource(); resetRequestIdentity() }}>{t('generate.clearSource')}</ActionButton></div></div>}
       </div></div>

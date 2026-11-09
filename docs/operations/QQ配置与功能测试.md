@@ -1,5 +1,7 @@
 # Eating QQ 配置与功能测试
 
+2026-11-10 图片大小现统一在“设置 → 图片大小”配置，默认10MiB、可配1–50MiB，多图合计2倍／最多4张。当前变更仅本地验证，未发布／部署；下方旧部署数字保留当时事实。操作见[图片大小设置](图片大小设置.md)，契约见[ADR-0052](../decisions/ADR-0052-统一可配置图片大小.md)。
+
 2026-11-04 图片消息结构提示更新：**QQ0.14.1本地验证及云端发布部署完成**。用户初期“先修改提示词吧”仅本地修复，随后明确“push 发到服务器上”，授权本轮Git发布与云端Eating更新。`message` 直接传 image 段对象／数组，不能 `JSON.stringify` 或把 `eating-asset` URI／图片 JSON 当 text；普通文字发送成功不能当作已发图，须核对实际 image 调用及成功回执，unknown 不重发。已有图片复用原引用，不为补发重新生图；工具、参数校验、权限和原 file／Base64选择均保留，不增拦截／回执字段／环境自动检测，不改人格／自定义正文。正反JSON例见[ADR-0047](../decisions/ADR-0047-图片消息结构提示.md)，本地完整构建／严格类型、378项相关测试（0跳过）及7项浏览器通过，未重跑全量；源码 `f8b0d51` 已commit／push，云端从GitHub拉取同提交，完整构建／严格类型及Linux363项通过、私有备份后同data安装QQ0.14.1；正式私聊／群聊与主插件提示、主bridge及发送schema描述／真实数组examples已更新，公网GET实读通过，QQ connected、队列0，保存配置／人格／原数据保持。完整证据见[本轮报告](../reports/2026-11-04-图片资源发送提示词验证报告.md)，提示指引不保证真实LLM绝不误用，未真实QQ试发／付费生图。下方既有版本与部署记录保历史。
 
 Eating 使用 QQ OneBot v11 插件，需要先在协议端登录真实QQ并启用OneBot，Eating不实现QQ登录或自动安装协议端；连接页顶部明确提示这一前提。当前应用／Host／Web0.18.0、SDK4.8.0、UI4.2.1、core4.0.0、QQ0.14.0、DSH0.16.0，仅API4。部署提示与可信图片发送按[ADR-0045](../decisions/ADR-0045-官方记忆接口与插件部署提示.md)及[ADR-0046](../decisions/ADR-0046-可信图片传输与生图尺寸.md)实现，已完成本地和云端验证并部署更新（QQ0.14.0 connected），完整证据见[本轮报告](../reports/2026-11-04-官方记忆与插件能力更新验证报告.md)。保留38公开API＋1框架quick共39项标准工具，另有qq_view_received_image受控扩展，共40项；子通讯只用当前类型可范围化已选集合。普通会话自主处理和功能默认开放可配置见[ADR-0035](../decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)，标准目录见[OneBot覆盖清单](../technical/OneBot标准功能覆盖.md)，官方Web与图片操作遵循当前架构。
@@ -142,7 +144,7 @@ Cookies、CSRF Token和QQ接口凭据只在主动查询后显示，不加入普�
 
 “MCP能力 → 查看MCP配置”仅在主动点击后获取QQ专属StreamableHTTP地址与独立Bearer，离开页签隐藏；不回显OneBot令牌，不自动修改其他Harness。新增未知可执行扩展仍需主人批准；本轮标准QQ工具已由用户授权加入。
 
-授权插件图片发送使用 `eating-asset` 引用：后台getAsset取得当前授权lease，核验真实字节、大小、SHA-256和MIME；AI预览仍readAsset，不为发送先展开Base64预览。单图仍5MiB，每次最多4张／10MiB原图；只有最终选择Base64的可信资源才计算额外预算，普通wire扣该字节后≤1MiB、额外≤14MiB、全JSON≤15MiB。模型不能传预算或借此读任意URL／路径，普通JSON／文本／模型输入与入站／响应／ws仍1MiB。OneBot retcode100仍failed，unknown保原request_id核对，不换传输重发。普通入站unknown只拦原context或原task，新入站新call可由同child处理，pending仍串行；主动联系仍按主人实际保存的小时额度。额度错误读contactLimit的used／resetAt，activity_state读取成功不表示额度恢复。发送预算承接[ADR-0037](../decisions/ADR-0037-未知委派隔离与受控图片发送预算.md)，当前资源契约见[ADR-0046](../decisions/ADR-0046-可信图片传输与生图尺寸.md)。
+授权插件图片发送使用 `eating-asset` 引用：后台getAsset取得当前授权lease，核验真实字节、大小、SHA-256和MIME；AI预览仍readAsset，不为发送先展开Base64预览。单图默认10MiB，可在“设置 → 图片大小”配置1–50MiB，每次最多4张／合计为单图上限的2倍；只有最终选择Base64的可信资源才计算额外预算，普通wire扣该字节后≤1MiB、额外Base64与全JSON上限按当前图片设置派生（见ADR-0052）。模型不能传预算或借此读任意URL／路径，普通JSON／文本／模型输入与入站／响应／ws仍1MiB。OneBot retcode100仍failed，unknown保原request_id核对，不换传输重发。普通入站unknown只拦原context或原task，新入站新call可由同child处理，pending仍串行；主动联系仍按主人实际保存的小时额度。额度错误读contactLimit的used／resetAt，activity_state读取成功不表示额度恢复。发送预算承接[ADR-0037](../decisions/ADR-0037-未知委派隔离与受控图片发送预算.md)，当前资源契约见[ADR-0046](../decisions/ADR-0046-可信图片传输与生图尺寸.md)。
 
 ## 插件图片传输设置
 
@@ -156,7 +158,7 @@ AI只见opaque资源引用，不能填写目录、任意路径或传输模式。
 
 qq_view_received_image使用当前账号／会话已经收到并核验的消息和图片资源引用，message与resource必须配对；不接受任意本机路径或任意网址。子Agent按实际类型勾选和scope调用，获取字节后还会再次检查权限，撤权／切号后的迟到结果不能恢复访问。
 
-有可用图片URL时受控获取，解析与路由交给系统网络栈（兼容TUN／Fake-IP、系统代理与局域网），禁止redirect且不传OneBot／Host认证；最多5MiB、10秒，同时核对MIME与真实字节格式。若协议端仅给远端路径、没有可用获取接口，会明确MEDIA_UNAVAILABLE；Eating不会读本机文件、登录远端或猜地址。
+有可用图片URL时受控获取，解析与路由交给系统网络栈（兼容TUN／Fake-IP、系统代理与局域网），禁止redirect且不传OneBot／Host认证；单图按当前图片设置（默认10MiB）、10秒，同时核对MIME与真实字节格式。若协议端仅给远端路径、没有可用获取接口，会明确MEDIA_UNAVAILABLE；Eating不会读本机文件、登录远端或猜地址。
 
 真实imageInput=true。此前失败是插件自身把198.18.7.115（Fake-IP特征）当内网拒绝，拦截发生在HTTP GET前，不是capability=false，也不需要用户改DNS。该预判已删除，QQ0.10.1改由系统网络栈取图，同一条真实消息取得image/jpeg、110000字节。不记录QQ标识、签名URL、rkey或消息正文。
 

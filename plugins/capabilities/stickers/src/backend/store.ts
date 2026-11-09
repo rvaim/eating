@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants, closeSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
+import { DEFAULT_IMAGE_LIMITS, isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { ImageResource, JsonObject, PluginImageAsset } from '@eating/plugin-sdk'
 import { STICKER_LIMITS } from '../types'
 import type { StickerItem, StickerList, StickerPreview, StickerTags } from '../types'
@@ -65,7 +65,7 @@ export class StickerLibrary {
   readonly directory: string
   readonly indexPath: string
   private readonly blobs: string
-  constructor(directory: string) {
+  constructor(directory: string, private readonly maximum: () => number = () => DEFAULT_IMAGE_LIMITS.imageBytes) {
     this.directory = resolve(directory)
     this.indexPath = join(this.directory, 'library.json')
     this.blobs = join(this.directory, 'blobs')
@@ -183,7 +183,7 @@ export class StickerLibrary {
     }
     return total
   }
-  stats() { const index = this.load(); return { revision: index.revision, total: index.items.length, bytes: index.items.reduce((sum, item) => sum + item.bytes, 0), limits: { ...STICKER_LIMITS } } }
+  stats() { const index = this.load(); return { revision: index.revision, total: index.items.length, bytes: index.items.reduce((sum, item) => sum + item.bytes, 0), limits: { ...STICKER_LIMITS, imageBytes: this.maximum() } } }
   async list(input: unknown = {}): Promise<StickerList> {
     const values = inputObject(input, ['query', 'tags', 'offset', 'limit', 'expectedRevision'])
     const query = values.query ?? ''
@@ -215,15 +215,17 @@ export class StickerLibrary {
       const index = this.load(); sameRevision(index, values.expectedRevision)
       const item = index.items.find(item => item.assetId === assetId)
       if (!item) throw new PlatformError('STICKER_NOT_FOUND', '此表情已不存在，请重新读取列表。', 404, 'not-sent')
+      if (item.bytes > this.maximum()) throw new PlatformError('STICKER_INVALID_IMAGE', '图片超过当前图片大小设置；原图已保留，请调整上限后读取。', 413, 'not-sent')
       return { revision: index.revision, item: structuredClone(item), image: this.readImage(item) }
     })
   }
   async add(image: unknown, input: unknown, assertActive: () => void = () => {}): Promise<{ revision: number; item: StickerItem; duplicate: boolean }> {
     const values = inputObject(input, ['description', 'tags', 'expectedRevision'], ['description', 'tags'])
     const description = stickerDescription(values.description), tags = stickerTags(values.tags)
-    const decoded = decodeStickerImage(image), assetId = createHash('sha256').update(decoded.bytes).digest('hex')
+    const decoded = decodeStickerImage(image, this.maximum()), assetId = createHash('sha256').update(decoded.bytes).digest('hex')
     return this.serialize(() => {
       assertActive()
+      if (decoded.bytes.length > this.maximum()) throw new PlatformError('STICKER_INVALID_IMAGE', '图片超过当前图片大小设置，未写入。', 413, 'not-sent')
       const index = this.load(); sameRevision(index, values.expectedRevision)
       const present = index.items.find(item => item.assetId === assetId)
       if (present) { this.readImage(present); return { revision: index.revision, item: structuredClone(present), duplicate: true } }

@@ -1,3 +1,4 @@
+import { MAX_IMAGE_RESOURCE_BYTES } from '@eating/plugin-sdk'
 import type { ImageMimeType, ImageResource } from '@eating/plugin-sdk'
 
 export type ImageGenerationResponseFormat = '' | 'b64_json' | 'url'
@@ -80,6 +81,6 @@ export interface ImageGenerationPreview {
   readonly sendable: ImageGenerationSendable
 }
 export const IMAGE_GENERATION_LIMITS = Object.freeze({
-  imageBytes: 5 * 1024 * 1024, libraryBytes: 256 * 1024 * 1024, jobs: 500, images: 500,
+  imageBytes: MAX_IMAGE_RESOURCE_BYTES, libraryBytes: 256 * 1024 * 1024, jobs: 500, images: 500,
   page: 50, prompt: 12000, waitMs: 20000, minimumTimeoutMs: 1000, maximumTimeoutMs: 600000,
 })

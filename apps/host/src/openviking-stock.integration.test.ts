@@ -1,3 +1,4 @@
+import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { spawn } from 'node:child_process'
 import { mkdtemp, open, realpath, rm, readFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
@@ -115,7 +116,7 @@ async function startStock() {
 type Stock = Awaited<ReturnType<typeof startStock>>
 
 function context(dataDirectory: string): HostPluginContext {
-  return {
+  return { imageLimits: () => DEFAULT_IMAGE_LIMITS,
     dataDirectory, getSetting: () => null, setSetting: () => {}, recordEvent: () => ({ inserted: true, eventId: 'unused' }), listMessages: () => [],
     executeIdempotent: async () => { throw new Error('Stock integration must not write chat bodies to Host action storage') },
   }

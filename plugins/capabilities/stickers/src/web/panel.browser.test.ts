@@ -1,3 +1,4 @@
+import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { build } from 'esbuild'
 import { chromium } from '@playwright/test'
 import type { Browser, Page } from '@playwright/test'
@@ -16,7 +17,7 @@ interface HarnessState { readonly active: number; readonly revoked: number; read
 async function fixture() {
   const parent = await realpath(tmpdir()), directory = await realpath(await mkdtemp(join(parent, 'eating-stickers-ui-')))
   stops.push(async () => { const target = await realpath(directory); if (target !== directory || dirname(target) !== parent || !basename(target).startsWith('eating-stickers-ui-')) throw new Error('Unsafe sticker UI cleanup'); await rm(target, { recursive: true }) })
-  const context: HostPluginContext = { dataDirectory: directory, getSetting: () => null, setSetting: () => {}, listMessages: () => [], recordEvent: () => ({ eventId: 'fixture', inserted: true }), executeIdempotent: async (_plugin, _action, _params, _id, execute) => execute() }
+  const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS, dataDirectory: directory, getSetting: () => null, setSetting: () => {}, listMessages: () => [], recordEvent: () => ({ eventId: 'fixture', inserted: true }), executeIdempotent: async (_plugin, _action, _params, _id, execute) => execute() }
   const plugin = entry.create(context); stops.push(() => plugin.dispose())
   const project = fileURLToPath(new URL('../../../../../', import.meta.url))
   const bundle = await build({ stdin: { sourcefile: 'sticker-harness.tsx', resolveDir: project, loader: 'tsx', contents: `import React from 'react'; import {createRoot} from 'react-dom/client'; import {setLocale} from '@eating/ui-sdk'; import {StickersPanel} from './plugins/capabilities/stickers/src/web/panel'; const root=createRoot(document.getElementById('root')); const active=new Set(); let revoked=0; const feedback=[]; const create=URL.createObjectURL.bind(URL),revoke=URL.revokeObjectURL.bind(URL); URL.createObjectURL=value=>{const url=create(value);active.add(url);return url;};URL.revokeObjectURL=url=>{active.delete(url);revoked++;return revoke(url);};window.stickerHarness={state:()=>({active:active.size,revoked,feedback}),locale:setLocale,unmount:()=>root.unmount()};root.render(<StickersPanel initialValues={{}} onSave={()=>({ok:true})} onFeedback={message=>feedback.push(message)}/>);` }, bundle: true, write: false, outfile: 'stickers-fixture.js', platform: 'browser', format: 'iife', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' }, alias: { '@eating/plugin-sdk': join(project, 'packages/plugin-sdk/src/index.ts'), '@eating/ui-sdk': join(project, 'packages/ui-sdk/src/index.ts') } })
@@ -27,6 +28,7 @@ async function fixture() {
   await page.route('http://stickers.test/**', async route => {
     const request = route.request(), url = new URL(request.url())
     if (url.pathname === '/api/bootstrap') { await route.fulfill({ json: { csrfToken: 'local-ui-fixture' } }); return }
+    if (url.pathname === '/api/image-limits') { await route.fulfill({ json: DEFAULT_IMAGE_LIMITS }); return }
     if (url.pathname === '/api/plugins/stickers/manage') {
       const body = request.postDataJSON() as { operation: string; input: JsonObject }
       operations.push(body.operation)

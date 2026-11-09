@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { lstatSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
+import { DEFAULT_IMAGE_LIMITS, isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { PluginImageAsset } from '@eating/plugin-sdk'
 import { IMAGE_GENERATION_LIMITS } from '../types'
 import type { GeneratedImageItem, ImageGenerationJob, ImageGenerationJobError, ImageGenerationPage, ImageGenerationPreview, ImageGenerationSourceSummary } from '../types'
@@ -90,12 +90,12 @@ export class ImageGenerationStore {
     if (found && found.requestHash !== requestHash) throw new PlatformError('IMAGE_GENERATION_IDEMPOTENCY_CONFLICT', '同一 request_id 已用于不同生图参数，未重复请求。', 409, 'not-sent')
     return found ? publicJob(found) : null
   }
-  ensureCapacity(): void {
+  ensureCapacity(maximum = DEFAULT_IMAGE_LIMITS.imageBytes): void {
     const used = this.value.images.reduce((total, item) => total + item.bytes, 0)
-    if (this.value.jobs.length >= IMAGE_GENERATION_LIMITS.jobs || this.value.images.length >= IMAGE_GENERATION_LIMITS.images || used + IMAGE_GENERATION_LIMITS.imageBytes > IMAGE_GENERATION_LIMITS.libraryBytes) throw new PlatformError('IMAGE_GENERATION_CAPACITY_REACHED', '任务或图片容量已满，或剩余空间不足单图 5 MiB 上限；未发送付费请求。', 409, 'not-sent')
+    if (this.value.jobs.length >= IMAGE_GENERATION_LIMITS.jobs || this.value.images.length >= IMAGE_GENERATION_LIMITS.images || used + maximum > IMAGE_GENERATION_LIMITS.libraryBytes) throw new PlatformError('IMAGE_GENERATION_CAPACITY_REACHED', '任务或图片容量已满，或剩余空间不足当前单图大小上限；未发送付费请求。', 409, 'not-sent')
   }
-  enqueue(requestId: string, requestHash: string, prompt: string, model: string, source?: ResolvedSourceImage): ImageGenerationJob {
-    this.ensureCapacity()
+  enqueue(requestId: string, requestHash: string, prompt: string, model: string, source?: ResolvedSourceImage, maximum = DEFAULT_IMAGE_LIMITS.imageBytes): ImageGenerationJob {
+    this.ensureCapacity(maximum)
     const now = new Date().toISOString(), job: StoredJob = { jobId: randomUUID(), requestId, requestHash, prompt, model, status: 'queued', createdAt: now, updatedAt: now, assetIds: [],
       ...(source ? { source: sourceSummary(source), sourceHash: source.hash } : {}) }
     this.save({ ...this.value, jobs: [...this.value.jobs, job] })
@@ -115,7 +115,7 @@ export class ImageGenerationStore {
   }
   complete(jobId: string, generated: GeneratedImageBytes, assertActive: () => void): void {
     assertActive()
-    const job = this.job(jobId), image = imageBytes(generated.bytes, generated.mimeType), assetId = createHash('sha256').update(image.bytes).digest('hex')
+    const job = this.job(jobId), image = imageBytes(generated.bytes, generated.mimeType, IMAGE_GENERATION_LIMITS.imageBytes), assetId = createHash('sha256').update(image.bytes).digest('hex')
     const present = this.value.images.find(item => item.assetId === assetId)
     prepareDirectory(this.blobs)
     const path = join(this.blobs, assetId), created = !lstatSync(path, { throwIfNoEntry: false })
@@ -140,7 +140,7 @@ export class ImageGenerationStore {
         || realpathSync(this.blobs) !== join(realpathSync(root), 'blobs') || realpathSync(path) !== join(realpathSync(this.blobs), assetId)) corrupt()
       const bytes = readBytes(path, IMAGE_GENERATION_LIMITS.imageBytes)
       if (!bytes || bytes.length !== item.bytes || createHash('sha256').update(bytes).digest('hex') !== assetId) corrupt()
-      imageBytes(bytes, item.mimeType)
+      imageBytes(bytes, item.mimeType, IMAGE_GENERATION_LIMITS.imageBytes)
       return { item, bytes, path: realpathSync(path) }
     } catch { corrupt() }
   }
@@ -151,7 +151,9 @@ export class ImageGenerationStore {
       localFile: async () => this.assetBytes(assetId).path,
     })
   }
-  get(assetId: string): ImageGenerationPreview {
+  get(assetId: string, maximum = IMAGE_GENERATION_LIMITS.imageBytes): ImageGenerationPreview {
+    const existing = this.value.images.find(item => item.assetId === assetId)
+    if (existing && existing.bytes > maximum) throw new PlatformError('IMAGE_GENERATION_INVALID_IMAGE', '图片超过当前图片大小设置；原图已保留，请调整上限后读取。', 413, 'not-sent')
     const { item, bytes } = this.assetBytes(assetId)
     return { item: structuredClone(item), image: { mimeType: item.mimeType, data: bytes.toString('base64') }, sendable: { type: 'image', data: { file: 'eating-asset://image-generation/' + assetId } } }
   }

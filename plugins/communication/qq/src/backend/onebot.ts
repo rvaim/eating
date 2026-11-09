@@ -2,7 +2,7 @@ import type { OneBotConnectionConfig } from '../config'
 import { randomUUID } from 'node:crypto'
 import WebSocket from 'ws'
 import type { RawData } from 'ws'
-import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
+import { DEFAULT_IMAGE_LIMITS, isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { ConnectionStatus, JsonObject, JsonValue } from '@eating/plugin-sdk'
 
 // OneBot v11 d4456ee706f9ada9c2dfde56a2bcfc69752600e4:
@@ -10,10 +10,8 @@ import type { ConnectionStatus, JsonObject, JsonValue } from '@eating/plugin-sdk
 // One forward WebSocket endpoint must carry both API responses and events.
 const MAX_INCOMING_PAYLOAD_BYTES = 1024 * 1024
 const MAX_REQUEST_PARAMETER_BYTES = 1024 * 1024
-// Only backend-resolved plugin images earn additional request space. Four images
-// totalling 10 MiB encode to <14 MiB; keep a separate hard cap on the whole JSON.
-const MAX_RESOLVED_IMAGE_BASE64_BYTES = 14 * 1024 * 1024
-const MAX_OUTGOING_PAYLOAD_BYTES = MAX_REQUEST_PARAMETER_BYTES + MAX_RESOLVED_IMAGE_BASE64_BYTES
+// Only backend-resolved media earn additional space. The owner image policy
+// derives aggregate and encoded budgets; ordinary parameters remain bounded.
 type RequestOptions = {
   timeoutMs?: number
   readOnly?: boolean
@@ -30,6 +28,7 @@ const MAX_TIMER_MS = 2147483647
 
 type Timer = ReturnType<typeof setTimeout>
 type ClientOptions = {
+  readonly imageLimits?: () => import('@eating/plugin-sdk').ImageLimits
   onEvent: (event: JsonObject) => void
   onStatus?: (status: ConnectionStatus) => void
   requestTimeoutMs?: number
@@ -109,7 +108,7 @@ export class OneBotClient {
   private configured = false
   private disposed = false
 
-  constructor(options: ClientOptions) {
+  constructor(private readonly options: ClientOptions) {
     this.onEvent = options.onEvent
     this.onStatus = options.onStatus
     this.requestTimeoutMs = options.requestTimeoutMs === undefined ? undefined : validateTimeout(options.requestTimeoutMs)
@@ -304,11 +303,12 @@ export class OneBotClient {
       return Promise.reject(new PlatformError('onebot_invalid_request', 'OneBot 请求必须包含有效动作与 JSON 参数', 400, 'not-sent'))
     }
     const wireBytes = Buffer.byteLength(wire)
+    const limits = this.options.imageLimits?.() ?? DEFAULT_IMAGE_LIMITS
     if (!Number.isSafeInteger(resolvedImageBase64Bytes) || resolvedImageBase64Bytes < 0
-      || resolvedImageBase64Bytes > MAX_RESOLVED_IMAGE_BASE64_BYTES
+      || resolvedImageBase64Bytes > limits.encodedBytes
       || !Number.isSafeInteger(resolvedAudioBase64Bytes) || resolvedAudioBase64Bytes < 0 || resolvedAudioBase64Bytes > 4 * 1024 * 1024
-      || resolvedImageBase64Bytes + resolvedAudioBase64Bytes > MAX_RESOLVED_IMAGE_BASE64_BYTES
-      || wireBytes > MAX_OUTGOING_PAYLOAD_BYTES
+      || resolvedImageBase64Bytes + resolvedAudioBase64Bytes > Math.max(limits.encodedBytes, 4 * 1024 * 1024)
+      || wireBytes > limits.wireBytes
       || wireBytes - resolvedImageBase64Bytes - resolvedAudioBase64Bytes > MAX_REQUEST_PARAMETER_BYTES) {
       return Promise.reject(new PlatformError('onebot_payload_too_large', 'OneBot 请求超过大小上限', 413, 'not-sent'))
     }

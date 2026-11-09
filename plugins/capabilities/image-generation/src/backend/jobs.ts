@@ -10,6 +10,7 @@ import type { ResolvedSourceImage } from './validation'
 
 interface ActiveJob {
   jobId: string | null
+  readonly maximumImageBytes: number
   readonly controller: AbortController
   readonly done: Promise<void>
   readonly finish: () => void
@@ -42,7 +43,9 @@ export class ImageGenerationJobs {
     if (previous) return previous
     if (scope?.signal?.aborted || scope?.source?.signal?.aborted) throw new PlatformError(cancellation.code, cancellation.message, 409, 'not-sent')
     if (this.active) throw new PlatformError('IMAGE_GENERATION_BUSY', '已有一个生成任务正在执行，请先查询其结果。', 409, 'not-sent')
-    this.store.ensureCapacity()
+    const maximumImageBytes = this.context.imageLimits().imageBytes
+    if (source && source.bytes.length > maximumImageBytes) throw new PlatformError('IMAGE_GENERATION_INVALID_SOURCE_IMAGE', '参考图片超过当前图片大小设置，未发送生成请求。', 413, 'not-sent')
+    this.store.ensureCapacity(maximumImageBytes)
     const configuration = this.configuration.snapshot(), controller = new AbortController()
     let finish!: () => void
     const done = new Promise<void>(accept => { finish = accept })
@@ -50,7 +53,7 @@ export class ImageGenerationJobs {
     const assertBeforePost = () => {
       if (signals.some(signal => signal.aborted)) throw new PlatformError('IMAGE_GENERATION_CANCELLED_BEFORE_SEND', '提交权限在请求发出前已撤销，未发送生成请求。', 409, 'not-sent')
     }
-    const active: ActiveJob = { jobId: null, controller, done, finish, started: false, assertBeforePost }
+    const active: ActiveJob = { jobId: null, maximumImageBytes, controller, done, finish, started: false, assertBeforePost }
     this.active = active
     let created = false
     try {
@@ -58,7 +61,7 @@ export class ImageGenerationJobs {
         this.assertActive(active)
         const existing = this.store.existing(parameters.request_id, requestHash)
         if (existing) return { jobId: existing.jobId, submitted: true }
-        const job = this.store.enqueue(parameters.request_id, requestHash, parameters.prompt, configuration.model, source)
+        const job = this.store.enqueue(parameters.request_id, requestHash, parameters.prompt, configuration.model, source, active.maximumImageBytes)
         active.jobId = job.jobId; created = true
         return { jobId: job.jobId, submitted: true }
       })
@@ -93,7 +96,7 @@ export class ImageGenerationJobs {
     try {
       this.assertActive(active)
       this.store.running(active.jobId!)
-      const image = await generateImage(configuration, parameters, source, active.controller.signal, active.assertBeforePost)
+      const image = await generateImage(configuration, parameters, source, active.controller.signal, active.assertBeforePost, active.maximumImageBytes)
       generated = true
       this.assertActive(active)
       this.store.complete(active.jobId!, image, () => this.assertActive(active))

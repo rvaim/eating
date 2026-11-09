@@ -1,5 +1,9 @@
 # Eating
 
+2026-11-10 发布授权：主人明确要求“push 部署到服务器上”，授权本轮图片大小配置与已本地提交的语音插件一并提交／push，并由云端从GitHub拉取同一提交构建、备份和保留数据更新。当前发布处理中，完成以本轮部署报告的实际结果为准。
+
+2026-11-10 图片大小统一配置：原 5 MiB 是 Eating 本地限制；现可在“设置 → 图片大小”配置 1–50 MiB，默认单图 10 MiB、多图合计 20 MiB／最多 4 张。生图、表情库、QQ 收图／发图和图片预览共用设置，传输预算随之计算；调低上限保留已有图片。源码应用 0.21.0／plugin-sdk 4.11.0，本地修改验证完成，本轮已授权提交／push／部署，发布处理中；前轮语音已本地提交为 `66f01c0`。操作见[图片大小设置](docs/operations/图片大小设置.md)，契约见[ADR-0052](docs/decisions/ADR-0052-统一可配置图片大小.md)，最终证据见[本轮报告](docs/reports/2026-11-10-图片大小配置验证报告.md)。下方为各前轮交付记录。
+
 2026-11-09 OpenAI云端语音插件：主人已授权开始开发，本地开发与验证完成，本轮已授权本地提交，未push／部署。新增text-to-speech0.1.0，主人保存音色，会话子Agent按次选择delivery，不提供全局语气字段；官方Realtime单次合成、受控音频lease与QQ record发送，未知不重放。应用0.20.0、plugin-sdk4.10.0、QQ0.15.0，其他SDK产物消费者按封存规则补丁升级；锁文件仅新增workspace链接，无新外部版本。未调用真实Key／付费服务或真人QQ，最终实数和限制见[本轮报告](docs/reports/2026-11-09-OpenAI语音插件本地开发验证报告.md)。 完整构建／严格类型、全量1902项通过／11项条件跳过、11项相关浏览器及最终补充语音12项通过；真实Key音质与真人QQ播放未验证。
 
 2026-11-09 自主调度边界：**实现、可行性验证、Git发布及云端保留数据部署完成**。源码`585a52e`由云端从GitHub拉取构建，应用0.19.0、plugin-sdk4.9.0、DSH0.18.0，API4及其他插件／依赖保持。新增主人可配置maxRestMinutes，默认15分钟，sleeping／waiting均到期重新考虑，暂停／忙碌／额度优先，不强制发言。本地构建／严格类型、全量1881项通过／11项条件跳过及21项相关浏览器验证通过；云端551项通过，私有全量备份后显式转换自主schema2并更新，旧次日10:00长休息已缩短到当日22:29:41。五插件connected、DSH／nativeWeb ready，原配置、人格、会话与日志保留。可行性、实际边界及证据见[本轮报告](docs/reports/2026-11-09-自主调度边界与可行性验证报告.md)、[ADR-0050](docs/decisions/ADR-0050-自主思考休息上限.md)。
@@ -180,6 +184,6 @@ docs                      当前规范、决策与历史验证
 
 Eating0.18.0／plugin-sdk4.8.0只加载API4插件。已启用且connected的功能来源默认all，当前／未来类型与工具自动开放；主人可在MCP页保存custom精确例外并恢复all，新source仍默认all。accessPolicy返回策略、自管来源null，grant是当前有效摘要；通讯仍由机器人权限页和真实账号／目标／资源scope管理。save-grants接受严格all/custom DTO，direct save只收连接／秘密，文件仍严格schema2。新host:mcp-access-policies严格schema1／revision／policies，CAS为direct＋policy；旧host:capability-grants不读／不写／不迁移／不删。策略、连接及目录变化使用一次性重挂：只恢复原connected且同一实例／启用的Harness，owner stop优先，不重放unknown。direct在途撤权可能中断transport并使source error，需主人显式connect。详见[当前接口](docs/technical/接口契约.md)。
 
-表情包列表默认20条、最多50条，只返回描述、标签等元数据；不为浏览目录逐张调用识图。库上限1000张／256MiB，单图5MiB，支持PNG/JPEG/GIF/WebP，描述必填。AI收藏须有当前会话图片引用与相应工具权限，图片预览还需模型图像输入支持；收藏、检索和发送是分别可核对的动作。
+表情包列表默认20条、最多50条，只返回描述、标签等元数据；不为浏览目录逐张调用识图。库上限1000张／256MiB，单图按“设置 → 图片大小”（默认10MiB，可配1–50MiB），支持PNG/JPEG/GIF/WebP，描述必填。AI收藏须有当前会话图片引用与相应工具权限，图片预览还需模型图像输入支持；收藏、检索和发送是分别可核对的动作。
 
 当前会话职责、可配置默认与主／子complete组合见[ADR-0035](docs/decisions/ADR-0035-会话代理自主处理与默认开放可配置.md)和[本轮变更](docs/changes/2026-11-02-会话代理自主处理与默认开放可配置.md)，此前默认开放决定保留在[ADR-0034](docs/decisions/ADR-0034-主Agent自主决策与功能能力默认开放.md)。验收须核对实际本地模型request.system；scripted mock证明预设普通回复／生图查询取图／mock私聊链路可执行，不证明真实LLM必然自主选择同一路径。历史字段和证据保留在[ADR-0019](docs/decisions/ADR-0019-统一插件与MCP能力管理.md)、[实施契约](docs/plans/2026-10-30-MCP与能力插件实施契约.md)及[阶段报告](docs/reports/2026-10-30-MCP插件与表情包验证.md)。

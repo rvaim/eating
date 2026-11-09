@@ -2,11 +2,11 @@ import { createHash } from 'node:crypto'
 import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, posix, relative, resolve, sep, win32 } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { checkedImageBytes, isJsonObject, parseImageAssetUri, PlatformError } from '@eating/plugin-sdk'
+import { DEFAULT_IMAGE_LIMITS, checkedImageBytes, isJsonObject, parseImageAssetUri, PlatformError } from '@eating/plugin-sdk'
 import type { CapabilityInvocationScope, ImageAssetLease, JsonObject, JsonValue, PluginResourceServices } from '@eating/plugin-sdk'
 import type { QQMediaDirectoryMapping, QQMediaTransportSettings } from '../media-transport'
 
-function mappedImageFile(source: string, mapping: QQMediaDirectoryMapping, asset: ImageAssetLease): string | null {
+function mappedImageFile(source: string, mapping: QQMediaDirectoryMapping, asset: ImageAssetLease, maximum: number): string | null {
   let descriptor: number | undefined
   try {
     if (!isAbsolute(source) || resolve(source) !== source || realpathSync(mapping.sourceRoot) !== mapping.sourceRoot || realpathSync(mapping.hostMappingRoot) !== mapping.hostMappingRoot) return null
@@ -17,7 +17,7 @@ function mappedImageFile(source: string, mapping: QQMediaDirectoryMapping, asset
     descriptor = openSync(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
     const stat = fstatSync(descriptor)
     if (!stat.isFile() || stat.size !== asset.byteLength) return null
-    const bytes = checkedImageBytes(readFileSync(descriptor), asset.mimeType)
+    const bytes = checkedImageBytes(readFileSync(descriptor), asset.mimeType, maximum)
     if (bytes.byteLength !== asset.byteLength || createHash('sha256').update(bytes).digest('hex') !== asset.sha256) return null
     const remotePath = /^[A-Za-z]:/.test(mapping.onebotRoot) ? win32.join(mapping.onebotRoot, ...suffix.split(sep)) : posix.join(mapping.onebotRoot, ...suffix.split(sep))
     if (!/^[A-Za-z]:/.test(remotePath)) return pathToFileURL(remotePath).href
@@ -37,7 +37,7 @@ export function containsQQImageAssets(params: JsonObject): boolean {
   return contains(params.message) || isJsonObject(params.operation) && contains(params.operation.reply)
 }
 
-export async function resolveQQImageAssets(params: JsonObject, resources: PluginResourceServices | undefined, settings: QQMediaTransportSettings, scope?: CapabilityInvocationScope): Promise<{ params: JsonObject; imageBase64Bytes: number }> {
+export async function resolveQQImageAssets(params: JsonObject, resources: PluginResourceServices | undefined, settings: QQMediaTransportSettings, scope?: CapabilityInvocationScope, limits = DEFAULT_IMAGE_LIMITS): Promise<{ params: JsonObject; imageBase64Bytes: number }> {
   let totalBytes = 0
   const images: { data: JsonObject; asset: ImageAssetLease; bytes: Uint8Array; source: string | null }[] = []
   const resolveMessage = async (value: JsonValue): Promise<JsonValue> => {
@@ -52,10 +52,10 @@ export async function resolveQQImageAssets(params: JsonObject, resources: Plugin
       if (!reference) return value
       if (images.length >= 4) throw new PlatformError('MEDIA_ASSET_LIMIT', '单次发送最多解析4张插件图片。', 400, 'not-sent')
       if (!resources) throw new PlatformError('MEDIA_RESOURCE_SERVICE_UNAVAILABLE', '宿主未提供图片资源服务。', 503, 'not-sent')
-      const asset = await resources.getAsset(reference, scope), bytes = checkedImageBytes(await asset.readBytes(), asset.mimeType)
+      const asset = await resources.getAsset(reference, scope), bytes = checkedImageBytes(await asset.readBytes(), asset.mimeType, limits.imageBytes)
       if (asset.byteLength !== bytes.byteLength || createHash('sha256').update(bytes).digest('hex') !== asset.sha256) throw new PlatformError('INVALID_IMAGE_RESOURCE', '图片资源摘要或大小无效，未发送。', 502, 'not-sent')
       totalBytes += bytes.byteLength
-      if (totalBytes > 10 * 1024 * 1024) throw new PlatformError('MEDIA_ASSET_LIMIT', '单次发送的插件图片总大小不能超过10MiB。', 400, 'not-sent')
+      if (totalBytes > limits.batchBytes) throw new PlatformError('MEDIA_ASSET_LIMIT', '单次发送图片总大小超过主人配置的总量上限。', 400, 'not-sent')
       let source: string | null = null
       if (settings.fileEligible && settings.mapping && asset.localFile) {
         try { source = await asset.localFile() }
@@ -74,7 +74,7 @@ export async function resolveQQImageAssets(params: JsonObject, resources: Plugin
   for (const image of images) await image.asset.assertActive()
   let imageBase64Bytes = 0
   for (const image of images) {
-    const file = image.source && settings.mapping ? mappedImageFile(image.source, settings.mapping, image.asset) : null
+    const file = image.source && settings.mapping ? mappedImageFile(image.source, settings.mapping, image.asset, limits.imageBytes) : null
     if (file) image.data.file = file
     else {
       const encoded = Buffer.from(image.bytes).toString('base64')

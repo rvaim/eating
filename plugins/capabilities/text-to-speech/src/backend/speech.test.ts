@@ -1,3 +1,4 @@
+import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { mkdtempSync, readFileSync, realpathSync, rmSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -17,7 +18,7 @@ async function fixture(mode: SpeechFixtureMode = 'success', failReceipt = false)
   cleanups.push(() => { if (realpathSync(directory) !== directory || dirname(directory) !== parent || !basename(directory).startsWith('eating-speech-test-')) throw new Error('Unsafe speech cleanup'); rmSync(directory, { recursive: true }) })
   const provider = await startSpeechFixture(mode); cleanups.push(provider.close)
   const records = new Map<string, { fingerprint: string; result: JsonValue }>()
-  const context: HostPluginContext = { dataDirectory: directory, getSetting: () => null, setSetting: () => {}, listMessages: () => [], recordEvent: () => ({ inserted: false, eventId: 'fixture' }), executeIdempotent: async (_plugin, _action, params, id, execute) => {
+  const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS, dataDirectory: directory, getSetting: () => null, setSetting: () => {}, listMessages: () => [], recordEvent: () => ({ inserted: false, eventId: 'fixture' }), executeIdempotent: async (_plugin, _action, params, id, execute) => {
     const fingerprint = JSON.stringify(params), existing = records.get(id)
     if (existing) { if (existing.fingerprint !== fingerprint) throw new Error('Request conflict'); return existing.result }
     const result = await execute(); if (failReceipt) throw new PlatformError('STORE_FAILURE', 'Fixture receipt failed', 500, 'unknown')

@@ -100,10 +100,10 @@ export function imageBlob(image: { readonly mimeType: ImageMimeType; readonly da
 }
 
 export interface ImageGenerationUpload { readonly mimeType: ImageMimeType; readonly data: string }
-export async function localImage(file: File): Promise<ImageGenerationUpload> {
+export async function localImage(file: File, maximum = 10 * 1024 * 1024): Promise<ImageGenerationUpload> {
   const declared = file.type === 'image/jpg' ? 'image/jpeg' : file.type
   const mime = declared || (/\.png$/i.test(file.name) ? 'image/png' : /\.jpe?g$/i.test(file.name) ? 'image/jpeg' : /\.gif$/i.test(file.name) ? 'image/gif' : /\.webp$/i.test(file.name) ? 'image/webp' : '')
-  if (!file.size || file.size > IMAGE_GENERATION_LIMITS.imageBytes || !mimeTypes.includes(mime as ImageMimeType)) throw new HostApiError('IMAGE_GENERATION_INVALID_SOURCE_IMAGE', it('generate.sourceInvalid'), 'not-sent')
+  if (!file.size || file.size > maximum || !mimeTypes.includes(mime as ImageMimeType)) throw new HostApiError('IMAGE_GENERATION_INVALID_SOURCE_IMAGE', it('generate.sourceInvalid'), 'not-sent')
   const bytes = new Uint8Array(await file.arrayBuffer())
   if (bytes.length !== file.size) invalid()
   let binary = ''

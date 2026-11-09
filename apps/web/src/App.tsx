@@ -14,11 +14,11 @@ import type { PlatformWorkspace } from './state/workspace'
 const Authoring = lazy(() => import('./pages/Authoring').then(module => ({ default: module.Authoring })))
 
 type Page = 'overview' | 'robots' | 'harness' | 'mcp' | 'plugins' | 'settings' | 'prompts' | 'personas'
-type Route = { readonly page: Page; readonly pluginId: string | null; readonly section: 'delivery' | 'queue' | 'autonomy'; readonly documentId?: string | null }
+type Route = { readonly page: Page; readonly pluginId: string | null; readonly section: 'delivery' | 'queue' | 'autonomy' | 'images'; readonly documentId?: string | null }
 
 function readRoute(): Route {
   const [page, id] = window.location.hash.slice(1).split('/')
-  if (page === 'settings') return { page, pluginId: null, section: id === 'autonomy' ? 'autonomy' : id === 'queue' ? 'queue' : 'delivery' }
+  if (page === 'settings') return { page, pluginId: null, section: id === 'images' ? 'images' : id === 'autonomy' ? 'autonomy' : id === 'queue' ? 'queue' : 'delivery' }
   if (page === 'prompts' || page === 'personas') {
     try { return { page, pluginId: null, section: 'delivery', documentId: id ? decodeURIComponent(id) : null } }
     catch { return { page, pluginId: null, section: 'delivery', documentId: null } }

@@ -1,3 +1,4 @@
+import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { execFile, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
@@ -90,7 +91,7 @@ async function fixture(modelTool?: { name: string; args: JsonObject }, autonomou
     { id: 'agent:qq.group', scope: 'agent', source: 'plugin', pluginId: 'qq', agentTypeId: 'qq.group', title: 'Fixture group', body: 'Unused synthetic group.', revision: 1, updatedAt: null },
   ], agentTypes: [{ id: 'qq.group', title: 'Fixture group', description: 'Synthetic source with no QQ connection.', conversationKind: 'group', pluginId: 'qq', pluginName: 'Fixture QQ', enabled: true, availableTools: [], defaultTools: [], enabledTools: [], defaultPrompt: 'Unused fixture role.', identity: { owners: [], administrators: [] } }] }
   const forbidden = (name: string) => vi.fn(() => { throw new Error(`Forbidden integration Host action: ${name}`) })
-  const host: HostPluginContext = { dataDirectory: home, getSetting: () => null, setSetting: forbidden('setSetting'), recordEvent: forbidden('recordEvent'), listMessages: () => [], executeIdempotent: forbidden('executeIdempotent'), harness: { registerSink: () => () => {}, wake: vi.fn(), readOwnerConfiguration: () => structuredClone(owner), readAgentActions: () => [], revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: forbidden('getMcpConnection'), hasPendingMessages: () => false, readProactiveChannels: () => [], prepareProactiveScope: forbidden('prepareProactiveScope') } }
+  const host: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS, dataDirectory: home, getSetting: () => null, setSetting: forbidden('setSetting'), recordEvent: forbidden('recordEvent'), listMessages: () => [], executeIdempotent: forbidden('executeIdempotent'), harness: { registerSink: () => () => {}, wake: vi.fn(), readOwnerConfiguration: () => structuredClone(owner), readAgentActions: () => [], revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: forbidden('getMcpConnection'), hasPendingMessages: () => false, readProactiveChannels: () => [], prepareProactiveScope: forbidden('prepareProactiveScope') } }
   const clients: DeepSeekHarness[] = [], launches: DeepSeekHarnessOptions[] = []
   let closeCalls = 0
   const plugin = new DshPlugin(host, { locateSystemDsh: () => ({ bin: systemBin!, version: version.stdout.trim(), source: 'override' }), createHarness: options => {

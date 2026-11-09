@@ -1,3 +1,4 @@
+import { imageLimits } from '@eating/plugin-sdk'
 import { mkdtemp, realpath, rm, mkdir, writeFile, readFile, symlink } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -17,7 +18,7 @@ afterEach(async () => { for (const stop of stops.splice(0).reverse()) await stop
 const reference = { type: 'image', data: { file: 'eating-asset://image-generation/fixture-image' } }
 const maxImage = createLargeImageFixturePng(5 * 1024 * 1024)
 
-async function fixture(options: { bytes?: Buffer; fail?: boolean; unknown?: boolean; readSentFile?: boolean } = {}) {
+async function fixture(options: { limitMiB?: number; bytes?: Buffer; fail?: boolean; unknown?: boolean; readSentFile?: boolean } = {}) {
   const parent = await realpath(tmpdir()), home = await realpath(await mkdtemp(join(parent, 'eating-qq-assets-')))
   stops.push(async () => {
     const target = await realpath(home)
@@ -48,7 +49,7 @@ async function fixture(options: { bytes?: Buffer; fail?: boolean; unknown?: bool
   const readAsset = vi.fn<NonNullable<HostPluginContext['resources']>['readAsset']>(async () => { throw new Error('Sending must not read Base64 previews') })
   const store = new HostStore(join(home, 'ledger.sqlite')); stops.push(() => store.close())
   const executeIdempotent = vi.fn<HostPluginContext['executeIdempotent']>((...args) => store.executeIdempotent(...args))
-  const context: HostPluginContext = { dataDirectory: home, getSetting: () => null, setSetting: () => {}, listMessages: () => [],
+  const context: HostPluginContext = { imageLimits: () => imageLimits(options.limitMiB ?? 10), dataDirectory: home, getSetting: () => null, setSetting: () => {}, listMessages: () => [],
     recordEvent: () => ({ inserted: true, eventId: 'fixture-event' }), executeIdempotent,
     resources: { getAudioAsset: async () => { throw new Error('Unexpected audio read') }, getAsset, readAsset, readReceivedImage: async () => { throw new Error('Unexpected received image read') } } }
   const plugin = entry.create(context)
@@ -83,22 +84,22 @@ describe('QQ authorized image assets with real OneBot transport', () => {
     expect(f.remote.connections).toHaveLength(1)
   })
 
-  it('allows two 5 MiB assets at the existing 10 MiB aggregate boundary including base64 padding and JSON', async () => {
-    const f = await fixture()
+  it('allows two 5 MiB assets at the owner-selected 10 MiB aggregate boundary including base64 padding and JSON', async () => {
+    const f = await fixture({ limitMiB: 5 })
     await expect(f.send([reference, reference])).resolves.toEqual({ message_id: 1001 })
     expect(f.sends()).toHaveLength(1)
     expect(Buffer.byteLength(JSON.stringify(f.sends()[0]!.params))).toBeGreaterThan(13 * 1024 * 1024)
     expect(Buffer.byteLength(JSON.stringify(f.sends()[0]!.params))).toBeLessThan(15 * 1024 * 1024)
   })
 
-  it('rejects a single image above 5 MiB before any send', async () => {
-    const f = await fixture({ bytes: createLargeImageFixturePng(5 * 1024 * 1024 + 1) })
+  it('rejects a single image above an owner-selected 5 MiB before any send', async () => {
+    const f = await fixture({ limitMiB: 5, bytes: createLargeImageFixturePng(5 * 1024 * 1024 + 1) })
     await expect(f.send(reference)).rejects.toMatchObject({ code: 'INVALID_IMAGE_RESOURCE', outcome: 'not-sent' })
     expect(f.sends()).toEqual([])
   })
 
-  it('rejects images above the existing aggregate bound before any send', async () => {
-    const f = await fixture()
+  it('rejects images above the owner-selected aggregate bound before any send', async () => {
+    const f = await fixture({ limitMiB: 5 })
     await expect(f.send([reference, reference, reference])).rejects.toMatchObject({ code: 'MEDIA_ASSET_LIMIT', outcome: 'not-sent' })
     expect(f.sends()).toEqual([])
   })
@@ -135,8 +136,8 @@ describe('QQ authorized image assets with real OneBot transport', () => {
     expect(next.sends()).toEqual([])
   })
 
-  it('uses verified mapped file URIs with real files and keeps all paths out of logical actions', async () => {
-    const f = await fixture({ bytes: createLargeImageFixturePng(), readSentFile: true })
+  it('uses verified mapped file URIs for a configured 12 MiB image and keeps all paths out of logical actions', async () => {
+    const f = await fixture({ limitMiB: 12, bytes: createLargeImageFixturePng(12 * 1024 * 1024), readSentFile: true })
     expect(await f.saveMapping()).toMatchObject({ schemaVersion: 1, revision: 1, fileEligible: true })
     await expect(f.send(reference)).resolves.toEqual({ message_id: 1001 })
     expect(f.sends()).toHaveLength(1)

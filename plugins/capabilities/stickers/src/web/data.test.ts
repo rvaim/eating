@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { DEFAULT_IMAGE_LIMITS, imageLimits } from '@eating/plugin-sdk'
 import { getLocale, setLocale } from '@eating/ui-sdk'
 import { readStickerList, readStickerPreview, readStickerTags, tagsFromText, imageBlob, localImage } from './data'
 import { stickerTranslations, st } from './i18n'
@@ -45,6 +46,8 @@ describe('sticker panel boundaries and translations', () => {
     expect(await localImage(file)).toEqual(fixtureImage())
     expect(await localImage(new File([Uint8Array.from(fixturePng())], 'local.png'))).toEqual(fixtureImage())
     await expect(localImage(new File(['bad'], 'file.svg', { type: 'image/svg+xml' }))).rejects.toThrow()
-    await expect(localImage(new File([new Uint8Array(5 * 1024 * 1024 + 1)], 'too-large.png', { type: 'image/png' }))).rejects.toThrow()
+    const large = new File([new Uint8Array(DEFAULT_IMAGE_LIMITS.imageBytes + 1)], 'large.png', { type: 'image/png' })
+    expect(await localImage(large).then(() => 'accepted', () => 'rejected')).toBe('rejected')
+    expect((await localImage(large, imageLimits(12).imageBytes)).data.length).toBe(Math.ceil(large.size / 3) * 4)
   })
 })

@@ -1,3 +1,4 @@
+import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { mkdtemp, readFile, writeFile, rm, realpath, lstat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -19,7 +20,7 @@ async function home() {
   stops.push(async () => { if (await realpath(root) !== root || dirname(root) !== parent || !basename(root).startsWith('eating-ov-memory-')) throw new Error('Unsafe fixture cleanup'); await rm(root, { recursive: true }) })
   return root
 }
-function host(dataDirectory: string): HostPluginContext { return { dataDirectory, getSetting: () => null, setSetting: () => {}, recordEvent: () => ({ inserted: true, eventId: 'unused' }), listMessages: () => [], executeIdempotent: async () => { throw new Error('Must not persist raw memory tool arguments in Host ledger') } } }
+function host(dataDirectory: string): HostPluginContext { return { imageLimits: () => DEFAULT_IMAGE_LIMITS, dataDirectory, getSetting: () => null, setSetting: () => {}, recordEvent: () => ({ inserted: true, eventId: 'unused' }), listMessages: () => [], executeIdempotent: async () => { throw new Error('Must not persist raw memory tool arguments in Host ledger') } } }
 async function fixture(options: { root?: string; settings?: Partial<MemorySettings>; apiKey?: string; user?: string; account?: string } = {}) {
   const provider = await startOpenVikingFixture({ apiKey: options.apiKey, user: options.user, account: options.account }); stops.push(provider.close)
   const directory = options.root ?? await home(), plugin = new OpenVikingMemoryPlugin(host(directory)); stops.push(() => plugin.disconnect())

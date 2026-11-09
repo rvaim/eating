@@ -1,3 +1,4 @@
+import { MAX_IMAGE_RESOURCE_BYTES } from '@eating/plugin-sdk'
 import { useEffect, useState } from 'react'
 import { AlertCircle } from 'lucide-react'
 import { isJsonObject } from '@eating/plugin-sdk'
@@ -9,7 +10,7 @@ export interface ImagePreviewResult {
   readonly metadata: JsonObject
 }
 const mimeTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const
-const maxBytes = 5 * 1024 * 1024
+const maxBytes = MAX_IMAGE_RESOURCE_BYTES
 function invalid(): never { throw new HostApiError('INVALID_HOST_RESPONSE', '', 'failed') }
 
 /** Decode only declared image content. Base64 never enters the ordinary execution model. */

@@ -4,8 +4,8 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js'
-import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
-import type { BackendPlugin, PluginToolDefinition } from '@eating/plugin-sdk'
+import { DEFAULT_IMAGE_LIMITS, isJsonObject, PlatformError } from '@eating/plugin-sdk'
+import type { BackendPlugin, ImageLimits, PluginToolDefinition } from '@eating/plugin-sdk'
 import { assertToolResultFormat, toolResult } from './tool-results'
 
 function describeTool(tool: PluginToolDefinition): Tool {
@@ -28,7 +28,7 @@ function toolError(error: unknown, requestId?: string): CallToolResult {
   return { isError: true, structuredContent, content: [{ type: 'text', text: JSON.stringify(structuredContent) }] }
 }
 
-function createServer(plugin: BackendPlugin): Server {
+function createServer(plugin: BackendPlugin, limits: () => ImageLimits): Server {
   const server = new Server(
     { name: plugin.id, title: plugin.name, version: plugin.version },
     { capabilities: { tools: {} } },
@@ -50,7 +50,7 @@ function createServer(plugin: BackendPlugin): Server {
     try {
       assertToolResultFormat(tool)
       const result = await plugin.invoke(tool.name, input, requestId)
-      return toolResult(tool, result, requestId)
+      return toolResult(tool, result, requestId, limits())
     } catch (error) {
       // Unexpected exceptions may contain credentials, request headers or stacks.
       // Only the plugin's intentional public PlatformError crosses this boundary.
@@ -68,7 +68,7 @@ function httpError(res: ServerResponse, status: number, message: string, headers
 }
 
 /** Host authenticates and validates the HTTP boundary before calling this handler. */
-export function createPluginMcpHandler(plugin: BackendPlugin): {
+export function createPluginMcpHandler(plugin: BackendPlugin, limits: () => ImageLimits = () => DEFAULT_IMAGE_LIMITS): {
   handle(req: IncomingMessage, res: ServerResponse, body: unknown): Promise<void>
   close(): Promise<void>
 } {
@@ -82,7 +82,7 @@ export function createPluginMcpHandler(plugin: BackendPlugin): {
       // No standalone SSE stream or session exists in this stateless JSON endpoint.
       if (req.method !== 'POST') { httpError(res, 405, '此 MCP 入口仅接受 POST 请求。', { Allow: 'POST' }); return }
 
-      const server = createServer(plugin)
+      const server = createServer(plugin, limits)
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
       let cleanupPromise: Promise<void> | undefined
       let signalStopped!: () => void

@@ -1,3 +1,4 @@
+import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { basename, dirname, join, resolve } from 'node:path'
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -39,7 +40,7 @@ function fixture(dataDirectory?: string) {
   if (!dataDirectory) roots.push(directory)
   const events: HarnessEvent[] = []
   const executeIdempotent = vi.fn<HostPluginContext['executeIdempotent']>(async (_pluginId, _action, _params, _requestId, execute) => execute())
-  const context: HostPluginContext = { dataDirectory: directory, getSetting: () => null, setSetting: () => {}, listMessages: () => [], executeIdempotent,
+  const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS, dataDirectory: directory, getSetting: () => null, setSetting: () => {}, listMessages: () => [], executeIdempotent,
     recordEvent: (_pluginId, _key, _raw, event) => { if (event) events.push(event); return { inserted: true, eventId: 'fixture-event', admission: 'queued' } } }
   const plugin = entry.create(context)
   plugins.push(plugin)
@@ -220,7 +221,7 @@ describe('QQ agent policy backend integration', () => {
     expect(result).toMatchObject({ content: [{ type: 'text' }, { type: 'image', mimeType: 'image/png', data: expect.any(String) }], structuredContent: { messageId: '12', imageId: 'image-a' } })
     expect(JSON.stringify(result)).not.toContain('fixture-secret')
     expect(reopened.client.call).toHaveBeenCalledExactlyOnceWith('get_msg', { message_id: 12 }, { timeoutMs: 10000, readOnly: true })
-    expect(imageDownload).toHaveBeenCalledExactlyOnceWith('https://cdn.example.test/image?signature=fixture-secret')
+    expect(imageDownload).toHaveBeenCalledExactlyOnceWith('https://cdn.example.test/image?signature=fixture-secret', { maxBytes: DEFAULT_IMAGE_LIMITS.imageBytes })
     expect(reopened.executeIdempotent).not.toHaveBeenCalled()
   })
 

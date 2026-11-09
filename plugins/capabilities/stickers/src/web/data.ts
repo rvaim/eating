@@ -1,5 +1,5 @@
 import { HostApiError } from '@eating/ui-sdk'
-import { isJsonObject } from '@eating/plugin-sdk'
+import { DEFAULT_IMAGE_LIMITS, isJsonObject } from '@eating/plugin-sdk'
 import { STICKER_LIMITS } from '../types'
 import type { StickerImage, StickerItem, StickerList, StickerPreview, StickerTags } from '../types'
 import { st } from './i18n'
@@ -49,9 +49,9 @@ export function imageBlob(image: StickerImage): Blob {
   if (!binary.length || binary.length > STICKER_LIMITS.imageBytes || btoa(binary) !== image.data) invalid()
   return new Blob([Uint8Array.from(binary, character => character.charCodeAt(0))], { type: image.mimeType })
 }
-export async function localImage(file: File): Promise<StickerImage> {
+export async function localImage(file: File, maximum = DEFAULT_IMAGE_LIMITS.imageBytes): Promise<StickerImage> {
   const mime = file.type || (/\.png$/i.test(file.name) ? 'image/png' : /\.jpe?g$/i.test(file.name) ? 'image/jpeg' : /\.gif$/i.test(file.name) ? 'image/gif' : /\.webp$/i.test(file.name) ? 'image/webp' : '')
-  if (!file.size || file.size > STICKER_LIMITS.imageBytes || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(mime)) throw new HostApiError('STICKER_INVALID_IMAGE', st('error.image'))
+  if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > STICKER_LIMITS.imageBytes || !file.size || file.size > maximum || !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime)) throw new HostApiError('STICKER_INVALID_IMAGE', st('error.image'))
   const bytes = new Uint8Array(await file.arrayBuffer())
   if (bytes.length !== file.size) invalid()
   let binary = ''

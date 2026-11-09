@@ -1,11 +1,10 @@
-import { PlatformError } from '@eating/plugin-sdk'
+import { DEFAULT_IMAGE_LIMITS, PlatformError } from '@eating/plugin-sdk'
 import type { ImageMimeType } from '@eating/plugin-sdk'
-import { IMAGE_GENERATION_LIMITS } from '../types'
 
 export interface GeneratedImageBytes { readonly mimeType: ImageMimeType; readonly bytes: Buffer }
-export function imageFailure(): never { throw new PlatformError('IMAGE_GENERATION_INVALID_IMAGE', '生成服务返回的图片无效、格式不符或超过 5 MiB；请求可能已计费，请先核对任务。', 502, 'unknown') }
-export function imageBytes(bytes: Buffer, declared?: string): GeneratedImageBytes {
-  if (!bytes.length || bytes.length > IMAGE_GENERATION_LIMITS.imageBytes) imageFailure()
+export function imageFailure(): never { throw new PlatformError('IMAGE_GENERATION_INVALID_IMAGE', '生成服务返回的图片无效、格式不符或超过当前图片大小上限；请求可能已计费，请先核对任务。', 502, 'unknown') }
+export function imageBytes(bytes: Buffer, declared?: string, maximum = DEFAULT_IMAGE_LIMITS.imageBytes): GeneratedImageBytes {
+  if (!bytes.length || bytes.length > maximum) imageFailure()
   let mimeType: ImageMimeType | undefined
   if (bytes.length >= 45 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) && bytes.readUInt32BE(8) === 13 && bytes.toString('ascii', 12, 16) === 'IHDR'
     && bytes.readUInt32BE(16) > 0 && bytes.readUInt32BE(20) > 0 && bytes.subarray(-12).equals(Buffer.from([0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]))) mimeType = 'image/png'
@@ -15,19 +14,19 @@ export function imageBytes(bytes: Buffer, declared?: string): GeneratedImageByte
   if (!mimeType || declared && declared !== mimeType) imageFailure()
   return { mimeType, bytes }
 }
-export function base64Image(value: unknown): GeneratedImageBytes {
-  if (typeof value !== 'string' || !value || value.length > Math.ceil(IMAGE_GENERATION_LIMITS.imageBytes / 3) * 4 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) imageFailure()
+export function base64Image(value: unknown, maximum = DEFAULT_IMAGE_LIMITS.imageBytes): GeneratedImageBytes {
+  if (typeof value !== 'string' || !value || value.length > Math.ceil(maximum / 3) * 4 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) imageFailure()
   const bytes = Buffer.from(value, 'base64')
   if (bytes.toString('base64') !== value) imageFailure()
-  return imageBytes(bytes)
+  return imageBytes(bytes, undefined, maximum)
 }
-function sourceImageFailure(): never { throw new PlatformError('IMAGE_GENERATION_INVALID_SOURCE_IMAGE', '参考图片无效、格式不符或超过 5 MiB；未发送生成请求。', 400, 'not-sent') }
-export function sourceImageBytes(bytes: Buffer, declared?: string): GeneratedImageBytes {
-  try { return imageBytes(bytes, declared) } catch { sourceImageFailure() }
+function sourceImageFailure(): never { throw new PlatformError('IMAGE_GENERATION_INVALID_SOURCE_IMAGE', '参考图片无效、格式不符或超过当前图片大小上限；未发送生成请求。', 400, 'not-sent') }
+export function sourceImageBytes(bytes: Buffer, declared?: string, maximum = DEFAULT_IMAGE_LIMITS.imageBytes): GeneratedImageBytes {
+  try { return imageBytes(bytes, declared, maximum) } catch { sourceImageFailure() }
 }
-export function sourceBase64Image(value: unknown, declared?: string): GeneratedImageBytes {
-  if (typeof value !== 'string' || !value || value.length > Math.ceil(IMAGE_GENERATION_LIMITS.imageBytes / 3) * 4 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) sourceImageFailure()
+export function sourceBase64Image(value: unknown, declared?: string, maximum = DEFAULT_IMAGE_LIMITS.imageBytes): GeneratedImageBytes {
+  if (typeof value !== 'string' || !value || value.length > Math.ceil(maximum / 3) * 4 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) sourceImageFailure()
   const bytes = Buffer.from(value, 'base64')
   if (bytes.toString('base64') !== value) sourceImageFailure()
-  return sourceImageBytes(bytes, declared)
+  return sourceImageBytes(bytes, declared, maximum)
 }

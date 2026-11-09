@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { AlertCircle, ChevronLeft, ChevronRight, ImagePlus, Images, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { ActionButton, formatDateTime, formatNumber, hostRequest, useI18n } from '@eating/ui-sdk'
 import type { PluginPanelProps } from '@eating/ui-sdk'
-import { isJsonObject } from '@eating/plugin-sdk'
+import { isJsonObject, readImageLimits } from '@eating/plugin-sdk'
 import type { JsonObject } from '@eating/plugin-sdk'
 import type { StickerItem, StickerList, StickerTags } from '../types'
 import { imageBlob, localImage, readStickerItem, readStickerList, readStickerPreview, readStickerTags, tagsFromText } from './data'
@@ -130,11 +130,17 @@ export function StickersPanel({ onFeedback }: PluginPanelProps) {
     if (dirty) { setPendingOpen(target); setDiscarding(true); return }
     void open(target)
   }
-  const chooseFile = (selected: File | undefined) => {
+  const chooseFile = async (selected: File | undefined) => {
     if (!selected) return
     clearImage(); setFailure(null)
-    if (!selected.size || selected.size > 5 * 1024 * 1024 || !(/\.(png|jpe?g|gif|webp)$/i.test(selected.name) || ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(selected.type))) { setFailure(st('error.image')); return }
-    setFile(selected); replaceImage(URL.createObjectURL(selected))
+    const controller = newController(), current = generation.current
+    try {
+      const limits = readImageLimits(await hostRequest<unknown>('/image-limits', { signal: controller.signal }))
+      if (controller.signal.aborted || !mounted.current || document.hidden || current !== generation.current) return
+      if (!selected.size || selected.size > limits.imageBytes || !(/\.(png|jpe?g|gif|webp)$/i.test(selected.name) || ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(selected.type))) { setFailure(st('error.image')); return }
+      setFile(selected); replaceImage(URL.createObjectURL(selected))
+    } catch (error) { if (!controller.signal.aborted && mounted.current && current === generation.current) setFailure(stickerError(error)) }
+    finally { controllers.current.delete(controller) }
   }
   const refresh = (reset = false) => {
     if (busy) return
@@ -153,7 +159,8 @@ export function StickersPanel({ onFeedback }: PluginPanelProps) {
     const controller = newController(), current = generation.current
     mutationLock.current = true; setBusy(true); setFailure(null)
     try {
-      const data: JsonObject = adding ? { ...await localImage(file!), description: description.trim(), tags: normalizedTags, expectedRevision: page.revision }
+      const limits = adding ? readImageLimits(await hostRequest<unknown>('/image-limits', { signal: controller.signal })) : null
+      const data: JsonObject = adding ? { ...await localImage(file!, limits!.imageBytes), description: description.trim(), tags: normalizedTags, expectedRevision: page.revision }
         : { assetId: selection!.item.assetId, description: description.trim(), tags: normalizedTags, expectedRevision: selection!.revision }
       if (controller.signal.aborted || document.hidden || current !== generation.current) return
       const result = await manage(adding ? 'add' : 'update', data, controller.signal)

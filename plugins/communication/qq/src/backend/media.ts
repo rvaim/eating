@@ -1,7 +1,7 @@
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { ClientRequest, IncomingMessage, RequestOptions } from 'node:http'
-import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
+import { DEFAULT_IMAGE_LIMITS, MAX_IMAGE_RESOURCE_BYTES, isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { AgentInvocationScope, JsonObject, JsonValue, PluginToolDefinition } from '@eating/plugin-sdk'
 
 export const qqViewReceivedImageTool: PluginToolDefinition = {
@@ -56,7 +56,6 @@ export function qqReceivedMessageSegments(message: JsonValue | undefined): JsonO
   return segments
 }
 
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const IMAGE_TIMEOUT_MS = 10000
 export type QQImageMimeType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
 export type QQImageBytes = { readonly mimeType: QQImageMimeType; readonly bytes: Buffer }
@@ -104,8 +103,8 @@ function detectedImageMime(bytes: Buffer): QQImageMimeType | null {
 export async function downloadQQImage(source: string, options: { readonly timeoutMs?: number; readonly maxBytes?: number } = {}, network: QQImageNetwork = publicImageNetwork): Promise<QQImageBytes> {
   const url = imageSource(source)
   const timeoutMs = options.timeoutMs ?? IMAGE_TIMEOUT_MS
-  const maxBytes = options.maxBytes ?? MAX_IMAGE_BYTES
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > IMAGE_TIMEOUT_MS || !Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_IMAGE_BYTES) throw mediaError('MEDIA_UNAVAILABLE', '图片读取限制无效。')
+  const maxBytes = options.maxBytes ?? DEFAULT_IMAGE_LIMITS.imageBytes
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > IMAGE_TIMEOUT_MS || !Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_IMAGE_RESOURCE_BYTES) throw mediaError('MEDIA_UNAVAILABLE', '图片读取限制无效。')
   return new Promise((resolve, reject) => {
     let request: ClientRequest | undefined
     let response: IncomingMessage | undefined

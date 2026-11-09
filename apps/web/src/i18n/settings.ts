@@ -1,7 +1,7 @@
 import { registerTranslations } from '@eating/ui-sdk'
 
 const zhCN = {
-  'nav.heading': '设置分类',
+  'nav.heading': '设置分类', 'nav.images': '图片大小', 'description.images': '设置图片大小上限。',
   'nav.delivery': '消息投递',
   'nav.queue': '队列与存储',
   'nav.autonomy': '自主运行',
@@ -123,7 +123,7 @@ const zhCN = {
 } as const
 
 const enUS: Record<keyof typeof zhCN, string> = {
-  'nav.heading': 'Settings',
+  'nav.heading': 'Settings', 'nav.images': 'Image size', 'description.images': 'Configure the image-size limit.',
   'nav.delivery': 'Message delivery',
   'nav.queue': 'Queue & storage',
   'nav.autonomy': 'Autonomous activity',

@@ -2,9 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { ClientRequest, IncomingMessage } from 'node:http'
-import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
+import { DEFAULT_IMAGE_LIMITS, isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { ImageMimeType } from '@eating/plugin-sdk'
-import { IMAGE_GENERATION_LIMITS } from '../types'
 import type { ImageGenerationParameters } from '../types'
 import type { PrivateImageConfiguration } from './config'
 import { base64Image, imageBytes } from './image'
@@ -66,7 +65,7 @@ function requestBytes(url: URL, signal: AbortSignal, maximum: number, body?: Buf
   })
 }
 
-export async function generateImage(configuration: PrivateImageConfiguration, input: ImageGenerationParameters, editSource: ImageEditSource | undefined, signal: AbortSignal, assertBeforePost: () => void = () => {}): Promise<GeneratedImageBytes> {
+export async function generateImage(configuration: PrivateImageConfiguration, input: ImageGenerationParameters, editSource: ImageEditSource | undefined, signal: AbortSignal, assertBeforePost: () => void = () => {}, maximumImageBytes = DEFAULT_IMAGE_LIMITS.imageBytes): Promise<GeneratedImageBytes> {
   const timeout = new AbortController(), combined = AbortSignal.any([signal, timeout.signal])
   const timer = setTimeout(() => timeout.abort(), configuration.timeoutMs)
   try {
@@ -81,21 +80,21 @@ export async function generateImage(configuration: PrivateImageConfiguration, in
     } else body = Buffer.from(JSON.stringify({ model: configuration.model, prompt: input.prompt, n: 1, ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(format ? { response_format: format } : {}) }))
     const endpoint = new URL(configuration.baseUrl.replace(/\/+$/, '') + (editSource ? '/images/edits' : '/images/generations'))
     assertBeforePost()
-    const response = await requestBytes(endpoint, combined, 8 * 1024 * 1024, body, configuration.apiKey, contentType)
+    const response = await requestBytes(endpoint, combined, Math.ceil(maximumImageBytes / 3) * 4 + 1024 * 1024, body, configuration.apiKey, contentType)
     let value: unknown
     try { value = JSON.parse(response.bytes.toString('utf8')) } catch { throw failure('IMAGE_GENERATION_INVALID_RESPONSE', '生成服务成功响应格式无效；请求可能已计费。') }
     if (!isJsonObject(value) || !Array.isArray(value.data) || !isJsonObject(value.data[0])) throw failure('IMAGE_GENERATION_INVALID_RESPONSE', '生成服务未返回有效图片；请求可能已计费。')
     combined.throwIfAborted()
     const item = value.data[0]
-    if (item.b64_json !== undefined) return base64Image(item.b64_json)
+    if (item.b64_json !== undefined) return base64Image(item.b64_json, maximumImageBytes)
     if (typeof item.url !== 'string' || !item.url || item.url.length > 16384) throw failure('IMAGE_GENERATION_INVALID_RESPONSE', '生成服务未返回有效图片；请求可能已计费。')
     let imageUrl: URL
     try { imageUrl = new URL(item.url) } catch { throw failure('IMAGE_GENERATION_INVALID_RESPONSE', '生成图片地址格式无效；请求可能已计费。') }
     if (!['http:', 'https:'].includes(imageUrl.protocol) || imageUrl.username || imageUrl.password || imageUrl.hash) throw failure('IMAGE_GENERATION_INVALID_RESPONSE', '生成图片地址不受支持；请求可能已计费。')
-    const downloaded = await requestBytes(imageUrl, combined, IMAGE_GENERATION_LIMITS.imageBytes)
+    const downloaded = await requestBytes(imageUrl, combined, maximumImageBytes)
     combined.throwIfAborted()
     if (!downloaded.mime) throw failure('IMAGE_GENERATION_INVALID_IMAGE', '生成图片没有有效媒体类型；请求可能已计费。')
-    return imageBytes(downloaded.bytes, downloaded.mime)
+    return imageBytes(downloaded.bytes, downloaded.mime, maximumImageBytes)
   } catch (error) {
     if (timeout.signal.aborted) throw failure('IMAGE_GENERATION_TIMEOUT', '生成任务超时；请求可能已计费，未自动重放。')
     if (signal.aborted) throw canceled()

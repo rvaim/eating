@@ -1,9 +1,8 @@
-import { PlatformError } from '@eating/plugin-sdk'
+import { DEFAULT_IMAGE_LIMITS, PlatformError } from '@eating/plugin-sdk'
 import type { ImageResource } from '@eating/plugin-sdk'
-import { STICKER_LIMITS } from '../types'
 import type { StickerMimeType } from '../types'
 
-function invalid(): never { throw new PlatformError('STICKER_INVALID_IMAGE', '请选择有效的 PNG、JPEG、GIF 或 WebP 图片，大小不超过 5 MiB。', 400, 'not-sent') }
+function invalid(): never { throw new PlatformError('STICKER_INVALID_IMAGE', '请选择有效的 PNG、JPEG、GIF 或 WebP 图片，大小不超过当前图片设置上限。', 400, 'not-sent') }
 export function imageMime(bytes: Buffer): StickerMimeType | null {
   if (bytes.length >= 45 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
     && bytes.readUInt32BE(8) === 13 && bytes.toString('ascii', 12, 16) === 'IHDR'
@@ -15,12 +14,12 @@ export function imageMime(bytes: Buffer): StickerMimeType | null {
     && bytes.toString('ascii', 8, 12) === 'WEBP' && ['VP8 ', 'VP8L', 'VP8X'].includes(bytes.toString('ascii', 12, 16))) return 'image/webp'
   return null
 }
-export function decodeStickerImage(input: unknown): { bytes: Buffer; mimeType: StickerMimeType } {
+export function decodeStickerImage(input: unknown, maximum = DEFAULT_IMAGE_LIMITS.imageBytes): { bytes: Buffer; mimeType: StickerMimeType } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) invalid()
   const image = input as Partial<ImageResource>
   if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(String(image.mimeType)) || typeof image.data !== 'string'
-    || image.data.length === 0 || image.data.length > Math.ceil(STICKER_LIMITS.imageBytes / 3) * 4 || image.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(image.data)) invalid()
+    || image.data.length === 0 || image.data.length > Math.ceil(maximum / 3) * 4 || image.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(image.data)) invalid()
   const bytes = Buffer.from(image.data, 'base64')
-  if (!bytes.length || bytes.length > STICKER_LIMITS.imageBytes || bytes.toString('base64') !== image.data || imageMime(bytes) !== image.mimeType) invalid()
+  if (!bytes.length || bytes.length > maximum || bytes.toString('base64') !== image.data || imageMime(bytes) !== image.mimeType) invalid()
   return { bytes, mimeType: image.mimeType as StickerMimeType }
 }

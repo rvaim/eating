@@ -1,3 +1,4 @@
+import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -181,7 +182,7 @@ async function pluginFixture(configuration: JsonObject = {}, accessToken = 'test
     records.push({ event, harnessEvent, inserted })
     return { inserted, eventId: key }
   })
-  const context: HostPluginContext = {
+  const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS,
     dataDirectory: join(directory, 'qq-bot'),
     getSetting: () => null,
     setSetting: () => {},

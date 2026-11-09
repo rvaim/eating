@@ -1,3 +1,4 @@
+import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { createServer } from 'node:http'
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http'
 import { createHash, randomUUID } from 'node:crypto'
@@ -38,7 +39,7 @@ async function home() {
 async function fixture(directory?: string, execute?: HostPluginContext['executeIdempotent'], resources?: HostPluginContext['resources']) {
   directory ??= await home()
   const submissions: { params: JsonObject; requestId: string }[] = []
-  const context: HostPluginContext = { dataDirectory: directory, getSetting: () => null, setSetting: () => {}, recordEvent: () => ({ inserted: true, eventId: 'unit-event' }), listMessages: () => [],
+  const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS, dataDirectory: directory, getSetting: () => null, setSetting: () => {}, recordEvent: () => ({ inserted: true, eventId: 'unit-event' }), listMessages: () => [],
     ...(resources ? { resources } : {}),
     executeIdempotent: execute ?? (async (_id, _action, params, requestId, run) => { submissions.push({ params, requestId }); return run() }) }
   const plugin = new ImageGenerationPlugin(context)

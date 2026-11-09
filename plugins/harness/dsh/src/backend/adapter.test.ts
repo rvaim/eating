@@ -1,3 +1,4 @@
+import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -54,7 +55,7 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
   }
   let registered: HarnessMessageSink | null = null
   const detach = vi.fn(() => { registered = null })
-  const context: HostPluginContext = {
+  const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS,
     dataDirectory: directory,
     harness: { registerSink: vi.fn(sink => { registered = sink; return detach }), wake: vi.fn(), readOwnerConfiguration: () => owner,
       readAgentActions: vi.fn(() => []), revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: vi.fn((_pluginId: string, scope: AgentInvocationScope) => ({ url: 'http://127.0.0.1:1/mcp/qq', headers: { Authorization: 'Bearer fixture-only-mcp-token' }, toolNames: owner.agentTypes.find(type => type.id === scope.agentTypeId)!.enabledTools })) },

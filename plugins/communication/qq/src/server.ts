@@ -65,7 +65,7 @@ class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly kind = 'communication' as const
   readonly name = 'QQ'
-  readonly version = '0.15.0'
+  readonly version = '0.16.0'
   readonly logs = new LiveLogChannel()
   readonly tools = [...qqTools, qqViewReceivedImageTool]
   readonly capabilities = [
@@ -112,7 +112,7 @@ class QQPlugin implements BackendPlugin {
     this.file = new QQConfigurationFile(this.accounts.directoryFor(this.instanceId))
     this.mediaTransport = new QQMediaTransportConfiguration(this.file.directory)
     this.configuration = this.file.read() ?? createDefaultConfiguration()
-    this.client = new OneBotClient({ onEvent: event => this.receiveEvent(event) })
+    this.client = new OneBotClient({ onEvent: event => this.receiveEvent(event), imageLimits: () => this.context.imageLimits() })
   }
 
   getStatus(): ConnectionStatus {
@@ -189,7 +189,7 @@ class QQPlugin implements BackendPlugin {
       if (scope?.signal?.aborted) throw new PlatformError('AGENT_SCOPE_VIOLATION', '当前调用授权已撤销，未发送。', 403, 'not-sent')
       const account = this.client.getStatus().accountId
       const transport = containsQQImageAssets(forwarded) ? this.mediaTransport.snapshot(this.mediaConnection()) : null
-      const wire = transport ? await resolveQQImageAssets(forwarded, this.context.resources, transport, scope ? { agentId: scope.agentId, agentTypeId: scope.agentTypeId, source: scope } : undefined) : { params: forwarded, imageBase64Bytes: 0 }
+      const wire = transport ? await resolveQQImageAssets(forwarded, this.context.resources, transport, scope ? { agentId: scope.agentId, agentTypeId: scope.agentTypeId, source: scope } : undefined, this.context.imageLimits()) : { params: forwarded, imageBase64Bytes: 0 }
       const audio = await resolveQQAudioAsset(wire.params, this.context.resources, scope ? { agentId: scope.agentId, agentTypeId: scope.agentTypeId, source: scope } : undefined)
       if (transport && this.mediaTransport.snapshot(this.mediaConnection()).revision !== transport.revision) throw new PlatformError('QQ_MEDIA_CONFIGURATION_CHANGED', '资源读取期间图片传输设置已变化，未发送。', 409, 'not-sent')
       if (scope?.signal?.aborted) throw new PlatformError('AGENT_SCOPE_VIOLATION', '资源读取期间任务已撤销，未发送。', 403, 'not-sent')
@@ -211,7 +211,7 @@ class QQPlugin implements BackendPlugin {
     const content = result.content
     const image = Array.isArray(content) ? content.find(block => isJsonObject(block) && block.type === 'image') : undefined
     if (!isJsonObject(image)) throw new PlatformError('IMAGE_UNAVAILABLE', '当前消息没有可读取的图片。', 409, 'not-sent')
-    return checkedImageResource({ mimeType: image.mimeType ?? null, data: image.data ?? null })
+    return checkedImageResource({ mimeType: image.mimeType ?? null, data: image.data ?? null }, this.context.imageLimits().imageBytes)
   }
 
   private mediaConnection() {
@@ -229,7 +229,7 @@ class QQPlugin implements BackendPlugin {
     }
     return readQQReceivedImage(params, { accountId, ...(scope ? { scope } : {}) }, {
       getMessage: messageId => this.client.call('get_msg', { message_id: messageId }, { timeoutMs: this.configuration.timeoutMs, readOnly: true }),
-      download: url => downloadQQImage(url),
+      download: url => downloadQQImage(url, { maxBytes: this.context.imageLimits().imageBytes }),
       assertActive,
     })
   }

@@ -2,6 +2,7 @@ export * from './authoring.js'
 export * from './agents.js'
 export * from './capabilities.js'
 export * from './media.js'
+export * from './image-limits.js'
 export * from './autonomy.js'
 export * from './memory.js'
 import type { CapabilityInvocationScope, HarnessCapabilityConnection, ImageResource, PluginKind, PluginMediaProvider, PluginResourceServices, ReceivedImageReference } from './capabilities.js'
@@ -191,6 +192,7 @@ export interface HarnessHostServices {
 }
 
 export interface HostPluginContext {
+  imageLimits(): import('./image-limits.js').ImageLimits
   /** Present only for installed, approved Harness plugins. */
   readonly harness?: HarnessHostServices
   readonly resources?: PluginResourceServices

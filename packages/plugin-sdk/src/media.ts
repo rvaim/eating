@@ -1,7 +1,9 @@
 import { PlatformError, isJsonObject } from './index.js'
 import type { ImageAssetReference, ImageMimeType, ImageResource } from './capabilities.js'
+import { DEFAULT_IMAGE_LIMITS, MAX_CONFIGURED_IMAGE_MIB, MIB } from './image-limits.js'
 
-export const MAX_IMAGE_RESOURCE_BYTES = 5 * 1024 * 1024
+/** Absolute supported storage ceiling; live operations use the owner's ImageLimits. */
+export const MAX_IMAGE_RESOURCE_BYTES = MAX_CONFIGURED_IMAGE_MIB * MIB
 export const MAX_AUDIO_DURATION_MS = 60000
 export const MAX_AUDIO_RESOURCE_BYTES = 44 + MAX_AUDIO_DURATION_MS * 48
 
@@ -24,9 +26,9 @@ export function parseAudioAssetUri(value: string): ImageAssetReference | null {
   return { pluginId: match[1]!, assetId: match[2]! }
 }
 
-export function checkedImageBytes(value: unknown, mimeType: unknown): Uint8Array {
+export function checkedImageBytes(value: unknown, mimeType: unknown, maximum = DEFAULT_IMAGE_LIMITS.imageBytes): Uint8Array {
   const invalid = (): never => { throw new PlatformError('INVALID_IMAGE_RESOURCE', '插件未返回有效、有界的图片资源。', 502, 'not-sent') }
-  if (!(value instanceof Uint8Array) || value.byteLength < 1 || value.byteLength > MAX_IMAGE_RESOURCE_BYTES) return invalid()
+  if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > MAX_IMAGE_RESOURCE_BYTES || !(value instanceof Uint8Array) || value.byteLength < 1 || value.byteLength > maximum) return invalid()
   const prefix = (...expected: number[]) => expected.every((byte, index) => value[index] === byte)
   const ascii = (start: number, end: number) => String.fromCharCode(...value.subarray(start, end))
   const detected: ImageMimeType | null = prefix(137, 80, 78, 71, 13, 10, 26, 10) ? 'image/png'
@@ -45,13 +47,13 @@ export function parseImageAssetUri(value: string): ImageAssetReference | null {
 }
 
 /** Validate bounded canonical image bytes at the cross-plugin boundary. */
-export function checkedImageResource(value: unknown): ImageResource {
+export function checkedImageResource(value: unknown, maximum = DEFAULT_IMAGE_LIMITS.imageBytes): ImageResource {
   const invalid = (): never => { throw new PlatformError('INVALID_IMAGE_RESOURCE', '插件未返回有效、有界的图片资源。', 502, 'not-sent') }
-  if (!isJsonObject(value) || typeof value.data !== 'string' || typeof value.mimeType !== 'string'
-    || value.data.length === 0 || value.data.length > Math.ceil(5 * 1024 * 1024 / 3) * 4 || value.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value.data)) return invalid()
+  if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > MAX_IMAGE_RESOURCE_BYTES || !isJsonObject(value) || typeof value.data !== 'string' || typeof value.mimeType !== 'string'
+    || value.data.length === 0 || value.data.length > Math.ceil(maximum / 3) * 4 || value.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value.data)) return invalid()
   let bytes: string
   try { bytes = atob(value.data) } catch { return invalid() }
-  if (bytes.length > 5 * 1024 * 1024 || btoa(bytes) !== value.data) return invalid()
+  if (bytes.length > maximum || btoa(bytes) !== value.data) return invalid()
   const mime = bytes.startsWith('\x89PNG\r\n\x1a\n') ? 'image/png'
     : bytes.startsWith('\xff\xd8\xff') ? 'image/jpeg'
       : ['GIF87a', 'GIF89a'].includes(bytes.slice(0, 6)) ? 'image/gif'

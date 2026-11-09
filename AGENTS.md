@@ -1,5 +1,7 @@
 # Eating 开发规则
 
+2026-11-09 OpenAI云端语音插件：主人已授权开始开发，本地开发与验证完成，本轮已授权本地提交，未push／部署。新增text-to-speech0.1.0，主人保存音色，会话子Agent按次选择delivery，不提供全局语气字段；官方Realtime单次合成、受控音频lease与QQ record发送，未知不重放。应用0.20.0、plugin-sdk4.10.0、QQ0.15.0，其他SDK产物消费者按封存规则补丁升级；锁文件仅新增workspace链接，无新外部版本。未调用真实Key／付费服务或真人QQ，最终实数和限制见[本轮报告](docs/reports/2026-11-09-OpenAI语音插件本地开发验证报告.md)。 完整构建／严格类型、全量1902项通过／11项条件跳过、11项相关浏览器及最终补充语音12项通过；真实Key音质与真人QQ播放未验证。
+
 2026-11-09 自主调度边界：**实现、可行性验证、Git发布及云端保留数据部署完成**。源码`585a52e`由云端从GitHub拉取构建，应用0.19.0、plugin-sdk4.9.0、DSH0.18.0，API4及其他插件／依赖保持。新增主人可配置maxRestMinutes，默认15分钟，sleeping／waiting均到期重新考虑，暂停／忙碌／额度优先，不强制发言。主人同意修改并要求先完成实现再展示可行性，沿用会话内已有push部署授权。自主文件严格schema2；本次停Eating、私有全量备份与原SHA核对后，由GitHub独立工具显式转换schema1→2，保其余配置、note、历史、计数、暂停及错误状态。旧次日10:00长休息缩短到当日22:29:41，原人格／自定义正文／Host settings／数据库行数与schema／会话身份／3份原生日志前缀／Token保持，五插件connected、DSH／nativeWeb ready、异常restart0。本地1881项通过／11项条件跳过、21项相关浏览器通过，云端551项通过；未清历史，不改主DSH或官方Web。证据见[可行性与部署报告](docs/reports/2026-11-09-自主调度边界与可行性验证报告.md)与[ADR-0050](docs/decisions/ADR-0050-自主思考休息上限.md)。
 
 2026-11-09 自然聊天与自主活动提示词：**本地验证、Git发布及云端保留数据部署完成**。应用0.18.1、QQ0.14.2、DSH0.17.1，源码`551e4af`已push并由云端GitHub取同提交构建。区分正常接话／围观／收尾，普通聊天先回应当下，自主机会明确真实社交选择与sleeping／waiting。现场common按正式CAS从revision1升至2，仅修改相关表达要求和匹配旧默认尾段，其余自定义正文／人格保留。调度、权限、额度、其他插件及依赖保持。主人已明确授权本轮修改、push与部署，由主代理独立完成。全量1868项通过／11项条件跳过、14项浏览器验证通过；云端591项回归及构建／类型通过，私有全量备份后更新，五插件connected、DSH／nativeWeb ready、异常重启0。原配置、会话与3份原生日志前缀核验通过，未清历史。自主运行原已开启且未暂停，本轮通过既有wake给同一主Agent一次重新规划机会，最终安排与证据见[本轮报告](docs/reports/2026-11-09-自然聊天与自主提示词部署验证报告.md)及[ADR-0049](docs/decisions/ADR-0049-自然聊天与自主活动提示词.md)。 既有wake后的自主轮次已完成，AI自行选择sleeping并登记下次唤醒，未暂停、无错误。
@@ -51,9 +53,9 @@
 
 ## 工程与当前契约
 
-一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`。
+一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`、`plugins/capabilities/text-to-speech`。
 
-当前源码应用／Host／Web0.19.0，plugin-sdk4.9.0、ui-sdk4.2.1、plugin-core4.0.0，QQ0.14.2、DSH0.18.0、表情包0.2.0、生图0.3.1、记忆源码0.3.0（本机已有安装0.1.1保持）；插件唯一 API4。无新UI SDK API，无新增依赖，锁文件workspace links零差异；五插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前源码应用／Host／Web0.20.0，plugin-sdk4.10.0、ui-sdk4.2.1、plugin-core4.0.0，QQ0.15.0、DSH0.18.1、表情包0.2.1、生图0.3.2、记忆源码0.3.1、语音text-to-speech0.1.0（本机已有安装0.1.1保持）；插件唯一 API4。无新UI SDK API，无新增外部依赖版本，锁文件仅新增语音插件workspace importer及现有锁定链接；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 

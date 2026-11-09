@@ -19,6 +19,7 @@ type RequestOptions = {
   readOnly?: boolean
   /** Exact base64 byte count from authorized resource resolution, never model input. */
   resolvedImageBase64Bytes?: number
+  resolvedAudioBase64Bytes?: number
 }
 const MAX_PENDING_REQUESTS = 1024
 const DEFAULT_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000] as const
@@ -161,7 +162,7 @@ export class OneBotClient {
     if (!session?.ready || !this.isCurrent(session) || session.socket.readyState !== WebSocket.OPEN) {
       throw new PlatformError('onebot_not_connected', 'OneBot 尚未通过在线核验', 409, 'not-sent')
     }
-    return this.request(session, action, params, options?.timeoutMs, options?.readOnly === true, options?.resolvedImageBase64Bytes)
+    return this.request(session, action, params, options?.timeoutMs, options?.readOnly === true, options?.resolvedImageBase64Bytes, options?.resolvedAudioBase64Bytes)
   }
 
   async dispose(): Promise<void> {
@@ -290,7 +291,7 @@ export class OneBotClient {
     }
   }
 
-  private request(session: Session, action: string, params: JsonObject, timeoutMs: number | undefined, readOnly: boolean, resolvedImageBase64Bytes = 0): Promise<JsonValue> {
+  private request(session: Session, action: string, params: JsonObject, timeoutMs: number | undefined, readOnly: boolean, resolvedImageBase64Bytes = 0, resolvedAudioBase64Bytes = 0): Promise<JsonValue> {
     if (!this.isCurrent(session) || session.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new PlatformError('onebot_not_connected', 'OneBot 连接不可用', 409, 'not-sent'))
     }
@@ -305,8 +306,10 @@ export class OneBotClient {
     const wireBytes = Buffer.byteLength(wire)
     if (!Number.isSafeInteger(resolvedImageBase64Bytes) || resolvedImageBase64Bytes < 0
       || resolvedImageBase64Bytes > MAX_RESOLVED_IMAGE_BASE64_BYTES
+      || !Number.isSafeInteger(resolvedAudioBase64Bytes) || resolvedAudioBase64Bytes < 0 || resolvedAudioBase64Bytes > 4 * 1024 * 1024
+      || resolvedImageBase64Bytes + resolvedAudioBase64Bytes > MAX_RESOLVED_IMAGE_BASE64_BYTES
       || wireBytes > MAX_OUTGOING_PAYLOAD_BYTES
-      || wireBytes - resolvedImageBase64Bytes > MAX_REQUEST_PARAMETER_BYTES) {
+      || wireBytes - resolvedImageBase64Bytes - resolvedAudioBase64Bytes > MAX_REQUEST_PARAMETER_BYTES) {
       return Promise.reject(new PlatformError('onebot_payload_too_large', 'OneBot 请求超过大小上限', 413, 'not-sent'))
     }
     if (session.pending.size >= MAX_PENDING_REQUESTS) {

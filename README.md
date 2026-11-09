@@ -1,5 +1,7 @@
 # Eating
 
+2026-11-09 OpenAI云端语音插件：主人已授权开始开发，本地开发与验证完成，本轮已授权本地提交，未push／部署。新增text-to-speech0.1.0，主人保存音色，会话子Agent按次选择delivery，不提供全局语气字段；官方Realtime单次合成、受控音频lease与QQ record发送，未知不重放。应用0.20.0、plugin-sdk4.10.0、QQ0.15.0，其他SDK产物消费者按封存规则补丁升级；锁文件仅新增workspace链接，无新外部版本。未调用真实Key／付费服务或真人QQ，最终实数和限制见[本轮报告](docs/reports/2026-11-09-OpenAI语音插件本地开发验证报告.md)。 完整构建／严格类型、全量1902项通过／11项条件跳过、11项相关浏览器及最终补充语音12项通过；真实Key音质与真人QQ播放未验证。
+
 2026-11-09 自主调度边界：**实现、可行性验证、Git发布及云端保留数据部署完成**。源码`585a52e`由云端从GitHub拉取构建，应用0.19.0、plugin-sdk4.9.0、DSH0.18.0，API4及其他插件／依赖保持。新增主人可配置maxRestMinutes，默认15分钟，sleeping／waiting均到期重新考虑，暂停／忙碌／额度优先，不强制发言。本地构建／严格类型、全量1881项通过／11项条件跳过及21项相关浏览器验证通过；云端551项通过，私有全量备份后显式转换自主schema2并更新，旧次日10:00长休息已缩短到当日22:29:41。五插件connected、DSH／nativeWeb ready，原配置、人格、会话与日志保留。可行性、实际边界及证据见[本轮报告](docs/reports/2026-11-09-自主调度边界与可行性验证报告.md)、[ADR-0050](docs/decisions/ADR-0050-自主思考休息上限.md)。
 
 2026-11-09 自然聊天与自主活动提示词：**本地验证、Git发布及云端保留数据部署完成**。应用0.18.1、QQ0.14.2、DSH0.17.1，源码`551e4af`已push并由云端GitHub取同提交构建。区分正常接话／围观／收尾，普通聊天先回应当下，自主机会明确真实社交选择与sleeping／waiting。现场common按正式CAS从revision1升至2，仅修改相关表达要求和匹配旧默认尾段，其余自定义正文／人格保留。调度、权限、额度、其他插件及依赖保持。本地完整构建／严格类型、全量1868项通过／11项条件跳过，14项相关浏览器验证通过；云端591项回归通过。五插件connected，DSH／nativeWeb ready，配置、会话及日志保留。行为与验证限制见[ADR-0049](docs/decisions/ADR-0049-自然聊天与自主活动提示词.md)，最终证据见[本轮报告](docs/reports/2026-11-09-自然聊天与自主提示词部署验证报告.md)。 既有wake后的自主轮次已完成，AI自行选择sleeping并登记下次唤醒，未暂停、无错误。
@@ -43,6 +45,8 @@ Eating 是一个独立管理应用，用于连接通讯平台和用户选择的 
 本轮交付供用户自行运行的本机 SSH 别名配置脚本，见[使用说明](docs/operations/配置SSH别名.md)与[ADR-0042](docs/decisions/ADR-0042-项目外SSH配置与部署隐私.md)：真实连接值及映射只存项目外，忽略文件也不得入项目；未运行真实 setup、未连接服务器、未 commit／push。
 
 ## 已实现功能
+
+- **OpenAI云端语音**：独立语音插件，主人保存音色，会话AI按段选择临时语气；异步合成、转写核对、试听与受控QQ语音条发送，未知不重试。当前本地实现与验证完成，尚未部署或配置真实Key，见[使用说明](docs/operations/OpenAI云端语音合成插件.md)。
 
 - **插件管理**：通讯、Harness、能力三类插件统一安装、更新、启停和卸载，左侧固定插件目录、右侧当前单项面板，顶部右侧返回管理列表。当前支持本机可信构建目录，先预览同份代码快照再确认，卸载保留数据。
 - **MCP 管理**：左侧固定服务目录，右侧一次查看／编辑一个服务，工具目录可搜索并独立滚动。直接配置stdio／Streamable HTTP，或使用插件服务；已启用且connected的功能型MCP新来源默认all，全部当前及未来工具／Agent类型自动开放；主人可保存custom精确类型／工具例外并恢复all。连接状态、工具发现和实际挂载分别显示，秘密不回显；通讯权限仍由来源插件按账号／目标／资源范围管理。
@@ -91,6 +95,7 @@ pnpm plugin install plugins/communication/qq/dist
 pnpm plugin install plugins/harness/dsh/dist
 pnpm plugin install plugins/capabilities/stickers/dist
 pnpm plugin install plugins/capabilities/image-generation/dist
+pnpm plugin install plugins/capabilities/text-to-speech/dist
 pnpm plugin install plugins/capabilities/openviking-memory/dist
 pnpm dev
 ```

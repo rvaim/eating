@@ -1,6 +1,6 @@
 {
   "name": "@eating/plugin-stickers",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "Eating 表情资源库，提供受控收藏、检索、预览与管理。",
   "files": ["dist"],

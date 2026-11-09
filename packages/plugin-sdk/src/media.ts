@@ -2,6 +2,27 @@ import { PlatformError, isJsonObject } from './index.js'
 import type { ImageAssetReference, ImageMimeType, ImageResource } from './capabilities.js'
 
 export const MAX_IMAGE_RESOURCE_BYTES = 5 * 1024 * 1024
+export const MAX_AUDIO_DURATION_MS = 60000
+export const MAX_AUDIO_RESOURCE_BYTES = 44 + MAX_AUDIO_DURATION_MS * 48
+
+/** Current audio contract: canonical 24 kHz mono PCM16 WAV, at most 60 seconds. */
+export function checkedAudioBytes(value: unknown, mimeType: unknown): Uint8Array {
+  const invalid = (): never => { throw new PlatformError('INVALID_AUDIO_RESOURCE', '音频资源格式、时长或大小无效。', 502, 'not-sent') }
+  if (!(value instanceof Uint8Array) || value.byteLength <= 44 || value.byteLength > MAX_AUDIO_RESOURCE_BYTES || mimeType !== 'audio/wav') return invalid()
+  const view = new DataView(value.buffer, value.byteOffset, value.byteLength)
+  const ascii = (start: number, end: number) => String.fromCharCode(...value.subarray(start, end))
+  if (ascii(0, 4) !== 'RIFF' || ascii(8, 12) !== 'WAVE' || ascii(12, 16) !== 'fmt ' || ascii(36, 40) !== 'data'
+    || view.getUint32(4, true) !== value.byteLength - 8 || view.getUint32(16, true) !== 16 || view.getUint16(20, true) !== 1
+    || view.getUint16(22, true) !== 1 || view.getUint32(24, true) !== 24000 || view.getUint32(28, true) !== 48000
+    || view.getUint16(32, true) !== 2 || view.getUint16(34, true) !== 16 || view.getUint32(40, true) !== value.byteLength - 44 || (value.byteLength - 44) % 2) return invalid()
+  return new Uint8Array(value)
+}
+export function parseAudioAssetUri(value: string): ImageAssetReference | null {
+  if (!value.startsWith('eating-audio:')) return null
+  const match = /^eating-audio:\/\/([a-z][a-z0-9-]{0,63})\/([a-f0-9]{64})$/.exec(value)
+  if (!match) throw new PlatformError('INVALID_ASSET_REFERENCE', '语音资源引用格式无效。', 400, 'not-sent')
+  return { pluginId: match[1]!, assetId: match[2]! }
+}
 
 export function checkedImageBytes(value: unknown, mimeType: unknown): Uint8Array {
   const invalid = (): never => { throw new PlatformError('INVALID_IMAGE_RESOURCE', '插件未返回有效、有界的图片资源。', 502, 'not-sent') }

@@ -239,6 +239,7 @@ export interface BackendPlugin {
   readonly name: string
   readonly version: string
   readonly media?: PluginMediaProvider
+  readonly audio?: import('./capabilities.js').PluginAudioProvider
   readonly memory?: import('./memory.js').MemoryProvider
   readReceivedImage?(reference: ReceivedImageReference, scope: import('./agents.js').AgentInvocationScope): Promise<ImageResource>
   invokeCapability?(name: string, input: unknown, requestId: string, scope: CapabilityInvocationScope): Promise<JsonValue>

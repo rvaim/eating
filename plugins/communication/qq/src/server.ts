@@ -11,6 +11,7 @@ import { LiveLogChannel } from './backend/live-logs'
 import { downloadQQImage, qqViewReceivedImageTool, readQQReceivedImage } from './backend/media'
 import { QQMediaTransportConfiguration } from './backend/media-transport-config'
 import { containsQQImageAssets, resolveQQImageAssets } from './backend/media-transport'
+import { resolveQQAudioAsset } from './backend/audio-transport'
 
 type Configuration = OneBotConfig
 
@@ -64,7 +65,7 @@ class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly kind = 'communication' as const
   readonly name = 'QQ'
-  readonly version = '0.14.2'
+  readonly version = '0.15.0'
   readonly logs = new LiveLogChannel()
   readonly tools = [...qqTools, qqViewReceivedImageTool]
   readonly capabilities = [
@@ -189,11 +190,14 @@ class QQPlugin implements BackendPlugin {
       const account = this.client.getStatus().accountId
       const transport = containsQQImageAssets(forwarded) ? this.mediaTransport.snapshot(this.mediaConnection()) : null
       const wire = transport ? await resolveQQImageAssets(forwarded, this.context.resources, transport, scope ? { agentId: scope.agentId, agentTypeId: scope.agentTypeId, source: scope } : undefined) : { params: forwarded, imageBase64Bytes: 0 }
+      const audio = await resolveQQAudioAsset(wire.params, this.context.resources, scope ? { agentId: scope.agentId, agentTypeId: scope.agentTypeId, source: scope } : undefined)
       if (transport && this.mediaTransport.snapshot(this.mediaConnection()).revision !== transport.revision) throw new PlatformError('QQ_MEDIA_CONFIGURATION_CHANGED', '资源读取期间图片传输设置已变化，未发送。', 409, 'not-sent')
       if (scope?.signal?.aborted) throw new PlatformError('AGENT_SCOPE_VIOLATION', '资源读取期间任务已撤销，未发送。', 403, 'not-sent')
       if (scope) assertQQAgentInvocation(name, params, scope, this.configuration, { instanceId: this.instanceId, accountId: this.client.getStatus().accountId })
       if (this.client.getStatus().accountId !== account) throw new PlatformError('ACCOUNT_CHANGED', '资源读取期间账号已变化，未发送。', 409, 'not-sent')
-      return this.client.call(action, wire.params, { timeoutMs: this.configuration.timeoutMs, readOnly: tool.readOnly,
+      audio.lease?.assertCurrent()
+      return this.client.call(action, audio.params, { timeoutMs: this.configuration.timeoutMs, readOnly: tool.readOnly,
+        ...(audio.audioBase64Bytes ? { resolvedAudioBase64Bytes: audio.audioBase64Bytes } : {}),
         ...(wire.imageBase64Bytes ? { resolvedImageBase64Bytes: wire.imageBase64Bytes } : {}) })
     }
     if (tool.readOnly) return execute()

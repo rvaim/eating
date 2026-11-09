@@ -19,7 +19,7 @@ const source: AgentInvocationScope = { agentId: 'child', agentTypeId: 'qq.privat
 const scope: CapabilityInvocationScope = { agentId: 'child', agentTypeId: 'qq.private', source }
 function fixture(withResources = true) {
   const directory = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), 'eating-sticker-api-'))); roots.push(directory)
-  const resources = { readReceivedImage: vi.fn(async () => fixtureImage()), readAsset: vi.fn(async () => fixtureImage()), getAsset: vi.fn(async () => { throw new Error('Unexpected send asset request') }) }
+  const resources = { readReceivedImage: vi.fn(async () => fixtureImage()), readAsset: vi.fn(async () => fixtureImage()), getAudioAsset: async () => { throw new Error('Unexpected audio read') }, getAsset: vi.fn(async () => { throw new Error('Unexpected send asset request') }) }
   const cached = new Map<string, { params: string; result: JsonValue }>()
   const executeIdempotent = vi.fn<HostPluginContext['executeIdempotent']>(async (_plugin, action, params, requestId, execute) => {
     const key = action + requestId, previous = cached.get(key), fingerprint = JSON.stringify(params)

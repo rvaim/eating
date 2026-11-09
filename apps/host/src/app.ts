@@ -8,7 +8,7 @@ import { PlatformError, checkedImageResource, composeAgentPrompt, isJsonObject, 
 import { AgentAccessRegistry, collectAgentContributions } from './agent-access'
 import { CapabilityAccess } from './capability-access'
 import { MemoryAccess } from './memory-access'
-import { verifiedImageAsset } from './media-assets'
+import { verifiedAudioAsset, verifiedImageAsset } from './media-assets'
 import { DirectMcpConnections } from './mcp-connections'
 import { PluginPackageManager } from './plugin-manager'
 import type { InstalledPluginPackage } from './plugin-installation'
@@ -157,6 +157,18 @@ export class EatingHost {
   private resourceServices(callerId: string): PluginResourceServices {
     const requireCaller = () => this.requirePlugin(callerId, true)
     return {
+      getAudioAsset: async (reference, scope) => {
+        const caller = requireCaller(), source = this.requirePlugin(reference.pluginId, true), provider = source.audio
+        if (!provider || !source.tools.some(tool => tool.name === provider.readTool && tool.readOnly)) throw new PlatformError('ASSET_UNAVAILABLE', '来源插件未提供语音资源。', 409, 'not-sent')
+        const assertAllowed = () => {
+          if (this.closed || requireCaller() !== caller || this.requirePlugin(source.id, true) !== source || source.audio !== provider || source.getStatus().state !== 'connected'
+            || scope && (scope.signal?.aborted || scope.source?.signal?.aborted || !this.capabilityAccess.activePermission(scope, 'plugin.' + source.id, provider.readTool))) throw new PlatformError('ASSET_ACCESS_DENIED', '语音资源授权已撤销，未发送。', 403, 'not-sent')
+        }
+        assertAllowed()
+        const asset = await provider.getAsset(reference.assetId)
+        assertAllowed()
+        return verifiedAudioAsset(asset, assertAllowed)
+      },
       readReceivedImage: async (scope, reference) => {
         requireCaller()
         const active = () => !scope.signal?.aborted && this.capabilityAccess.activeService({ agentId: scope.agentId, agentTypeId: scope.agentTypeId }, 'plugin.' + callerId)
@@ -764,7 +776,7 @@ export class EatingHost {
     try {
       const bytes = await readFile(path)
       response.writeHead(200, { 'Content-Type': mime[extname(path)] ?? 'application/octet-stream', 'X-Content-Type-Options': 'nosniff',
-        'Content-Security-Policy': "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" })
+        'Content-Security-Policy': "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" })
       response.end(bytes)
     } catch { throw new PlatformError('NOT_FOUND', '页面资源不存在，请先构建前端。', 404) }
   }

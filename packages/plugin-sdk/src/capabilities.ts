@@ -35,10 +35,26 @@ export interface ImageAssetLease extends PluginImageAsset {
   assertActive(): Promise<void>
   assertCurrent(): void
 }
+export interface PluginAudioAsset {
+  readonly mimeType: 'audio/wav'
+  readonly byteLength: number
+  readonly sha256: string
+  readonly durationMs: number
+  readBytes(): Promise<Uint8Array>
+}
+export interface AudioAssetLease extends PluginAudioAsset {
+  assertActive(): Promise<void>
+  assertCurrent(): void
+}
+export interface PluginAudioProvider {
+  readonly readTool: string
+  getAsset(assetId: string): Promise<PluginAudioAsset>
+}
 export interface PluginResourceServices {
   readReceivedImage(scope: AgentInvocationScope, reference: ReceivedImageReference): Promise<ImageResource>
   readAsset(reference: ImageAssetReference, scope?: CapabilityInvocationScope): Promise<ImageResource>
   getAsset(reference: ImageAssetReference, scope?: CapabilityInvocationScope): Promise<ImageAssetLease>
+  getAudioAsset(reference: ImageAssetReference, scope?: CapabilityInvocationScope): Promise<AudioAssetLease>
 }
 export interface PluginMediaProvider {
   /** Tool authorization required when another plugin resolves one of this plugin's assets. */

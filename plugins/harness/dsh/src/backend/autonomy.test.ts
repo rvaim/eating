@@ -47,7 +47,7 @@ describe('owner controlled autonomous activity state', () => {
     f.advance(1000); expect(f.activity.claim('runtime').admitted).toBe(true)
     expect(state(f.activity).cycles).toBe(2)
   })
-  it('supersedes old sleep times with a structured revision and honors indefinite waiting', async () => {
+  it('supersedes rest with a structured revision and allows the owner to wake early', async () => {
     const f = fixture(); await f.configure(); f.activity.startRuntime('runtime'); await f.control('resume')
     const revision = state(f.activity).revision
     f.activity.decide('runtime', { expectedActivityRevision: revision, mode: 'sleeping', wakeAt: f.now() + 10000, note: 'Resume the chosen activity' })
@@ -65,6 +65,66 @@ describe('owner controlled autonomous activity state', () => {
     f.activity.finish('runtime', String(cycle.id), 'completed', null)
     f.advance(9000); expect(f.activity.claim('runtime').admitted).toBe(false)
     f.advance(1000); expect(f.activity.claim('runtime').admitted).toBe(true)
+  })
+  it.each(['sleeping', 'waiting'] as const)('bounds %s and reconsiders without new input after the recorded deadline', async mode => {
+    const f = fixture(); await f.configure({ maxRestMinutes: 2, autoResume: true }); f.activity.startRuntime('first'); await f.control('resume')
+    f.activity.decide('first', { expectedActivityRevision: state(f.activity).revision, mode, wakeAt: mode === 'sleeping' ? f.now() + 12 * 3600000 : null, note: 'Quiet without giving up future thought' })
+    const deadline = f.now() + 120000
+    expect(state(f.activity)).toMatchObject({ mode, wakeAt: deadline, nextWakeAt: deadline })
+    f.activity.stopRuntime()
+    const reopened = new DshAutonomy(f.directory, () => true, () => {}, () => {}, f.now); reopened.startRuntime('second')
+    f.advance(119999); expect(reopened.claim('second').admitted).toBe(false)
+    f.advance(1); const next = reopened.claim('second')
+    expect(next.admitted).toBe(true)
+    expect(next.limits).toMatchObject({ maxRestMinutes: 2 })
+    expect((next.activity as JsonObject).mode).toBe(mode)
+  })
+  it('keeps shorter rests and shows an earlier scheduled task as the next eligible opportunity', async () => {
+    const f = fixture(); await f.configure({ maxRestMinutes: 15 }); f.activity.startRuntime('runtime'); await f.control('resume')
+    f.activity.decide('runtime', { expectedActivityRevision: state(f.activity).revision, mode: 'sleeping', wakeAt: f.now() + 120000, note: 'Short rest' })
+    expect(state(f.activity).nextWakeAt).toBe(f.now() + 120000)
+    f.activity.scheduleTask('runtime', { expectedRevision: 0, dueAt: f.now() + 30000, message: 'Earlier real task' })
+    expect(state(f.activity).nextWakeAt).toBe(f.now() + 30000)
+    f.advance(30000)
+    const next = f.activity.claim('runtime')
+    expect(next.admitted).toBe(true)
+    expect((next.scheduledTasks as JsonObject[]).map(task => task.message)).toEqual(['Earlier real task'])
+  })
+  it('does not let a rest deadline bypass pause, runtime readiness or hourly quota', async () => {
+    const f = fixture(); await f.configure({ maxRestMinutes: 1, maxCyclesPerHour: 1 }); f.activity.startRuntime('runtime'); await f.control('resume')
+    const cycle = f.activity.claim('runtime').cycle as JsonObject
+    f.activity.decide('runtime', { expectedActivityRevision: state(f.activity).revision, mode: 'waiting', wakeAt: null, note: 'Await input' })
+    f.activity.finish('runtime', String(cycle.id), 'completed', null)
+    expect(state(f.activity)).toMatchObject({ reason: 'hourly-limit', nextWakeAt: f.now() + 3600000 })
+    f.advance(60000); expect(f.activity.claim('runtime').admitted).toBe(false)
+    await f.control('pause'); f.advance(3600000)
+    expect(f.activity.claim('runtime').admitted).toBe(false); expect(state(f.activity).nextWakeAt).toBeNull()
+    await f.control('resume'); f.setReady(false)
+    expect(f.activity.claim('runtime').admitted).toBe(false); expect(state(f.activity).nextWakeAt).toBeNull()
+    f.setReady(true); expect(f.activity.claim('runtime').admitted).toBe(true)
+  })
+  it('shortens an existing rest on owner configuration changes without silently resuming it', async () => {
+    const f = fixture(); await f.configure({ maxRestMinutes: 60 }); f.activity.startRuntime('runtime'); await f.control('resume')
+    f.activity.decide('runtime', { expectedActivityRevision: state(f.activity).revision, mode: 'sleeping', wakeAt: f.now() + 3600000, note: 'Original rest' })
+    await f.configure({ maxRestMinutes: 5 })
+    expect(state(f.activity)).toMatchObject({ ownerPaused: true, mode: 'sleeping', wakeAt: f.now() + 300000, note: 'Original rest', nextWakeAt: null })
+    await f.control('resume'); expect(state(f.activity).nextWakeAt).toBe(f.now() + 300000)
+  })
+  it('rejects missing or conflicting rest limits and old schema without overwriting the saved document', async () => {
+    const f = fixture(); await f.configure()
+    const bytes = readFileSync(f.activity.filePath, 'utf8')
+    for (const values of [{ maxRestMinutes: 0 }, { maxRestMinutes: 1441 }, { maxRestMinutes: 1.5 }, { minIntervalSeconds: 61, maxRestMinutes: 1 }]) await expect(f.configure(values)).rejects.toMatchObject({ code: 'INVALID_AUTONOMY_CONFIGURATION' })
+    const missing = { ...AUTONOMY_DEFAULTS }; Reflect.deleteProperty(missing, 'maxRestMinutes')
+    await expect(f.activity.configure({ expectedRevision: f.activity.snapshot().revision, configuration: missing })).rejects.toMatchObject({ code: 'INVALID_AUTONOMY_CONFIGURATION' })
+    expect(readFileSync(f.activity.filePath, 'utf8')).toBe(bytes)
+    const incomplete = JSON.parse(bytes); delete incomplete.configuration.maxRestMinutes
+    const incompleteBytes = JSON.stringify(incomplete); writeFileSync(f.activity.filePath, incompleteBytes)
+    expect(() => new DshAutonomy(f.directory, () => true, () => {}, () => {})).toThrow(expect.objectContaining({ code: 'AUTONOMY_STATE_CORRUPTED' }))
+    expect(readFileSync(f.activity.filePath, 'utf8')).toBe(incompleteBytes)
+    const previous = JSON.parse(bytes); previous.schemaVersion = 1; delete previous.configuration.maxRestMinutes
+    const oldBytes = JSON.stringify(previous); writeFileSync(f.activity.filePath, oldBytes)
+    expect(() => new DshAutonomy(f.directory, () => true, () => {}, () => {})).toThrow(expect.objectContaining({ code: 'AUTONOMY_STATE_CORRUPTED' }))
+    expect(readFileSync(f.activity.filePath, 'utf8')).toBe(oldBytes)
   })
   it('does not charge a sleeping interval to the continuous run limit', async () => {
     const f = fixture(); await f.configure({ maxRunMinutes: 120 }); f.activity.startRuntime('runtime'); await f.control('resume')

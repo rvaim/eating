@@ -25,7 +25,7 @@ interface AutonomyState {
   errorCode: string | null
   history: { cycleId: string; startedAt: number; finishedAt: number; outcome: string; code: string | null }[]
 }
-interface Document { schemaVersion: 1; revision: number; configuration: AutonomyConfiguration; state: AutonomyState }
+interface Document { schemaVersion: 2; revision: number; configuration: AutonomyConfiguration; state: AutonomyState }
 const integer = (value: unknown, min = 0, max = Number.MAX_SAFE_INTEGER): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max
 const text = (value: unknown, max = 256): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max && !/[\u0000-\u001f\u007f]/.test(value)
 const exact = (value: JsonObject, names: string[]) => Object.keys(value).length === names.length && names.every(name => Object.hasOwn(value, name))
@@ -46,11 +46,12 @@ const errorMessages: Readonly<Record<string, string>> = {
 function fail(code = 'INVALID_AUTONOMY_CONFIGURATION', status = 400, details?: JsonObject, message = errorMessages[code] ?? '自主运行操作被拒绝，请根据错误码核对具体原因。'): never {
   throw Object.assign(new PlatformError(code, message, status, 'not-sent'), details ? { details } : {})
 }
-export const AUTONOMY_DEFAULTS: AutonomyConfiguration = Object.freeze({ enabled: false, autoResume: false, minIntervalSeconds: 60, maxCyclesPerHour: 12, maxRunMinutes: 120, cycleTimeoutSeconds: 120, maxConsecutiveFailures: 3, maxContactsPerHour: 6, targets: [] })
+export const AUTONOMY_DEFAULTS: AutonomyConfiguration = Object.freeze({ enabled: false, autoResume: false, minIntervalSeconds: 60, maxRestMinutes: 15, maxCyclesPerHour: 12, maxRunMinutes: 120, cycleTimeoutSeconds: 120, maxConsecutiveFailures: 3, maxContactsPerHour: 6, targets: [] })
 export function parseAutonomyConfiguration(input: unknown): AutonomyConfiguration {
   if (!isJsonObject(input) || Buffer.byteLength(JSON.stringify(input)) > 128 * 1024 || !exact(input, Object.keys(AUTONOMY_DEFAULTS)) || typeof input.enabled !== 'boolean' || typeof input.autoResume !== 'boolean') fail()
-  const bounds = { minIntervalSeconds: [1, 86400], maxCyclesPerHour: [1, 3600], maxRunMinutes: [1, 10080], cycleTimeoutSeconds: [10, 3600], maxConsecutiveFailures: [1, 10], maxContactsPerHour: [0, 1000] }
+  const bounds = { minIntervalSeconds: [1, 86400], maxRestMinutes: [1, 1440], maxCyclesPerHour: [1, 3600], maxRunMinutes: [1, 10080], cycleTimeoutSeconds: [10, 3600], maxConsecutiveFailures: [1, 10], maxContactsPerHour: [0, 1000] }
   for (const [name, [min, max]] of Object.entries(bounds)) if (!integer(input[name], min, max)) fail()
+  if (Number(input.minIntervalSeconds) > Number(input.maxRestMinutes) * 60) fail('INVALID_AUTONOMY_CONFIGURATION', 400, undefined, '最短续行间隔不能超过最长休息或等待时间，请调整后再保存。')
   if (!Array.isArray(input.targets) || input.targets.length > 50) fail()
   const ids = new Set<string>(), identities = new Set<string>()
   for (const value of input.targets) {
@@ -62,7 +63,7 @@ export function parseAutonomyConfiguration(input: unknown): AutonomyConfiguratio
   return structuredClone(input) as unknown as AutonomyConfiguration
 }
 function fresh(): Document {
-  return { schemaVersion: 1, revision: 0, configuration: { ...AUTONOMY_DEFAULTS }, state: { revision: 0, ownerPaused: true, mode: 'active', wakeAt: null, note: '', startedAt: null, windowAt: 0, cycles: 0, contacts: 0, failures: 0, active: null, lastStartedAt: null, lastFinishedAt: null, lastOutcome: null, errorCode: null, history: [] } }
+  return { schemaVersion: 2, revision: 0, configuration: { ...AUTONOMY_DEFAULTS }, state: { revision: 0, ownerPaused: true, mode: 'active', wakeAt: null, note: '', startedAt: null, windowAt: 0, cycles: 0, contacts: 0, failures: 0, active: null, lastStartedAt: null, lastFinishedAt: null, lastOutcome: null, errorCode: null, history: [] } }
 }
 
 /** Owns mechanical activity state only; the installed Harness decides and executes the activity. */
@@ -83,10 +84,11 @@ export class DshAutonomy {
     if (data === null) this.document = fresh()
     else {
       try {
-        if (!exact(data, ['schemaVersion', 'revision', 'configuration', 'state']) || data.schemaVersion !== 1 || !integer(data.revision) || !isJsonObject(data.state)) fail()
+        if (!exact(data, ['schemaVersion', 'revision', 'configuration', 'state']) || data.schemaVersion !== 2 || !integer(data.revision) || !isJsonObject(data.state)) fail()
         parseAutonomyConfiguration(data.configuration)
         const s = data.state
         if (!exact(s, Object.keys(fresh().state)) || !integer(s.revision) || typeof s.ownerPaused !== 'boolean' || !['active', 'sleeping', 'waiting'].includes(String(s.mode)) || typeof s.note !== 'string' || s.note.length > 500 || ['wakeAt', 'startedAt', 'lastStartedAt', 'lastFinishedAt'].some(key => s[key] !== null && !integer(s[key])) || ['windowAt', 'cycles', 'contacts', 'failures'].some(key => !integer(s[key])) || ![null, 'completed', 'failed', 'unknown', 'cancelled'].includes(s.lastOutcome as null) || s.errorCode !== null && !text(s.errorCode, 100) || !Array.isArray(s.history) || s.history.length > 20) fail()
+        if (s.mode !== 'active' && s.wakeAt === null) fail()
         if (s.active !== null && (!isJsonObject(s.active) || !exact(s.active, ['id', 'nonce', 'startedAt', 'deadline', 'configurationRevision', 'activityRevision']) || !text(s.active.id) || !text(s.active.nonce) || ['startedAt', 'deadline', 'configurationRevision', 'activityRevision'].some(key => !integer((s.active as JsonObject)[key])))) fail()
         if (s.history.some(row => !isJsonObject(row) || !exact(row, ['cycleId', 'startedAt', 'finishedAt', 'outcome', 'code']) || !text(row.cycleId) || !integer(row.startedAt) || !integer(row.finishedAt) || !['completed', 'failed', 'unknown', 'cancelled'].includes(String(row.outcome)) || row.code !== null && !text(row.code, 100))) fail()
         this.document = structuredClone(data) as unknown as Document
@@ -120,10 +122,12 @@ export class DshAutonomy {
   snapshot(): JsonObject {
     const { configuration, state } = this.document, now = this.clock()
     const reset = state.windowAt === 0 || now - state.windowAt >= 3600000
-    let reason = !configuration.enabled ? 'disabled' : state.active && state.ownerPaused ? 'pausing' : state.errorCode ? 'error' : state.ownerPaused ? 'owner-paused' : !this.runtimeReady() ? 'runtime-stopped' : state.active ? 'running' : state.mode === 'waiting' ? 'waiting-event' : (state.wakeAt ?? 0) > now ? state.mode === 'sleeping' ? 'sleeping' : 'interval' : !reset && state.cycles >= configuration.maxCyclesPerHour ? 'hourly-limit' : 'ready'
+    const arrangedAt = Math.min(state.wakeAt ?? now, this.agenda.nextDueAt() ?? Infinity)
+    const quotaAt = !reset && state.cycles >= configuration.maxCyclesPerHour ? state.windowAt + 3600000 : now
+    let reason = !configuration.enabled ? 'disabled' : state.active && state.ownerPaused ? 'pausing' : state.errorCode ? 'error' : state.ownerPaused ? 'owner-paused' : !this.runtimeReady() ? 'runtime-stopped' : state.active ? 'running' : quotaAt > now ? 'hourly-limit' : arrangedAt > now ? state.mode === 'waiting' ? 'waiting-event' : state.mode === 'sleeping' ? 'sleeping' : 'interval' : 'ready'
     if (['ready', 'waiting-event', 'sleeping', 'interval', 'hourly-limit'].includes(reason) && this.runtimeNonce && now - (this.observed?.at ?? this.runtimeStartedAt) > 15000) reason = 'status-unavailable'
     else if (reason === 'ready' && this.observed && now - this.observed.at < 5000 && this.observed.phase !== 'idle') reason = this.observed.phase
-    const nextWakeAt = reason === 'hourly-limit' ? state.windowAt + 3600000 : state.ownerPaused || !configuration.enabled || state.mode === 'waiting' ? null : state.wakeAt
+    const nextWakeAt = state.ownerPaused || !configuration.enabled || state.errorCode || !this.runtimeReady() ? null : Math.max(arrangedAt, quotaAt)
     // Only an active segment consumes the continuous-run budget. Sleeping/waiting
     // ends the segment; the next admitted cycle starts a new one.
     const runRemainingMs = state.startedAt === null ? configuration.maxRunMinutes * 60000 : Math.max(0, state.startedAt + configuration.maxRunMinutes * 60000 - now)
@@ -136,6 +140,7 @@ export class DshAutonomy {
     this.validateTargets(configuration.targets)
     if (this.document.revision >= Number.MAX_SAFE_INTEGER) fail('AUTONOMY_REVISION_EXHAUSTED', 409)
     this.document.configuration = configuration; this.document.revision++; this.advance()
+    if (this.document.state.mode !== 'active') this.document.state.wakeAt = Math.min(this.document.state.wakeAt!, this.clock() + configuration.maxRestMinutes * 60000)
     this.document.state.ownerPaused = true
     this.onRevoke(); this.save()
     return this.snapshot()
@@ -186,7 +191,7 @@ export class DshAutonomy {
     const s = this.document.state, c = this.document.configuration, now = this.clock()
     this.resetWindow()
     const scheduled = this.agenda.due(now)
-    if (!c.enabled || s.ownerPaused || s.errorCode || !this.runtimeReady() || s.active || (!scheduled.length && (s.mode === 'waiting' || (s.wakeAt ?? 0) > now)) || s.cycles >= c.maxCyclesPerHour) return { admitted: false }
+    if (!c.enabled || s.ownerPaused || s.errorCode || !this.runtimeReady() || s.active || (!scheduled.length && (s.wakeAt ?? 0) > now) || s.cycles >= c.maxCyclesPerHour) return { admitted: false }
     if (s.startedAt !== null && now - s.startedAt >= c.maxRunMinutes * 60000) { s.ownerPaused = true; s.errorCode = 'AUTONOMY_RUN_LIMIT'; this.advance(); this.save(); return { admitted: false } }
     s.startedAt ??= now
     const cycle: Cycle = { id: randomUUID(), nonce, startedAt: now, deadline: Math.min(now + c.cycleTimeoutSeconds * 1000, s.startedAt + c.maxRunMinutes * 60000), configurationRevision: this.document.revision, activityRevision: s.revision }
@@ -197,7 +202,7 @@ export class DshAutonomy {
     // agenda write leaves the task pending and the runtime exposes a fault instead of
     // silently dropping it.
     if (scheduled.length) this.agenda.consume(scheduled.map(task => task.id))
-    return { admitted: true, cycle: { ...cycle }, activity, scheduledTasks: scheduled.map(task => ({ id: task.id, message: task.message, dueAt: task.dueAt })), limits: { minIntervalSeconds: c.minIntervalSeconds, maxCyclesPerHour: c.maxCyclesPerHour, maxRunMinutes: c.maxRunMinutes, runRemainingMs } }
+    return { admitted: true, cycle: { ...cycle }, activity, scheduledTasks: scheduled.map(task => ({ id: task.id, message: task.message, dueAt: task.dueAt })), limits: { minIntervalSeconds: c.minIntervalSeconds, maxRestMinutes: c.maxRestMinutes, maxCyclesPerHour: c.maxCyclesPerHour, maxRunMinutes: c.maxRunMinutes, runRemainingMs } }
   }
   validCycle(nonce: string, id: string): boolean { const { configuration: c, state: s } = this.document; return nonce === this.runtimeNonce && c.enabled && !s.ownerPaused && !s.errorCode && s.active?.id === id && s.active.nonce === nonce && s.active.configurationRevision === this.document.revision && this.clock() < s.active.deadline }
   activeCycle(): Cycle | null { return this.document.state.active ? { ...this.document.state.active } : null }
@@ -211,7 +216,8 @@ export class DshAutonomy {
     const now = this.clock()
     if (input.mode === 'sleeping' ? !integer(input.wakeAt, now + 1000, now + 365 * 86400000) : input.wakeAt !== null) fail('INVALID_AUTONOMY_INPUT')
     const s = this.document.state
-    this.advance(); s.mode = input.mode as AutonomyState['mode']; s.note = input.note; s.wakeAt = input.mode === 'sleeping' ? input.wakeAt as number : input.mode === 'active' ? now + this.document.configuration.minIntervalSeconds * 1000 : null
+    const restDeadline = now + this.document.configuration.maxRestMinutes * 60000
+    this.advance(); s.mode = input.mode as AutonomyState['mode']; s.note = input.note; s.wakeAt = input.mode === 'sleeping' ? Math.min(input.wakeAt as number, restDeadline) : input.mode === 'active' ? now + this.document.configuration.minIntervalSeconds * 1000 : restDeadline
     // A sleep/wait boundary ends the active segment. Otherwise a long sleep
     // would consume maxRunMinutes and pause the bot before it can wake again.
     if (input.mode !== 'active') s.startedAt = null

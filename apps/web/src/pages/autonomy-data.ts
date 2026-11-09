@@ -13,7 +13,7 @@ export interface Harness { id: string; name: string; enabled: boolean; status: s
 export interface Directory { protocolVersion: 1; harnesses: Harness[]; channels: ProactiveChannel[] }
 export type NumericKey = Exclude<keyof AutonomyConfiguration, 'enabled' | 'autoResume' | 'targets'>
 export type Draft = { enabled: boolean; autoResume: boolean; targets: ProactiveTarget[] } & Record<NumericKey, string>
-export const fields: { name: NumericKey; min: number; max: number }[] = [{ name: 'minIntervalSeconds', min: 1, max: 86400 }, { name: 'maxCyclesPerHour', min: 1, max: 3600 }, { name: 'maxRunMinutes', min: 1, max: 10080 }, { name: 'cycleTimeoutSeconds', min: 10, max: 3600 }, { name: 'maxConsecutiveFailures', min: 1, max: 10 }, { name: 'maxContactsPerHour', min: 0, max: 1000 }]
+export const fields: { name: NumericKey; min: number; max: number }[] = [{ name: 'minIntervalSeconds', min: 1, max: 86400 }, { name: 'maxRestMinutes', min: 1, max: 1440 }, { name: 'maxCyclesPerHour', min: 1, max: 3600 }, { name: 'maxRunMinutes', min: 1, max: 10080 }, { name: 'cycleTimeoutSeconds', min: 10, max: 3600 }, { name: 'maxConsecutiveFailures', min: 1, max: 10 }, { name: 'maxContactsPerHour', min: 0, max: 1000 }]
 export function readDirectory(value: unknown): Directory {
   const invalid = (): never => { throw new HostApiError('AUTONOMY_RESPONSE_INVALID', '', 'failed') }
   if (!isJsonObject(value) || value.protocolVersion !== 1 || !Array.isArray(value.harnesses) || value.harnesses.length > 100 || !Array.isArray(value.channels) || value.channels.length > 500) return invalid()
@@ -29,6 +29,7 @@ export function readDirectory(value: unknown): Directory {
       }
       const c = snapshot.configuration, s = snapshot.state
       if (typeof c.enabled !== 'boolean' || typeof c.autoResume !== 'boolean' || fields.some(field => !Number.isSafeInteger(c[field.name]) || Number(c[field.name]) < field.min || Number(c[field.name]) > field.max) || !Array.isArray(c.targets) || c.targets.length > 50 || typeof s.ownerPaused !== 'boolean' || !['active', 'sleeping', 'waiting'].includes(String(s.mode)) || typeof s.note !== 'string' || typeof s.reason !== 'string' || !Number.isSafeInteger(s.revision) || !Array.isArray(s.history) || s.history.length > 20) invalid()
+      if (Number(c.minIntervalSeconds) > Number(c.maxRestMinutes) * 60) invalid()
       const safeText = (v: unknown, max = 256): v is string => typeof v === 'string' && v.length <= max
       if (snapshot.agenda !== undefined) {
         const agenda = snapshot.agenda

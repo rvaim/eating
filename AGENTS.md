@@ -1,5 +1,7 @@
 # Eating 开发规则
 
+2026-11-09 自主调度边界本轮：主人同意修改，并要求先完成实现再展示可行性。按[ADR-0050](docs/decisions/ADR-0050-自主思考休息上限.md)新增maxRestMinutes默认15分钟，sleeping／waiting均有有界重新考虑机会，暂停／忙碌／额度优先，不强制发消息。源码应用0.19.0、plugin-sdk4.9.0、DSH0.18.0，其他版本／依赖保持；autonomy严格schema2，现有云端schema1仅在已有部署授权内停机备份后由独立GitHub工具显式转换，不加生产兼容或自动迁移。构建／类型及全量1881项通过／11项条件跳过，21项相关浏览器验证通过；最终状态见[本轮报告](docs/reports/2026-11-09-自主调度边界与可行性验证报告.md)。
+
 2026-11-09 自然聊天与自主活动提示词：**本地验证、Git发布及云端保留数据部署完成**。应用0.18.1、QQ0.14.2、DSH0.17.1，源码`551e4af`已push并由云端GitHub取同提交构建。区分正常接话／围观／收尾，普通聊天先回应当下，自主机会明确真实社交选择与sleeping／waiting。现场common按正式CAS从revision1升至2，仅修改相关表达要求和匹配旧默认尾段，其余自定义正文／人格保留。调度、权限、额度、其他插件及依赖保持。主人已明确授权本轮修改、push与部署，由主代理独立完成。全量1868项通过／11项条件跳过、14项浏览器验证通过；云端591项回归及构建／类型通过，私有全量备份后更新，五插件connected、DSH／nativeWeb ready、异常重启0。原配置、会话与3份原生日志前缀核验通过，未清历史。自主运行原已开启且未暂停，本轮通过既有wake给同一主Agent一次重新规划机会，最终安排与证据见[本轮报告](docs/reports/2026-11-09-自然聊天与自主提示词部署验证报告.md)及[ADR-0049](docs/decisions/ADR-0049-自然聊天与自主活动提示词.md)。 既有wake后的自主轮次已完成，AI自行选择sleeping并登记下次唤醒，未暂停、无错误。
 
 2026-11-04 Harness 历史会话清理最新授权：**本地验证及云端发布部署完成**。用户在独立预览后明确要求“部署到服务器上”，授权本轮commit／push、云端GitHub拉取构建和Eating更新，由主代理独立完成，不再启动子代理。仅部署功能，不执行真实历史清理，不动主 DSH 或当前 GUI。按[ADR-0048](docs/decisions/ADR-0048-Harness历史会话清理.md)实现主人专用“历史会话”页签及离线扫描／确认清理，全部 SDK、子运行时、原生 Web／helper 真正退出且 Host 无待交接消息才可维护；API 不注册为 MCP 工具。应用0.18.0、QQ0.14.1、生图0.3.1保持，本地 DSH 插件从前轮云端0.16.0升至0.17.0，SDK等保持、无新依赖。本地实现与验证完成：完整构建／严格类型、最终1871项通过／8项条件跳过及9项历史页浏览器通过；独立预览已扫描1主2子示例，未点击清理。源码 `29387f9` 已commit／push，服务器从GitHub拉取同提交完整构建和Linux14文件410项回归通过后，私有全量备份并同data更新DSH0.17.0。公网历史页和运行中拒绝扫描已核验，五插件connected、DSH／nativeWeb ready、异常重启0；配置、图片、3份原生日志前缀、会话身份、账本、17条记忆任务身份和Token保留。未调用真实清理接口；记忆范围仅lastSeenAt动态时间变化，设置不变。完整证据见[本轮报告](docs/reports/2026-11-04-Harness历史会话清理验证报告.md)；下方旧发布与真实清理记录保留历史事实。
@@ -51,7 +53,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`。
 
-当前源码应用／Host／Web0.18.1，plugin-sdk4.8.0、ui-sdk4.2.1、plugin-core4.0.0，QQ0.14.2、DSH0.17.1、表情包0.2.0、生图0.3.1、记忆源码0.3.0（本机已有安装0.1.1保持）；插件唯一 API4。无新UI SDK API，无新增依赖，锁文件workspace links零差异；五插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前源码应用／Host／Web0.19.0，plugin-sdk4.9.0、ui-sdk4.2.1、plugin-core4.0.0，QQ0.14.2、DSH0.18.0、表情包0.2.0、生图0.3.1、记忆源码0.3.0（本机已有安装0.1.1保持）；插件唯一 API4。无新UI SDK API，无新增依赖，锁文件workspace links零差异；五插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -91,7 +93,7 @@ DSH 不自行下载运行时：检测系统安装的 `dsh`（EATING_DSH_BIN → 
 
 实例名含真实绑定账号，正常恢复复用稳定UUID，不从旧label猜账号；本轮主人明确清主／子会话后，再运行创建新UUID，人格身份不变。默认系统层去实时时间；原生time-context在主、子对应scope各挂一次，上海时区、600000ms，不另加调度或时钟工具。当前9变量仍可手写使用，含动态变量的自定义正文对缓存的影响应如实报告。
 
-无输入时的定时机会按[ADR-0023](docs/decisions/ADR-0023-自主活动协调与主动通讯授权.md)由同一主Agent原生followup接受，外部消息/原生目标/Inbox优先，机械检查不请求模型。autonomy.json/schema1保存配置CAS、主人暂停、AI安排revision、窗口额度、周期nonce及有界无正文结果；保存与开启分开、默认关闭。enabled/ownerPaused只控制此类定时机会，普通有输入轮次仍可联系获准目标；真正自主机会取消撤销该轮许可。
+无输入时的定时机会按[ADR-0023](docs/decisions/ADR-0023-自主活动协调与主动通讯授权.md)由同一主Agent原生followup接受，外部消息/原生目标/Inbox优先，机械检查不请求模型。autonomy.json/schema2保存配置CAS、主人maxRestMinutes（默认15分钟）及有界sleeping／waiting安排、主人暂停、AI安排revision、窗口额度、周期nonce及有界无正文结果；保存与开启分开、默认关闭。enabled/ownerPaused只控制此类定时机会，普通有输入轮次仍可联系获准目标；真正自主机会取消撤销该轮许可。
 
 AI未来一次性任务按[ADR-0032](docs/decisions/ADR-0032-AI定时任务.md)，主Agent在自主运行开启且未暂停时用eating_schedule_task/eating_cancel_scheduled_task按agenda revision创建／取消，eating_activity_state返回agenda。autonomy-agenda.json/schema1独立保存最多50条、128KiB、每条最多2000字符、未来1秒至365天的任务。到期每轮最多10条合并为同一eating-autonomy机会，可打断sleeping/waiting，仍受主人暂停、额度、runtime及周期限制；cycle持久登记后移出agenda，投递与读取间中断按unknown处理，不重放已进入会话的任务。主人概览可见可取消，取消不撤回已进入会话的机会；当前agenda无重复规则。按ADR-0034移除自主周期对原生DSH schedule_create/schedule_update的人工阻断，原生Schedule保官方语义；Eating暂停不冻结main其他能力，也不承诺暂停所有原生提醒／目标。
 

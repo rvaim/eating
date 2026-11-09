@@ -38,6 +38,8 @@ export interface AutonomyConfiguration {
   readonly enabled: boolean
   readonly autoResume: boolean
   readonly minIntervalSeconds: number
+  /** Maximum AI-requested rest or event wait before another eligible opportunity. */
+  readonly maxRestMinutes: number
   readonly maxCyclesPerHour: number
   readonly maxRunMinutes: number
   readonly cycleTimeoutSeconds: number

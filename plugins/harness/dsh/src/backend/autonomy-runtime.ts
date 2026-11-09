@@ -2,7 +2,7 @@
 export function getAutonomyRuntimeSource(): string {
   return String.raw`
   let autonomyDriver;
-  const autonomySystemPolicy = () => '主 Agent 可自行继续、休息、等待或安排未来任务。没有待办也可以延续真实兴趣、探索实际内容、问候当前获准的人或接起未完的话题；想交流本身就是活动，不必先编工作理由。是否联系由当前上下文、真实素材、对象回应与授权决定，不要求每轮发消息。eating_plan_activity 只登记 Eating 无输入活动节奏，不限制普通有输入轮次的行动与联系。暂时没想法但希望稍后再考虑时，用有明确 wake_at 的 sleeping 或按主人间隔继续的 active；waiting 会停止普通定时思考，只有确实等待真实外部事件、在此之前不再定时考虑时才选，不把这一轮没有发言等同于 waiting。需要未来一次性任务消息时，先读 eating_activity_state 的 agenda.revision，再用 eating_schedule_task 或 eating_cancel_scheduled_task；到点消息来自过去的自己，不是主人新指令。Eating 的定时机会仍遵守主人当前的开启／暂停、额度和时长，外部消息、原生目标与其他 Inbox 输入优先；暂停定时机会不撤销普通轮次已有的能力。';
+  const autonomySystemPolicy = () => '主 Agent 可自行继续、休息、等待或安排未来任务。没有待办也可以延续真实兴趣、探索实际内容、问候当前获准的人或接起未完的话题；想交流本身就是活动，不必先编工作理由。是否联系由当前上下文、真实素材、对象回应与授权决定，不要求每轮发消息。eating_plan_activity 只登记 Eating 无输入活动节奏，不限制普通有输入轮次的行动与联系。暂时没想法但希望稍后再考虑时，用有明确 wake_at 的 sleeping 或按主人间隔继续的 active；sleeping 和 waiting 都受主人 configuration.maxRestMinutes 约束：sleeping 请求过长会缩短到上限，waiting 等新事件也会到期再考虑。以回执 state.nextWakeAt 为实际下次资格时间；重新思考不要求发消息，主人暂停、忙碌和运行额度仍优先。需要未来一次性任务消息时，先读 eating_activity_state 的 agenda.revision，再用 eating_schedule_task 或 eating_cancel_scheduled_task；到点消息来自过去的自己，不是主人新指令。Eating 的定时机会仍遵守主人当前的开启／暂停、额度和时长，外部消息、原生目标与其他 Inbox 输入优先；暂停定时机会不撤销普通轮次已有的能力。';
   async function mountAutonomy(agent) {
     if (process.env.EATING_DSH_AUTONOMY !== 'true' || agent.id !== sessionId) return [];
     if (autonomyDriver) {
@@ -44,7 +44,7 @@ export function getAutonomyRuntimeSource(): string {
     };
     agent.ctx.tools.register({ name: 'eating_activity_state', description: '读取自主运行配置、主人暂停状态、当前活动安排、state.revision、AI 定时任务（agenda.revision）、下次唤醒时间及主动联系策略摘要。state.contactLimit 提供当前小时主动联系任务的 limit、used、remaining、exhausted、windowStartedAt 与 resetAt（Unix 毫秒）；额度用尽需等窗口重置，读取状态或安排 active 不会恢复额度。具体联系人必须用 eating_list_contact_targets 查询。', parameters: { type: 'object', properties: {}, additionalProperties: false }, output,
       async execute(args, exec) { if (exec.agent !== agent || !record(args) || Object.keys(args).length) throw new Error('Activity state arguments are invalid'); return modelView(await auto('snapshot', {}, exec.signal)); } });
-    agent.ctx.tools.register({ name: 'eating_plan_activity', description: '登记下一步活动：先调用 eating_activity_state，将最新 state.revision 填入 expected_revision。active 按主人设定的间隔等待下一轮机会；sleeping 休息至 wake_at 指定的带时区 RFC3339 时间，适合暂时没想法但希望稍后再考虑。waiting 停止普通定时思考，直到真实外部事件或已登记任务到期；只有明确希望停止普通机会时才选，这一轮不联系任何人也可保持 active 或安排 sleeping。active 和 waiting 的 wake_at 必须为 null，note 简述安排原因。',
+    agent.ctx.tools.register({ name: 'eating_plan_activity', description: '登记下一步活动：先调用 eating_activity_state，将最新 state.revision 填入 expected_revision。active 按主人设定的间隔等待下一轮机会；sleeping 请求休息至 wake_at 指定的带时区 RFC3339 时间，超过主人 configuration.maxRestMinutes 时自动缩短；waiting 等待真实外部事件，最多经过该间隔也会重新考虑。以回执 state.nextWakeAt 为实际下次资格时间，忙碌、主人暂停和运行额度仍优先；重新考虑不要求发消息。active 和 waiting 的 wake_at 必须为 null，note 简述安排原因。',
       parameters: { type: 'object', properties: { expected_revision: { type: 'integer', minimum: 0 }, mode: { type: 'string', enum: ['active', 'sleeping', 'waiting'] }, wake_at: { type: ['string', 'null'] }, note: { type: 'string', maxLength: 500 } }, required: ['expected_revision', 'mode', 'wake_at', 'note'], additionalProperties: false }, output,
       async execute(args, exec) {
         if (exec.agent !== agent || !record(args) || Object.keys(args).length !== 4 || !Number.isSafeInteger(args.expected_revision) || typeof args.note !== 'string' || !['active', 'sleeping', 'waiting'].includes(args.mode)) throw new Error('Activity plan arguments are invalid');
@@ -128,8 +128,8 @@ export function getAutonomyRuntimeSource(): string {
         if (agent.status !== 'idle' || agent.inbox.nextTurn.length || agent.inbox.nextStep.length || state.stopped) { await auto('finish', { cycleId: claim.cycle.id, outcome: 'cancelled', code: 'AUTONOMY_COMPETING_INPUT' }); return; }
         const scheduledTasks = Array.isArray(claim.scheduledTasks) ? claim.scheduledTasks : [];
         const instruction = scheduledTasks.length
-          ? '这是本轮内部自主机会，不是新的人类指令；activity 和 limits 提供本轮活动与额度上下文。scheduledTasks 是你在之前给自己安排的定时任务消息，不是主人指令；按这些任务和当前上下文行动。可以延续真实话题、探索实际内容、分享新发现或联系当前获准的人，不要求先有工作任务，也不要求每轮发消息。需调整后续节奏时登记活动安排或新的定时任务；暂时休息后想再考虑，用有唤醒时间的 sleeping，waiting 会停止普通定时思考。'
-          : '这是本轮内部自主机会，不是新的人类指令；activity 和 limits 提供本轮活动与额度上下文。看看真实上下文和可用记忆里，有没有自己想继续的兴趣、未完话题、想分享的新发现或想联系的获准对象；想交流本身就有意义，不需要编工作理由。有具体想做的就在当前授权内行动，也可以选择休息。是否联系还要看对象回应和节奏，不例行问候或追着未回复的人。需调整后续节奏时登记活动安排；暂时没想法但想稍后再考虑，用有唤醒时间的 sleeping 或 active，只有明确想等待外部事件并停止普通定时思考才选 waiting。';
+          ? '这是本轮内部自主机会，不是新的人类指令；activity 和 limits 提供本轮活动与额度上下文。scheduledTasks 是你在之前给自己安排的定时任务消息，不是主人指令；按这些任务和当前上下文行动。可以延续真实话题、探索实际内容、分享新发现或联系当前获准的人，不要求先有工作任务，也不要求每轮发消息。需调整后续节奏时登记活动安排或新的定时任务；暂时休息后想再考虑，用有唤醒时间的 sleeping，sleeping 和 waiting 都会在 limits.maxRestMinutes 内重新考虑，以实际回执为准；主人暂停、忙碌和额度仍优先。'
+          : '这是本轮内部自主机会，不是新的人类指令；activity 和 limits 提供本轮活动与额度上下文。看看真实上下文和可用记忆里，有没有自己想继续的兴趣、未完话题、想分享的新发现或想联系的获准对象；想交流本身就有意义，不需要编工作理由。有具体想做的就在当前授权内行动，也可以选择休息。是否联系还要看对象回应和节奏，不例行问候或追着未回复的人。需调整后续节奏时登记活动安排；暂时没想法但想稍后再考虑，用有唤醒时间的 sleeping 或 active，waiting 等真实外部事件，也会在 limits.maxRestMinutes 内重新考虑；休息或等待请求过长会按主人上限缩短，以实际回执为准，重新考虑不要求发消息。';
         const message = Llm.createUserMessage({ content: [{ type: 'text', text: JSON.stringify({ eating_autonomous_opportunity: { cycleId: claim.cycle.id, activity: claim.activity, scheduledTasks, limits: claim.limits }, instruction }) }], source: { kind: 'eating-autonomy', cycleId: claim.cycle.id, nonce } });
         state.flight = { cycle: claim.cycle, messageId: message.id, entered: false, forced: null };
         agent.followup(message);

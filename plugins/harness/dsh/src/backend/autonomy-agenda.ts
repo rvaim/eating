@@ -52,6 +52,7 @@ export class DshAutonomyAgenda {
   snapshot(): JsonObject {
     return { revision: this.document.revision, tasks: [...this.document.tasks].sort((left, right) => left.dueAt - right.dueAt || left.createdAt - right.createdAt).map(task => ({ ...task })) as unknown as JsonObject[] }
   }
+  nextDueAt(): number | null { return this.document.tasks.length ? Math.min(...this.document.tasks.map(task => task.dueAt)) : null }
   private requireRevision(value: unknown): void { if (!integer(value) || value !== this.document.revision) fail('AUTONOMY_AGENDA_CONFLICT', 409) }
   schedule(input: unknown): JsonObject {
     if (!isJsonObject(input) || !exact(input, ['expectedRevision', 'dueAt', 'message']) || !integer(input.dueAt) || !messageText(input.message)) fail()

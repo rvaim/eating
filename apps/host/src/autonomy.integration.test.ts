@@ -71,7 +71,7 @@ function expectMainSystem(f: Awaited<ReturnType<typeof fixture>>) {
   }
 }
 
-async function fixture({ withholdSend = false, autonomyEnabled = true, scheduledOnly = false, groupScopeFirst = false } = {}) {
+async function fixture({ withholdSend = false, autonomyEnabled = true, scheduledOnly = false, groupScopeFirst = false, longRest = false } = {}) {
   const parent = await realpath(tmpdir()), home = await realpath(await mkdtemp(join(parent, 'Eating_native_autonomy_')))
   stops.push(async () => { const actual = await realpath(home); if (actual !== home || dirname(actual) !== parent || !basename(actual).startsWith('Eating_native_autonomy_')) throw new Error('Unsafe autonomy fixture cleanup'); await rm(actual, { recursive: true }) })
   const targetId = '100000202', accountId = '100000101'
@@ -93,6 +93,25 @@ async function fixture({ withholdSend = false, autonomyEnabled = true, scheduled
     const chunk = (delta: object, finish: string | null = null) => response.write(`data: ${JSON.stringify({ id: 'autonomy-fixture-' + requests.length, object: 'chat.completion.chunk', model: body.model, created: 1700000000, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`)
     const tool = (name: string, args: object) => { chunk({ role: 'assistant', tool_calls: [{ index: 0, id: randomUUID(), type: 'function', function: { name, arguments: JSON.stringify(args) } }] }); chunk({}, 'tool_calls') }
     if (main) {
+      if (longRest) {
+        const stage = mainCalls++
+        if (stage === 0) {
+          const opportunities = messages.filter(message => message.role === 'user').map(messageText).flatMap(text => {
+            try { const value = JSON.parse(text); return value.eating_autonomous_opportunity ? [value.eating_autonomous_opportunity] : [] } catch { return [] }
+          })
+          expect(opportunities).toEqual(expect.arrayContaining([expect.objectContaining({ limits: expect.objectContaining({ maxRestMinutes: 1 }) })]))
+          tool('eating_activity_state', {})
+        } else if (stage === 1) {
+          const snapshot = object(JSON.parse(String([...messages].reverse().find(message => message.role === 'tool')!.content)))
+          expect(object(snapshot.configuration).maxRestMinutes).toBe(1)
+          tool('eating_plan_activity', { expected_revision: object(snapshot.state).revision, mode: 'sleeping', wake_at: new Date(Date.now() + 12 * 3600000).toISOString(), note: 'An overlong requested rest must be bounded' })
+        } else {
+          const snapshot = object(JSON.parse(String([...messages].reverse().find(message => message.role === 'tool')!.content)))
+          expect(Number(object(snapshot.state).wakeAt)).toBeLessThanOrEqual(Date.now() + 60000)
+          chunk({ role: 'assistant', content: 'BOUNDED-REST-DONE' }); chunk({}, 'stop')
+        }
+        response.end('data: [DONE]\n\n'); return
+      }
       if (scheduledOnly) {
         let scheduled = false
         for (const message of messages.filter(candidate => candidate.role === 'user')) {
@@ -186,7 +205,7 @@ async function fixture({ withholdSend = false, autonomyEnabled = true, scheduled
   const directory = await api('/autonomy'), channel = (directory.channels as JsonObject[]).find(row => row.agentTypeId === 'qq.private')!
   expect(channel.accountId).toBe(accountId)
   const initial = plugin.autonomy.snapshot()
-  await api('/autonomy', { harnessId: 'dsh', operation: 'configure', input: { expectedRevision: initial.revision, configuration: { ...object(initial.configuration), enabled: autonomyEnabled, minIntervalSeconds: 1, maxCyclesPerHour: 10, cycleTimeoutSeconds: 30 } } })
+  await api('/autonomy', { harnessId: 'dsh', operation: 'configure', input: { expectedRevision: initial.revision, configuration: { ...object(initial.configuration), enabled: autonomyEnabled, minIntervalSeconds: 1, maxRestMinutes: longRest ? 1 : object(initial.configuration).maxRestMinutes, maxCyclesPerHour: 10, cycleTimeoutSeconds: 30 } } })
   const configured = plugin.autonomy.snapshot()
   await api('/autonomy', { harnessId: 'dsh', operation: 'configure-contact-policy', input: { expectedRevision: object(configured.contactPolicy).revision, expectedConfigurationRevision: configured.revision, expectedActivityRevision: object(configured.state).revision, mode: 'allowlist', entries: [{ pluginId: channel.pluginId, instanceId: channel.instanceId, accountId, agentTypeId: channel.agentTypeId, targetId, label: 'Isolated fixture contact' }] } })
   const state = () => object(plugin.autonomy.snapshot().state)
@@ -232,6 +251,17 @@ async function expectOrdinaryContact(f: Awaited<ReturnType<typeof fixture>>, { g
 }
 
 describe.runIf(Boolean(systemBin))('native main contact with real scoped Host and loopback OneBot', () => {
+  it('returns a bounded real planning receipt for an overlong rest without sending QQ messages', async () => {
+    const f = await fixture({ longRest: true })
+    await f.control('resume')
+    await vi.waitFor(() => expect(f.state()).toMatchObject({ mode: 'sleeping', lastOutcome: 'completed', active: null }), { timeout: 20000, interval: 100 })
+    expect(f.requests.filter(request => request.main)).toHaveLength(3)
+    expect(Number(f.state().nextWakeAt)).toBeGreaterThan(Date.now())
+    expect(Number(f.state().nextWakeAt)).toBeLessThanOrEqual(Date.now() + 60000)
+    expect(f.onebot.requests.filter(request => request.action.startsWith('send_'))).toHaveLength(0)
+    expect(f.modelErrors).toEqual([])
+    expectMainSystem(f)
+  }, 60000)
   it('privately contacts an approved target requested from a group while timed autonomy is disabled and owner-paused', async () => {
     const f = await fixture({ autonomyEnabled: false })
     expect(f.requests).toHaveLength(0)

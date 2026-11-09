@@ -154,6 +154,32 @@ test.describe('自主运行设置与信息', () => {
     expect(activity.snapshot().agenda.tasks).toHaveLength(0)
   })
 
+  test('最长休息字段校验间隔关系，真实保存并在语言切换和窄屏保留', async ({ page }, testInfo) => {
+    let writes = 0
+    page.on('request', request => { if (new URL(request.url()).pathname === '/api/autonomy' && request.method() === 'POST') writes++ })
+    await open(page); await page.getByRole('tab', { name: '运行设置', exact: true }).click()
+    const rest = page.getByLabel('最长休息或等待（分钟）', { exact: true })
+    await expect(rest).toHaveValue('15')
+    await page.getByLabel('最短续行间隔（秒）', { exact: true }).fill('120'); await rest.fill('1')
+    await page.getByRole('button', { name: '保存更改', exact: true }).click()
+    await expect(page.getByText('最长休息或等待时间不能短于最短续行间隔，请调整其中一项。', { exact: true })).toBeVisible()
+    expect(writes).toBe(0)
+    await rest.fill('4'); await page.getByRole('button', { name: '保存更改', exact: true }).click()
+    await expect(page.getByText('设置已保存，自主运行已关闭。', { exact: true })).toBeVisible()
+    const saved = JSON.parse(await readFile(join(home, 'harness/dsh/autonomy.json'), 'utf8'))
+    expect(saved).toMatchObject({ schemaVersion: 2, configuration: { maxRestMinutes: 4, minIntervalSeconds: 120 }, state: { ownerPaused: true } })
+    await rest.scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('bounded-rest-desktop.png') })
+    const before = writes
+    await page.getByLabel('界面语言', { exact: true }).selectOption('en-US')
+    await expect(page.getByLabel('Maximum rest or wait (minutes)', { exact: true })).toHaveValue('4')
+    expect(writes).toBe(before)
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.getByLabel('Maximum rest or wait (minutes)', { exact: true }).scrollIntoViewIfNeeded()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await page.screenshot({ path: testInfo.outputPath('bounded-rest-mobile.png') })
+    expect(onebot.requests.filter(request => request.action.startsWith('send_'))).toHaveLength(0)
+  })
+
   test('配置冲突保留草稿，明确核对最新配置后才能再次保存', async ({ page }) => {
     await open(page)
     await page.getByRole('tab', { name: '运行设置', exact: true }).click()

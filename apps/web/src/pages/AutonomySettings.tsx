@@ -10,7 +10,7 @@ import './AutonomySettings.css'
 
 type Tab = 'status' | 'configuration' | 'contacts'
 type Failure = { key: string; code?: string; kind: 'read' | 'mutation' }
-const primaryFields: readonly NumericKey[] = ['minIntervalSeconds', 'maxCyclesPerHour']
+const primaryFields: readonly NumericKey[] = ['minIntervalSeconds', 'maxRestMinutes', 'maxCyclesPerHour']
 const advancedFields: readonly NumericKey[] = ['maxRunMinutes', 'cycleTimeoutSeconds', 'maxConsecutiveFailures', 'maxContactsPerHour']
 const fieldId = (name: NumericKey) => `autonomy-field-${name}`
 const tabs: readonly Tab[] = ['status', 'configuration', 'contacts']
@@ -143,11 +143,17 @@ export function AutonomySettings({ active }: { readonly active: boolean }) {
   function numberIssue(name: NumericKey) {
     if (!draft) return null
     const field = fields.find(field => field.name === name)!
-    return !/^\d+$/.test(draft[name]) || Number(draft[name]) < field.min || Number(draft[name]) > field.max ? 'validation.number' : null
+    if (!/^\d+$/.test(draft[name]) || Number(draft[name]) < field.min || Number(draft[name]) > field.max) return 'validation.number'
+    if (name === 'maxRestMinutes' && /^\d+$/.test(draft.minIntervalSeconds) && Number(draft.minIntervalSeconds) > Number(draft.maxRestMinutes) * 60) return 'validation.restInterval'
+    return null
   }
   function validateNumber(name: NumericKey) {
-    const id = fieldId(name), issue = numberIssue(name)
-    setErrors(previous => { const next = { ...previous }; if (issue) next[id] = issue; else delete next[id]; return next })
+    const names: readonly NumericKey[] = name === 'minIntervalSeconds' || name === 'maxRestMinutes' ? ['minIntervalSeconds', 'maxRestMinutes'] : [name]
+    setErrors(previous => {
+      const next = { ...previous }
+      for (const field of names) { const id = fieldId(field), issue = numberIssue(field); if (issue) next[id] = issue; else delete next[id] }
+      return next
+    })
   }
   function revealError(id: string) {
     if (id.startsWith('autonomy-field-')) {

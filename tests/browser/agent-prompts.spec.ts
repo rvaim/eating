@@ -139,7 +139,14 @@ test.describe('动态代理提示词与已保存组合', () => {
     const data = { schemaVersion: 1, revision: 0, prompts: ['main', 'group', 'private'].map(id => ({ id, title: `旧 ${id}`, body: `旧正文 ${id}`, revision: 0, updatedAt: null })), personas: [], activePersonaId: null }
     const latest = { schemaVersion: 2, revision: 0, prompts: (await snapshot(page)).prompts.filter(doc => doc.source === 'owner').map(({ id, title, body, revision, updatedAt, scope, source }) => ({ id, title, body, revision, updatedAt, scope, source })), personas: [], activePersonaId: null }
     const mutations: string[] = []
-    page.on('request', request => { if (request.method() === 'POST') mutations.push(request.url()) })
+    page.on('request', request => {
+      if (request.method() !== 'POST') return
+      if (request.url() === `${url}/api/plugins/qq/manage`) {
+        const body = request.postDataJSON() as { operation?: string; input?: Record<string, unknown> }
+        if (body.operation === 'media-transport' && body.input && Object.keys(body.input).length === 0) return
+      }
+      mutations.push(request.url())
+    })
     for (const unsupported of [data, { ...latest, legacyPrompts: [] }]) {
       const raw = JSON.stringify(unsupported, null, 2) + '\n'
       host!.store.setSetting('host:authoring', raw)

@@ -18,7 +18,7 @@ function validate(values: PluginConfiguration): ConfigurationValidation {
 
 const plugin: CommunicationPlugin = {
   id: 'qq', name: 'QQ', get description() { return translate('qq', 'plugin.description') },
-  version: '0.14.1', apiVersion: 4, kind: 'communication', order: 10,
+  version: '0.14.2', apiVersion: 4, kind: 'communication', order: 10,
   icon: MessageCircle, brandColor: '#3876b6', defaultRegistered: true,
   initialValues: { displayName: 'QQ', endpoint: '', autoConnect: false, forwardToHarness: true, receiveGroups: true, timeoutMs: '10000' },
   validate, summary: values => typeof values.displayName === 'string' && values.displayName.trim() ? values.displayName : translate('qq', 'plugin.summary'), Panel: QQPanel,

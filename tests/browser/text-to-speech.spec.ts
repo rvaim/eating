@@ -32,6 +32,28 @@ test.describe('OpenAI speech plugin installed UI', () => {
     await page.getByRole('button', { name: '保存配置', exact: true }).click()
     await expect(page.getByText('配置已保存，未调用语音合成。', { exact: true })).toBeVisible()
   }
+  test('disabled plugin keeps service settings editable, sends no job requests and resumes reads only after enabling', async ({ page }) => {
+    const boot = await page.request.get(url + '/api/bootstrap'), { csrfToken } = await boot.json()
+    expect((await page.request.post(url + '/api/plugins/text-to-speech/disable', { headers: { 'X-Eating-Csrf': csrfToken }, data: {} })).ok()).toBe(true)
+    let jobReads = 0
+    page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/text-to-speech/manage') && request.postDataJSON()?.operation === 'jobs') jobReads++ })
+    await configure(page)
+    await expect(page.getByRole('region', { name: '语音任务', exact: true }).getByText('插件尚未启用，可先保存服务配置，再点击页面底部的启用。', { exact: true })).toBeVisible()
+    await page.waitForTimeout(2200)
+    expect(jobReads).toBe(0)
+    await expect(page.locator('.speech-error[role="alert"]')).toHaveCount(0)
+    await page.getByRole('region', { name: '插件操作', exact: true }).getByRole('button', { name: '启用', exact: true }).click()
+    await expect.poll(() => jobReads).toBe(1)
+    await page.waitForTimeout(2200)
+    expect(jobReads).toBe(1)
+    expect(provider.connections()).toBe(0)
+    expect(provider.requests).toHaveLength(0)
+    await page.getByRole('region', { name: '插件操作', exact: true }).getByRole('button', { name: '停用', exact: true }).click()
+    await expect(page.getByRole('region', { name: '语音任务', exact: true }).getByText('插件尚未启用，可先保存服务配置，再点击页面底部的启用。', { exact: true })).toBeVisible()
+    await page.waitForTimeout(2200)
+    expect(jobReads).toBe(1)
+    await expect(page.locator('.speech-error[role="alert"]')).toHaveCount(0)
+  })
   test('owner voice is saved with no cloud call, locale changes keep drafts and do not submit requests', async ({ page }) => {
     await configure(page); expect(provider.requests).toHaveLength(0); expect(provider.connections()).toBe(0)
     await expect(page.getByLabel('API Key', { exact: true })).toHaveValue('')

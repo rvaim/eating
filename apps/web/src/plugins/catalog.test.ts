@@ -31,7 +31,7 @@ describe('按真实插件类型组织管理界面', () => {
       { id: 'headless-harness', kind: 'harness', name: '无前端 Harness', version: '0.1.0' },
     ])
     expect(catalog.map(plugin => [plugin.id, plugin.kind])).toEqual([['qq', 'communication'], ['other-harness', 'harness'], ['headless-harness', 'harness']])
-    const renderFailure = () => renderToStaticMarkup(createElement(catalog[1]!.Panel, { saved: undefined, initialValues: {}, onSave: () => ({ ok: true as const }), onFeedback: vi.fn() }))
+    const renderFailure = () => renderToStaticMarkup(createElement(catalog[1]!.Panel, { enabled: false, saved: undefined, initialValues: {}, onSave: () => ({ ok: true as const }), onFeedback: vi.fn() }))
     expect(renderFailure()).toContain('此插件的配置面板无法加载')
     setLocale('en-US')
     expect(renderFailure()).toContain('This plugin’s settings panel could not load')

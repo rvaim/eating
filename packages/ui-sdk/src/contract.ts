@@ -13,6 +13,7 @@ export type WorkspaceActionResult =
   | { readonly ok: false; readonly error: string }
 
 export interface PluginPanelProps {
+  readonly enabled: boolean
   readonly saved: SavedConfiguration | undefined
   readonly initialValues: PluginConfiguration
   readonly onSave: (values: PluginConfiguration) => WorkspaceActionResult | Promise<WorkspaceActionResult>

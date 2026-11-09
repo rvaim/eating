@@ -286,7 +286,7 @@ function PluginPanelPage({ workspace, snapshot, pluginId, onFeedback }: {
       <div className="plugins-panel-actions"><span className={`status-badge plugins-status plugins-status-${state}`}>{t(statusText(plugin.kind, state))}</span></div>
     </div>
     {failure && <div className="plugins-alert" role="alert"><AlertCircle size={17} aria-hidden="true" /><p>{failure}</p></div>}
-    <PanelBoundary key={plugin.id}><plugin.Panel saved={snapshot.configurations[plugin.id]} initialValues={plugin.initialValues} onSave={values => workspace.save(plugin.id, values)} onFeedback={onFeedback} onRefresh={() => workspace.refresh()} /></PanelBoundary>
+    <PanelBoundary key={plugin.id}><plugin.Panel enabled={enabled} saved={snapshot.configurations[plugin.id]} initialValues={plugin.initialValues} onSave={values => workspace.save(plugin.id, values)} onFeedback={onFeedback} onRefresh={() => workspace.refresh()} /></PanelBoundary>
     <section className="plugins-panel-footer" aria-label={t('plugins.panelActions')}>
       <div className="plugins-panel-actions">
         <ActionButton reason={t('ui.reason.busy')} type="button" className="button button-secondary" disabled={busy} onClick={() => void toggle(enabled)}>{busy ? t('plugins.busy') : t(enabled ? 'plugins.disable' : 'plugins.enable')}</ActionButton>

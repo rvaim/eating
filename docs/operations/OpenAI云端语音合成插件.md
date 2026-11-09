@@ -6,6 +6,8 @@
 
 使用已构建产物plugins/capabilities/text-to-speech/dist，通过正式插件安装入口安装；源码开发可先运行pnpm build。插件独立可停用、卸载，卸载代码不删除数据。
 
+更新已有实例时，新插件保留未启用状态。可以先保存服务地址、模型、音色和自己的 Key，再点击页面底部“启用”；停用时面板只提供配置，不请求任务列表或调用合成。任务列表仅在有运行中任务时定时更新。
+
 在插件→语音合成填写服务地址、模型、音色和API Key并保存。默认使用wss://api.openai.com/v1/realtime与gpt-realtime-2.1-mini，音色可选alloy、ash、ballad、coral、echo、sage、shimmer、verse、marin、cedar。正式服务使用wss；ws仅接受本机回环测试。Key留空保留，显式勾选清除才删除。保存／连接只做本地配置检查，不代表真实模型权限或合成已验证。
 
 默认请求超时120秒，允许10～300秒。没有接入本地模型、旧Speech接口或失败自动回退。官方[语音文档](https://developers.openai.com/api/docs/guides/text-to-speech)说明旧tts模型2027-01-06停服；本插件直接使用Realtime事件。

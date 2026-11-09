@@ -114,7 +114,7 @@ function PluginDetails({ plugin, snapshot, workspace, onFeedback, onRemoved }: {
   return <article className="plugin-details">
     <div className="panel-title-row"><h2>{plugin.name}</h2><PluginStatus kind={plugin.kind} status={snapshot.statuses[plugin.id]} stale={Boolean(snapshot.storageError)} /></div>
     <p className="panel-description">{t(`robots.detailDescription.${plugin.kind}`)}</p>
-    <PanelBoundary key={plugin.id}><Panel saved={snapshot.configurations[plugin.id]} initialValues={plugin.initialValues} onSave={values => workspace.save(plugin.id, values)} onFeedback={onFeedback} onRefresh={() => workspace.refresh()} /></PanelBoundary>
+    <PanelBoundary key={plugin.id}><Panel enabled={snapshot.plugins.some(entry => entry.id === plugin.id)} saved={snapshot.configurations[plugin.id]} initialValues={plugin.initialValues} onSave={values => workspace.save(plugin.id, values)} onFeedback={onFeedback} onRefresh={() => workspace.refresh()} /></PanelBoundary>
     <section className="plugin-information" aria-label={t('robots.pluginInformation')}>
       <div><h3>{t('robots.pluginTitle', { name: plugin.name })}<span className="version-label">v{plugin.version}</span></h3><p>{t(`robots.disableHint.${plugin.kind}`)}</p></div>
       {!confirming && <ActionButton reasonCode="busy" ref={removeTrigger} className="text-button remove-trigger" onClick={() => setConfirming(true)}><Power size={15} />{t('robots.disable')}</ActionButton>}

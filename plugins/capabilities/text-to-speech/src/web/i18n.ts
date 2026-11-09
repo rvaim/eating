@@ -1,6 +1,7 @@
 import { registerTranslations, translate } from '@eating/ui-sdk'
 const zh = {
   name: '语音合成', description: '通过 OpenAI 云端生成语音，音色由你选择，每段语气由 AI 决定。', summary: '云端合成 · 固定音色 · 自主语气',
+  disabled: '插件尚未启用，可先保存服务配置，再点击页面底部的启用。',
   configuration: '声音与服务', endpoint: '服务地址', endpointHelp: '填写 OpenAI Realtime WebSocket 地址。保存配置不会调用云端。', model: '模型', voice: '音色', voiceHelp: '保存后作为固定声音；语气由会话 AI 每次决定，不会改动这里。', key: 'API Key', keySaved: '已保存密钥；留空保持', keyEmpty: '尚未保存密钥', clearKey: '清除已保存密钥', timeout: '请求超时（秒）',
   save: '保存配置', saved: '配置已保存，未调用语音合成。', refresh: '刷新配置', reloadQuestion: '重新读取会放弃当前配置草稿。', reload: '放弃草稿并读取', cancel: '取消', loading: '正在读取…', working: '处理中…',
   preview: '试听', text: '朗读文本', previewHelp: '试听使用已保存的音色和自然语气。生成的声音由 AI 合成。', generate: '生成试听', confirm: '确认生成', charge: '将向 OpenAI 提交此文本，可能产生费用。生成完成后可播放，不会发送到 QQ。',
@@ -10,6 +11,7 @@ const zh = {
 }
 const en: Record<keyof typeof zh, string> = {
   name: 'Speech synthesis', description: 'Generate speech with OpenAI. You choose the voice; the AI chooses delivery for each utterance.', summary: 'Cloud speech · Fixed voice · Contextual delivery',
+  disabled: 'This plugin is disabled. Save your service settings, then enable it at the bottom of the page.',
   configuration: 'Voice and service', endpoint: 'Service endpoint', endpointHelp: 'OpenAI Realtime WebSocket endpoint. Saving does not call the cloud service.', model: 'Model', voice: 'Voice', voiceHelp: 'Your saved voice stays fixed. The conversation AI chooses delivery per utterance.', key: 'API Key', keySaved: 'Key saved; leave empty to keep it', keyEmpty: 'No saved key', clearKey: 'Clear saved API Key', timeout: 'Request timeout (seconds)',
   save: 'Save configuration', saved: 'Configuration saved. No speech was generated.', refresh: 'Reload configuration', reloadQuestion: 'Reloading discards your configuration draft.', reload: 'Discard draft and reload', cancel: 'Cancel', loading: 'Loading…', working: 'Working…',
   preview: 'Try the voice', text: 'Text to read', previewHelp: 'Preview uses the saved voice with natural delivery. The voice is AI-generated.', generate: 'Generate preview', confirm: 'Confirm generation', charge: 'This text will be sent to OpenAI and may incur charges. You can play the result; it will not be sent to QQ.',

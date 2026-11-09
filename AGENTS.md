@@ -1,5 +1,7 @@
 # Eating 开发规则
 
+2026-11-10 部署收尾：图片大小与语音源码8920db9已push并部署0.21.0，云端656项通过，原数据保留。公网检查补充修复语音停用时仍查询任务的根因；应用0.21.1、ui-sdk4.3.0、语音0.1.2，由Host传入真实enabled，停用只编辑配置、启用恢复读取、运行中任务才轮询。修复继续沿用本轮push／部署授权；最终状态见[本轮报告](docs/reports/2026-11-10-图片大小配置验证报告.md)。
+
 2026-11-10 发布授权：主人明确要求“push 部署到服务器上”，授权本轮图片大小配置与已本地提交的语音插件一并提交／push，并由云端从GitHub拉取同一提交构建、备份和保留数据更新。当前发布处理中，完成以本轮部署报告的实际结果为准。
 
 2026-11-10 图片大小：主人要求把 Eating 本地 5 MiB 限制改为可配置、默认 10 MiB。按[ADR-0052](docs/decisions/ADR-0052-统一可配置图片大小.md)，Host 独立 `host:image-limits` 严格 schema1／CAS，通过 `context.imageLimits()` 实时提供 1–50 MiB 单图上限，批次 2 倍／最多 4 张，可信 Base64／wire／上传预算统一计算。内置生图、表情、QQ 和预览共用；存储验证独立 50 MiB，调低保原图与索引，旧发送 lease 撤销，已接受生图沿用提交时上限。本地修改验证完成，本轮已授权提交／push／部署，发布处理中；前轮语音已本地提交 `66f01c0`。证据见[本轮报告](docs/reports/2026-11-10-图片大小配置验证报告.md)。
@@ -59,7 +61,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`、`plugins/capabilities/text-to-speech`。
 
-当前源码应用／Host／Web0.21.0，plugin-sdk4.11.0、ui-sdk4.2.1、plugin-core4.0.0，QQ0.16.0、DSH0.18.2、表情包0.3.0、生图0.4.0、记忆源码0.3.2、语音text-to-speech0.1.1（本机原记忆安装0.1.1保持）；插件唯一 API4。无新UI SDK API、无新增依赖，本轮锁文件零差异；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前源码应用／Host／Web0.21.1，plugin-sdk4.11.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.16.0、DSH0.18.2、表情包0.3.0、生图0.4.0、记忆源码0.3.2、语音text-to-speech0.1.2（本机原记忆安装0.1.1保持）；插件唯一 API4。UI SDK新增必填面板enabled类型，无新增依赖，本轮锁文件零差异；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 

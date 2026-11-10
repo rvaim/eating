@@ -37,6 +37,38 @@ test.describe('自主运行设置与信息', () => {
     await expect(page.getByRole('heading', { name: '自主模式未启用', exact: true })).toBeVisible()
   }
   const plugin = () => Reflect.get(host, 'plugins').get('dsh')
+  test('预算暂停与模型故障显示不同原因，恢复文案双语完整且不自动恢复', async ({ page }, info) => {
+    let code = 'AUTONOMY_RUN_LIMIT'
+    const writes: string[] = []
+    page.on('request', request => { if (new URL(request.url()).pathname === '/api/autonomy' && request.method() === 'POST') writes.push(request.postData() ?? '') })
+    await page.route('**/api/autonomy', async route => {
+      const response = await route.fetch(), value = await response.json()
+      const snapshot = value.harnesses[0].snapshot, limited = code === 'AUTONOMY_RUN_LIMIT'
+      snapshot.configuration.enabled = true
+      Object.assign(snapshot.state, { runtimeReady: true, ownerPaused: true, reason: limited ? 'run-limit' : 'error', errorCode: code, failures: limited ? 0 : 3, runUsedMs: limited ? 7200000 : 3000, runRemainingMs: limited ? 0 : 7197000, lastOutcome: limited ? 'completed' : 'failed' })
+      await route.fulfill({ response, json: value })
+    })
+    await page.goto(url + '/#settings/autonomy')
+    await expect(page.getByRole('heading', { name: '已达连续执行时长上限，已暂停', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '恢复自主运行', exact: true })).toBeVisible()
+    await expect(page.locator('.autonomy-status-copy')).toContainText('120 分钟')
+    await expect(page.locator('.autonomy-status-copy')).toContainText(code)
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await page.screenshot({ path: info.outputPath('autonomy-limit-desktop.png') })
+    await page.setViewportSize({ width: 390, height: 844 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.screenshot({ path: info.outputPath('autonomy-limit-mobile.png') })
+    await page.locator('#display-language').selectOption('en-US')
+    await expect(page.getByRole('button', { name: 'Resume autonomous activity', exact: true })).toBeVisible()
+    code = 'AUTONOMY_MODEL_FAILED'
+    await page.getByRole('button', { name: 'Refresh activity status', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Review and resume', exact: true })).toBeVisible()
+    await expect(page.locator('.autonomy-status-copy')).toContainText(code)
+    await page.locator('#display-language').selectOption('zh-CN')
+    await expect(page.getByRole('button', { name: '核对后恢复', exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '发生错误，已暂停', exact: true })).toBeVisible()
+    expect(writes).toEqual([])
+  })
   // UI state fixture only: the actual native runtime was validated separately, no model is started here.
   async function showReady(page: Page, calls: string[], failResume = false) {
     await page.route('**/api/autonomy', async route => {
@@ -167,7 +199,7 @@ test.describe('自主运行设置与信息', () => {
     await rest.fill('4'); await page.getByRole('button', { name: '保存更改', exact: true }).click()
     await expect(page.getByText('设置已保存，自主运行已关闭。', { exact: true })).toBeVisible()
     const saved = JSON.parse(await readFile(join(home, 'harness/dsh/autonomy.json'), 'utf8'))
-    expect(saved).toMatchObject({ schemaVersion: 2, configuration: { maxRestMinutes: 4, minIntervalSeconds: 120 }, state: { ownerPaused: true } })
+    expect(saved).toMatchObject({ schemaVersion: 3, configuration: { maxRestMinutes: 4, minIntervalSeconds: 120 }, state: { ownerPaused: true } })
     await rest.scrollIntoViewIfNeeded(); await page.screenshot({ path: testInfo.outputPath('bounded-rest-desktop.png') })
     const before = writes
     await page.getByLabel('界面语言', { exact: true }).selectOption('en-US')

@@ -4,7 +4,7 @@ import { HostApiError } from '@eating/ui-sdk'
 
 export interface ActivityState {
   revision: number; ownerPaused: boolean; mode: 'active' | 'sleeping' | 'waiting'; note: string; reason: string; nextWakeAt: number | null; runtimeReady: boolean
-  active: { id: string; startedAt: number; deadline: number } | null; cycles: number; contacts: number; failures: number; lastStartedAt: number | null; lastFinishedAt: number | null; lastOutcome: string | null; errorCode: string | null; runRemainingMs?: number
+  active: { id: string; startedAt: number; deadline: number } | null; cycles: number; contacts: number; failures: number; lastStartedAt: number | null; lastFinishedAt: number | null; lastOutcome: string | null; errorCode: string | null; runUsedMs: number; runRemainingMs: number
   history: { cycleId: string; startedAt: number; finishedAt: number; outcome: string; code: string | null }[]
 }
 export interface ScheduledTask { id: string; message: string; dueAt: number; createdAt: number }
@@ -36,7 +36,7 @@ export function readDirectory(value: unknown): Directory {
         if (!isJsonObject(agenda) || !Number.isSafeInteger(agenda.revision) || Number(agenda.revision) < 0 || !Array.isArray(agenda.tasks) || agenda.tasks.length > 50 || agenda.tasks.some(task => !isJsonObject(task) || Object.keys(task).length !== 4 || !safeText(task.id) || !safeText(task.message, 2000) || !Number.isSafeInteger(task.dueAt) || !Number.isSafeInteger(task.createdAt))) return invalid()
       }
       if ((c.targets as unknown[]).some(target => !isJsonObject(target) || ['id', 'label', 'pluginId', 'instanceId', 'accountId', 'agentTypeId', 'targetId'].some(key => !safeText(target[key])) || !Array.isArray(target.toolNames) || target.toolNames.length > 256 || target.toolNames.some(name => !safeText(name, 160)))) return invalid()
-      if (['cycles', 'contacts', 'failures'].some(key => !Number.isSafeInteger(s[key]) || Number(s[key]) < 0) || ['nextWakeAt', 'lastStartedAt', 'lastFinishedAt'].some(key => s[key] !== null && (!Number.isSafeInteger(s[key]) || Number(s[key]) < 0)) || typeof s.runtimeReady !== 'boolean' || ![null, 'completed', 'failed', 'unknown', 'cancelled'].includes(s.lastOutcome as null) || s.errorCode !== null && !safeText(s.errorCode, 100)) return invalid()
+      if (['runUsedMs', 'runRemainingMs', 'cycles', 'contacts', 'failures'].some(key => !Number.isSafeInteger(s[key]) || Number(s[key]) < 0) || ['nextWakeAt', 'lastStartedAt', 'lastFinishedAt'].some(key => s[key] !== null && (!Number.isSafeInteger(s[key]) || Number(s[key]) < 0)) || typeof s.runtimeReady !== 'boolean' || ![null, 'completed', 'failed', 'unknown', 'cancelled'].includes(s.lastOutcome as null) || s.errorCode !== null && !safeText(s.errorCode, 100)) return invalid()
       if (s.active !== null && (!isJsonObject(s.active) || !safeText(s.active.id) || !Number.isSafeInteger(s.active.startedAt) || !Number.isSafeInteger(s.active.deadline))) return invalid()
       if ((s.history as unknown[]).some(row => !isJsonObject(row) || !safeText(row.cycleId) || !Number.isSafeInteger(row.startedAt) || !Number.isSafeInteger(row.finishedAt) || !['completed', 'failed', 'unknown', 'cancelled'].includes(String(row.outcome)) || row.code !== null && !safeText(row.code, 100)) || snapshot.contactTasks.length > 100 || snapshot.contactTasks.some(row => !isJsonObject(row) || ['agentId', 'targetId', 'label', 'taskId'].some(key => !safeText(row[key])) || !['pending', 'completed', 'failed', 'unknown', 'reviewed'].includes(String(row.state)))) return invalid()
     }

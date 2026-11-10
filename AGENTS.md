@@ -1,5 +1,7 @@
 # Eating 开发规则
 
+2026-11-10 自主执行预算修复：主人已授权修复、提交／push及云端保留数据部署。应用0.22.0／DSH0.19.0，严格自主schema3/runUsedMs，只累计轮次准入至结算，间隔、额度等待和停机不计；预算暂停与真实故障分开显示，补齐恢复按钮双语。独立停机工具按原SHA和私有备份显式schema2→3，从0开始新预算，保其余配置、历史及暂停；当前验证与发布处理中，实际结果见[本轮报告](docs/reports/2026-11-10-自主执行预算修复部署报告.md)。
+
 2026-11-10 图片大小与云端语音：**源码发布及云端保留数据部署完成**。源码 `de79aee` 已push并由服务器从GitHub拉取构建部署，应用0.21.1、plugin-sdk4.11.0、ui-sdk4.3.0；QQ0.16.0、DSH0.18.2、生图0.4.0、表情0.3.0、记忆0.3.2、语音0.1.2。“设置 → 图片大小”默认单图10MiB、合计20MiB／最多4张，可配1–50MiB；原配置、人格、图片、数据库记录、会话身份及3份原生日志前缀保留。原有五插件connected、DSH／nativeWeb ready、异常restart0。语音插件已安装且待配置／未启用；面板停用不查询任务，保存自己的Key及音色后再启用。本地全量1910项通过／8项条件跳过、19项相关浏览器最终通过，补发修复云端465项通过；首轮云端656项通过。无新增外部依赖、无真实付费合成／真人试发，完整证据见[本轮报告](docs/reports/2026-11-10-图片大小配置验证报告.md)。 面板启停按ADR-0053的必填enabled契约，图片按ADR-0052严格schema1／CAS；默认10MiB不补写，已接受生图固定提交时上限，调低保原图，旧发送lease失效。不重新初始化插件或清历史。
 
 2026-11-09 OpenAI云端语音插件：主人已授权开始开发，本地开发与验证完成，本轮已授权本地提交，未push／部署。新增text-to-speech0.1.0，主人保存音色，会话子Agent按次选择delivery，不提供全局语气字段；官方Realtime单次合成、受控音频lease与QQ record发送，未知不重放。应用0.20.0、plugin-sdk4.10.0、QQ0.15.0，其他SDK产物消费者按封存规则补丁升级；锁文件仅新增workspace链接，无新外部版本。未调用真实Key／付费服务或真人QQ，最终实数和限制见[本轮报告](docs/reports/2026-11-09-OpenAI语音插件本地开发验证报告.md)。 完整构建／严格类型、全量1902项通过／11项条件跳过、11项相关浏览器及最终补充语音12项通过；真实Key音质与真人QQ播放未验证。
@@ -57,7 +59,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`、`plugins/capabilities/text-to-speech`。
 
-当前源码应用／Host／Web0.21.1，plugin-sdk4.11.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.16.0、DSH0.18.2、表情包0.3.0、生图0.4.0、记忆源码0.3.2、语音text-to-speech0.1.2（本机原记忆安装0.1.1保持）；插件唯一 API4。UI SDK新增必填面板enabled类型，无新增依赖，本轮锁文件零差异；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前源码应用／Host／Web0.22.0，plugin-sdk4.11.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.16.0、DSH0.19.0、表情包0.3.0、生图0.4.0、记忆源码0.3.2、语音text-to-speech0.1.2（本机原记忆安装0.1.1保持）；插件唯一 API4。UI SDK新增必填面板enabled类型，无新增依赖，本轮锁文件零差异；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -97,7 +99,7 @@ DSH 不自行下载运行时：检测系统安装的 `dsh`（EATING_DSH_BIN → 
 
 实例名含真实绑定账号，正常恢复复用稳定UUID，不从旧label猜账号；本轮主人明确清主／子会话后，再运行创建新UUID，人格身份不变。默认系统层去实时时间；原生time-context在主、子对应scope各挂一次，上海时区、600000ms，不另加调度或时钟工具。当前9变量仍可手写使用，含动态变量的自定义正文对缓存的影响应如实报告。
 
-无输入时的定时机会按[ADR-0023](docs/decisions/ADR-0023-自主活动协调与主动通讯授权.md)由同一主Agent原生followup接受，外部消息/原生目标/Inbox优先，机械检查不请求模型。autonomy.json/schema2保存配置CAS、主人maxRestMinutes（默认15分钟）及有界sleeping／waiting安排、主人暂停、AI安排revision、窗口额度、周期nonce及有界无正文结果；保存与开启分开、默认关闭。enabled/ownerPaused只控制此类定时机会，普通有输入轮次仍可联系获准目标；真正自主机会取消撤销该轮许可。
+无输入时的定时机会按[ADR-0023](docs/decisions/ADR-0023-自主活动协调与主动通讯授权.md)由同一主Agent原生followup接受，外部消息/原生目标/Inbox优先，机械检查不请求模型。autonomy.json/schema3保存配置CAS、主人maxRestMinutes（默认15分钟）及有界sleeping／waiting安排、主人暂停、AI安排revision、窗口额度、周期nonce及有界无正文结果；保存与开启分开、默认关闭。enabled/ownerPaused只控制此类定时机会，普通有输入轮次仍可联系获准目标；真正自主机会取消撤销该轮许可。
 
 AI未来一次性任务按[ADR-0032](docs/decisions/ADR-0032-AI定时任务.md)，主Agent在自主运行开启且未暂停时用eating_schedule_task/eating_cancel_scheduled_task按agenda revision创建／取消，eating_activity_state返回agenda。autonomy-agenda.json/schema1独立保存最多50条、128KiB、每条最多2000字符、未来1秒至365天的任务。到期每轮最多10条合并为同一eating-autonomy机会，可打断sleeping/waiting，仍受主人暂停、额度、runtime及周期限制；cycle持久登记后移出agenda，投递与读取间中断按unknown处理，不重放已进入会话的任务。主人概览可见可取消，取消不撤回已进入会话的机会；当前agenda无重复规则。按ADR-0034移除自主周期对原生DSH schedule_create/schedule_update的人工阻断，原生Schedule保官方语义；Eating暂停不冻结main其他能力，也不承诺暂停所有原生提醒／目标。
 

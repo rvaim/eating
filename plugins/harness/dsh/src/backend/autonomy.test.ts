@@ -20,6 +20,59 @@ const state = (activity: DshAutonomy) => activity.snapshot().state as JsonObject
 const target: ProactiveTarget = { id: 'owner-approved-target', label: 'Fixture owner', pluginId: 'qq', instanceId: 'fixture', accountId: '100', agentTypeId: 'qq.private', targetId: '200', toolNames: ['qq_send_private_message'] }
 
 describe('owner controlled autonomous activity state', () => {
+  it('excludes interval and hourly-quota waits from the persisted execution budget', async () => {
+    const f = fixture(); await f.configure({ minIntervalSeconds: 60, maxRunMinutes: 120, maxCyclesPerHour: 12 }); f.activity.startRuntime('runtime'); await f.control('resume')
+    for (let hour = 0; hour < 2; hour++) {
+      const window = f.now()
+      for (let i = 0; i < 12; i++) {
+        const cycle = f.activity.claim('runtime').cycle as JsonObject
+        f.advance(3000); f.activity.finish('runtime', String(cycle.id), 'completed', null); f.advance(60000)
+      }
+      expect(f.activity.claim('runtime').admitted).toBe(false)
+      f.advance(3600000 - (f.now() - window))
+    }
+    expect(state(f.activity)).toMatchObject({ ownerPaused: false, errorCode: null, failures: 0, runUsedMs: 72000, runRemainingMs: 120 * 60000 - 72000 })
+    const stored = readFileSync(f.activity.filePath, 'utf8'), revision = state(f.activity).revision
+    f.advance(3600000)
+    expect(state(f.activity).runUsedMs).toBe(72000)
+    expect(state(f.activity).revision).toBe(revision); expect(readFileSync(f.activity.filePath, 'utf8')).toBe(stored)
+    expect(f.activity.claim('runtime').admitted).toBe(true)
+  })
+  it('preserves measured time across restart, shows live usage without saving and stops at the remaining budget', async () => {
+    const f = fixture(); await f.configure({ maxRunMinutes: 1, cycleTimeoutSeconds: 120, autoResume: true }); f.activity.startRuntime('first'); await f.control('resume')
+    const first = f.activity.claim('first').cycle as JsonObject
+    const before = readFileSync(f.activity.filePath, 'utf8')
+    f.advance(59000); expect(state(f.activity)).toMatchObject({ runUsedMs: 59000, runRemainingMs: 1000 })
+    expect(readFileSync(f.activity.filePath, 'utf8')).toBe(before)
+    f.activity.finish('first', String(first.id), 'completed', null)
+    f.activity.stopRuntime(); f.advance(8 * 3600000)
+    const reopened = new DshAutonomy(f.directory, () => true, () => {}, () => {}, f.now)
+    reopened.startRuntime('second')
+    expect(state(reopened)).toMatchObject({ runUsedMs: 59000, runRemainingMs: 1000, ownerPaused: false })
+    const next = reopened.claim('second').cycle as JsonObject
+    expect(next).toMatchObject({ deadline: f.now() + 1000, budgetLimited: true })
+    f.advance(1000); expect(reopened.validCycle('second', String(next.id))).toBe(false)
+    reopened.finish('second', String(next.id), 'unknown', 'AUTONOMY_RUN_LIMIT')
+    expect(state(reopened)).toMatchObject({ reason: 'run-limit', ownerPaused: true, errorCode: 'AUTONOMY_RUN_LIMIT', failures: 0, runUsedMs: 60000, runRemainingMs: 0, lastOutcome: 'unknown' })
+    expect(reopened.claim('second').admitted).toBe(false)
+  })
+  it('reports an execution-limit pause after a completed cycle without inventing a failed result', async () => {
+    const f = fixture(); await f.configure({ maxRunMinutes: 1, cycleTimeoutSeconds: 120 }); f.activity.startRuntime('runtime'); await f.control('resume')
+    const cycle = f.activity.claim('runtime').cycle as JsonObject
+    f.advance(60000); f.activity.finish('runtime', String(cycle.id), 'completed', null)
+    expect(state(f.activity)).toMatchObject({ reason: 'run-limit', ownerPaused: true, errorCode: 'AUTONOMY_RUN_LIMIT', failures: 0, lastOutcome: 'completed', runUsedMs: 60000 })
+    expect(state(f.activity).history).toEqual([expect.objectContaining({ outcome: 'completed', code: null })])
+    await f.control('resume')
+    expect(state(f.activity)).toMatchObject({ ownerPaused: false, errorCode: null, runUsedMs: 0, runRemainingMs: 60000 })
+  })
+  it.each(['sleeping', 'waiting'] as const)('settles the current cycle before resetting the budget for %s', async mode => {
+    const f = fixture(); await f.configure(); f.activity.startRuntime('runtime'); await f.control('resume')
+    const cycle = f.activity.claim('runtime').cycle as JsonObject
+    f.advance(3000)
+    f.activity.decide('runtime', { expectedActivityRevision: state(f.activity).revision, mode, wakeAt: mode === 'sleeping' ? f.now() + 60000 : null, note: 'A real rest boundary' })
+    f.advance(1000); f.activity.finish('runtime', String(cycle.id), 'completed', null)
+    expect(state(f.activity)).toMatchObject({ mode, runUsedMs: 0, runRemainingMs: 120 * 60000 })
+  })
   it('exposes a stale driver heartbeat and records control failure instead of pretending the AI chose to rest', async () => {
     const f = fixture(); await f.configure(); f.activity.startRuntime('runtime'); await f.control('resume')
     f.advance(16000); expect(state(f.activity).reason).toBe('status-unavailable')

@@ -67,6 +67,28 @@ describe('runtime control errors visible to native tools', () => {
 })
 
 describe('native autonomous driver publication lifecycle', () => {
+  it.each([true, false])('distinguishes execution-budget exhaustion (%s) from a single-cycle timeout', async budgetLimited => {
+    vi.useFakeTimers()
+    const releases: (() => void)[] = [], initialization = new AbortController(), settlements: unknown[] = []
+    try {
+      const cycle = { id: 'fixture-budget-cycle', deadline: Date.now() + 1500, budgetLimited }
+      const agent = { id: 'root', status: 'idle', session: { id: 'root' }, followup: () => {}, cancel: () => {}, inbox: { nextTurn: [], nextStep: [], remove: () => true }, ctx: { tools: { register: () => {} } } }
+      const context = { process: { env: { EATING_DSH_AUTONOMY: 'true' } }, sessionId: 'root', nonce: 'fixture-runtime', releases, initialization,
+        ctx: { agents: { get: () => agent }, sessions: { flush: async () => true }, on: () => () => {}, get: () => undefined },
+        loadModule: async () => ({ createUserMessage: () => ({ id: 'fixture-budget-message' }) }), record: (value: unknown) => value !== null && typeof value === 'object', opaque: () => true,
+        control: async (operation: string, body: unknown) => {
+          if (operation === 'autonomy-snapshot') return { ready: true, configuration: { enabled: true }, state: { ownerPaused: false, errorCode: null, active: null } }
+          if (operation === 'autonomy-claim') return { admitted: true, cycle, activity: {}, limits: {} }
+          if (operation === 'autonomy-valid') return { valid: false }
+          if (operation === 'autonomy-finish') settlements.push(body)
+          return {}
+        },
+      }
+      await new Function(...Object.keys(context), getAutonomyRuntimeSource() + '\nreturn mountAutonomy;')(...Object.values(context))(agent)
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(settlements).toEqual([expect.objectContaining({ outcome: 'unknown', code: budgetLimited ? 'AUTONOMY_RUN_LIMIT' : 'AUTONOMY_CYCLE_TIMEOUT' })])
+    } finally { for (const release of releases) release(); initialization.abort(); vi.useRealTimers() }
+  })
   it('publishes Chinese tools and policy while preserving the admitted opportunity context and trusted source', async () => {
     vi.useFakeTimers()
     const releases: (() => void)[] = []

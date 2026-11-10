@@ -115,7 +115,7 @@ export function getAutonomyRuntimeSource(): string {
           return;
         }
         if (state.flight) {
-          if (!(await auto('valid', { cycleId: state.flight.cycle.id })).valid) await cancelFlight(Date.now() >= state.flight.cycle.deadline ? 'unknown' : 'cancelled', Date.now() >= state.flight.cycle.deadline ? 'AUTONOMY_CYCLE_TIMEOUT' : 'AUTONOMY_OWNER_PAUSED');
+          if (!(await auto('valid', { cycleId: state.flight.cycle.id })).valid) await cancelFlight(Date.now() >= state.flight.cycle.deadline ? 'unknown' : 'cancelled', Date.now() >= state.flight.cycle.deadline ? state.flight.cycle.budgetLimited ? 'AUTONOMY_RUN_LIMIT' : 'AUTONOMY_CYCLE_TIMEOUT' : 'AUTONOMY_OWNER_PAUSED');
           return;
         }
         if (state.settling || !status.configuration.enabled || status.state.ownerPaused || status.state.errorCode) return;

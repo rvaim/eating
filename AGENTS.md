@@ -1,5 +1,7 @@
 # Eating 开发规则
 
+2026-11-13 生图预览：**Git发布与云端保留数据部署完成**。源码`87edc66`由服务器从GitHub拉取构建，生图0.4.1改为当前视口弹窗，关闭保持位置与焦点；其余版本保持。云端449项控制层及156项相关回归通过，231文件全量私有备份核对、50保护文件、数据库记录、会话及3日志前缀保持；六插件connected、DSH／nativeWeb ready、异常restart0，公网桌面／手机及双语实读通过。图片JSON误发仅完成诊断和约束建议，未修改QQ发送契约。详见[报告](docs/reports/2026-11-13-生图预览优化与图片文字误发诊断.md)。
+
 2026-11-10 自主执行预算修复：**修复、提交／push及云端保留数据部署完成**。源码`f528d17`由服务器从GitHub拉取构建，应用0.22.0／DSH0.19.0，其余五插件及SDK／依赖不变。严格自主schema3/runUsedMs只累计轮次准入至结算，间隔、额度等待和停机不计，已结算用时跨重启保留；预算暂停与真实故障分开，恢复按钮双语正常。本地全量1915项通过／11项条件跳过、22项相关浏览器最终通过、最终51项专项通过；云端468项通过。空闲停Eating后全量200文件私有备份并核对，显式schema2→3，从0开始新预算，保其余配置、历史、计数、暂停及错误。六插件connected、DSH／nativeWeb ready、异常restart0；公网HTTP桌面／手机及双语实读通过。当前保留原暂停，主人可点击“恢复自主运行”；未自动resume或试发。证据见[本轮报告](docs/reports/2026-11-10-自主执行预算修复部署报告.md)。
 
 2026-11-10 图片大小与云端语音：**源码发布及云端保留数据部署完成**。源码 `de79aee` 已push并由服务器从GitHub拉取构建部署，应用0.21.1、plugin-sdk4.11.0、ui-sdk4.3.0；QQ0.16.0、DSH0.18.2、生图0.4.0、表情0.3.0、记忆0.3.2、语音0.1.2。“设置 → 图片大小”默认单图10MiB、合计20MiB／最多4张，可配1–50MiB；原配置、人格、图片、数据库记录、会话身份及3份原生日志前缀保留。原有五插件connected、DSH／nativeWeb ready、异常restart0。语音插件已安装且待配置／未启用；面板停用不查询任务，保存自己的Key及音色后再启用。本地全量1910项通过／8项条件跳过、19项相关浏览器最终通过，补发修复云端465项通过；首轮云端656项通过。无新增外部依赖、无真实付费合成／真人试发，完整证据见[本轮报告](docs/reports/2026-11-10-图片大小配置验证报告.md)。 面板启停按ADR-0053的必填enabled契约，图片按ADR-0052严格schema1／CAS；默认10MiB不补写，已接受生图固定提交时上限，调低保原图，旧发送lease失效。不重新初始化插件或清历史。
@@ -59,7 +61,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`、`plugins/capabilities/text-to-speech`。
 
-当前源码应用／Host／Web0.22.0，plugin-sdk4.11.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.16.0、DSH0.19.0、表情包0.3.0、生图源码0.4.1（预览优化本地验证完成、未发布）、记忆源码0.3.2、语音text-to-speech0.1.2（本机原记忆安装0.1.1保持）；插件唯一 API4。UI SDK新增必填面板enabled类型，无新增依赖，本轮锁文件零差异；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前源码应用／Host／Web0.22.0，plugin-sdk4.11.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.16.0、DSH0.19.0、表情包0.3.0、生图0.4.1、记忆源码0.3.2、语音text-to-speech0.1.2（本机原记忆安装0.1.1保持）；插件唯一 API4。UI SDK新增必填面板enabled类型，无新增依赖，本轮锁文件零差异；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -169,6 +171,6 @@ openviking-memory@0.3.2按[ADR-0045](docs/decisions/ADR-0045-官方记忆接口�
 
 ## 生图插件（OpenAI Images）
 
-独立image-generation源码@0.4.1、API4（2026-11-13预览优化本地验证完成，未发布部署；云端仍0.4.0）。配置Base URL／model及可选Key，允许不要求Key的服务；单次size优先于保存默认，省略沿用默认、空串不传并用服务默认。尺寸接受WIDTHxHEIGHT或service native identifier／auto，实际支持由provider决定，不自动换尺寸付费重试。无参考图追加/images/generations，有参考图走/images/edits，固定n1，无聊天／Responses回退。保存／connect只本地检查，不真实试生成；请求仍报告可能计费及真实结果。可信asset发送按[ADR-0046](docs/decisions/ADR-0046-可信图片传输与生图尺寸.md)，模型只见opaque资源引用，生图成功与QQ发送分别核对。
+独立image-generation@0.4.1、API4（2026-11-13预览优化已发布部署）。配置Base URL／model及可选Key，允许不要求Key的服务；单次size优先于保存默认，省略沿用默认、空串不传并用服务默认。尺寸接受WIDTHxHEIGHT或service native identifier／auto，实际支持由provider决定，不自动换尺寸付费重试。无参考图追加/images/generations，有参考图走/images/edits，固定n1，无聊天／Responses回退。保存／connect只本地检查，不真实试生成；请求仍报告可能计费及真实结果。可信asset发送按[ADR-0046](docs/decisions/ADR-0046-可信图片传输与生图尺寸.md)，模型只见opaque资源引用，生图成功与QQ发送分别核对。
 
 异步image_generate返回jobId，image_job_get查询最终状态，image_jobs/image_list分页元数据，image_get才实际图。生成提交回执不是生成成功，稳定request_id防重复计费，queued/running重启转unknown不重发。单图编辑只接受三种来源：主人面板本机上传、当前会话已授权消息的{messageId,imageId}、本插件已有assetId；不接受任意路径/URL或其它插件私有图片，来源哈希计入幂等。提交前检查调用signal；已接受后台任务由插件持有，普通Agent结束不丢已付费结果，停用/dispose取消为unknown，后续读取仍须当前授权。owner离页只停UI轮询；隐藏清Key、参考图和Blob，locale不请求。私有配置和资源schema1，500任务/500图/256MiB保持；单图使用主人图片设置，存储格式支持50MiB，调低不清原图，满在请求前拒绝。错误不回显提供商原body、Key、签名URL，URL结果不传认证下载。无真实Key时不声称付费服务验证。见[ADR-0020](docs/decisions/ADR-0020-独立OpenAI生图能力.md)与[ADR-0026](docs/decisions/ADR-0026-生图单图编辑与受控图片来源.md)。

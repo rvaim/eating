@@ -3,7 +3,7 @@
   "id": "stickers",
   "name": "表情包",
   "description": "独立表情资源库：上传或收藏会话图片，管理描述、标签和可发送图片引用。",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "kind": "capability",
   "apiVersion": 4,
   "assets": [],

@@ -1,0 +1,25 @@
+.recognition-panel { max-width: 100%; padding-bottom: 24px; }
+.recognition-panel section + section { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--color-line); }
+.recognition-panel h3 { margin-bottom: 12px; font-size: 15px; }
+.recognition-description { color: var(--color-muted); font-size: 13px; line-height: 1.7; max-width: 70ch; margin-bottom: 16px; }
+.recognition-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
+.recognition-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; font-size: 13px; }
+.recognition-field-wide { grid-column: 1 / -1; }
+.recognition-field input, .recognition-field select, .recognition-field textarea { width: 100%; box-sizing: border-box; min-height: 44px; font: inherit; color: var(--color-ink); background: var(--color-surface); border: 1px solid var(--color-line-input); border-radius: 5px; padding: 10px 12px; }
+.recognition-field textarea { min-height: 104px; resize: vertical; }
+.recognition-field small { color: var(--color-muted); line-height: 1.6; }
+.recognition-actions { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-top: 16px; }
+.recognition-actions button, .recognition-job button { min-height: 44px; }
+.recognition-error { color: var(--color-danger-ink); margin: 12px 0; font-size: 13px; line-height: 1.6; }
+.recognition-success { color: var(--color-primary); margin: 12px 0; font-size: 13px; }
+.recognition-confirm { padding: 16px 0; font-size: 13px; line-height: 1.7; }
+.recognition-jobs { padding: 0; margin: 0; list-style: none; }
+.recognition-job { padding: 16px 0; border-bottom: 1px solid var(--color-line); }
+.recognition-job header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; font-size: 13px; }
+.recognition-job time, .recognition-job small { color: var(--color-muted); font-size: 12px; }
+.recognition-job p { margin-top: 8px; max-width: 75ch; overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.7; font-size: 13px; }
+.recognition-player { display: block; width: min(100%, 420px); margin-top: 16px; }
+.recognition-player + section { margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--color-line); }
+@media (max-width: 650px) { .recognition-fields { grid-template-columns: minmax(0, 1fr); } .recognition-actions { align-items: stretch; } .recognition-actions button { flex-grow: 1; } }
+
+.recognition-result { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 75ch; font: inherit; line-height: 1.7; }

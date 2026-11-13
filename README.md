@@ -1,5 +1,7 @@
 # Eating
 
+2026-11-14 多协议语音与识别：**实现及Git发布部署已获授权，验证与发布进行中**。独立工作树新增DeepSeek TTS与speech-to-text ASR，协议能力独立、旧语音合成数据显式重建，不做生产自动迁移；其余数据保留。主分支其他会话在途修改不覆盖。实际结果见[ADR-0059](docs/decisions/ADR-0059-多协议语音合成与受控语音识别.md)与[报告](docs/reports/2026-11-14-多协议语音与识别部署报告.md)。
+
 2026-11-14 消息聚合与主Agent异步协调：**实现、提交／push及云端保留数据部署完成**。运行源码`3217924`由GitHub拉取构建，应用0.23.0／SDK4.12.0／DSH0.20.0，默认固定10秒聚合和忙碌追加；主Agent自主查询、给同会话子任务追加消息或中断。多批次双确认退休、原租约增量扩展、verify不升级、unknown不重放。云端453项控制层及47项专项通过，253文件私有全量备份核对，显式转换投递设置revision0→1及已接受旧瞬时指针；原配置／数据库／主子UUID／3原生日志前缀／118记忆任务身份保持。六插件connected、DSH／nativeWeb ready、异常restart0；公网桌面手机与双语实读10秒/开启通过，真实试发0。其余插件因SDK产物字节变化按封存规则升补丁：QQ0.16.2、表情0.3.1、生图0.6.1、记忆0.3.3、语音0.1.3；锁文件不变。见[ADR-0058](docs/decisions/ADR-0058-固定聚合窗口与主Agent异步协调.md)与[报告](docs/reports/2026-11-14-消息聚合与异步协调部署报告.md)。
 
 2026-11-13 生图0.6.0已发布部署：新增“请求参数（JSON）”，默认moderation=low，可保存background、output_format等服务参数，文生图和编辑共用。源码`6b326fc`由GitHub构建，原配置和图片历史保留；本地、云端和公网验证见[报告](docs/reports/2026-11-13-生图请求参数配置部署报告.md)。
@@ -60,7 +62,7 @@ Eating 是一个独立管理应用，用于连接通讯平台和用户选择的 
 
 ## 已实现功能
 
-- **OpenAI云端语音**：独立语音插件，主人保存音色，会话AI按段选择临时语气；异步合成、转写核对、试听与受控QQ语音条发送，未知不重试。当前本地实现与验证完成，尚未部署或配置真实Key，见[使用说明](docs/operations/OpenAI云端语音合成插件.md)。
+- **云端语音合成与识别**：独立text-to-speech支持OpenAI Realtime与DeepSeek TTS，按实际协议提供音色与临时语气；独立speech-to-text识别获准会话语音或主人上传的音频。受控资源、防重与unknown不重试，见[操作说明](docs/operations/多协议语音与语音识别.md)。
 
 - **插件管理**：通讯、Harness、能力三类插件统一安装、更新、启停和卸载，左侧固定插件目录、右侧当前单项面板，顶部右侧返回管理列表。当前支持本机可信构建目录，先预览同份代码快照再确认，卸载保留数据。
 - **MCP 管理**：左侧固定服务目录，右侧一次查看／编辑一个服务，工具目录可搜索并独立滚动。直接配置stdio／Streamable HTTP，或使用插件服务；已启用且connected的功能型MCP新来源默认all，全部当前及未来工具／Agent类型自动开放；主人可保存custom精确类型／工具例外并恢复all。连接状态、工具发现和实际挂载分别显示，秘密不回显；通讯权限仍由来源插件按账号／目标／资源范围管理。
@@ -110,6 +112,7 @@ pnpm plugin install plugins/harness/dsh/dist
 pnpm plugin install plugins/capabilities/stickers/dist
 pnpm plugin install plugins/capabilities/image-generation/dist
 pnpm plugin install plugins/capabilities/text-to-speech/dist
+pnpm plugin install plugins/capabilities/speech-to-text/dist
 pnpm plugin install plugins/capabilities/openviking-memory/dist
 pnpm dev
 ```

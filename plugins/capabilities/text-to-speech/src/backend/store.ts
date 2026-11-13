@@ -7,11 +7,11 @@ import type { SpeechJob } from '../types'
 import { args, hash, text } from './config'
 import { directory, json, read, storageError, write } from './files'
 
-interface Index { schemaVersion: 1; jobs: SpeechJob[] }
+interface Index { schemaVersion: 2; jobs: SpeechJob[] }
 const maximumJobs = 200, maximumStorage = 128 * 1024 * 1024
 const uuid = (value: unknown) => typeof value === 'string' && /^[a-f0-9-]{36}$/.test(value)
 const digest = (value: unknown) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
-const jobKeys = ['jobId', 'requestId', 'requestHash', 'text', 'delivery', 'model', 'voice', 'status', 'createdAt', 'updatedAt', 'assetId', 'byteLength', 'durationMs', 'errorCode']
+const jobKeys = ['jobId', 'requestId', 'requestHash', 'text', 'delivery', 'protocol', 'model', 'voice', 'verification', 'status', 'createdAt', 'updatedAt', 'assetId', 'byteLength', 'durationMs', 'errorCode']
 export class SpeechStore {
   private readonly root: string
   private readonly path: string
@@ -23,18 +23,18 @@ export class SpeechStore {
     this.root = directory(root); this.assets = directory(join(this.root, 'audio')); this.path = join(this.root, 'index.json')
     const bytes = read(this.path, 2 * 1024 * 1024); this.stamp = bytes ? hash(bytes) : null
     try {
-      const value = bytes ? JSON.parse(bytes.toString()) : { schemaVersion: 1, jobs: [] }
+      const value = bytes ? JSON.parse(bytes.toString()) : { schemaVersion: 2, jobs: [] }
       args(value, ['schemaVersion', 'jobs'], ['schemaVersion', 'jobs'])
-      if (value.schemaVersion !== 1 || !Array.isArray(value.jobs) || value.jobs.length > maximumJobs) storageError()
+      if (value.schemaVersion !== 2 || !Array.isArray(value.jobs) || value.jobs.length > maximumJobs) storageError()
       const ids = new Set(), requests = new Set()
       for (const job of value.jobs) {
         args(job, jobKeys, jobKeys)
         if (!uuid(job.jobId) || ids.has(job.jobId) || requests.has(job.requestId) || !digest(job.requestHash) || !['queued', 'running', 'succeeded', 'failed', 'unknown'].includes(job.status)
           || !Number.isFinite(Date.parse(job.createdAt)) || !Number.isFinite(Date.parse(job.updatedAt)) || job.assetId !== null && !digest(job.assetId)
           || job.errorCode !== null && (typeof job.errorCode !== 'string' || !/^SPEECH_[A-Z_]+$/.test(job.errorCode))) storageError()
-        text(job.text, 1000); text(job.delivery, 500, true); text(job.model, 160); text(job.voice, 160)
+        text(job.text, 1000); text(job.delivery, 500, true); if (!['openai-realtime', 'deepseek-tts'].includes(job.protocol) || (job.protocol === 'openai-realtime' ? typeof job.model !== 'string' : job.model !== null) || job.model !== null && !job.model.trim()) storageError(); text(job.voice, 160)
         if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$/.test(job.requestId)) storageError()
-        if (job.status === 'succeeded' ? !digest(job.assetId) || !Number.isSafeInteger(job.byteLength) || job.byteLength <= 44 || job.byteLength > MAX_AUDIO_RESOURCE_BYTES || job.durationMs !== (job.byteLength - 44) / 48 || job.errorCode !== null : job.assetId !== null || job.byteLength !== null || job.durationMs !== null) storageError()
+        if (job.status === 'succeeded' ? !digest(job.assetId) || !Number.isSafeInteger(job.byteLength) || job.byteLength <= 44 || job.byteLength > MAX_AUDIO_RESOURCE_BYTES || job.durationMs !== (job.byteLength - 44) / 48 || job.errorCode !== null || !['provider-transcript', 'provider-completion'].includes(job.verification) || job.verification !== (job.protocol === 'openai-realtime' ? 'provider-transcript' : 'provider-completion') : job.verification !== null || job.assetId !== null || job.byteLength !== null || job.durationMs !== null) storageError()
         ids.add(job.jobId); requests.add(job.requestId)
       }
       this.value = value
@@ -68,7 +68,7 @@ export class SpeechStore {
     if (job && job.requestHash !== requestHash) throw new PlatformError('SPEECH_REQUEST_CONFLICT', '相同请求标识不能用于不同文本、语气或配置。', 409, 'not-sent')
     return job ? { ...job } : null
   }
-  enqueue(input: Pick<SpeechJob, 'requestId' | 'requestHash' | 'text' | 'delivery' | 'model' | 'voice'>): SpeechJob {
+  enqueue(input: Pick<SpeechJob, 'requestId' | 'requestHash' | 'text' | 'delivery' | 'protocol' | 'model' | 'voice'>): SpeechJob {
     if (this.failed) storageError()
     // Count real files too, including a blob left by an interrupted index commit.
     let used = 0
@@ -78,18 +78,18 @@ export class SpeechStore {
       used += stat.size
     }
     if (this.value.jobs.length >= maximumJobs || used + MAX_AUDIO_RESOURCE_BYTES > maximumStorage) throw new PlatformError('SPEECH_CAPACITY', '语音任务或存储已满，请由主人删除不再需要的任务。', 409, 'not-sent')
-    const now = new Date().toISOString(), job: SpeechJob = { ...input, jobId: randomUUID(), status: 'queued', createdAt: now, updatedAt: now, assetId: null, byteLength: null, durationMs: null, errorCode: null }
+    const now = new Date().toISOString(), job: SpeechJob = { ...input, jobId: randomUUID(), status: 'queued', verification: null, createdAt: now, updatedAt: now, assetId: null, byteLength: null, durationMs: null, errorCode: null }
     this.value.jobs.push(job); this.save(); return { ...job }
   }
   status(id: string, status: SpeechJob['status'], errorCode: string | null = null): void {
     const job = this.find(id); if (job.status === 'succeeded') return
     Object.assign(job, { status, errorCode, updatedAt: new Date().toISOString() }); this.save()
   }
-  complete(id: string, bytes: Buffer): void {
+  complete(id: string, bytes: Buffer, verification: NonNullable<SpeechJob['verification']>): void {
     checkedAudioBytes(bytes, 'audio/wav')
     const job = this.find(id), assetId = hash(id + ':' + hash(bytes))
     write(join(this.assets, assetId), bytes)
-    Object.assign(job, { status: 'succeeded', assetId, byteLength: bytes.length, durationMs: (bytes.length - 44) / 48, updatedAt: new Date().toISOString(), errorCode: null }); this.save()
+    Object.assign(job, { status: 'succeeded', verification, assetId, byteLength: bytes.length, durationMs: (bytes.length - 44) / 48, updatedAt: new Date().toISOString(), errorCode: null }); this.save()
   }
   preview(assetId: unknown) {
     if (!digest(assetId)) throw new PlatformError('SPEECH_INVALID_INPUT', '语音资源编号无效。', 400, 'not-sent')

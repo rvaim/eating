@@ -1,8 +1,8 @@
 {
   "name": "@eating/plugin-text-to-speech",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "type": "module",
-  "description": "Eating 独立 OpenAI 云端语音合成插件，主人配置音色，Agent选择本次语气。",
+  "description": "Eating 多协议云端语音合成插件，主人固定音色，按服务能力控制语气。",
   "files": [
     "dist"
   ],

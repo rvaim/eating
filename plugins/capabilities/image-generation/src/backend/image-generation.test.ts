@@ -169,7 +169,7 @@ describe('OpenAI Images 后端与任务边界', () => {
   it('编辑当前会话图片只提交一次 multipart /images/edits，源图不进入任务或提交账本', async () => {
     const p = await provider((_request, response) => imageResponse(response)), source = createImageFixturePng()
     const readReceivedImage = vi.fn(async () => ({ mimeType: 'image/png' as const, data: source.toString('base64') }))
-    const f = await fixture(undefined, undefined, { readReceivedImage, readAsset: async () => ({ mimeType: 'image/png' as const, data: source.toString('base64') }), getAudioAsset: async () => { throw new Error('Unexpected audio read') }, getAsset: async () => { throw new Error('Unexpected send asset request') } })
+    const f = await fixture(undefined, undefined, { readReceivedImage, readAsset: async () => ({ mimeType: 'image/png' as const, data: source.toString('base64') }), readReceivedAudio: async () => { throw new Error('No incoming audio in this fixture') }, getAudioAsset: async () => { throw new Error('Unexpected audio read') }, getAsset: async () => { throw new Error('Unexpected send asset request') } })
     await f.plugin.updateConfiguration({ expectedRevision: 0, baseUrl: p.baseUrl, apiKey: 'PRIVATE-IMAGES-TEST-KEY', model: 'fixture-images-model' })
     const sourceScope = { agentId: 'edit-child', agentTypeId: 'qq.private', pluginId: 'qq', instanceId: 'fixture-instance', accountId: '100', conversationId: 'qq:100:private:200', kind: 'private' as const, targetId: '200', messageIds: ['900'], resourceIds: ['image-a'] }
     const scope: CapabilityInvocationScope = { agentId: sourceScope.agentId, agentTypeId: sourceScope.agentTypeId, source: sourceScope }
@@ -196,7 +196,7 @@ describe('OpenAI Images 后端与任务边界', () => {
 
   it('owner上传参考图和已有生成图都走 /images/edits，源图只用于请求', async () => {
     const p = await provider((_request, response) => imageResponse(response)), source = createImageFixturePng()
-    const f = await fixture(undefined, undefined, { readReceivedImage: async () => ({ mimeType: 'image/png' as const, data: source.toString('base64') }), readAsset: async () => ({ mimeType: 'image/png' as const, data: source.toString('base64') }), getAudioAsset: async () => { throw new Error('Unexpected audio read') }, getAsset: async () => { throw new Error('Unexpected send asset request') } })
+    const f = await fixture(undefined, undefined, { readReceivedImage: async () => ({ mimeType: 'image/png' as const, data: source.toString('base64') }), readAsset: async () => ({ mimeType: 'image/png' as const, data: source.toString('base64') }), readReceivedAudio: async () => { throw new Error('No incoming audio in this fixture') }, getAudioAsset: async () => { throw new Error('Unexpected audio read') }, getAsset: async () => { throw new Error('Unexpected send asset request') } })
     await f.plugin.updateConfiguration({ expectedRevision: 0, baseUrl: p.baseUrl, apiKey: 'PRIVATE-IMAGES-TEST-KEY', model: 'fixture-images-model' })
     const uploaded = object(await f.plugin.manage('generate', { prompt: '把上传的图改成蓝色', request_id: 'edit-upload-0001', confirmed: true, source: { kind: 'upload', data: source.toString('base64'), mimeType: 'image/png' } }))
     const uploadJob = await finalJob(f.plugin, uploaded)

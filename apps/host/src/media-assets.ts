@@ -1,9 +1,23 @@
 import { createHash } from 'node:crypto'
 import { isAbsolute } from 'node:path'
-import { checkedAudioBytes, checkedImageBytes, MAX_IMAGE_RESOURCE_BYTES, MAX_AUDIO_RESOURCE_BYTES, PlatformError } from '@eating/plugin-sdk'
-import type { AudioAssetLease, PluginAudioAsset, ImageAssetLease, PluginImageAsset } from '@eating/plugin-sdk'
+import { checkedInputAudio, checkedAudioBytes, checkedImageBytes, MAX_IMAGE_RESOURCE_BYTES, MAX_AUDIO_RESOURCE_BYTES, PlatformError } from '@eating/plugin-sdk'
+import type { ReceivedAudioAsset, ReceivedAudioLease, AudioAssetLease, PluginAudioAsset, ImageAssetLease, PluginImageAsset } from '@eating/plugin-sdk'
 
 function invalid(): never { throw new PlatformError('INVALID_IMAGE_RESOURCE', '插件未返回有效、有界的图片资源。', 502, 'not-sent') }
+
+export async function verifiedReceivedAudio(value: ReceivedAudioAsset, assertAllowed: () => void): Promise<ReceivedAudioLease> {
+  const reject = (): never => { throw new PlatformError('INVALID_INPUT_AUDIO', '收到的音频内容与资源摘要不匹配。', 502, 'not-sent') }
+  assertAllowed()
+  if (!value || typeof value.readBytes !== 'function' || typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.sha256)) reject()
+  const { mimeType, byteLength, durationMs, sha256 } = value
+  const readBytes = async () => {
+    assertAllowed(); const checked = checkedInputAudio(await value.readBytes()); assertAllowed()
+    if (checked.mimeType !== mimeType || checked.bytes.byteLength !== byteLength || checked.durationMs !== durationMs || createHash('sha256').update(checked.bytes).digest('hex') !== sha256) reject()
+    return checked.bytes
+  }
+  await readBytes()
+  return Object.freeze({ mimeType, byteLength, durationMs, sha256, readBytes, assertCurrent: assertAllowed })
+}
 
 export async function verifiedAudioAsset(value: PluginAudioAsset, assertAllowed: () => void): Promise<AudioAssetLease> {
   assertAllowed()

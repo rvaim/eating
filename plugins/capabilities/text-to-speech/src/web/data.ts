@@ -1,10 +1,10 @@
 import { checkedAudioBytes, isJsonObject, MAX_AUDIO_RESOURCE_BYTES } from '@eating/plugin-sdk'
 import { HostApiError, hostRequest } from '@eating/ui-sdk'
 import type { SpeechConfiguration, SpeechJob } from '../types'
-import { SPEECH_VOICES } from '../types'
+import { speechVoices } from '../types'
 const invalid = (): never => { throw new HostApiError('SPEECH_RESPONSE_INVALID', '', 'failed') }
 export function readConfig(value: unknown): SpeechConfiguration {
-  if (!isJsonObject(value) || value.schemaVersion !== 1 || !Number.isSafeInteger(value.revision) || Number(value.revision) < 0 || typeof value.endpoint !== 'string' || typeof value.model !== 'string' || !SPEECH_VOICES.includes(value.voice as typeof SPEECH_VOICES[number]) || !Number.isSafeInteger(value.timeoutMs) || Number(value.timeoutMs) < 10000 || Number(value.timeoutMs) > 300000 || typeof value.apiKeyConfigured !== 'boolean' || typeof value.ready !== 'boolean') return invalid()
+  if (!isJsonObject(value) || value.schemaVersion !== 2 || !Number.isSafeInteger(value.revision) || Number(value.revision) < 0 || typeof value.endpoint !== 'string' || !isJsonObject(value.provider) || !['openai-realtime', 'deepseek-tts'].includes(String(value.provider.protocol)) || !speechVoices(value.provider.protocol as 'openai-realtime' | 'deepseek-tts').includes(String(value.provider.voice)) || (value.provider.protocol === 'openai-realtime' ? typeof value.provider.model !== 'string' || !value.provider.model.trim() : typeof value.provider.filterMarkdown !== 'boolean') || !Number.isSafeInteger(value.timeoutMs) || Number(value.timeoutMs) < 10000 || Number(value.timeoutMs) > 300000 || typeof value.apiKeyConfigured !== 'boolean' || typeof value.ready !== 'boolean') return invalid()
   return value as unknown as SpeechConfiguration
 }
 export function readPage(value: unknown): { items: SpeechJob[]; total: number; offset: number; limit: number } {

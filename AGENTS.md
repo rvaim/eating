@@ -1,5 +1,7 @@
 # Eating 开发规则
 
+2026-11-14 多协议语音与识别：**实现及Git发布部署已获授权，验证与发布进行中**。独立工作树新增DeepSeek TTS与speech-to-text ASR，协议能力独立、旧语音合成数据显式重建，不做生产自动迁移；其余数据保留。主分支其他会话在途修改不覆盖。实际结果见[ADR-0059](docs/decisions/ADR-0059-多协议语音合成与受控语音识别.md)与[报告](docs/reports/2026-11-14-多协议语音与识别部署报告.md)。
+
 2026-11-14 消息聚合与主Agent异步协调：**实现、提交／push及云端保留数据部署完成**。运行源码`3217924`由GitHub拉取构建，应用0.23.0／SDK4.12.0／DSH0.20.0，默认固定10秒聚合和忙碌追加；主Agent自主查询、给同会话子任务追加消息或中断。多批次双确认退休、原租约增量扩展、verify不升级、unknown不重放。云端453项控制层及47项专项通过，253文件私有全量备份核对，显式转换投递设置revision0→1及已接受旧瞬时指针；原配置／数据库／主子UUID／3原生日志前缀／118记忆任务身份保持。六插件connected、DSH／nativeWeb ready、异常restart0；公网桌面手机与双语实读10秒/开启通过，真实试发0。其余插件因SDK产物字节变化按封存规则升补丁：QQ0.16.2、表情0.3.1、生图0.6.1、记忆0.3.3、语音0.1.3；锁文件不变。见[ADR-0058](docs/decisions/ADR-0058-固定聚合窗口与主Agent异步协调.md)与[报告](docs/reports/2026-11-14-消息聚合与异步协调部署报告.md)。
 
 2026-11-13 生图请求参数：**实现、提交／push及云端保留数据部署完成**。运行源码`6b326fc`、生图0.6.0，主人可配置请求参数JSON，默认moderation=low，文生图及编辑均实际传递；独立schema1／revision，默认只读不落盘，原配置／历史不迁移。云端451项控制层及147项专项通过，226文件私有备份核对、配置／数据库／会话保持，六插件connected、DSH／nativeWeb ready、异常restart0；公网默认low、双语桌面手机已核验，真实生成0。见[ADR-0057](docs/decisions/ADR-0057-生图请求参数配置.md)与[报告](docs/reports/2026-11-13-生图请求参数配置部署报告.md)。
@@ -67,9 +69,9 @@
 
 ## 工程与当前契约
 
-一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`、`plugins/capabilities/text-to-speech`。
+一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`、`plugins/capabilities/text-to-speech`、`plugins/capabilities/speech-to-text`。
 
-当前源码应用／Host／Web0.23.0，plugin-sdk4.12.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.16.2、DSH0.20.0、表情包0.3.1、生图0.6.1、记忆源码0.3.3、语音text-to-speech0.1.3（本机原记忆安装0.1.1保持）；插件唯一 API4。UI SDK新增必填面板enabled类型，无新增依赖，本轮锁文件零差异；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前源码应用／Host／Web0.24.0，plugin-sdk4.13.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.17.0、DSH0.20.1、表情包0.3.2、生图0.6.2、记忆0.3.4、语音合成0.2.0、语音识别speech-to-text0.1.0（本机原记忆安装0.1.1保持）；插件唯一API4。七插件独立封存，同版本产物不可改写，无新外部依赖。当前功能及实际发布状态见顶部报告。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 

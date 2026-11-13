@@ -8,7 +8,7 @@ import { PlatformError, checkedImageResource, composeAgentPrompt, isJsonObject, 
 import { AgentAccessRegistry, collectAgentContributions } from './agent-access'
 import { CapabilityAccess } from './capability-access'
 import { MemoryAccess } from './memory-access'
-import { verifiedAudioAsset, verifiedImageAsset } from './media-assets'
+import { verifiedAudioAsset, verifiedImageAsset, verifiedReceivedAudio } from './media-assets'
 import { ImageLimitsService } from './image-limits'
 import { DirectMcpConnections } from './mcp-connections'
 import { PluginPackageManager } from './plugin-manager'
@@ -156,12 +156,27 @@ export class EatingHost {
     let plugin: BackendPlugin
     try { plugin = entry.create(context) } catch (error) { this.revokeHarnessSinks(entry.id); plugin = failedPlugin(entry, error) }
     if (plugin.id !== entry.id || plugin.kind !== kind) { this.revokeHarnessSinks(entry.id); throw new Error('插件后台身份或类型不匹配。') }
+    if (plugin.configurationChangesTools !== undefined && typeof plugin.configurationChangesTools !== 'boolean') throw new Error('插件工具目录配置声明无效。')
+    if (plugin.managementInputMaxBytes !== undefined && (!Number.isSafeInteger(plugin.managementInputMaxBytes) || plugin.managementInputMaxBytes < 1024 || plugin.managementInputMaxBytes > 16 * 1024 * 1024)) throw new Error('插件管理输入大小声明无效。')
     this.plugins.set(plugin.id, plugin)
   }
 
   private resourceServices(callerId: string): PluginResourceServices {
     const requireCaller = () => this.requirePlugin(callerId, true)
     return {
+      readReceivedAudio: async (scope, reference) => {
+        if (!scope.source) throw new PlatformError('ASSET_ACCESS_DENIED', '入站音频必须绑定原会话调用。', 403, 'not-sent')
+        const caller = requireCaller(), source = this.requirePlugin(scope.source.pluginId, true), reader = source.readReceivedAudio
+        const capabilityActive = this.capabilityAccess.pinService(scope, 'plugin.' + callerId)
+        const assertAllowed = () => {
+          if (this.closed || requireCaller() !== caller || this.requirePlugin(source.id, true) !== source || source.readReceivedAudio !== reader
+            || source.getStatus().state !== 'connected' || scope.signal?.aborted || scope.source?.signal?.aborted || !capabilityActive()) throw new PlatformError('ASSET_ACCESS_DENIED', '入站语音授权已撤销。', 403, 'not-sent')
+        }
+        assertAllowed()
+        if (source.kind !== 'communication' || !reader) throw new PlatformError('RECEIVED_AUDIO_UNAVAILABLE', '来源插件未提供受控入站语音。', 409, 'not-sent')
+        const sourceScope = { ...scope.source, signal: scope.signal && scope.source.signal ? AbortSignal.any([scope.signal, scope.source.signal]) : scope.signal ?? scope.source.signal }
+        return verifiedReceivedAudio(await reader.call(source, reference, sourceScope), assertAllowed)
+      },
       getAudioAsset: async (reference, scope) => {
         const caller = requireCaller(), source = this.requirePlugin(reference.pluginId, true), provider = source.audio
         if (!provider || !source.tools.some(tool => tool.name === provider.readTool && tool.readOnly)) throw new PlatformError('ASSET_UNAVAILABLE', '来源插件未提供语音资源。', 409, 'not-sent')
@@ -577,10 +592,11 @@ export class EatingHost {
           await this.automaticHarnessOperations.get(id)?.catch(() => {})
         }
         if (this.packageMutation && !(plugin.kind === 'harness' && (operation === 'disconnect' || operation === 'disable'))) throw new PlatformError('PLUGIN_BUSY', '插件安装或卸载正在执行，请稍后重试。', 409, 'not-sent')
-        const body = await readJson(request, operation === 'invoke' ? 1024 * 1024 : operation === 'manage' ? this.imageLimits.snapshot().uploadBytes : undefined)
-        if (plugin.kind === 'capability' && ['connect', 'disconnect', 'enable', 'disable'].includes(operation)) {
+        const body = await readJson(request, operation === 'invoke' ? 1024 * 1024 : operation === 'manage' ? plugin.managementInputMaxBytes ?? this.imageLimits.snapshot().uploadBytes : undefined)
+        if (plugin.kind === 'capability' && (['connect', 'disconnect', 'enable', 'disable'].includes(operation) || operation === 'configuration' && plugin.configurationChangesTools === true && this.enabled.has(id))) {
           this.capabilityAccess.revokeSource('plugin.' + id)
           const { value, ...report } = await this.changeCapabilityTopology(() => this.mutatePlugin(id, operation, async () => {
+            if (operation === 'configuration') return plugin.updateConfiguration(body)
             if (operation === 'enable' || operation === 'disable') { await this.setEnabled(id, operation === 'enable'); return { ok: true } }
             await plugin[operation as 'connect' | 'disconnect']()
             return plugin.getStatus()

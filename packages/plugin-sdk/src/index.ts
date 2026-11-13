@@ -2,6 +2,7 @@ export * from './authoring.js'
 export * from './agents.js'
 export * from './capabilities.js'
 export * from './media.js'
+export * from './input-audio.js'
 export * from './image-limits.js'
 export * from './autonomy.js'
 export * from './memory.js'
@@ -240,6 +241,11 @@ export interface BackendPlugin {
   readonly version: string
   readonly media?: PluginMediaProvider
   readonly audio?: import('./capabilities.js').PluginAudioProvider
+  /** Configuration changes the MCP schema/instructions and requires a source remount. */
+  readonly configurationChangesTools?: boolean
+  /** Owner-only management payload bound, independently of image settings (at most 16 MiB). */
+  readonly managementInputMaxBytes?: number
+  readReceivedAudio?(reference: import('./capabilities.js').ReceivedAudioReference, scope: import('./agents.js').AgentInvocationScope): Promise<import('./capabilities.js').ReceivedAudioAsset>
   readonly memory?: import('./memory.js').MemoryProvider
   readReceivedImage?(reference: ReceivedImageReference, scope: import('./agents.js').AgentInvocationScope): Promise<ImageResource>
   invokeCapability?(name: string, input: unknown, requestId: string, scope: CapabilityInvocationScope): Promise<JsonValue>

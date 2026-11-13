@@ -170,6 +170,22 @@ export class CapabilityAccess {
   activeService(scope: CapabilityInvocationScope, sourceId: string): boolean {
     return this.source(sourceId).tools.some(tool => this.activePermission(scope, sourceId, tool.name))
   }
+  /** Pin the actual caller lease so a later grant to the same Agent cannot revive an old resource. */
+  pinService(scope: CapabilityInvocationScope, sourceId: string): () => boolean {
+    const identity = (value: CapabilityInvocationScope) => {
+      const s = value.source
+      return JSON.stringify([value.agentId, value.agentTypeId, value.readOnly === true, s ? [s.pluginId, s.instanceId, s.accountId, s.conversationId, s.kind, s.targetId, s.readOnly === true] : null])
+    }
+    const expected = identity(scope)
+    const lease = [...this.leases.values()].find(lease => {
+      if (lease.sourceId !== sourceId || lease.abort.signal.aborted || identity(lease.scope) !== expected || scope.signal && scope.signal !== lease.abort.signal) return false
+      if (!scope.source || !lease.scope.source) return !scope.source && !lease.scope.source
+      const messages = new Set(lease.scope.source.messageIds), resources = new Set(lease.scope.source.resourceIds)
+      return scope.source.messageIds.every(id => messages.has(id)) && scope.source.resourceIds.every(id => resources.has(id))
+    })
+    return () => Boolean(lease && this.leases.get(lease.token) === lease && !lease.abort.signal.aborted && !scope.signal?.aborted && this.options.enabled(lease.harnessId)
+      && this.source(sourceId).tools.some(tool => this.allowed(lease.scope, sourceId, tool.name)))
+  }
   activePermission(scope: CapabilityInvocationScope, sourceId: string, toolName: string): boolean {
     return this.allowed(scope, sourceId, toolName) && [...this.leases.values()].some(lease => !lease.abort.signal.aborted && lease.scope.agentId === scope.agentId && lease.scope.agentTypeId === scope.agentTypeId && lease.sourceId === sourceId && this.options.enabled(lease.harnessId) && this.allowed(lease.scope, sourceId, toolName))
   }

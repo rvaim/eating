@@ -66,7 +66,7 @@ describe('OpenAI Images through actual Host capability MCP', () => {
     expect(done).toMatchObject({ status: 'succeeded', assetIds: [expect.any(String)] })
     await client.callTool({ name: 'image_generate', arguments: input })
     expect(provider.requests).toHaveLength(1)
-    expect(provider.requests[0]!.body).toEqual({ prompt: input.prompt, model: 'fixture-images-model', n: 1 })
+    expect(provider.requests[0]!.body).toEqual({ prompt: input.prompt, model: 'fixture-images-model', n: 1, moderation: 'low' })
     const assetId = (done.assetIds as string[])[0]!
     const image = await client.callTool({ name: 'image_get', arguments: { assetId } })
     expect(image.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'image', data: provider.image.toString('base64') })]))
@@ -120,7 +120,7 @@ describe('received-image editing through actual Host resource scope', () => {
     expect(done).toMatchObject({ status: 'succeeded', source: { kind: 'received', mimeType: 'image/png', bytes: provider.image.length } })
     expect(provider.requests).toHaveLength(0)
     expect(provider.edits).toHaveLength(1)
-    expect(provider.edits[0]!.fields).toEqual({ model: 'fixture-images-model', prompt, n: '1' })
+    expect(provider.edits[0]!.fields).toEqual({ model: 'fixture-images-model', prompt, n: '1', moderation: 'low' })
     expect(provider.edits[0]!.image).toEqual(provider.image)
     expect(JSON.stringify([job, done, await api('/plugins/image-generation/manage', { operation: 'jobs', input: {} })])).not.toContain(imageId)
   })

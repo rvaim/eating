@@ -1,10 +1,11 @@
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { CapabilityInvocationScope, HostPluginContext, JsonObject } from '@eating/plugin-sdk'
-import type { ImageGenerationJob, ImageGenerationJobError, ImageGenerationParameters } from '../types'
+import type { ImageGenerationJob, ImageGenerationJobError, ImageGenerationParameters, ImageRequestParameters } from '../types'
 import { IMAGE_GENERATION_LIMITS } from '../types'
 import { ImageConfigurationStore, configured } from './config'
 import { generateImage } from './provider'
 import { ImageGenerationStore } from './store'
+import type { ImageRequestParametersStore } from './request-parameters'
 import { generationHash, generationIntent, identifier, object, parseGeneration, safeInteger } from './validation'
 import type { ResolvedSourceImage } from './validation'
 
@@ -28,7 +29,7 @@ export class ImageGenerationJobs {
   private enabled = true
   private closed = false
   private lastFailure: string | null = null
-  constructor(private readonly context: HostPluginContext, readonly configuration: ImageConfigurationStore, readonly store: ImageGenerationStore) {}
+  constructor(private readonly context: HostPluginContext, readonly configuration: ImageConfigurationStore, readonly store: ImageGenerationStore, private readonly requestParameters: ImageRequestParametersStore) {}
   get busy(): boolean { return this.active !== null }
   get ready(): boolean { return !this.closed && this.enabled && configured(this.configuration.snapshot()) }
   get error(): string | null { return this.lastFailure }
@@ -46,7 +47,7 @@ export class ImageGenerationJobs {
     const maximumImageBytes = this.context.imageLimits().imageBytes
     if (source && source.bytes.length > maximumImageBytes) throw new PlatformError('IMAGE_GENERATION_INVALID_SOURCE_IMAGE', '参考图片超过当前图片大小设置，未发送生成请求。', 413, 'not-sent')
     this.store.ensureCapacity(maximumImageBytes)
-    const configuration = this.configuration.snapshot(), controller = new AbortController()
+    const configuration = this.configuration.snapshot(), requestParameters = this.requestParameters.snapshot().parameters, controller = new AbortController()
     let finish!: () => void
     const done = new Promise<void>(accept => { finish = accept })
     const signals = [scope?.signal, scope?.source?.signal].filter((signal): signal is AbortSignal => Boolean(signal))
@@ -74,7 +75,7 @@ export class ImageGenerationJobs {
       }
       // Schedule only after the durable plugin index and Host submission receipt exist.
       queueMicrotask(() => {
-        void this.run(active, configuration, parameters, source).catch(() => {
+        void this.run(active, configuration, parameters, source, requestParameters).catch(() => {
           this.lastFailure = '生图工作任务异常结束，结果待核对；未自动重放。'
           this.release(active)
         })
@@ -89,14 +90,14 @@ export class ImageGenerationJobs {
       throw error
     }
   }
-  private async run(active: ActiveJob, configuration: ReturnType<ImageConfigurationStore['snapshot']>, parameters: ImageGenerationParameters, source?: ResolvedSourceImage): Promise<void> {
+  private async run(active: ActiveJob, configuration: ReturnType<ImageConfigurationStore['snapshot']>, parameters: ImageGenerationParameters, source: ResolvedSourceImage | undefined, requestParameters: ImageRequestParameters): Promise<void> {
     if (this.active !== active) return
     active.started = true
     let generated = false
     try {
       this.assertActive(active)
       this.store.running(active.jobId!)
-      const image = await generateImage(configuration, parameters, source, active.controller.signal, active.assertBeforePost, active.maximumImageBytes)
+      const image = await generateImage(configuration, parameters, source, active.controller.signal, requestParameters, active.assertBeforePost, active.maximumImageBytes)
       generated = true
       this.assertActive(active)
       this.store.complete(active.jobId!, image, () => this.assertActive(active))

@@ -14,7 +14,7 @@ function tool(name: string, title: string, description: string, properties: Json
   return { name, title, description, readOnly: name !== 'image_generate', destructive: false, resultFormat: content ? 'content' : 'json', inputSchema: { type: 'object', properties, required, additionalProperties: false } }
 }
 export const imageGenerationTools: readonly PluginToolDefinition[] = [
-  tool('image_generate', '提交生图或图片编辑任务', '可能产生付费请求。提交一次异步任务后返回 jobId，不代表图片已生成；通过 image_job_get 查询。复用稳定 request_id 防重，unknown 不要以新 ID 自动重试。不传 source 为文生图；传 source 为单图编辑：当前会话收到的图片用 {kind:"received",messageId,imageId}（imageId 是 image 段的原始 file 引用，不是 URL），之前生成的图片用 {kind:"asset",assetId}。只接受当前会话已授权图片或本插件资源，不接受任意路径/URL；固定 n=1。', generation, ['prompt', 'request_id']),
+  tool('image_generate', '提交生图或图片编辑任务', '可能产生付费请求。提交一次异步任务后返回 jobId，不代表图片已生成；通过 image_job_get 查询。复用稳定 request_id 防重，unknown 不要以新 ID 自动重试。不传 source 为文生图；传 source 为单图编辑：当前会话收到的图片用 {kind:"received",messageId,imageId}（imageId 是 image 段的原始 file 引用，不是 URL），之前生成的图片用 {kind:"asset",assetId}。只接受当前会话已授权图片或本插件资源，不接受任意路径/URL；固定 n=1。请求参数使用主人面板保存的JSON配置，默认moderation=low；只影响新任务，不能因服务不支持参数而自动付费重试。', generation, ['prompt', 'request_id']),
   tool('image_job_get', '查询生图任务', '查询实际持久任务状态；waitMs 只作最多20秒有限等待，未知结果不重放。succeeded但assetIds为空表示主人已删除原图，任务记录仍保留；不能为补发自动重新生成。', { jobId, waitMs: { type: 'integer', minimum: 0, maximum: 20000, default: 0 } }, ['jobId']),
   tool('image_jobs', '列出生图任务', '分页读取任务元数据，不含 Key、服务原响应或签名下载地址。', page, []),
   tool('image_list', '列出生成图片', '按生成时间倒序分页读取图片元数据，可按描述或模型搜索，不返回原图或 Base64。已删除图片不在列表中。', { ...page, query: { type: 'string', maxLength: 200 } }, []),

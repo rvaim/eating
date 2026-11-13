@@ -4,7 +4,9 @@ import { HostApiError, hostRequest } from '@eating/ui-sdk'
 import type {
   GeneratedImageItem, ImageGenerationConfiguration, ImageGenerationJob, ImageGenerationJobError,
   ImageGenerationDeleteResult, ImageGenerationPage, ImageGenerationPreview, ImageGenerationResponseFormat, ImageGenerationSourceKind, ImageGenerationSourceSummary,
+  ImageRequestParametersConfiguration,
 } from '../types'
+import { parseRequestParameters } from '../request-parameters'
 import { IMAGE_GENERATION_LIMITS } from '../types'
 import { it } from './i18n'
 import type { ImageGenerationTranslationKey } from './i18n'
@@ -29,6 +31,10 @@ export function readConfiguration(value: unknown): ImageGenerationConfiguration 
   return { schemaVersion: 1, revision: value.revision, baseUrl: value.baseUrl, model: value.model, timeoutMs: value.timeoutMs,
     size: value.size, quality: value.quality, responseFormat: value.responseFormat as ImageGenerationResponseFormat,
     apiKeyConfigured: value.apiKeyConfigured, ready: value.ready }
+}
+export function readRequestParameters(value: unknown): ImageRequestParametersConfiguration {
+  if (!isJsonObject(value) || !onlyKeys(value, ['schemaVersion', 'revision', 'parameters']) || value.schemaVersion !== 1 || !integer(value.revision)) return invalid()
+  try { return { schemaVersion: 1, revision: value.revision, parameters: parseRequestParameters(value.parameters) } } catch { return invalid() }
 }
 
 function readError(value: unknown): ImageGenerationJobError {
@@ -123,11 +129,14 @@ export async function fetchConfiguration(signal?: AbortSignal): Promise<ImageGen
 export async function updateConfiguration(patch: JsonObject, signal?: AbortSignal): Promise<ImageGenerationConfiguration> {
   return readConfiguration(await hostRequest<unknown>('/plugins/image-generation/configuration', { method: 'POST', body: patch, signal }))
 }
-export async function manage(operation: 'generate' | 'job' | 'jobs' | 'list' | 'get' | 'delete', input: JsonObject, signal?: AbortSignal): Promise<unknown> {
+export async function manage(operation: 'generate' | 'job' | 'jobs' | 'list' | 'get' | 'delete' | 'request-parameters' | 'save-request-parameters', input: JsonObject, signal?: AbortSignal): Promise<unknown> {
   return hostRequest<unknown>('/plugins/image-generation/manage', { method: 'POST', body: { operation, input }, signal })
 }
 
 const errorKeys: Readonly<Record<string, ImageGenerationTranslationKey>> = {
+  IMAGE_REQUEST_PARAMETERS_INVALID: 'parameters.invalid',
+  IMAGE_REQUEST_PARAMETERS_CORRUPTED: 'parameters.corrupted',
+  IMAGE_REQUEST_PARAMETERS_CONFLICT: 'parameters.conflict',
   IMAGE_GENERATION_BUSY: 'error.busy',
   IMAGE_GENERATION_REVISION_CONFLICT: 'error.listChanged',
   IMAGE_GENERATION_DELETE_CONFIRMATION_REQUIRED: 'error.deleteConfirmation',

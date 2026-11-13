@@ -11,6 +11,7 @@ import { startImagesProviderFixture } from '../../../../../tests/fixtures/images
 import { ImageGenerationPlugin } from '../server'
 import type { PrivateImageConfiguration } from './config'
 import { generateImage } from './provider'
+import { DEFAULT_REQUEST_PARAMETERS } from '../request-parameters'
 import { imageGenerationTools } from './tools'
 import { generationHash, imageSize, parseGeneration } from './validation'
 
@@ -87,7 +88,7 @@ describe('生图尺寸原样传递与服务默认值', () => {
       { input: { size: '' }, expected: undefined },
     ]
     for (const entry of cases) {
-      const result = await generateImage(saved, parameters(entry.input), source, new AbortController().signal)
+      const result = await generateImage(saved, parameters(entry.input), source, new AbortController().signal, DEFAULT_REQUEST_PARAMETERS)
       expect(result.bytes).toEqual(provider.image)
     }
     const requests = editing ? provider.edits.map(entry => ({ path: entry.path, body: entry.fields })) : provider.requests
@@ -112,7 +113,7 @@ describe('生图尺寸原样传递与服务默认值', () => {
     const submitted = object(await plugin.manage('generate', { ...parameters({ size: '1024x1536' }), confirmed: true }))
     const completed = await plugin.manage('job', { jobId: submitted.jobId!, waitMs: 20000 })
     expect(completed).toMatchObject({ status: 'succeeded' })
-    expect(provider.requests).toEqual([{ path: '/v1/images/generations', authorization: undefined, body: { model: 'anonymous-image-model', prompt: parameters().prompt, n: 1, size: '1024x1536' } }])
+    expect(provider.requests).toEqual([{ path: '/v1/images/generations', authorization: undefined, body: { model: 'anonymous-image-model', prompt: parameters().prompt, n: 1, size: '1024x1536', moderation: 'low' } }])
   })
 
   it('同 request_id 改尺寸或改省略语义拒绝，查询和重复提交不会再次计费', async () => {

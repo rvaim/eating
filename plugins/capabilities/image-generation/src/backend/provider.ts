@@ -4,7 +4,7 @@ import { request as httpsRequest } from 'node:https'
 import type { ClientRequest, IncomingMessage } from 'node:http'
 import { DEFAULT_IMAGE_LIMITS, isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { ImageMimeType } from '@eating/plugin-sdk'
-import type { ImageGenerationParameters } from '../types'
+import type { ImageGenerationParameters, ImageRequestParameters } from '../types'
 import type { PrivateImageConfiguration } from './config'
 import { base64Image, imageBytes } from './image'
 import type { GeneratedImageBytes } from './image'
@@ -65,7 +65,7 @@ function requestBytes(url: URL, signal: AbortSignal, maximum: number, body?: Buf
   })
 }
 
-export async function generateImage(configuration: PrivateImageConfiguration, input: ImageGenerationParameters, editSource: ImageEditSource | undefined, signal: AbortSignal, assertBeforePost: () => void = () => {}, maximumImageBytes = DEFAULT_IMAGE_LIMITS.imageBytes): Promise<GeneratedImageBytes> {
+export async function generateImage(configuration: PrivateImageConfiguration, input: ImageGenerationParameters, editSource: ImageEditSource | undefined, signal: AbortSignal, requestParameters: ImageRequestParameters, assertBeforePost: () => void = () => {}, maximumImageBytes = DEFAULT_IMAGE_LIMITS.imageBytes): Promise<GeneratedImageBytes> {
   const timeout = new AbortController(), combined = AbortSignal.any([signal, timeout.signal])
   const timer = setTimeout(() => timeout.abort(), configuration.timeoutMs)
   try {
@@ -73,11 +73,12 @@ export async function generateImage(configuration: PrivateImageConfiguration, in
     let body: Buffer, contentType = 'application/json'
     if (editSource) {
       const fields: Array<readonly [string, string]> = [['model', configuration.model], ['prompt', input.prompt], ['n', '1'],
-        ...(size ? [['size', size] as const] : []), ...(quality ? [['quality', quality] as const] : []), ...(format ? [['response_format', format] as const] : [])]
+        ...(size ? [['size', size] as const] : []), ...(quality ? [['quality', quality] as const] : []), ...(format ? [['response_format', format] as const] : []),
+        ...Object.entries(requestParameters).map(([key, value]) => [key, String(value)] as const)]
       const boundary = '----eating-image-' + randomUUID()
       body = multipartBody(fields, editSource, boundary)
       contentType = 'multipart/form-data; boundary=' + boundary
-    } else body = Buffer.from(JSON.stringify({ model: configuration.model, prompt: input.prompt, n: 1, ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(format ? { response_format: format } : {}) }))
+    } else body = Buffer.from(JSON.stringify({ ...requestParameters, model: configuration.model, prompt: input.prompt, n: 1, ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(format ? { response_format: format } : {}) }))
     const endpoint = new URL(configuration.baseUrl.replace(/\/+$/, '') + (editSource ? '/images/edits' : '/images/generations'))
     assertBeforePost()
     const response = await requestBytes(endpoint, combined, Math.ceil(maximumImageBytes / 3) * 4 + 1024 * 1024, body, configuration.apiKey, contentType)

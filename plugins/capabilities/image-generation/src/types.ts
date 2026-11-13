@@ -4,6 +4,12 @@ import type { ImageMimeType, ImageResource } from '@eating/plugin-sdk'
 export type ImageGenerationResponseFormat = '' | 'b64_json' | 'url'
 export type ImageGenerationJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'unknown'
 export type ImageGenerationSourceKind = 'received' | 'asset' | 'upload'
+export type ImageRequestParameters = Readonly<Record<string, string | number | boolean>>
+export interface ImageRequestParametersConfiguration {
+  readonly schemaVersion: 1
+  readonly revision: number
+  readonly parameters: ImageRequestParameters
+}
 export interface ImageGenerationSourceSummary {
   readonly kind: ImageGenerationSourceKind
   readonly mimeType: ImageMimeType

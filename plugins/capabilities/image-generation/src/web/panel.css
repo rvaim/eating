@@ -136,3 +136,7 @@
   .image-preview-stage { padding: 8px; }
   .image-preview-caption { padding: 12px 14px 14px; }
 }
+
+.image-parameters { margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--color-line); }
+.image-field .image-parameters-editor { margin-top: 10px; min-height: 140px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.image-parameters .image-form-actions { margin-top: 12px; }

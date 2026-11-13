@@ -15,6 +15,7 @@ import {
 } from './data'
 import type { ImageGenerationUpload } from './data'
 import { it } from './i18n'
+import { RequestParameters } from './RequestParameters'
 import './panel.css'
 
 interface ConfigDraft {
@@ -56,6 +57,8 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
   const [config, setConfig] = useState<ImageGenerationConfiguration | null>(null)
   const [draft, setDraft] = useState<ConfigDraft | null>(null)
   const [configDirty, setConfigDirty] = useState(false)
+  const [parametersReady, setParametersReady] = useState(false)
+  const [parametersDirty, setParametersDirty] = useState(false)
   const dirtyRef = useRef(false)
   const [configLoading, setConfigLoading] = useState(true)
   const [configSaving, setConfigSaving] = useState(false)
@@ -379,7 +382,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
   function resetRequestIdentity() { requestIdentity.current = null; setConfirming(false); setGenerateFailure(null) }
 
   async function submitGeneration() {
-    if (!config?.ready || configDirty || hasActive || generating || deletingRef.current || !prompt.trim()) return
+    if (!config?.ready || configDirty || !parametersReady || parametersDirty || hasActive || generating || deletingRef.current || !prompt.trim()) return
     if ([...prompt.trim()].length > IMAGE_GENERATION_LIMITS.prompt) { setGenerateFailure(it('generate.promptTooLong', { max: formatNumber(IMAGE_GENERATION_LIMITS.prompt) })); return }
     const key = JSON.stringify([prompt.trim(), useServiceSize ? '' : overrideSize.trim() || null, overrideQuality.trim(), overrideFormat, source?.key ?? null])
     if (requestIdentity.current?.key !== key) requestIdentity.current = { key, id: createRequestId() }
@@ -405,7 +408,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
   }
 
   const hasActive = Boolean(jobsPage?.items.some(job => isBusyStatus(job.status))) || generating
-  const canGenerate = Boolean(config?.ready && !configDirty && !hasActive && !deleting && prompt.trim())
+  const canGenerate = Boolean(config?.ready && !configDirty && parametersReady && !parametersDirty && !hasActive && !deleting && prompt.trim())
   const jobs = jobsPage?.items ?? []
   const assets = assetsPage?.items ?? []
   const prerequisite = !config || config.ready ? null : !config.baseUrl.trim() && !config.model.trim() ? 'prerequisite.baseUrlModel' : !validUrl(config.baseUrl) ? 'prerequisite.baseUrl' : !config.model.trim() ? 'prerequisite.model' : 'prerequisite.inactive'
@@ -431,12 +434,13 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
         {configMessage && <p className="image-success" role="status"><Check size={14} aria-hidden="true" />{configMessage}</p>}
         <div className="image-form-actions"><ActionButton reasonCode={configSaving ? 'busy' : hasActive ? 'active' : 'unchanged'} type="submit" className="button button-primary" disabled={configSaving || !configDirty || hasActive}>{configSaving ? t('config.saving') : t('config.save')}</ActionButton><ActionButton reasonCode="busy" type="button" className="button button-secondary" disabled={configSaving} onClick={requestReload}><RefreshCw size={14} aria-hidden="true" />{t('config.retry')}</ActionButton></div>
       </form>}
+      <RequestParameters blocked={hasActive} onDirtyChange={setParametersDirty} onReadyChange={setParametersReady} />
     </section>
 
     <section className="image-block" aria-labelledby={`${prefix}-generate-title`}>
       <div className="image-block-heading"><div><h3 id={`${prefix}-generate-title`}>{t('generate.title')}</h3><p>{t('generate.description')}</p></div></div>
       {config && !config.ready && <p className="image-hint">{t(prerequisite ?? 'generate.needConfig')}</p>}
-      {configDirty && <p className="image-hint">{t('generate.dirtyConfig')}</p>}
+      {(configDirty || parametersDirty) && <p className="image-hint">{t('generate.dirtyConfig')}</p>}
       <div className="image-field"><label htmlFor={`${prefix}-source`}>{t('generate.source')}</label><div>
         <input ref={sourceInput} id={`${prefix}-source`} type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={event => void chooseSource(event.target.files?.[0])} />
         <p className="image-hint">{t('generate.sourceHint')}</p>
@@ -446,7 +450,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
       <div className="image-field"><label htmlFor={`${prefix}-prompt`}>{t('generate.prompt')}</label><div><textarea id={`${prefix}-prompt`} rows={5} maxLength={IMAGE_GENERATION_LIMITS.prompt} value={prompt} placeholder={t('generate.promptPlaceholder')} onChange={event => { setPrompt(event.target.value); resetRequestIdentity() }} /><p className="image-hint">{t('generate.promptHint', { max: formatNumber(IMAGE_GENERATION_LIMITS.prompt) })}</p></div></div>
       <details className="image-overrides"><summary>{t('generate.overrides')}</summary><p className="image-hint">{t('generate.overridesHint')}</p><div className="image-field"><label htmlFor={`${prefix}-generate-size`}>{t('generate.size')}</label><div><input id={`${prefix}-generate-size`} value={overrideSize} maxLength={64} disabled={useServiceSize} placeholder={config?.size || t('config.sizePlaceholder')} aria-describedby={`${prefix}-generate-size-hint`} onChange={event => { setOverrideSize(event.target.value); resetRequestIdentity() }} /><p className="image-hint" id={`${prefix}-generate-size-hint`}>{t('generate.sizeHint')}</p><label className="image-check"><input type="checkbox" checked={useServiceSize} aria-describedby={`${prefix}-service-size-hint`} onChange={event => { setUseServiceSize(event.target.checked); resetRequestIdentity() }} /><span>{t('generate.serviceSize')}</span></label><p className="image-hint" id={`${prefix}-service-size-hint`}>{t('generate.serviceSizeHint')}</p></div></div><div className="image-field"><label htmlFor={`${prefix}-generate-quality`}>{t('generate.quality')}</label><div><input id={`${prefix}-generate-quality`} value={overrideQuality} maxLength={200} placeholder={config?.quality || ''} onChange={event => { setOverrideQuality(event.target.value); resetRequestIdentity() }} /></div></div><div className="image-field"><label htmlFor={`${prefix}-generate-format`}>{t('generate.responseFormat')}</label><div><select id={`${prefix}-generate-format`} value={overrideFormat} onChange={event => { setOverrideFormat(event.target.value as ImageGenerationResponseFormat); resetRequestIdentity() }}>{formats.map(value => <option key={value || 'empty'} value={value}>{value ? (value === 'b64_json' ? t('config.format.b64') : value) : t('config.format.empty')}</option>)}</select></div></div></details>
       {generateFailure && <div className="image-notice" role="alert"><AlertCircle size={16} aria-hidden="true" /><span>{generateFailure}</span></div>}
-      {!confirming ? <ActionButton reasonCode={!config?.ready ? 'configure' : configDirty ? 'draft' : hasActive ? 'active' : 'prompt'} type="button" className="button button-primary" disabled={!canGenerate} onClick={() => { setConfirming(true); setGenerateFailure(null) }}><ImagePlus size={16} aria-hidden="true" />{t(source ? 'generate.editButton' : 'generate.button')}</ActionButton> : <div className="image-confirm" role="group" aria-label={t(source ? 'generate.editConfirmTitle' : 'generate.confirmTitle')}><strong>{t(source ? 'generate.editConfirmTitle' : 'generate.confirmTitle')}</strong><p>{t(source ? 'generate.editConfirmText' : 'generate.confirmText')}</p><div className="image-form-actions"><ActionButton reasonCode="busy" type="button" className="button button-secondary" disabled={generating} onClick={() => setConfirming(false)}>{t('generate.cancel')}</ActionButton><ActionButton reasonCode={generating || hasActive ? 'active' : !config?.ready ? 'configure' : 'draft'} type="button" className="button button-primary" disabled={generating || hasActive || !config?.ready || configDirty} onClick={() => void submitGeneration()}>{generating ? t('generate.submitting') : t('generate.confirm')}</ActionButton></div></div>}
+      {!confirming ? <ActionButton reasonCode={!config?.ready ? 'configure' : !parametersReady ? 'loading' : configDirty || parametersDirty ? 'draft' : hasActive ? 'active' : 'prompt'} type="button" className="button button-primary" disabled={!canGenerate} onClick={() => { setConfirming(true); setGenerateFailure(null) }}><ImagePlus size={16} aria-hidden="true" />{t(source ? 'generate.editButton' : 'generate.button')}</ActionButton> : <div className="image-confirm" role="group" aria-label={t(source ? 'generate.editConfirmTitle' : 'generate.confirmTitle')}><strong>{t(source ? 'generate.editConfirmTitle' : 'generate.confirmTitle')}</strong><p>{t(source ? 'generate.editConfirmText' : 'generate.confirmText')}</p><div className="image-form-actions"><ActionButton reasonCode="busy" type="button" className="button button-secondary" disabled={generating} onClick={() => setConfirming(false)}>{t('generate.cancel')}</ActionButton><ActionButton reasonCode={generating || hasActive ? 'active' : !config?.ready ? 'configure' : 'draft'} type="button" className="button button-primary" disabled={generating || hasActive || !config?.ready || configDirty || !parametersReady || parametersDirty} onClick={() => void submitGeneration()}>{generating ? t('generate.submitting') : t('generate.confirm')}</ActionButton></div></div>}
     </section>
 
     <div className="image-lower">

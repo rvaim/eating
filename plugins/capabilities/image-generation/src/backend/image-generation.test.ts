@@ -156,7 +156,7 @@ describe('OpenAI Images 后端与任务边界', () => {
     const p = await provider((_request, response) => imageResponse(response)), f = await configuredFixture(p.baseUrl)
     const submitted = object(await f.plugin.manage('generate', generation()))
     const completed = await finalJob(f.plugin, submitted)
-    expect(p.requests[0]!.body).toEqual({ model: 'fixture-images-model', prompt: generation().prompt, n: 1 })
+    expect(p.requests[0]!.body).toEqual({ model: 'fixture-images-model', prompt: generation().prompt, n: 1, moderation: 'low' })
     expect(await f.plugin.manage('generate', generation())).toEqual(completed)
     await expect(f.plugin.manage('generate', generation('generation-request-0001', { prompt: 'different' }))).rejects.toMatchObject({ code: 'IMAGE_GENERATION_IDEMPOTENCY_CONFLICT' })
     await f.plugin.dispose()
@@ -183,7 +183,7 @@ describe('OpenAI Images 后端与任务边界', () => {
     const request = p.requests[0]!
     expect(request.url).toBe('/nested/v1/images/edits')
     expect(request.headers['content-type']).toMatch(/^multipart\/form-data; boundary=/)
-    expect(request.multipart?.fields).toEqual({ model: 'fixture-images-model', prompt: input.prompt, n: '1' })
+    expect(request.multipart?.fields).toEqual({ model: 'fixture-images-model', prompt: input.prompt, n: '1', moderation: 'low' })
     expect(request.multipart?.image).toEqual(source)
     expect(request.multipart?.mimeType).toBe('image/png')
     const serialized = JSON.stringify([submitted, done, await f.plugin.manage('jobs', {}), f.submissions, await readFile(join(f.directory, 'state.json'), 'utf8')])

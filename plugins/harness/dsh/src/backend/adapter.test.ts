@@ -416,6 +416,7 @@ describe('DSH reliable single-batch handoff', () => {
     finally { write.mockRestore() }
     expect(existsSync(firstAck)).toBe(true)
     expect(existsSync(secondAck)).toBe(false)
+    expect(readRestrictedJson(join(setup.directory, 'bridge', 'deliveries.json'))!.deliveries).toEqual([expect.objectContaining({ batchId: 'a'.repeat(64) })])
     expect(await setup.plugin.deliverBatch(batch('b'.repeat(64)), signal)).toMatchObject({ accepted: true, durable: true })
     expect(existsSync(firstAck)).toBe(true)
     setup.sink!.accepted!('a'.repeat(64), 'receipt')

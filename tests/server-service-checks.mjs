@@ -34,7 +34,7 @@ function fixture(rootUser = false, configurationInside = false, symlinkState = f
 try {
   const success = fixture()
   assert.equal(success.code, 0)
-  assert.equal(success.calls.filter(call => call.command === success.config.runtimeNode).length, 6)
+  assert.equal(success.calls.filter(call => call.command === success.config.runtimeNode).length, 7)
   assert(success.calls.filter(call => call.command === 'systemctl').every(call => call.args[0] === '--user' && (call.args.includes('daemon-reload') || call.args.includes('eating-managed.service'))))
   const unit = join(success.home, '.config/systemd/user/eating-managed.service')
   assert.equal(fs.statSync(unit).mode & 0o777, 0o600)

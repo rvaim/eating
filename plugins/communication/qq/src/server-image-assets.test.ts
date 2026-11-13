@@ -51,7 +51,7 @@ async function fixture(options: { limitMiB?: number; bytes?: Buffer; fail?: bool
   const executeIdempotent = vi.fn<HostPluginContext['executeIdempotent']>((...args) => store.executeIdempotent(...args))
   const context: HostPluginContext = { imageLimits: () => imageLimits(options.limitMiB ?? 10), dataDirectory: home, getSetting: () => null, setSetting: () => {}, listMessages: () => [],
     recordEvent: () => ({ inserted: true, eventId: 'fixture-event' }), executeIdempotent,
-    resources: { getAudioAsset: async () => { throw new Error('Unexpected audio read') }, getAsset, readAsset, readReceivedImage: async () => { throw new Error('Unexpected received image read') } } }
+    resources: { readReceivedAudio: async () => { throw new Error('No incoming audio in this fixture') }, getAudioAsset: async () => { throw new Error('Unexpected audio read') }, getAsset, readAsset, readReceivedImage: async () => { throw new Error('Unexpected received image read') } } }
   const plugin = entry.create(context)
   stops.push(() => plugin.dispose())
   await plugin.updateConfiguration({ endpoint: remote.endpoint, timeoutMs: 5000, autoConnect: false })

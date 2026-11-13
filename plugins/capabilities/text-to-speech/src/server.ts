@@ -8,10 +8,11 @@ import type { SpeechJob } from './types'
 
 const asJson = (value: unknown) => value as JsonObject
 export class SpeechPlugin implements BackendPlugin {
-  readonly id = 'text-to-speech'; readonly kind = 'capability' as const; readonly name = '语音合成'; readonly version = '0.1.2'
-  readonly tools = speechTools
-  readonly capabilities = this.tools.map(tool => ({ id: tool.name, name: tool.title, description: tool.description, support: 'supported' as const, toolName: tool.name }))
-  readonly agentInstructions = [{ id: 'text-to-speech.instructions', title: '语音合成与发送', body: '由会话子Agent结合原话、人格和语境决定是否用语音，先组织要说的短口语文本，再调用speech_generate；音色只由主人保存，delivery是本次临时语气，不改全局设置。默认自然口语，需要时才表达情绪，不每句夸张或撒娇。语音为AI合成，首次使用应向听者明确说明，不冒充真人录音。服务只获得待朗读文本和语气，不获得会话历史或工具。提交可能计费，用稳定request_id防重；speech_job_get确认succeeded后，speech_get取得sendable。QQ发送直接传message:[sendable]，其中type=record、data.file为eating-audio引用，不JSON.stringify或当text发。每次语音独立发送，配文另发；只有真实发送成功回执才称已发送。unknown不自动重新生成或重发；已有音频复用资源引用。最多1000字符／60秒，长内容先由会话Agent按语义精简，不机械截断。朗读文本核对失败则不提供可发送音频。' }]
+  readonly id = 'text-to-speech'; readonly kind = 'capability' as const; readonly name = '语音合成'; readonly version = '0.2.0'
+  readonly configurationChangesTools = true
+  get tools() { return speechTools(this.configuration.snapshot().provider.protocol === 'openai-realtime') }
+  get capabilities() { return this.tools.map(tool => ({ id: tool.name, name: tool.title, description: tool.description, support: 'supported' as const, toolName: tool.name })) }
+  get agentInstructions() { return [{ id: 'text-to-speech.instructions', title: '语音合成与发送', body: (this.configuration.snapshot().provider.protocol === 'deepseek-tts' ? '当前使用DeepSeek TTS，仅支持主人保存的stella／tide音色，不支持自定义语气、语速或克隆声音；speech_generate不能提供delivery。成功仅表示服务完成并通过音频格式校验，不声称做了转写核对。\n' : '当前使用OpenAI Realtime，支持本段delivery，返回转写须与原文核对。\n') + '由会话子Agent结合原话、人格和语境决定是否用语音，先组织要说的短口语文本，再调用speech_generate；音色只由主人保存，delivery是本次临时语气，不改全局设置。默认自然口语，需要时才表达情绪，不每句夸张或撒娇。语音为AI合成，首次使用应向听者明确说明，不冒充真人录音。服务只获得待朗读文本和语气，不获得会话历史或工具。提交可能计费，用稳定request_id防重；speech_job_get确认succeeded后，speech_get取得sendable。QQ发送直接传message:[sendable]，其中type=record、data.file为eating-audio引用，不JSON.stringify或当text发。每次语音独立发送，配文另发；只有真实发送成功回执才称已发送。unknown不自动重新生成或重发；已有音频复用资源引用。最多1000字符／60秒，长内容先由会话Agent按语义精简，不机械截断。服务完成和音频校验失败不提供可发送音频。' }] }
   private readonly configuration: SpeechConfig
   private readonly store: SpeechStore
   private connected = true
@@ -37,7 +38,9 @@ export class SpeechPlugin implements BackendPlugin {
     const v = args(input, ['text', 'delivery', 'request_id'], ['text', 'request_id']), spoken = text(v.text, 1000), delivery = v.delivery === undefined ? '' : text(v.delivery, 500, true)
     if (!/[\p{L}\p{N}]/u.test(spoken)) throw new PlatformError('SPEECH_INVALID_INPUT', '请提供包含文字的朗读内容。', 400, 'not-sent')
     if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$/.test(requestId) || requestId !== v.request_id) throw new PlatformError('SPEECH_INVALID_INPUT', '合成需要一致的稳定request_id。', 400, 'not-sent')
-    const config = this.configuration.snapshot(), intent = { text: spoken, delivery, model: config.model, voice: config.voice, configuration: hash(JSON.stringify(config)) }, requestHash = hash(JSON.stringify(intent))
+    const config = this.configuration.snapshot()
+    if (config.provider.protocol === 'deepseek-tts' && v.delivery !== undefined) throw new PlatformError('SPEECH_UNSUPPORTED_OPTION', '当前DeepSeek不支持delivery，未提交合成。', 400, 'not-sent')
+    const intent = { text: spoken, delivery, provider: config.provider, configuration: hash(JSON.stringify(config)) }, requestHash = hash(JSON.stringify(intent))
     const previous = this.store.existing(requestId, requestHash); if (previous) return previous
     if (this.active) throw new PlatformError('SPEECH_BUSY', '已有合成任务，请先查询。', 409, 'not-sent')
     const authorize = () => { this.assertReady(); if (scope?.signal?.aborted || scope?.source?.signal?.aborted) throw new PlatformError('SPEECH_CANCELLED', '请求提交前授权已撤销。', 409, 'not-sent') }
@@ -47,7 +50,7 @@ export class SpeechPlugin implements BackendPlugin {
     try { result = await this.context.executeIdempotent(this.id, 'speech_generate', intent, requestId, async () => {
       authorize()
       if (this.active) throw new PlatformError('SPEECH_BUSY', '已有合成任务，请先查询。', 409, 'not-sent')
-      const job = this.store.enqueue({ requestId, requestHash, text: spoken, delivery, model: config.model, voice: config.voice })
+      const job = this.store.enqueue({ requestId, requestHash, text: spoken, delivery, protocol: config.provider.protocol, model: config.provider.protocol === 'openai-realtime' ? config.provider.model : null, voice: config.provider.voice })
       let finish!: () => void; const done = new Promise<void>(resolve => { finish = resolve }), active = { id: job.jobId, abort: new AbortController(), done, finish }
       this.active = active; accepted = active
       return { jobId: job.jobId }
@@ -66,9 +69,9 @@ export class SpeechPlugin implements BackendPlugin {
     try {
       if (this.active !== active || active.abort.signal.aborted) throw new PlatformError('SPEECH_CANCELLED', '合成已取消。', 409, 'not-sent')
       this.store.status(active.id, 'running')
-      const bytes = await synthesize(config, spoken, delivery, active.abort.signal, authorize)
+      const result = await synthesize(config, spoken, delivery, active.abort.signal, authorize)
       this.assertReady(); if (active.abort.signal.aborted) throw new PlatformError('SPEECH_CANCELLED', '合成已中断。', 409, 'unknown')
-      this.store.complete(active.id, bytes)
+      this.store.complete(active.id, result.bytes, result.verification)
     } catch (error) {
       const code = error instanceof PlatformError && /^SPEECH_[A-Z_]+$/.test(error.code) ? error.code : 'SPEECH_STORAGE_FAILED'
       try { this.store.status(active.id, error instanceof PlatformError && error.outcome !== 'unknown' ? 'failed' : 'unknown', code) }

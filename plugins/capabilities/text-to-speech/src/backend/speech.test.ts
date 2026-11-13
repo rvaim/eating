@@ -9,7 +9,7 @@ import { startSpeechFixture } from '../../../../../tests/fixtures/speech-provide
 import type { SpeechFixtureMode } from '../../../../../tests/fixtures/speech-provider'
 import { SpeechPlugin } from '../server'
 import { hash, SpeechConfig } from './config'
-import { normalizeSpeechText, wav } from './provider'
+import { normalizeSpeechText, wav } from './audio'
 
 const cleanups: Array<() => unknown | Promise<unknown>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
@@ -25,7 +25,7 @@ async function fixture(mode: SpeechFixtureMode = 'success', failReceipt = false)
     records.set(id, { fingerprint, result }); return result
   } }
   const plugin = new SpeechPlugin(context); cleanups.push(() => plugin.dispose())
-  await plugin.updateConfiguration({ expectedRevision: 0, endpoint: provider.endpoint, apiKey: 'fixture-speech-key', voice: 'marin' })
+  await plugin.updateConfiguration({ expectedRevision: 0, endpoint: provider.endpoint, apiKey: 'fixture-speech-key', provider: { protocol: 'openai-realtime', model: 'gpt-realtime-2.1-mini', voice: 'marin' } })
   const input = { text: '今天先休息一下吧。', delivery: '轻柔一点，正常语速', request_id: 'speech-test-request-001' }
   const submit = () => plugin.invokeCapability('speech_generate', input, input.request_id, { agentId: 'child', agentTypeId: 'qq.private' }) as Promise<JsonObject>
   const final = async (id: JsonValue) => {
@@ -86,8 +86,8 @@ describe('OpenAI cloud speech plugin', () => {
   })
   it('keeps key on blank saves, uses CAS, rejects unsupported stored schema and preserves its original bytes', async () => {
     const f = await fixture(), config = new SpeechConfig(f.directory)
-    config.update({ expectedRevision: 1, apiKey: '', voice: 'coral' }); expect(config.snapshot().apiKey).toBe('fixture-speech-key')
-    expect(() => config.update({ expectedRevision: 1, voice: 'alloy' })).toThrow(expect.objectContaining({ code: 'SPEECH_CONFIGURATION_CONFLICT' }))
+    config.update({ expectedRevision: 1, apiKey: '', provider: { protocol: 'openai-realtime', model: 'gpt-realtime-2.1-mini', voice: 'coral' } }); expect(config.snapshot().apiKey).toBe('fixture-speech-key')
+    expect(() => config.update({ expectedRevision: 1, provider: { protocol: 'openai-realtime', model: 'gpt-realtime-2.1-mini', voice: 'alloy' } })).toThrow(expect.objectContaining({ code: 'SPEECH_CONFIGURATION_CONFLICT' }))
     expect(() => config.update({ expectedRevision: 2, delivery: 'global tone is not configurable' })).toThrow()
     const path = join(f.directory, 'config.json'), original = '{"schemaVersion":0}'; writeFileSync(path, original)
     expect(() => new SpeechConfig(f.directory)).toThrow(expect.objectContaining({ code: 'SPEECH_CONFIGURATION_CORRUPTED' }))

@@ -83,6 +83,7 @@ if (target === 'all') {
   await buildPlugin('plugins/capabilities/image-generation')
   await buildPlugin('plugins/capabilities/openviking-memory')
   await buildPlugin('plugins/capabilities/text-to-speech')
+  await buildPlugin('plugins/capabilities/speech-to-text')
 }
 if (target === 'host' || target === 'all') await buildHost()
 if (target === 'all') {

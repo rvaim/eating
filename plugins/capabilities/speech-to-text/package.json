@@ -1,0 +1,23 @@
+{
+  "name": "@eating/plugin-speech-to-text",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "独立云端语音识别插件，支持可扩展协议与受控会话音频。",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": "./dist/server.mjs"
+  },
+  "scripts": {
+    "build": "node ../../../scripts/build.mjs plugin plugins/capabilities/speech-to-text"
+  },
+  "dependencies": {
+    "@eating/plugin-sdk": "workspace:^",
+    "@eating/ui-sdk": "workspace:^"
+  },
+  "peerDependencies": {
+    "lucide-react": "^1.61.0",
+    "react": "^19.3.1"
+  }
+}

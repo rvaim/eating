@@ -1,5 +1,7 @@
 # Eating
 
+2026-11-14 多协议语音与识别：**实现及Git发布部署已获授权，验证与发布进行中**。独立工作树新增DeepSeek TTS与speech-to-text ASR，协议能力独立、旧语音合成数据显式重建，不做生产自动迁移；其余数据保留。主分支其他会话在途修改不覆盖。实际结果见[ADR-0059](docs/decisions/ADR-0059-多协议语音合成与受控语音识别.md)与[报告](docs/reports/2026-11-14-多协议语音与识别部署报告.md)。
+
 2026-11-13 生图0.6.0已发布部署：新增“请求参数（JSON）”，默认moderation=low，可保存background、output_format等服务参数，文生图和编辑共用。源码`6b326fc`由GitHub构建，原配置和图片历史保留；本地、云端和公网验证见[报告](docs/reports/2026-11-13-生图请求参数配置部署报告.md)。
 
 2026-11-13 生图0.5.0已发布部署：历史图片支持单张、多选及本页批量删除，删除前确认；新增搜索、有界列表、末页回退和预览前后切换。源码`171d93c`从GitHub构建，原图片、任务、配置与会话保留，生产未执行删除。详见[报告](docs/reports/2026-11-13-历史图片删除与列表交互部署报告.md)。
@@ -58,7 +60,7 @@ Eating 是一个独立管理应用，用于连接通讯平台和用户选择的 
 
 ## 已实现功能
 
-- **OpenAI云端语音**：独立语音插件，主人保存音色，会话AI按段选择临时语气；异步合成、转写核对、试听与受控QQ语音条发送，未知不重试。当前本地实现与验证完成，尚未部署或配置真实Key，见[使用说明](docs/operations/OpenAI云端语音合成插件.md)。
+- **云端语音合成与识别**：独立text-to-speech支持OpenAI Realtime与DeepSeek TTS，按实际协议提供音色与临时语气；独立speech-to-text识别获准会话语音或主人上传的音频。受控资源、防重与unknown不重试，见[操作说明](docs/operations/多协议语音与语音识别.md)。
 
 - **插件管理**：通讯、Harness、能力三类插件统一安装、更新、启停和卸载，左侧固定插件目录、右侧当前单项面板，顶部右侧返回管理列表。当前支持本机可信构建目录，先预览同份代码快照再确认，卸载保留数据。
 - **MCP 管理**：左侧固定服务目录，右侧一次查看／编辑一个服务，工具目录可搜索并独立滚动。直接配置stdio／Streamable HTTP，或使用插件服务；已启用且connected的功能型MCP新来源默认all，全部当前及未来工具／Agent类型自动开放；主人可保存custom精确类型／工具例外并恢复all。连接状态、工具发现和实际挂载分别显示，秘密不回显；通讯权限仍由来源插件按账号／目标／资源范围管理。
@@ -108,6 +110,7 @@ pnpm plugin install plugins/harness/dsh/dist
 pnpm plugin install plugins/capabilities/stickers/dist
 pnpm plugin install plugins/capabilities/image-generation/dist
 pnpm plugin install plugins/capabilities/text-to-speech/dist
+pnpm plugin install plugins/capabilities/speech-to-text/dist
 pnpm plugin install plugins/capabilities/openviking-memory/dist
 pnpm dev
 ```

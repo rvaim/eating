@@ -13,6 +13,7 @@ import type { QQMessage, QQTranslationKey } from './i18n'
 import { LiveLogs } from './live-logs'
 import { ImageResult, readImagePreview } from './ImageResult'
 import { MediaTransportFields } from './media-transport'
+import { AudioInputFields } from './audio-input'
 import type { ImagePreviewResult } from './ImageResult'
 import { AgentPolicyFields, agentPolicyDraft } from './agent-policy-fields'
 import { isJsonObject } from '@eating/plugin-sdk'
@@ -328,6 +329,7 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
       <ErrorNotice failure={configurationReadFailure} />
       <ErrorNotice failure={configurationFailure} />
       {plugin && <MediaTransportFields active={tab === 'configuration'} enabled={plugin.enabled} busy={busy} connectionKey={`${saved?.endpoint ?? ''}:${plugin.status.accountId ?? ''}`} actionLock={actionLock} onBusy={setPolicySaving} onFeedback={onFeedback} />}
+      {plugin && <AudioInputFields active={tab === 'configuration'} enabled={plugin.enabled} busy={busy} connectionKey={`${saved?.endpoint ?? ''}:${plugin.status.accountId ?? ''}`} actionLock={actionLock} onBusy={setPolicySaving} onFeedback={onFeedback} />}
       {saved && (saved.instanceId || saved.configurationPath || saved.dataDirectory) && <details className="qq-location-details"><summary>{t('config.locations')}</summary><dl className="qq-paths">{saved.instanceId && <div><dt>{t('config.instance')}</dt><dd>{saved.instanceId}</dd></div>}{saved.configurationPath && <div><dt>{t('config.configurationPath')}</dt><dd>{saved.configurationPath}</dd></div>}{saved.dataDirectory && <div><dt>{t('config.dataDirectory')}</dt><dd>{saved.dataDirectory}</dd></div>}</dl></details>}
     </section>
     <section hidden={tab !== 'agent-policy'} role="tabpanel" id={`${prefix}-panel-agent-policy`} aria-labelledby={`${prefix}-tab-agent-policy`}>

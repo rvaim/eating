@@ -12,6 +12,8 @@ import { downloadQQImage, qqViewReceivedImageTool, readQQReceivedImage } from '.
 import { QQMediaTransportConfiguration } from './backend/media-transport-config'
 import { containsQQImageAssets, resolveQQImageAssets } from './backend/media-transport'
 import { resolveQQAudioAsset } from './backend/audio-transport'
+import { QQAudioInputConfig } from './backend/audio-input-config'
+import { readQQAudio } from './backend/received-audio'
 
 type Configuration = OneBotConfig
 
@@ -65,7 +67,7 @@ class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly kind = 'communication' as const
   readonly name = 'QQ'
-  readonly version = '0.16.1'
+  readonly version = '0.17.0'
   readonly logs = new LiveLogChannel()
   readonly tools = [...qqTools, qqViewReceivedImageTool]
   readonly capabilities = [
@@ -101,6 +103,7 @@ class QQPlugin implements BackendPlugin {
   getAgentIdentity() { return { owners: [...this.configuration.owners], administrators: [...this.configuration.administrators] } }
   private configuration: Configuration
   private readonly file: QQConfigurationFile
+  private readonly audioInput: QQAudioInputConfig
   private readonly mediaTransport: QQMediaTransportConfiguration
   private readonly accounts: QQAccountRegistry
   private readonly instanceId: string
@@ -111,6 +114,7 @@ class QQPlugin implements BackendPlugin {
     this.instanceId = this.accounts.defaultInstanceId
     this.file = new QQConfigurationFile(this.accounts.directoryFor(this.instanceId))
     this.mediaTransport = new QQMediaTransportConfiguration(this.file.directory)
+    this.audioInput = new QQAudioInputConfig(this.file.directory)
     this.configuration = this.file.read() ?? createDefaultConfiguration()
     this.client = new OneBotClient({ onEvent: event => this.receiveEvent(event), imageLimits: () => this.context.imageLimits() })
   }
@@ -136,6 +140,8 @@ class QQPlugin implements BackendPlugin {
   }
 
   async manage(operation: string, input: unknown): Promise<JsonValue> {
+    if (operation === 'audio-input') { if (!isJsonObject(input) || Object.keys(input).length) throw new PlatformError('QQ_AUDIO_INPUT_INVALID', '读取音频目录设置仅接受空对象。', 400, 'not-sent'); return this.audioInput.snapshot(this.mediaConnection()) }
+    if (operation === 'save-audio-input') return this.audioInput.save(input, this.mediaConnection())
     if (operation === 'media-transport') {
       if (!isJsonObject(input) || Object.keys(input).length) throw new PlatformError('QQ_MEDIA_CONFIGURATION_INVALID', '读取图片传输设置仅接受空对象。', 400, 'not-sent')
       return this.mediaTransport.snapshot(this.mediaConnection()) as unknown as JsonObject
@@ -212,6 +218,17 @@ class QQPlugin implements BackendPlugin {
     const image = Array.isArray(content) ? content.find(block => isJsonObject(block) && block.type === 'image') : undefined
     if (!isJsonObject(image)) throw new PlatformError('IMAGE_UNAVAILABLE', '当前消息没有可读取的图片。', 409, 'not-sent')
     return checkedImageResource({ mimeType: image.mimeType ?? null, data: image.data ?? null }, this.context.imageLimits().imageBytes)
+  }
+
+  async readReceivedAudio(reference: import('@eating/plugin-sdk').ReceivedAudioReference, scope: AgentInvocationScope): Promise<import('@eating/plugin-sdk').ReceivedAudioAsset> {
+    const accountId = this.client.getStatus().accountId, settings = this.audioInput.snapshot(this.mediaConnection())
+    const assertActive = () => {
+      if (this.audioInput.snapshot(this.mediaConnection()).revision !== settings.revision) throw new PlatformError('ASSET_ACCESS_DENIED', '音频共享目录授权已变化。', 403, 'not-sent')
+      if (!accountId || scope.signal?.aborted || this.client.getStatus().state !== 'connected' || this.client.getStatus().accountId !== accountId) throw new PlatformError('ASSET_ACCESS_DENIED', '语音读取期间账号或授权已变化。', 403, 'not-sent')
+      assertQQAgentInvocation('qq_get_message', { message_id: reference.messageId }, scope, this.configuration, { instanceId: this.instanceId, accountId })
+      assertQQAgentInvocation('qq_get_record', { file: reference.audioId }, scope, this.configuration, { instanceId: this.instanceId, accountId })
+    }
+    return readQQAudio(reference, scope, { assertActive, readMapped: file => this.audioInput.readMapped(file, this.mediaConnection(), settings.revision), call: (action, parameters) => this.client.call(action, parameters, { timeoutMs: this.configuration.timeoutMs, readOnly: true }) })
   }
 
   private mediaConnection() {

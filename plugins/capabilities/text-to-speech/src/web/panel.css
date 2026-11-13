@@ -21,3 +21,5 @@
 .speech-player { display: block; width: min(100%, 420px); margin-top: 16px; }
 .speech-player + section { margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--color-line); }
 @media (max-width: 650px) { .speech-fields { grid-template-columns: minmax(0, 1fr); } .speech-actions { align-items: stretch; } .speech-actions button { flex-grow: 1; } }
+
+.speech-field input[type='checkbox'] { width: 20px; min-height: 20px; align-self: flex-start; accent-color: var(--color-primary); }

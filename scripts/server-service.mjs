@@ -52,7 +52,7 @@ try {
     if (['active', 'activating', 'deactivating', 'reloading'].includes(active)) command('systemctl', ['--user', 'stop', serviceName], environment)
     else if (!['inactive', 'failed'].includes(active)) fail('Managed Eating service state is not recognized')
   }
-  for (const plugin of ['communication/qq', 'harness/dsh', 'capabilities/stickers', 'capabilities/image-generation', 'capabilities/openviking-memory', 'capabilities/text-to-speech']) command(config.runtimeNode, [resolve(repository, 'apps/host/dist/plugin-cli.mjs'), 'install', resolve(repository, 'plugins', plugin, 'dist')], environment)
+  for (const plugin of ['communication/qq', 'harness/dsh', 'capabilities/stickers', 'capabilities/image-generation', 'capabilities/openviking-memory', 'capabilities/text-to-speech', 'capabilities/speech-to-text']) command(config.runtimeNode, [resolve(repository, 'apps/host/dist/plugin-cli.mjs'), 'install', resolve(repository, 'plugins', plugin, 'dist')], environment)
   const variables = { EATING_HOME: config.dataDirectory, EATING_HOST_PORT: String(config.port), EATING_LISTEN_HOST: config.listenHost, EATING_PUBLIC_ORIGIN: config.publicOrigin, EATING_OWNER_TOKEN: config.ownerToken, EATING_DSH_BIN: config.runtimeDsh, EATING_AUTO_CONNECT: 'true', PATH: environment.PATH }
   const unit = [marker, '[Unit]', 'Description=Eating managed application', 'After=network.target', '', '[Service]', 'Type=simple', 'WorkingDirectory=' + repository.replaceAll('%', '%%'), 'ExecStart=' + quoted(config.runtimeNode) + ' ' + quoted(resolve(repository, 'apps/host/dist/main.mjs')), ...Object.entries(variables).map(([name, value]) => 'Environment=' + quoted(name + '=' + value)), 'UMask=0077', 'Restart=on-failure', 'RestartSec=5', 'TimeoutStopSec=60', 'KillMode=control-group', 'MemoryMax=1536M', 'CPUQuota=100%', 'Nice=10', '', '[Install]', 'WantedBy=default.target', ''].join('\n')
   writeFileSync(unitPath, unit, { mode: 0o600 })
@@ -62,9 +62,9 @@ try {
   command('systemctl', ['--user', 'enable', '--now', serviceName], environment)
   const status = command('systemctl', ['--user', 'is-active', serviceName], environment)
   if (status !== 'active') fail('Eating service did not become active')
-  writeFileSync(state, JSON.stringify({ serviceName, release: repository, status, installedPluginCount: 6 }), { mode: 0o600 })
+  writeFileSync(state, JSON.stringify({ serviceName, release: repository, status, installedPluginCount: 7 }), { mode: 0o600 })
   chmodSync(state, 0o600)
-  console.log(JSON.stringify({ managedServiceStarted: true, installedPluginCount: 6, configurationCopiedFromLocalAI: false, firewallChanged: false, otherServicesRestarted: false }))
+  console.log(JSON.stringify({ managedServiceStarted: true, installedPluginCount: 7, configurationCopiedFromLocalAI: false, firewallChanged: false, otherServicesRestarted: false }))
 } catch (error) {
   console.error(error instanceof Error && /^(This service|Use an external|Use an unprivileged|Invalid service|Service paths|Private service|Explicit listener|Public origin|An unrelated|Managed Eating|Eating service)/.test(error.message) ? error.message : 'Eating service setup failed; private configuration is not displayed')
   process.exitCode = 1

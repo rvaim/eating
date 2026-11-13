@@ -11,6 +11,16 @@ export interface ImageResource {
 }
 export interface ImageAssetReference { readonly pluginId: string; readonly assetId: string }
 export interface ReceivedImageReference { readonly messageId: string; readonly imageId: string }
+export interface ReceivedAudioReference { readonly messageId: string; readonly audioId: string }
+/** Incoming audio is independent of the canonical short WAV used for sending. */
+export interface ReceivedAudioAsset {
+  readonly mimeType: 'audio/wav' | 'audio/ogg'
+  readonly byteLength: number
+  readonly durationMs: number
+  readonly sha256: string
+  readBytes(): Promise<Uint8Array>
+}
+export interface ReceivedAudioLease extends ReceivedAudioAsset { assertCurrent(): void }
 
 /** Trusted Host-supplied identity; models cannot supply this as tool arguments. */
 export interface CapabilityInvocationScope {
@@ -51,6 +61,7 @@ export interface PluginAudioProvider {
   getAsset(assetId: string): Promise<PluginAudioAsset>
 }
 export interface PluginResourceServices {
+  readReceivedAudio(scope: AgentInvocationScope, reference: ReceivedAudioReference): Promise<ReceivedAudioLease>
   readReceivedImage(scope: AgentInvocationScope, reference: ReceivedImageReference): Promise<ImageResource>
   readAsset(reference: ImageAssetReference, scope?: CapabilityInvocationScope): Promise<ImageResource>
   getAsset(reference: ImageAssetReference, scope?: CapabilityInvocationScope): Promise<ImageAssetLease>

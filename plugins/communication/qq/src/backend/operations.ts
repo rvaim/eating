@@ -2,6 +2,7 @@ import { PlatformError } from '@eating/plugin-sdk'
 import type { JsonObject, PluginToolDefinition } from '@eating/plugin-sdk'
 import { oneBotIdSchema, oneBotMessageDefinitions, oneBotMessageIdSchema, oneBotMessageSchema } from '../message-schema'
 import { validateSchemaInput } from '../validation'
+import { assertQQImageMessage } from './image-message'
 
 const MAX_SAFE = Number.MAX_SAFE_INTEGER
 const text = (description: string, minimum = 0): JsonObject => ({ type: 'string', minLength: minimum, maxLength: 262144, description })
@@ -226,6 +227,8 @@ export function prepareOneBotCall(tool: PluginToolDefinition, params: JsonObject
   const registered = qqTools.find(candidate => candidate.name === tool.name)
   if (!registered || registered.protocolAction !== tool.protocolAction) throw new PlatformError('INVALID_INPUT', 'QQ 工具不属于已注册的 OneBot 功能。', 400, 'not-sent')
   const input = validateToolInput(registered, params)
+  assertQQImageMessage(input.message)
+  if (registered.protocolAction === '.handle_quick_operation' && input.operation && typeof input.operation === 'object' && !Array.isArray(input.operation)) assertQQImageMessage(input.operation.reply)
   const forwarded: JsonObject = { ...input }
   delete forwarded.request_id
   delete forwarded.instance_id

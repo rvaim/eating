@@ -113,6 +113,6 @@ export const oneBotMessageDefinitions: JsonObject = {
 
 export const oneBotMessageSchema: JsonObject = {
   $ref: '#/$defs/oneBotMessage',
-  description: '字符串、消息段数组或单个消息段对象。图片发送时 message 必须直接传消息段对象或数组，例如 [{"type":"image","data":{"file":"eating-asset://image-generation/<assetId>"}}]，file 使用工具返回的真实引用。不能 JSON.stringify，也不能把 URI／图片 JSON 作为普通字符串或 text 段发送；字符串不会被当成 JSON 消息段解析。用户要求重发已有图片时复用已有图片资源，不重新生图；生成成功不等于发送成功，文字发送的 message_id 不能证明图片已发送。字符串默认按纯文本发送；显式 auto_escape=false 时解析 CQ 码，不能将其用作解析图片 JSON 的开关。',
+  description: '字符串、消息段数组或单个消息段对象。图片发送时 message 必须直接传消息段对象或数组，例如 [{"type":"image","data":{"file":"eating-asset://image-generation/<assetId>"}}]，file 使用工具返回的真实引用。不能 JSON.stringify，也不能把 URI／图片 JSON 作为普通字符串或 text 段发送；图片 JSON 字符串、包含内部图片引用的文字或错误段类型会在发送前以 QQ_IMAGE_MESSAGE_REQUIRED／not-sent 拒绝，不能把拒绝当成已发送。修正本次格式后复用原图片和本次 request_id；此前成功或 unknown 的动作不得重发。用户要求重发已有图片时复用已有图片资源，不重新生图；生成成功不等于发送成功，文字发送的 message_id 不能证明图片已发送。字符串默认按纯文本发送；显式 auto_escape=false 时解析 CQ 码，不能将其用作解析图片 JSON 的开关。',
   examples: [[{ type: 'image', data: { file: 'eating-asset://image-generation/<assetId>' } }]],
 }

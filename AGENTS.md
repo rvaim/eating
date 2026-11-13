@@ -1,5 +1,7 @@
 # Eating 开发规则
 
+2026-11-13 图片JSON文字误发强制修复：QQ源码0.16.1已在发送前拒绝图片JSON字符串、正文中的内部图片引用和错误段字段，返回QQ_IMAGE_MESSAGE_REQUIRED／not-sent，未登记动作即可修正本次参数并复用原图。真实DSH回环已验证错误返回模型后同request_id纠正、只生成一次且只发一次。440项相关回归及6项浏览器通过，完整构建／严格类型通过；沿用本会话授权，正在提交、push及保留数据部署。新规则见[ADR-0055](docs/decisions/ADR-0055-图片消息发送前强制校验.md)，执行证据见[报告](docs/reports/2026-11-13-图片JSON文字误发强制修复报告.md)。
+
 2026-11-13 生图预览：**Git发布与云端保留数据部署完成**。源码`87edc66`由服务器从GitHub拉取构建，生图0.4.1改为当前视口弹窗，关闭保持位置与焦点；其余版本保持。云端449项控制层及156项相关回归通过，231文件全量私有备份核对、50保护文件、数据库记录、会话及3日志前缀保持；六插件connected、DSH／nativeWeb ready、异常restart0，公网桌面／手机及双语实读通过。图片JSON误发仅完成诊断和约束建议，未修改QQ发送契约。详见[报告](docs/reports/2026-11-13-生图预览优化与图片文字误发诊断.md)。
 
 2026-11-10 自主执行预算修复：**修复、提交／push及云端保留数据部署完成**。源码`f528d17`由服务器从GitHub拉取构建，应用0.22.0／DSH0.19.0，其余五插件及SDK／依赖不变。严格自主schema3/runUsedMs只累计轮次准入至结算，间隔、额度等待和停机不计，已结算用时跨重启保留；预算暂停与真实故障分开，恢复按钮双语正常。本地全量1915项通过／11项条件跳过、22项相关浏览器最终通过、最终51项专项通过；云端468项通过。空闲停Eating后全量200文件私有备份并核对，显式schema2→3，从0开始新预算，保其余配置、历史、计数、暂停及错误。六插件connected、DSH／nativeWeb ready、异常restart0；公网HTTP桌面／手机及双语实读通过。当前保留原暂停，主人可点击“恢复自主运行”；未自动resume或试发。证据见[本轮报告](docs/reports/2026-11-10-自主执行预算修复部署报告.md)。
@@ -61,7 +63,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`、`plugins/capabilities/text-to-speech`。
 
-当前源码应用／Host／Web0.22.0，plugin-sdk4.11.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.16.0、DSH0.19.0、表情包0.3.0、生图0.4.1、记忆源码0.3.2、语音text-to-speech0.1.2（本机原记忆安装0.1.1保持）；插件唯一 API4。UI SDK新增必填面板enabled类型，无新增依赖，本轮锁文件零差异；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前源码应用／Host／Web0.22.0，plugin-sdk4.11.0、ui-sdk4.3.0、plugin-core4.0.0，QQ源码0.16.1、DSH0.19.0、表情包0.3.0、生图0.4.1、记忆源码0.3.2、语音text-to-speech0.1.2（本机原记忆安装0.1.1保持）；插件唯一 API4。UI SDK新增必填面板enabled类型，无新增依赖，本轮锁文件零差异；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 

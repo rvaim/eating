@@ -169,6 +169,30 @@ test.describe('完整 OneBot 工具的通用面板', () => {
     expect(onebot.requests.filter(request => request.action === 'send_msg')[2]?.params.message).toEqual(single)
   })
 
+  test('图片JSON作为文字被拒绝且双语说明可见，切换为消息段后才发送', async ({ page }, info) => {
+    await configure(page)
+    await chooseLanguage(page, 'en-US')
+    await page.getByLabel('Test function', { exact: true }).selectOption('qq_send_message')
+    await page.getByLabel('Message type (optional)', { exact: true }).selectOption('group')
+    await page.getByLabel('Target group number (optional)', { exact: true }).fill('123456')
+    const image = [{ type: 'image', data: { file: 'https://example.invalid/fixture.png' } }]
+    await page.getByLabel('Message content (required)', { exact: true }).fill(JSON.stringify(image))
+    await page.getByRole('checkbox', { name: englishConfirmation, exact: true }).check()
+    await page.getByRole('button', { name: 'Run test', exact: true }).click()
+    await expect(page.getByText('Nothing was sent: use an image message segment or array, not image JSON or an internal image reference as text. Correct the format and reuse the existing image; no new generation is needed.', { exact: true }).first()).toBeVisible()
+    expect(onebot.requests.filter(request => request.action.startsWith('send_'))).toHaveLength(0)
+    await page.locator('.qq-error').first().screenshot({ path: info.outputPath('image-format-error-en.png') })
+    await chooseLanguage(page, 'zh-CN')
+    await expect(page.getByText('图片消息格式错误，未发送。请用图片消息段对象或数组，勿将图片 JSON 或内部图片引用作为文字发送。修正后复用已有图片，无需重新生成。', { exact: true }).first()).toBeVisible()
+    await page.locator('.qq-error').first().screenshot({ path: info.outputPath('image-format-error-zh.png') })
+    await chooseLanguage(page, 'en-US')
+    await page.getByLabel('Message content format', { exact: true }).selectOption('json')
+    await page.getByRole('checkbox', { name: englishConfirmation, exact: true }).check()
+    await page.getByRole('button', { name: 'Run test', exact: true }).click()
+    await expect.poll(() => onebot.requests.filter(request => request.action === 'send_msg').length).toBe(1)
+    expect(onebot.requests.filter(request => request.action === 'send_msg')[0]!.params.message).toEqual(image)
+  })
+
   test('群管理使用通用确认和整数布尔表单，快捷操作JSON保持原值，普通记录最多十条', async ({ page }) => {
     await configure(page)
     await page.getByLabel('测试功能', { exact: true }).selectOption('qq_set_group_whole_ban')

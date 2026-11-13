@@ -202,6 +202,37 @@ describe('call preparation, defaults, IDs and aliases', () => {
 })
 
 describe('complete OneBot message representations', () => {
+  it('rejects image references in text, serialized image messages and wrong segment fields before preparing a call', () => {
+    const ref = 'eating-asset://image-generation/fixture-image'
+    const image = { type: 'image', data: { file: ref } }
+    const malformed: JsonValue[] = [
+      ref, `这是图片：${ref}`, JSON.stringify([image]), { type: 'text', data: { text: JSON.stringify(image) } },
+      [{ type: 'text', data: { text: ref } }, image],
+      { type: 'node', data: { user_id: 456, nickname: '成员', content: JSON.stringify([image]) } },
+      { type: 'record', data: { file: ref } }, { type: 'video', data: { file: ref } },
+      { type: 'share', data: { url: 'https://example.invalid', title: ref } },
+      JSON.stringify([{ type: 'image', data: { file: 'https://example.invalid/image.png' } }]),
+    ]
+    for (const message of malformed) {
+      try { prepare('send_private_msg', { user_id: 456, message }); throw new Error('Expected image-format rejection') }
+      catch (error) { expect(error).toMatchObject({ code: 'QQ_IMAGE_MESSAGE_REQUIRED', statusCode: 400, outcome: 'not-sent' }) }
+    }
+    for (const auto_escape of [false, true]) expect(() => prepare('send_group_msg', { group_id: 789, message: JSON.stringify([image]), auto_escape })).toThrow('本次未发送')
+    expect(() => prepare('.handle_quick_operation', { context: privateContext, operation: { reply: JSON.stringify([image]) } })).toThrow('本次未发送')
+  })
+
+  it('preserves ordinary text, JSON, CQ codes, structured images and untrusted incoming context without coercion', () => {
+    for (const message of ['普通聊天', '{"result":"ok"}', '[1,2,3]', '[CQ:image,file=https://example.invalid/image.png]']) {
+      expect(prepare('send_private_msg', { user_id: 456, message, auto_escape: false }).params.message).toBe(message)
+    }
+    const image = { type: 'image', data: { file: 'eating-asset://image-generation/fixture-image' } }
+    for (const message of [image, [image], { type: 'node', data: { user_id: 456, nickname: '成员', content: [image] } }]) {
+      expect(prepare('send_private_msg', { user_id: 456, message }).params.message).toBe(message)
+    }
+    const inbound = { ...privateContext, message: JSON.stringify([image]) }
+    expect(prepare('.handle_quick_operation', { context: inbound, operation: { reply: '收到' } }).params.context).toEqual({ ...inbound, self_id: 123, user_id: 456 })
+  })
+
   const segments: JsonObject[] = [
     { type: 'text', data: { text: 'hello [CQ:face,id=1]' } }, { type: 'face', data: { id: '178' } },
     { type: 'image', data: { file: 'base64://YWJj', type: 'flash', cache: '0', proxy: 'no', timeout: '30' } },

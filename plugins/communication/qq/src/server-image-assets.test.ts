@@ -68,6 +68,40 @@ async function fixture(options: { limitMiB?: number; bytes?: Buffer; fail?: bool
 }
 
 describe('QQ authorized image assets with real OneBot transport', () => {
+  it('rejects serialized image text before the ledger, then accepts the corrected image once with the same request ID', async () => {
+    const f = await fixture({ bytes: createLargeImageFixturePng() })
+    for (const message of [JSON.stringify([reference]), { type: 'text', data: { text: JSON.stringify([reference]) } }, `图片：${reference.data.file}`]) {
+      await expect(f.send(message)).rejects.toMatchObject({ code: 'QQ_IMAGE_MESSAGE_REQUIRED', statusCode: 400, outcome: 'not-sent' })
+      expect(f.sends()).toEqual([])
+      expect(f.executeIdempotent).not.toHaveBeenCalled()
+      expect(f.getAsset).not.toHaveBeenCalled()
+    }
+    await expect(f.send([reference])).resolves.toEqual({ message_id: 1001 })
+    await expect(f.send([reference])).resolves.toEqual({ message_id: 1001 })
+    expect(f.sends()).toHaveLength(1)
+    expect(f.getAsset).toHaveBeenCalledTimes(1)
+    expect(f.sends()[0]!.params.message).toEqual([{ type: 'image', data: { file: 'base64://' + f.image.data } }])
+    await expect(f.send('changed intent')).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' })
+    expect(f.sends()).toHaveLength(1)
+  })
+
+  it('rejects owner and quick-operation image text before any OneBot request or action registration', async () => {
+    const f = await fixture({ bytes: createLargeImageFixturePng() })
+    const text = JSON.stringify([reference])
+    for (const [name, params] of [
+      ['qq_send_private_message', { user_id: '234567', message: text }],
+      ['qq_send_group_message', { group_id: '345678', message: text }],
+      ['qq_send_message', { user_id: '234567', message: text }],
+      ['qq_handle_quick_operation', { context: { post_type: 'message', message_type: 'private', self_id: 123456, user_id: 234567, message: 'inbound' }, operation: { reply: text } }],
+    ] as const) {
+      await expect(f.plugin.invoke(name, { ...params, request_id: 'owner-invalid-image-1' }, 'owner-invalid-image-1')).rejects.toMatchObject({ code: 'QQ_IMAGE_MESSAGE_REQUIRED', outcome: 'not-sent' })
+    }
+    expect(f.sends()).toEqual([])
+    expect(f.remote.requests.some(request => request.action === '.handle_quick_operation')).toBe(false)
+    expect(f.executeIdempotent).not.toHaveBeenCalled()
+    expect(f.getAsset).not.toHaveBeenCalled()
+  })
+
   it('sends the full 5 MiB PNG plus text and base64 JSON overhead exactly once, keeping raw bytes out of Host actions', async () => {
     const f = await fixture(), message = [{ type: 'text', data: { text: '生成完成。' } }, reference]
     await expect(f.send(message)).resolves.toEqual({ message_id: 1001 })

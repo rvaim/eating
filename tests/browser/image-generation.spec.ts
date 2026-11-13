@@ -158,6 +158,13 @@ test.describe('生图插件真实临时 Host', () => {
     await expect.poll(() => provider.requests.length).toBe(1)
     await job.getByRole('button', { name: '查看图片', exact: true }).first().click()
     await expect(page.locator('.image-preview img')).toBeVisible()
+    const preview = page.getByRole('dialog', { name: '图片预览', exact: true })
+    await expect(preview).toBeInViewport({ ratio: 1 })
+    await expect(preview.getByRole('button', { name: '关闭预览', exact: true })).toBeFocused()
+    await page.screenshot({ path: info.outputPath('image-preview-desktop.png') })
+    await page.keyboard.press('Escape')
+    await expect(preview).not.toBeVisible()
+    await expect(job.getByRole('button', { name: '查看图片', exact: true }).first()).toBeFocused()
     expect(provider.requests).toHaveLength(1)
 
     await page.getByRole('button', { name: '刷新任务', exact: true }).click()
@@ -180,8 +187,11 @@ test.describe('生图插件真实临时 Host', () => {
 
     await page.setViewportSize({ width: 1440, height: 1000 })
     await page.getByLabel('API Key', { exact: true }).fill('unsaved-private-key')
+    await page.locator('.image-asset-row').first().click()
+    await expect(preview).toBeVisible()
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')) })
     await expect(page.getByLabel('API Key', { exact: true })).toHaveValue('')
+    await expect(preview).not.toBeVisible()
     await expect(page.locator('.image-preview img')).toHaveCount(0)
     expect(provider.requests).toHaveLength(1)
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')) })
@@ -194,5 +204,72 @@ test.describe('生图插件真实临时 Host', () => {
     await expect(page.getByLabel('模型', { exact: true })).toHaveValue('gpt-image-fixture')
     await expect(page.locator('.image-job').filter({ hasText: prompt }).getByText('已完成', { exact: true })).toBeVisible({ timeout: 20_000 })
     expect(provider.requests).toHaveLength(1)
+  })
+
+  test('长图片列表在当前位置预览，明暗窄屏、取消读取、失败及关闭均保持可操作', async ({ page }, info) => {
+    const items = Array.from({ length: 20 }, (_, index) => ({ assetId: String(index + 1).padStart(64, '0'), mimeType: 'image/png', bytes: provider.image.length,
+      prompt: `预览示例 ${index + 1}：晨光中的绿色花园`, model: 'fixture-images-model', createdAt: '2026-11-13T08:00:00.000Z' }))
+    let previewRequests = 0
+    let fail = false
+    let release: (() => void) | undefined
+    let gate: Promise<void> | undefined
+    await page.route('**/api/plugins/image-generation/manage', async route => {
+      const body = route.request().postDataJSON() as { operation: string; input: { assetId?: string } }
+      if (body.operation === 'list') {
+        await route.fulfill({ json: { items, total: items.length, offset: 0, limit: 20, hasMore: false, nextOffset: null } }); return
+      }
+      if (body.operation !== 'get') { await route.continue(); return }
+      previewRequests++
+      const item = items.find(item => item.assetId === body.input.assetId)!
+      const failure = fail
+      await gate
+      await route.fulfill(failure ? { status: 404, json: { error: { code: 'IMAGE_GENERATION_NOT_FOUND' } } } : { json: { item,
+        image: { mimeType: 'image/png', data: provider.image.toString('base64') }, sendable: { type: 'image', data: { file: `eating-asset://image-generation/${item.assetId}` } } } }).catch(() => {})
+    })
+    await open(page)
+    await expect(page.locator('.image-asset-row')).toHaveCount(20)
+    expect(previewRequests).toBe(0)
+    const preview = page.getByRole('dialog', { name: '图片预览', exact: true })
+    for (const [width, height, theme] of [[1440, 1000, 'light'], [1440, 1000, 'dark'], [390, 844, 'light'], [390, 844, 'dark']] as const) {
+      await page.setViewportSize({ width, height }); await page.emulateMedia({ colorScheme: theme })
+      const trigger = page.locator('.image-asset-row').nth(2)
+      await trigger.scrollIntoViewIfNeeded()
+      const position = await page.locator('#main-content').evaluate(element => element.scrollTop)
+      await trigger.click()
+      await expect(preview.locator('img')).toBeVisible()
+      await expect(preview).toBeInViewport({ ratio: 1 })
+      await expect(preview.locator('img')).toBeInViewport({ ratio: 1 })
+      expect(await page.locator('#main-content').evaluate(element => element.scrollTop)).toBe(position)
+      await expect(preview.getByRole('button', { name: '关闭预览', exact: true })).toBeFocused()
+      await page.getByLabel('Base URL', { exact: true }).evaluate(element => element.focus())
+      await expect(preview.getByRole('button', { name: '关闭预览', exact: true })).toBeFocused()
+      await page.screenshot({ path: info.outputPath(`image-preview-${width}-${theme}.png`) })
+      await preview.getByRole('button', { name: '关闭预览', exact: true }).click()
+      await expect(preview).not.toBeVisible()
+      await expect(trigger).toBeFocused()
+      expect(await page.locator('#main-content').evaluate(element => element.scrollTop)).toBe(position)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0)
+    }
+    gate = new Promise<void>(resolve => { release = resolve })
+    await page.locator('.image-asset-row').first().click()
+    await expect(preview.getByRole('status')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(preview).not.toBeVisible()
+    release!(); gate = undefined
+    fail = true
+    await page.locator('.image-asset-row').nth(1).click()
+    await expect(preview.getByRole('alert')).toBeVisible()
+    await expect(preview.locator('img')).toHaveCount(0)
+    await page.mouse.click(1, 1)
+    await expect(preview).not.toBeVisible()
+    fail = false
+    await page.locator('.image-asset-row').nth(2).click()
+    await expect(preview.locator('img')).toBeVisible()
+    await expect(preview.getByRole('alert')).toHaveCount(0)
+    await page.keyboard.press('Escape')
+    await page.locator('#display-language').selectOption('en-US')
+    await page.locator('.image-asset-row').nth(2).click()
+    await expect(page.getByRole('dialog', { name: 'Image preview', exact: true }).getByRole('button', { name: 'Close preview', exact: true })).toBeVisible()
+    expect(provider.requests).toHaveLength(0)
   })
 })

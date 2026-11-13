@@ -1,7 +1,7 @@
 import { readImageLimits } from '@eating/plugin-sdk'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { AlertCircle, Check, ChevronLeft, ChevronRight, ImageOff, ImagePlus, LoaderCircle, RefreshCw } from 'lucide-react'
+import { AlertCircle, Check, ChevronLeft, ChevronRight, ImageOff, ImagePlus, LoaderCircle, RefreshCw, X } from 'lucide-react'
 import type { JsonObject } from '@eating/plugin-sdk'
 import { ActionButton, createRequestId, formatNumber, hostRequest, useI18n } from '@eating/ui-sdk'
 import type { PluginPanelProps } from '@eating/ui-sdk'
@@ -77,6 +77,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
   const [generating, setGenerating] = useState(false)
   const [generateFailure, setGenerateFailure] = useState<string | null>(null)
   const [selected, setSelected] = useState<ImageGenerationPreview | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewFailure, setPreviewFailure] = useState<string | null>(null)
   const [visible, setVisible] = useState(() => !document.hidden)
@@ -90,6 +91,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
   const jobsGeneration = useRef(0)
   const assetsGeneration = useRef(0)
   const previewUrl = useRef<string | null>(null)
+  const previewDialog = useRef<HTMLDialogElement | null>(null)
   const sourcePreviewUrl = useRef<string | null>(null)
   const sourceReadController = useRef<AbortController | null>(null)
   const sourceInput = useRef<HTMLInputElement | null>(null)
@@ -111,8 +113,13 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
     previewController.current?.abort(); previewController.current = null
     if (previewUrl.current) URL.revokeObjectURL(previewUrl.current)
     previewUrl.current = null
-    if (mounted.current) { setSelected(null); setPreviewLoading(false) }
+    if (mounted.current) { setPreviewOpen(false); setSelected(null); setPreviewLoading(false); setPreviewFailure(null) }
   }, [])
+  useEffect(() => {
+    const dialog = previewDialog.current
+    if (previewOpen) dialog?.showModal()
+    else if (dialog?.open) dialog.close()
+  }, [previewOpen])
   const clearSource = useCallback(() => {
     if (sourcePreviewUrl.current) URL.revokeObjectURL(sourcePreviewUrl.current)
     sourcePreviewUrl.current = null
@@ -276,9 +283,9 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
 
   async function openAsset(assetId: string) {
     if (!mounted.current || document.hidden) return
-    previewController.current?.abort()
+    clearPreview()
     const controller = new AbortController(); previewController.current = controller
-    setPreviewLoading(true); setPreviewFailure(null)
+    setPreviewOpen(true); setPreviewLoading(true)
     try {
       const preview = readPreview(await manage('get', { assetId }, controller.signal))
       if (!mounted.current || controller.signal.aborted || document.hidden) return
@@ -286,8 +293,10 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
     } catch (error) {
       if (mounted.current && !controller.signal.aborted) setPreviewFailure(errorTextFrom(error, it('resources.previewFailed')))
     } finally {
-      if (previewController.current === controller) previewController.current = null
-      if (mounted.current) setPreviewLoading(false)
+      if (previewController.current === controller) {
+        previewController.current = null
+        if (mounted.current) setPreviewLoading(false)
+      }
     }
   }
 
@@ -388,22 +397,31 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
         {listFailure && <div className="image-notice" role="alert"><AlertCircle size={16} aria-hidden="true" /><span>{listFailure}</span></div>}
         {listLoading && !jobsPage && <p className="image-loading" role="status"><LoaderCircle size={15} aria-hidden="true" />{t('jobs.loading')}</p>}
         {jobsPage && jobs.length === 0 && <div className="image-empty"><ImageOff size={26} aria-hidden="true" /><h4>{t('jobs.empty')}</h4><p>{t('jobs.emptyHelp')}</p></div>}
-        {jobs.length > 0 && <ol className="image-jobs">{jobs.map(job => <li key={job.jobId} className="image-job"><div className="image-job-head"><span className={`status-badge image-job-status image-job-status-${job.status}`}>{t(`jobs.status.${job.status}`)}</span><time dateTime={job.createdAt}>{formatDateTime(job.createdAt)}</time></div><p className="image-job-prompt" dir="auto">{job.prompt}</p><div className="image-job-meta"><span>{t('jobs.model', { model: job.model })}</span>{job.source && <span>{t(job.source.kind === 'received' ? 'jobs.source.received' : job.source.kind === 'asset' ? 'jobs.source.asset' : 'jobs.source.upload')}</span>}{job.assetIds.length > 0 && <span>{t('jobs.assets', { count: job.assetIds.length, value: formatNumber(job.assetIds.length) })}</span>}</div>{job.error && <p className="image-error">{t('jobs.error', { message: jobErrorText(job.error) })}</p>}{job.status === 'unknown' && <p className="image-warning">{t('jobs.unknownNotice')}</p>}{job.assetIds.length > 0 && <div className="image-asset-links">{job.assetIds.map(assetId => <ActionButton reasonCode="preview" key={assetId} type="button" className="text-button" disabled={previewLoading} onClick={() => void openAsset(assetId)}>{t('jobs.viewAssets')}</ActionButton>)}</div>}</li>)}</ol>}
+        {jobs.length > 0 && <ol className="image-jobs">{jobs.map(job => <li key={job.jobId} className="image-job"><div className="image-job-head"><span className={`status-badge image-job-status image-job-status-${job.status}`}>{t(`jobs.status.${job.status}`)}</span><time dateTime={job.createdAt}>{formatDateTime(job.createdAt)}</time></div><p className="image-job-prompt" dir="auto">{job.prompt}</p><div className="image-job-meta"><span>{t('jobs.model', { model: job.model })}</span>{job.source && <span>{t(job.source.kind === 'received' ? 'jobs.source.received' : job.source.kind === 'asset' ? 'jobs.source.asset' : 'jobs.source.upload')}</span>}{job.assetIds.length > 0 && <span>{t('jobs.assets', { count: job.assetIds.length, value: formatNumber(job.assetIds.length) })}</span>}</div>{job.error && <p className="image-error">{t('jobs.error', { message: jobErrorText(job.error) })}</p>}{job.status === 'unknown' && <p className="image-warning">{t('jobs.unknownNotice')}</p>}{job.assetIds.length > 0 && <div className="image-asset-links">{job.assetIds.map(assetId => <ActionButton reasonCode="preview" key={assetId} type="button" className="text-button" onClick={() => void openAsset(assetId)}>{t('jobs.viewAssets')}</ActionButton>)}</div>}</li>)}</ol>}
         {jobsPage && jobsPage.total > 0 && <nav className="image-pagination" aria-label={t('jobs.title')}><span>{t('jobs.page', { start: formatNumber(jobsPage.total ? jobsPage.offset + 1 : 0), end: formatNumber(Math.min(jobsPage.offset + jobsPage.items.length, jobsPage.total)), total: formatNumber(jobsPage.total) })}</span><div><ActionButton reasonCode={listLoading ? 'loading' : 'firstPage'} type="button" className="button button-secondary" aria-label={t('jobs.previous')} disabled={listLoading || jobsPage.offset === 0} onClick={() => void loadJobs(Math.max(0, jobsPage.offset - jobsPage.limit))}><ChevronLeft size={16} aria-hidden="true" /></ActionButton><ActionButton reasonCode={listLoading ? 'loading' : 'lastPage'} type="button" className="button button-secondary" aria-label={t('jobs.next')} disabled={listLoading || !jobsPage.hasMore} onClick={() => void loadJobs(jobsPage.nextOffset ?? 0)}><ChevronRight size={16} aria-hidden="true" /></ActionButton></div></nav>}
       </section>
 
       <section className="image-block" aria-labelledby={`${prefix}-assets-title`}>
         <div className="image-block-heading"><div><h3 id={`${prefix}-assets-title`}>{t('resources.title')}</h3><p>{t('resources.description')}</p></div><ActionButton reasonCode="busy" type="button" className="text-button" disabled={listLoading} onClick={() => void loadAssets(assetsPage?.offset ?? 0)}><RefreshCw size={14} aria-hidden="true" />{t('resources.refresh')}</ActionButton></div>
         {assetsPage && assets.length === 0 && <div className="image-empty"><ImageOff size={26} aria-hidden="true" /><h4>{t('resources.empty')}</h4><p>{t('resources.emptyHelp')}</p></div>}
-        {assets.length > 0 && <ul className="image-assets">{assets.map(asset => <li key={asset.assetId}><ActionButton reasonCode="preview" type="button" className="image-asset-row" disabled={previewLoading} onClick={() => void openAsset(asset.assetId)}><span className="image-asset-copy"><strong dir="auto">{asset.prompt}</strong><small>{t('resources.bytes', { size: bytesLabel(asset.bytes), type: asset.mimeType })} · {t('resources.created', { time: formatDateTime(asset.createdAt) })}</small></span><ChevronRight size={15} aria-hidden="true" /></ActionButton></li>)}</ul>}
+        {assets.length > 0 && <ul className="image-assets">{assets.map(asset => <li key={asset.assetId}><ActionButton reasonCode="preview" type="button" className="image-asset-row" onClick={() => void openAsset(asset.assetId)}><span className="image-asset-copy"><strong dir="auto">{asset.prompt}</strong><small>{t('resources.bytes', { size: bytesLabel(asset.bytes), type: asset.mimeType })} · {t('resources.created', { time: formatDateTime(asset.createdAt) })}</small></span><ChevronRight size={15} aria-hidden="true" /></ActionButton></li>)}</ul>}
         {assetsPage && assetsPage.total > 0 && <nav className="image-pagination" aria-label={t('resources.title')}><span>{t('resources.page', { start: formatNumber(assetsPage.total ? assetsPage.offset + 1 : 0), end: formatNumber(Math.min(assetsPage.offset + assetsPage.items.length, assetsPage.total)), total: formatNumber(assetsPage.total) })}</span><div><ActionButton reasonCode={listLoading ? 'loading' : 'firstPage'} type="button" className="button button-secondary" aria-label={t('resources.previous')} disabled={listLoading || assetsPage.offset === 0} onClick={() => void loadAssets(Math.max(0, assetsPage.offset - assetsPage.limit))}><ChevronLeft size={16} aria-hidden="true" /></ActionButton><ActionButton reasonCode={listLoading ? 'loading' : 'lastPage'} type="button" className="button button-secondary" aria-label={t('resources.next')} disabled={listLoading || !assetsPage.hasMore} onClick={() => void loadAssets(assetsPage.nextOffset ?? 0)}><ChevronRight size={16} aria-hidden="true" /></ActionButton></div></nav>}
-        <div className="image-preview" aria-label={t('resources.preview')}>
-          {previewLoading && <p className="image-loading" role="status"><LoaderCircle size={15} aria-hidden="true" />{t('resources.previewLoading')}</p>}
-          {!previewLoading && !selected && <p className="image-empty-copy"><ImageOff size={22} aria-hidden="true" />{t('resources.previewEmpty')}</p>}
-          {!previewLoading && selected && previewUrl.current && <><img src={previewUrl.current} alt={t('resources.previewAlt')} /><div className="image-preview-actions"><small>{t('resources.sendable')} · {bytesLabel(selected.item.bytes)}</small><ActionButton reasonCode="busy" type="button" className="text-button" onClick={clearPreview}>{t('resources.clearPreview')}</ActionButton></div></>}
-          {previewFailure && <p className="image-error" role="alert">{previewFailure}</p>}
-        </div>
       </section>
     </div>
+    <dialog ref={previewDialog} className="image-preview" aria-labelledby={`${prefix}-preview-title`}
+      onCancel={event => { event.preventDefault(); clearPreview() }}
+      onClick={event => {
+        if (event.target !== event.currentTarget) return
+        const bounds = event.currentTarget.getBoundingClientRect()
+        if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) clearPreview()
+      }}>
+      <div className="image-preview-heading"><h3 id={`${prefix}-preview-title`}>{t('resources.preview')}</h3><button type="button" className="text-button image-preview-close" autoFocus aria-label={t('resources.closePreview')} onClick={clearPreview}><X size={20} aria-hidden="true" /></button></div>
+      <div className="image-preview-stage" aria-busy={previewLoading}>
+        {previewLoading && <p className="image-loading" role="status"><LoaderCircle size={18} aria-hidden="true" />{t('resources.previewLoading')}</p>}
+        {!previewLoading && selected && previewUrl.current && <img src={previewUrl.current} alt={t('resources.previewAlt')} />}
+        {previewFailure && <p className="image-error" role="alert">{previewFailure}</p>}
+      </div>
+      {selected && <div className="image-preview-caption"><p dir="auto">{selected.item.prompt}</p><small>{t('resources.bytes', { size: bytesLabel(selected.item.bytes), type: selected.item.mimeType })} · {t('resources.created', { time: formatDateTime(selected.item.createdAt) })}</small></div>}
+    </dialog>
   </section>
 }

@@ -59,7 +59,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`、`plugins/capabilities/text-to-speech`。
 
-当前源码应用／Host／Web0.22.0，plugin-sdk4.11.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.16.0、DSH0.19.0、表情包0.3.0、生图0.4.0、记忆源码0.3.2、语音text-to-speech0.1.2（本机原记忆安装0.1.1保持）；插件唯一 API4。UI SDK新增必填面板enabled类型，无新增依赖，本轮锁文件零差异；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前源码应用／Host／Web0.22.0，plugin-sdk4.11.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.16.0、DSH0.19.0、表情包0.3.0、生图源码0.4.1（预览优化本地验证完成、未发布）、记忆源码0.3.2、语音text-to-speech0.1.2（本机原记忆安装0.1.1保持）；插件唯一 API4。UI SDK新增必填面板enabled类型，无新增依赖，本轮锁文件零差异；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -169,6 +169,6 @@ openviking-memory@0.3.2按[ADR-0045](docs/decisions/ADR-0045-官方记忆接口�
 
 ## 生图插件（OpenAI Images）
 
-独立image-generation@0.4.0、API4。配置Base URL／model及可选Key，允许不要求Key的服务；单次size优先于保存默认，省略沿用默认、空串不传并用服务默认。尺寸接受WIDTHxHEIGHT或service native identifier／auto，实际支持由provider决定，不自动换尺寸付费重试。无参考图追加/images/generations，有参考图走/images/edits，固定n1，无聊天／Responses回退。保存／connect只本地检查，不真实试生成；请求仍报告可能计费及真实结果。可信asset发送按[ADR-0046](docs/decisions/ADR-0046-可信图片传输与生图尺寸.md)，模型只见opaque资源引用，生图成功与QQ发送分别核对。
+独立image-generation源码@0.4.1、API4（2026-11-13预览优化本地验证完成，未发布部署；云端仍0.4.0）。配置Base URL／model及可选Key，允许不要求Key的服务；单次size优先于保存默认，省略沿用默认、空串不传并用服务默认。尺寸接受WIDTHxHEIGHT或service native identifier／auto，实际支持由provider决定，不自动换尺寸付费重试。无参考图追加/images/generations，有参考图走/images/edits，固定n1，无聊天／Responses回退。保存／connect只本地检查，不真实试生成；请求仍报告可能计费及真实结果。可信asset发送按[ADR-0046](docs/decisions/ADR-0046-可信图片传输与生图尺寸.md)，模型只见opaque资源引用，生图成功与QQ发送分别核对。
 
 异步image_generate返回jobId，image_job_get查询最终状态，image_jobs/image_list分页元数据，image_get才实际图。生成提交回执不是生成成功，稳定request_id防重复计费，queued/running重启转unknown不重发。单图编辑只接受三种来源：主人面板本机上传、当前会话已授权消息的{messageId,imageId}、本插件已有assetId；不接受任意路径/URL或其它插件私有图片，来源哈希计入幂等。提交前检查调用signal；已接受后台任务由插件持有，普通Agent结束不丢已付费结果，停用/dispose取消为unknown，后续读取仍须当前授权。owner离页只停UI轮询；隐藏清Key、参考图和Blob，locale不请求。私有配置和资源schema1，500任务/500图/256MiB保持；单图使用主人图片设置，存储格式支持50MiB，调低不清原图，满在请求前拒绝。错误不回显提供商原body、Key、签名URL，URL结果不传认证下载。无真实Key时不声称付费服务验证。见[ADR-0020](docs/decisions/ADR-0020-独立OpenAI生图能力.md)与[ADR-0026](docs/decisions/ADR-0026-生图单图编辑与受控图片来源.md)。

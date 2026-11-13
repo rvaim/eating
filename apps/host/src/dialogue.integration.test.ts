@@ -58,11 +58,13 @@ function system(request: ModelFixtureRequest): string {
   expect(messages).toHaveLength(1)
   return fixtureText(messages[0]!.content)
 }
-function expectImageSendingRules(text: string) {
+function expectMessageSendingRules(text: string) {
   expect(text).toContain('eating-asset://')
-  expect(text).toMatch(/message[^。\n]*直接传[^。\n]*消息段对象或数组/)
+  expect(text).toContain('message')
+  expect(text).toContain('直接传')
+  expect(text).toMatch(/对象[或／]数组/)
   expect(text).toMatch(/不能[^。\n]*JSON\.stringify/)
-  expect(text).toMatch(/复用[^。\n]*已有图片|已有图片[^。\n]*复用/)
+  expect(text).toMatch(/复用[^。\n]*已有(?:图片|资源)|已有图片[^。\n]*复用/)
   expect(text).toMatch(/生成成功[^。\n]*不等于[^。\n]*发送成功/)
 }
 async function temporaryHome() {
@@ -258,7 +260,7 @@ async function expectCompletedHandoff(f: Awaited<ReturnType<typeof fixture>>) {
     const prompt = system(request)
     expect(prompt.startsWith(f.ownerSystem + '\n\n')).toBe(true)
     expect(prompt).toContain('图片发送')
-    expectImageSendingRules(prompt)
+    expectMessageSendingRules(prompt)
     if (f.provider) {
       expect(prompt).toContain('image_job_get')
       expect(prompt).toMatch(/image_get 返回的 sendable[^。\n]*image 消息段/)
@@ -275,16 +277,17 @@ async function expectCompletedHandoff(f: Awaited<ReturnType<typeof fixture>>) {
     expect(batch(request).payload.events).toEqual(incoming.payload.events)
     const sender = request.tools!.find(tool => tool.function?.name === 'mcp__qq__qq_send_private_message')!.function!
     const message = object(object(object(sender.parameters).properties).message)
-    expectImageSendingRules(String(message.description))
+    expectMessageSendingRules(String(message.description))
+    expect(message.description).toContain('QQ_MESSAGE_FORMAT_INVALID')
     expect(message.$ref).toBe('#/$defs/oneBotMessage')
     expect(message.examples).toEqual(expect.arrayContaining([expect.arrayContaining([
       expect.objectContaining({ type: 'image', data: { file: expect.stringMatching(/^eating-asset:\/\/image-generation\//) } }),
     ])]))
     if (f.provider) {
       expect(prompt).toContain('图片发送')
-      expectImageSendingRules(prompt)
+      expectMessageSendingRules(prompt)
       const reader = object(request.tools!.find(tool => tool.function?.name === imagePrefix + 'image_get')!.function)
-      expectImageSendingRules(String(reader.description))
+      expectMessageSendingRules(String(reader.description))
       expect(reader.description).toContain('sendable')
     }
   }

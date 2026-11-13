@@ -70,11 +70,17 @@ describe('speech resources over actual Host and OneBot', () => {
 })
 
 describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('speech through the real system DSH conversation child', () => {
-  it('synthesizes per-call delivery and sends exactly one record with the original scope and a real receipt', async () => {
+  it.each(['private', 'group'] as const)('corrects serialized text and voice in a fresh %s child with the same requests and resources', async kind => {
     const root = await home(), provider = await startSpeechFixture(); stops.push(provider.close)
     const onebot = await startOneBotFixture(); stops.push(() => onebot.close())
+    const sendName = kind === 'private' ? 'mcp__qq__qq_send_private_message' : 'mcp__qq__qq_send_group_message'
+    const target: JsonObject = kind === 'private' ? { user_id: 123456 } : { group_id: 123456 }
+    const send = (message: JsonObject | string | JsonObject[], id: string): FixtureModelAction => ({ name: sendName, arguments: { ...target, message, request_id: id } })
     const model = await startStickersModel((request): FixtureModelAction => {
       const names = (request.tools ?? []).map(x => x.function?.name ?? ''), turns = fixtureToolTurns(request)
+      const system = fixtureText(request.messages?.find(message => message.role === 'system')?.content)
+      expect(system).toContain('QQ_MESSAGE_FORMAT_INVALID'); expect(system).toContain('record.data.file')
+      expect(system).toContain('普通文字直接作为 message 字符串'); expect(system).toContain('不猜测音频本机路径')
       if (names.includes('eating_handle_conversation')) {
         if (!turns.length) {
           for (const message of [...(request.messages ?? [])].reverse()) {
@@ -86,18 +92,39 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('speech through 
         expect(JSON.stringify(turns.at(-1)!.taskResult)).toContain('message_id'); return 'SPEECH-MAIN-DONE'
       }
       const prefix = names.find(name => name.endsWith('__speech_generate'))!.slice(0, -'speech_generate'.length)
-      expect(names).toContain('mcp__qq__qq_send_private_message')
-      const system = fixtureText(request.messages?.find(message => message.role === 'system')?.content)
+      expect(names).toContain(sendName)
+      expect(JSON.stringify(request.tools?.find(tool => tool.function?.name === sendName))).toContain('QQ_MESSAGE_FORMAT_INVALID')
       expect(system).toContain('音色由主人保存'); expect(system).toContain('delivery只描述本段临时语气')
-      if (!turns.length) return { name: prefix + 'speech_generate', arguments: { text: '今天先休息一下吧。', delivery: '轻柔、平稳', request_id: 'native-speech-generate-001' } }
-      const last = turns.at(-1)!, result = (last.taskResult ?? object(JSON.parse(last.text.split('\n')[0]!)))
-      if (last.name.endsWith('__speech_generate')) return { name: prefix + 'speech_job_get', arguments: { jobId: result.jobId!, waitMs: 1000 } }
-      if (last.name.endsWith('__speech_job_get')) {
-        if (result.status !== 'succeeded') return { name: prefix + 'speech_job_get', arguments: { jobId: result.jobId!, waitMs: 1000 } }
-        return { name: prefix + 'speech_get', arguments: { assetId: result.assetId! } }
+      const sent = turns.filter(turn => turn.name === sendName)
+      if (!sent.length) return send(JSON.stringify([{ type: 'text', data: { text: '先用文字回应。' } }]), 'native-text-format-001')
+      const last = turns.at(-1)!
+      if (sent.length === 1) {
+        expect(last.text).toContain('QQ_MESSAGE_FORMAT_INVALID'); expect(last.text).toContain('not-sent'); expect(last.text).toContain('message')
+        expect(onebot.requests.filter(x => x.action.startsWith('send_'))).toHaveLength(0)
+        return send('先用文字回应。', 'native-text-format-001')
       }
-      if (last.name.endsWith('__speech_get')) return { name: 'mcp__qq__qq_send_private_message', arguments: { user_id: '987654321', message: [result.sendable!], request_id: 'native-speech-send-001' } }
-      expect(result).toEqual({ message_id: 1001 }); return 'SPEECH-CHILD-DONE'
+      if (last.name === sendName && sent.length === 2) {
+        expect(last.text).toContain('message_id')
+        return { name: prefix + 'speech_generate', arguments: { text: '今天先休息一下吧。', delivery: '轻柔、平稳', request_id: 'native-speech-generate-001' } }
+      }
+      if (last.name === sendName) {
+        if (sent.length === 6) { expect(last.text).toContain('message_id'); return 'SPEECH-CHILD-DONE' }
+        expect(last.text).toContain('QQ_MESSAGE_FORMAT_INVALID'); expect(last.text).toContain('not-sent'); expect(last.text).toContain('request_id')
+        expect(onebot.requests.filter(x => x.action.startsWith('send_'))).toHaveLength(1)
+      } else {
+        const result = (last.taskResult ?? object(JSON.parse(last.text.split('\n')[0]!)))
+        if (last.name.endsWith('__speech_generate')) return { name: prefix + 'speech_job_get', arguments: { jobId: result.jobId!, waitMs: 1000 } }
+        if (last.name.endsWith('__speech_job_get')) {
+          if (result.status !== 'succeeded') return { name: prefix + 'speech_job_get', arguments: { jobId: result.jobId!, waitMs: 1000 } }
+          return { name: prefix + 'speech_get', arguments: { assetId: result.assetId! } }
+        }
+      }
+      const assetTurn = turns.find(turn => turn.name === prefix + 'speech_get')!
+      const record = object(object(JSON.parse(assetTurn.text.split('\n')[0]!)).sendable)
+      const file = String(object(record.data).file)
+      const malformed = [JSON.stringify(record), '[CQ:record,file=' + file + ']', { type: 'text', data: { text: file } }]
+      if (sent.length < 5) return send(malformed[sent.length - 2]!, 'native-speech-send-001')
+      return send([record], 'native-speech-send-001')
     }); stops.push(() => model.close())
     let dsh!: DshPlugin
     const entry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) { dsh = new DshPlugin(context, { locateSystemDsh: testSystemDsh }); return dsh } }
@@ -106,13 +133,14 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('speech through 
     await api('/plugins/text-to-speech/configuration', { expectedRevision: 0, endpoint: provider.endpoint, apiKey: fixtureKey })
     await api('/plugins/qq/configuration', { endpoint: onebot.endpoint, forwardToHarness: true, autoConnect: false }); await api('/plugins/qq/connect', {})
     await api('/plugins/dsh/configuration', { endpoint: model.endpoint, model: 'fixture-speech-controller', apiKey: model.apiKey, timeoutMs: 30000, autoConnect: false }); await api('/plugins/dsh/connect', {})
-    onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id: 70001, message: '请用语音说：今天先休息一下吧。' })
-    await vi.waitFor(() => { expect(model.errors).toEqual([]); expect(host.harness.getStatus()).toMatchObject({ accepted: 1, queueMessages: 0 }); expect(dsh.isReady()).toBe(true); expect(model.actions.at(-1)).toBe('SPEECH-MAIN-DONE') }, { timeout: 30000, interval: 50 })
+    onebot.emitEvent({ post_type: 'message', message_type: kind, ...(kind === 'group' ? { group_id: 123456 } : {}), self_id: 123456789, user_id: 123456, message_id: 70001, message: '请用语音说：今天先休息一下吧。' })
+    await vi.waitFor(() => { expect(model.errors, model.errors.join('\n')).toEqual([]); expect(host.harness.getStatus()).toMatchObject({ accepted: 1, queueMessages: 0 }); expect(dsh.isReady()).toBe(true); expect(model.actions.at(-1)).toBe('SPEECH-MAIN-DONE') }, { timeout: 30000, interval: 50 })
     expect(provider.requests).toHaveLength(1); expect(provider.requests[0]!.instructions).toContain('轻柔、平稳')
-    expect(onebot.requests.filter(x => x.action === 'send_private_msg')).toHaveLength(1)
+    const sends = onebot.requests.filter(x => x.action.startsWith('send_'))
+    expect(sends).toHaveLength(2); expect(sends[0]!.params.message).toBe('先用文字回应。')
     expect(JSON.stringify(model.requests)).not.toContain('data:audio')
-    const sent = onebot.requests.find(x => x.action === 'send_private_msg')!
-    const encoded = String(object((sent.params.message as JsonObject[])[0]!.data).file).slice(9)
+    const encoded = String(object((sends[1]!.params.message as JsonObject[])[0]!.data).file).slice(9)
+    expect(Buffer.from(encoded, 'base64').subarray(0, 4).toString()).toBe('RIFF')
     expect(JSON.stringify(model.requests).includes(encoded)).toBe(false)
   }, 60000)
 })
@@ -161,7 +189,7 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('ASR through the
     await api('/plugins/qq/manage', { operation: 'save-audio-input', input: { expectedRevision: 0, mapping: { onebotRoot: '/onebot-audio', hostRoot: cache, ownerConfirmed: true } } })
     await api('/plugins/dsh/configuration', { endpoint: model.endpoint, model: 'fixture-asr-controller', apiKey: model.apiKey, timeoutMs: 30000, autoConnect: false }); await api('/plugins/dsh/connect', {})
     onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: 100, user_id: 200, message_id: 70002, message: [{ type: 'record', data: { file: 'incoming.silk' } }] })
-    await vi.waitFor(() => { expect(model.errors).toEqual([]); expect(host.harness.getStatus()).toMatchObject({ accepted: 1, queueMessages: 0 }); expect(dsh.isReady()).toBe(true); expect(model.actions.at(-1)).toBe('ASR-MAIN-DONE') }, { timeout: 30000, interval: 50 })
+    await vi.waitFor(() => { expect(model.errors, model.errors.join('\n')).toEqual([]); expect(host.harness.getStatus()).toMatchObject({ accepted: 1, queueMessages: 0 }); expect(dsh.isReady()).toBe(true); expect(model.actions.at(-1)).toBe('ASR-MAIN-DONE') }, { timeout: 30000, interval: 50 })
     expect(provider.recognition).toHaveLength(1); expect(onebot.requests.filter(x => x.action === 'send_private_msg')).toHaveLength(1)
     expect(JSON.stringify(model.requests)).not.toContain(audio.toString('base64'))
   }, 60000)

@@ -164,9 +164,9 @@ describe.skipIf(!process.env.EATING_DSH_TEST_SYSTEM_BIN)('system DSH uses OpenAI
         return '已核对图片发送回执。'
       }
       const system = JSON.stringify(request.messages?.filter(message => message.role === 'system'))
-      expect(system).toContain('QQ_IMAGE_MESSAGE_REQUIRED')
+      expect(system).toContain('QQ_MESSAGE_FORMAT_INVALID')
       const sendTool = request.tools?.find(tool => tool.function?.name === sendName)
-      expect(JSON.stringify(sendTool)).toContain('QQ_IMAGE_MESSAGE_REQUIRED')
+      expect(JSON.stringify(sendTool)).toContain('QQ_MESSAGE_FORMAT_INVALID')
       if (!turns.length) return { name: prefix + 'image_generate', arguments: { prompt: 'IMAGE-FORMAT-CORRECTION-FIXTURE', request_id: 'native-image-generation-once' } }
       const last = turns.at(-1)!
       if (last.name.endsWith('__image_generate')) return { name: prefix + 'image_job_get', arguments: { jobId: (last.taskResult ?? object(JSON.parse(last.text))).jobId!, waitMs: 1000 } }
@@ -180,7 +180,7 @@ describe.skipIf(!process.env.EATING_DSH_TEST_SYSTEM_BIN)('system DSH uses OpenAI
       const sent = turns.filter(turn => turn.name === sendName)
       if (!sent.length) return { name: sendName, arguments: { user_id: 987654321, message: JSON.stringify([sendable]), request_id: sendId } }
       if (sent.length === 1) {
-        expect(last.text).toContain('QQ_IMAGE_MESSAGE_REQUIRED'); expect(last.text).toContain('not-sent')
+        expect(last.text).toContain('QQ_MESSAGE_FORMAT_INVALID'); expect(last.text).toContain('not-sent')
         expect(onebot.requests.filter(request => request.action.startsWith('send_'))).toHaveLength(0)
         return { name: sendName, arguments: { user_id: 987654321, message: [sendable], request_id: sendId } }
       }

@@ -113,6 +113,11 @@ export const oneBotMessageDefinitions: JsonObject = {
 
 export const oneBotMessageSchema: JsonObject = {
   $ref: '#/$defs/oneBotMessage',
-  description: '字符串、消息段数组或单个消息段对象。图片发送时 message 必须直接传消息段对象或数组，例如 [{"type":"image","data":{"file":"eating-asset://image-generation/<assetId>"}}]，file 使用工具返回的真实引用。不能 JSON.stringify，也不能把 URI／图片 JSON 作为普通字符串或 text 段发送；图片 JSON 字符串、包含内部图片引用的文字或错误段类型会在发送前以 QQ_IMAGE_MESSAGE_REQUIRED／not-sent 拒绝，不能把拒绝当成已发送。修正本次格式后复用原图片和本次 request_id；此前成功或 unknown 的动作不得重发。用户要求重发已有图片时复用已有图片资源，不重新生图；生成成功不等于发送成功，文字发送的 message_id 不能证明图片已发送。字符串默认按纯文本发送；显式 auto_escape=false 时解析 CQ 码，不能将其用作解析图片 JSON 的开关。',
-  examples: [[{ type: 'image', data: { file: 'eating-asset://image-generation/<assetId>' } }]],
+  description: '普通文字直接传字符串，例如 {"message":"你好"}；消息段直接传对象或数组，不能 JSON.stringify，也不能把 text／image／record 等消息段 JSON 放进字符串或 text 段。图片把工具返回的原 eating-asset:// 引用放在 image.data.file；语音把 speech_get 返回的原 eating-audio:// 引用放在单独的 record.data.file，不混文字／图片，不用 CQ 码包装内部引用，不猜本机路径。错误格式在发送前以 QQ_MESSAGE_FORMAT_INVALID／not-sent 拒绝并指出字段；没有登记发送动作，修正后复用已有资源和本次 request_id，已成功或 unknown 的动作不得重发。生成成功、文字发送的 message_id 不等于图片／语音发送成功；以正确媒体调用及真实回执为准。正常聊天不发送协议 JSON 或内部工具报告；必要诊断以实际证据为准。普通字符串默认按文字发送；auto_escape=false 只解析标准外部 CQ 码，不能解析 JSON 或内部媒体引用。',
+  examples: [
+    '你好',
+    [{ type: 'text', data: { text: '你好' } }],
+    [{ type: 'image', data: { file: 'eating-asset://image-generation/<assetId>' } }],
+    { type: 'record', data: { file: 'eating-audio://text-to-speech/<assetId>' } },
+  ],
 }

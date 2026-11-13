@@ -5,7 +5,7 @@ import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PlatformError } from '@eating/plugin-sdk'
-import type { AudioAssetLease, HostPluginContext, JsonObject } from '@eating/plugin-sdk'
+import type { AudioAssetLease, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { wav } from '../../../capabilities/text-to-speech/src/backend/audio'
 import { HostStore } from '../../../../apps/host/src/store'
 import { startOneBotFixture } from '../../../../tests/fixtures/onebot'
@@ -23,14 +23,16 @@ async function fixture(unknown = false) {
   const active = () => { if (revoked || abort.signal.aborted) throw new PlatformError('ASSET_ACCESS_DENIED', 'Revoked fixture lease', 403, 'not-sent') }
   const lease: AudioAssetLease = { mimeType: 'audio/wav', byteLength: bytes.length, durationMs: 30000, sha256: createHash('sha256').update(bytes).digest('hex'), readBytes: async () => corrupt ? wav(Buffer.alloc(48)) : bytes, assertCurrent: active, assertActive: async () => { active() } }
   const store = new HostStore(join(root, 'ledger.sqlite')); stops.push(() => store.close())
-  const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS, dataDirectory: root, getSetting: () => null, setSetting: () => {}, recordEvent: () => ({ inserted: false, eventId: 'fixture' }), listMessages: () => [], executeIdempotent: (...args) => store.executeIdempotent(...args),
-    resources: { readReceivedAudio: async () => { throw new Error('No incoming audio in this fixture') }, getAudioAsset: async () => lease, getAsset: async () => { throw new Error('No images') }, readAsset: async () => { throw new Error('No images') }, readReceivedImage: async () => { throw new Error('No images') } } }
+  const executeIdempotent = vi.fn<HostPluginContext['executeIdempotent']>((...args) => store.executeIdempotent(...args))
+  const getAudioAsset = vi.fn(async () => lease)
+  const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS, dataDirectory: root, getSetting: () => null, setSetting: () => {}, recordEvent: () => ({ inserted: false, eventId: 'fixture' }), listMessages: () => [], executeIdempotent,
+    resources: { readReceivedAudio: async () => { throw new Error('No incoming audio in this fixture') }, getAudioAsset, getAsset: async () => { throw new Error('No images') }, readAsset: async () => { throw new Error('No images') }, readReceivedImage: async () => { throw new Error('No images') } } }
   const plugin = qqEntry.create(context); stops.push(() => plugin.dispose())
   await plugin.updateConfiguration({ endpoint: remote.endpoint, autoConnect: false, timeoutMs: 1000 }); await plugin.connect()
   const accountId = '123456789'
   const scope = { agentId: 'voice-child', agentTypeId: 'qq.private', pluginId: 'qq', instanceId: String(plugin.getPublicConfiguration().instanceId), accountId: String(accountId), kind: 'private' as const, targetId: '987654321', conversationId: `qq:${accountId}:private:987654321`, messageIds: [], resourceIds: [], signal: abort.signal }
-  const send = (message: JsonObject | JsonObject[] = segment) => plugin.invokeScoped!('qq_send_private_message', { user_id: scope.targetId, message, request_id: 'qq-audio-request-001' }, 'qq-audio-request-001', scope)
-  return { send, remote, plugin, bytes, abort, revoke: () => { revoked = true }, corrupt: () => { corrupt = true } }
+  const send = (message: JsonValue = segment) => plugin.invokeScoped!('qq_send_private_message', { user_id: scope.targetId, message, request_id: 'qq-audio-request-001' }, 'qq-audio-request-001', scope)
+  return { send, remote, plugin, bytes, abort, executeIdempotent, getAudioAsset, revoke: () => { revoked = true }, corrupt: () => { corrupt = true } }
 }
 describe('QQ trusted audio transport and idempotency', () => {
   it('sends a 30 second WAV over the ordinary size limit exactly once using backend-resolved bytes', async () => {
@@ -46,6 +48,25 @@ describe('QQ trusted audio transport and idempotency', () => {
     const message = mode === 'mixed' ? [segment, { type: 'text', data: { text: 'mixed is not supported' } }] : mode === 'wrong-kind' ? { type: 'image', data: segment.data } : segment
     await expect(f.send(message)).rejects.toMatchObject({ outcome: 'not-sent' })
     expect(f.remote.requests.filter(x => x.action.startsWith('send_'))).toHaveLength(0)
+  })
+  it('rejects serialized text/audio and internal CQ before the ledger, then corrects the same request exactly once', async () => {
+    const f = await fixture()
+    for (const message of [
+      JSON.stringify([{ type: 'text', data: { text: 'fixture' } }]),
+      JSON.stringify(segment), JSON.stringify([segment]),
+      `[CQ:record,file=${segment.data.file}]`,
+      { type: 'text', data: { text: segment.data.file } },
+      [segment, { type: 'text', data: { text: 'do not mix' } }],
+    ]) await expect(f.send(message)).rejects.toMatchObject({ code: 'QQ_MESSAGE_FORMAT_INVALID', statusCode: 400, outcome: 'not-sent' })
+    expect(f.executeIdempotent).not.toHaveBeenCalled()
+    expect(f.getAudioAsset).not.toHaveBeenCalled()
+    expect(f.remote.requests.filter(request => request.action.startsWith('send_'))).toHaveLength(0)
+    await expect(f.send([segment])).resolves.toEqual({ message_id: 1001 })
+    await expect(f.send([segment])).resolves.toEqual({ message_id: 1001 })
+    expect(f.getAudioAsset).toHaveBeenCalledTimes(1)
+    const sends = f.remote.requests.filter(request => request.action.startsWith('send_'))
+    expect(sends).toHaveLength(1)
+    expect(sends[0]!.params.message).toEqual([{ type: 'record', data: { file: 'base64://' + f.bytes.toString('base64') } }])
   })
   it('retains unknown sending outcome and does not replay it with the original request ID', async () => {
     const f = await fixture(true)

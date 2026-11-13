@@ -215,7 +215,7 @@ describe('complete OneBot message representations', () => {
     ]
     for (const message of malformed) {
       try { prepare('send_private_msg', { user_id: 456, message }); throw new Error('Expected image-format rejection') }
-      catch (error) { expect(error).toMatchObject({ code: 'QQ_IMAGE_MESSAGE_REQUIRED', statusCode: 400, outcome: 'not-sent' }) }
+      catch (error) { expect(error).toMatchObject({ code: 'QQ_MESSAGE_FORMAT_INVALID', statusCode: 400, outcome: 'not-sent' }) }
     }
     for (const auto_escape of [false, true]) expect(() => prepare('send_group_msg', { group_id: 789, message: JSON.stringify([image]), auto_escape })).toThrow('本次未发送')
     expect(() => prepare('.handle_quick_operation', { context: privateContext, operation: { reply: JSON.stringify([image]) } })).toThrow('本次未发送')

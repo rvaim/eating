@@ -169,22 +169,25 @@ test.describe('完整 OneBot 工具的通用面板', () => {
     expect(onebot.requests.filter(request => request.action === 'send_msg')[2]?.params.message).toEqual(single)
   })
 
-  test('图片JSON作为文字被拒绝且双语说明可见，切换为消息段后才发送', async ({ page }, info) => {
+  test('文字图片语音JSON和内部CQ被拒绝且双语说明可见，修正后才发送', async ({ page }, info) => {
     await configure(page)
     await chooseLanguage(page, 'en-US')
     await page.getByLabel('Test function', { exact: true }).selectOption('qq_send_message')
     await page.getByLabel('Message type (optional)', { exact: true }).selectOption('group')
     await page.getByLabel('Target group number (optional)', { exact: true }).fill('123456')
     const image = [{ type: 'image', data: { file: 'https://example.invalid/fixture.png' } }]
-    await page.getByLabel('Message content (required)', { exact: true }).fill(JSON.stringify(image))
-    await page.getByRole('checkbox', { name: englishConfirmation, exact: true }).check()
-    await page.getByRole('button', { name: 'Run test', exact: true }).click()
-    await expect(page.getByText('Nothing was sent: use an image message segment or array, not image JSON or an internal image reference as text. Correct the format and reuse the existing image; no new generation is needed.', { exact: true }).first()).toBeVisible()
-    expect(onebot.requests.filter(request => request.action.startsWith('send_'))).toHaveLength(0)
-    await page.locator('.qq-error').first().screenshot({ path: info.outputPath('image-format-error-en.png') })
+    const audioRef = 'eating-audio://text-to-speech/' + 'a'.repeat(64)
+    for (const malformed of [JSON.stringify([{ type: 'text', data: { text: '普通文字' } }]), JSON.stringify({ type: 'record', data: { file: audioRef } }), '[CQ:record,file=' + audioRef + ']', JSON.stringify(image)]) {
+      await page.getByLabel('Message content (required)', { exact: true }).fill(malformed)
+      await page.getByRole('checkbox', { name: englishConfirmation, exact: true }).check()
+      await page.getByRole('button', { name: 'Run test', exact: true }).click()
+      await expect(page.getByText("Nothing was sent. Enter ordinary text directly; select JSON format for message segment objects or arrays. Do not send serialized segments or internal image/audio references as text or CQ codes. Send voice notes alone and reuse existing resources after correcting the format.", { exact: true }).first()).toBeVisible()
+      expect(onebot.requests.filter(request => request.action.startsWith('send_'))).toHaveLength(0)
+    }
+    await page.locator('.qq-error').first().screenshot({ path: info.outputPath('message-format-error-en.png') })
     await chooseLanguage(page, 'zh-CN')
-    await expect(page.getByText('图片消息格式错误，未发送。请用图片消息段对象或数组，勿将图片 JSON 或内部图片引用作为文字发送。修正后复用已有图片，无需重新生成。', { exact: true }).first()).toBeVisible()
-    await page.locator('.qq-error').first().screenshot({ path: info.outputPath('image-format-error-zh.png') })
+    await expect(page.getByText('消息格式错误，未发送。文字直接填写正文；消息段请选择 JSON 格式并传入对象或数组。不要把消息段 JSON、内部图片／语音引用作为文字发送，也不要用 CQ 码包装内部引用。语音须单独发送，修正后复用已有资源。', { exact: true }).first()).toBeVisible()
+    await page.locator('.qq-error').first().screenshot({ path: info.outputPath('message-format-error-zh.png') })
     await chooseLanguage(page, 'en-US')
     await page.getByLabel('Message content format', { exact: true }).selectOption('json')
     await page.getByRole('checkbox', { name: englishConfirmation, exact: true }).check()

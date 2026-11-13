@@ -106,7 +106,7 @@ function disconnectedStatus(): ConnectionStatus {
 function ErrorNotice({ failure }: { failure: Failure | null }) {
   const { t } = useI18n('qq')
   if (!failure) return null
-  const message = failure.messageKey ? t(failure.messageKey) : failure.code === 'QQ_IMAGE_MESSAGE_REQUIRED' ? t('error.imageMessage') : getErrorMessage(failure, t(failure.fallbackKey ?? 'error.operationFailed'))
+  const message = failure.messageKey ? t(failure.messageKey) : failure.code === 'QQ_MESSAGE_FORMAT_INVALID' ? t('error.messageFormat') : getErrorMessage(failure, t(failure.fallbackKey ?? 'error.operationFailed'))
   return <div className="qq-error" role="alert"><AlertCircle size={16} aria-hidden="true" /><div><p>{message}</p>
     {failure.outcome === 'unknown' && <p>{t('error.unknownOutcome')}</p>}
     <details><summary>{t('error.details')}</summary><small>{t('error.code', { code: failure.code })}</small>{failure.message && <p>{failure.message}</p>}</details>

@@ -71,7 +71,7 @@ describe('QQ authorized image assets with real OneBot transport', () => {
   it('rejects serialized image text before the ledger, then accepts the corrected image once with the same request ID', async () => {
     const f = await fixture({ bytes: createLargeImageFixturePng() })
     for (const message of [JSON.stringify([reference]), { type: 'text', data: { text: JSON.stringify([reference]) } }, `图片：${reference.data.file}`]) {
-      await expect(f.send(message)).rejects.toMatchObject({ code: 'QQ_IMAGE_MESSAGE_REQUIRED', statusCode: 400, outcome: 'not-sent' })
+      await expect(f.send(message)).rejects.toMatchObject({ code: 'QQ_MESSAGE_FORMAT_INVALID', statusCode: 400, outcome: 'not-sent' })
       expect(f.sends()).toEqual([])
       expect(f.executeIdempotent).not.toHaveBeenCalled()
       expect(f.getAsset).not.toHaveBeenCalled()
@@ -94,7 +94,7 @@ describe('QQ authorized image assets with real OneBot transport', () => {
       ['qq_send_message', { user_id: '234567', message: text }],
       ['qq_handle_quick_operation', { context: { post_type: 'message', message_type: 'private', self_id: 123456, user_id: 234567, message: 'inbound' }, operation: { reply: text } }],
     ] as const) {
-      await expect(f.plugin.invoke(name, { ...params, request_id: 'owner-invalid-image-1' }, 'owner-invalid-image-1')).rejects.toMatchObject({ code: 'QQ_IMAGE_MESSAGE_REQUIRED', outcome: 'not-sent' })
+      await expect(f.plugin.invoke(name, { ...params, request_id: 'owner-invalid-image-1' }, 'owner-invalid-image-1')).rejects.toMatchObject({ code: 'QQ_MESSAGE_FORMAT_INVALID', outcome: 'not-sent' })
     }
     expect(f.sends()).toEqual([])
     expect(f.remote.requests.some(request => request.action === '.handle_quick_operation')).toBe(false)

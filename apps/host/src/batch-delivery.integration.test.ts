@@ -386,7 +386,7 @@ describe.runIf(enabled)('isolated system DSH cross-conversation Gateway delivery
     await vi.waitFor(() => {
       expect(current.childInputs, JSON.stringify({ status: current.plugin.getStatus(), modelErrors: current.modelErrors, scopes: current.scopes, toolResults: current.requests.map(request => (request.messages as JsonObject[]).filter(message => message.role === 'tool')) })).toHaveLength(2)
       expect(current.requests.length).toBeGreaterThanOrEqual(5)
-      expect(current.plugin.isReady(), JSON.stringify({ status: current.plugin.getStatus(), errors: current.modelErrors })).toBe(true)
+      expect(current.runtime().busy, JSON.stringify({ status: current.plugin.getStatus(), errors: current.modelErrors })).toBe(false)
     }, { timeout: 20000 })
     expect(current.first.deliver).toHaveBeenCalledOnce(); expect(current.first.ack).toHaveBeenCalledOnce()
     current.assertBatch(envelope(current.requests[0]!), events)
@@ -456,7 +456,7 @@ describe.runIf(enabled)('isolated system DSH cross-conversation Gateway delivery
   it('ACKs more than 200 interleaved cross-account events in one native run and never replays them after same-version restart', async () => {
     const current = await fixture(), rootId = current.rootId()
     const events = Array.from({ length: 240 }, (_, index) => current.record(index % 2 === 0 ? '100' : '101'))
-    await vi.waitFor(() => { expect(current.store.harnessSummary()).toMatchObject({ accepted: 240, pending: 0, uncertain: 0 }); expect(current.plugin.isReady()).toBe(true) }, { timeout: 15000 })
+    await vi.waitFor(() => { expect(current.store.harnessSummary()).toMatchObject({ accepted: 240, pending: 0, uncertain: 0 }); expect(current.runtime().busy).toBe(false); expect(current.requests).toHaveLength(1) }, { timeout: 15000 })
     expect(current.first.deliver).toHaveBeenCalledOnce(); expect(current.first.ack).toHaveBeenCalledOnce(); expect(current.requests).toHaveLength(1)
     expect(current.first.deliver.mock.calls[0]![0]).toMatchObject({ conversationId: null, events })
     current.assertBatch(envelope(current.requests[0]!), events)

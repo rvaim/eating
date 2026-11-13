@@ -226,7 +226,7 @@ describe.runIf(enabled)('系统DSH → 能力MCP → 表情库与QQ真实链', (
     const diagnostics = () => ({ runtime: runtime(), status: plugin.getStatus(), delivery: host.harness.getStatus(), errors: model.errors, requests: settledDecisions(model.decisions).map(request => ({ kind: readModelFixtureBatch(request)?.kind, tools: names(request), last: request.messages?.at(-1) })), stderr: sdkStderr(plugin) })
     const sends = () => onebot.requests.filter(request => request.action.startsWith('send_'))
     onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: selfId, user_id: userId, message_id: 99601, message: 'UNTRUSTED-STICKER-REQUEST。请发一个招呼表情。' })
-    await until(() => host.harness.getStatus().accepted === 1 && object(plugin.getPublicConfiguration().runtimeStatus).busy === false, diagnostics, model.errors)
+    await until(() => host.harness.getStatus().accepted === 1 && object(plugin.getPublicConfiguration().runtimeStatus).busy === false && settledDecisions(model.decisions).length === 9, diagnostics, model.errors)
     expect(settledDecisions(model.decisions)).toHaveLength(9)
     expect(settledDecisions(model.decisions).map(request => batch(request).kind)).toEqual(['root', 'child', 'child', 'child', 'child', 'child', 'child', 'child', 'root'])
     expect(model.actions.filter(action => typeof action !== 'string').map(action => action.name)).toEqual(['eating_delegate_task', stickerPrefix + 'sticker_list_tags', stickerPrefix + 'sticker_list', stickerPrefix + 'sticker_list', stickerPrefix + 'sticker_get', 'mcp__qq__qq_send_private_message', 'mcp__qq__qq_send_private_message'])
@@ -243,7 +243,7 @@ describe.runIf(enabled)('系统DSH → 能力MCP → 表情库与QQ真实链', (
 
     onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: selfId, user_id: userId, message_id: 99602,
       message: [{ type: 'text', data: { text: '收藏这张图片，附上描述和标签。' } }, { type: 'image', data: { file: imageId } }] })
-    await until(() => host.harness.getStatus().accepted === 2 && object(plugin.getPublicConfiguration().runtimeStatus).busy === false, diagnostics, model.errors)
+    await until(() => host.harness.getStatus().accepted === 2 && object(plugin.getPublicConfiguration().runtimeStatus).busy === false && settledDecisions(model.decisions).length === 15, diagnostics, model.errors)
     expect(settledDecisions(model.decisions)).toHaveLength(15)
     expect(settledDecisions(model.decisions).slice(9).map(request => batch(request).kind)).toEqual(['root', 'child', 'child', 'child', 'child', 'root'])
     expect(sends()).toHaveLength(1)
@@ -363,7 +363,7 @@ describe.runIf(enabled)('系统DSH → 能力MCP → 表情库与QQ真实链', (
     try { await api('/plugins/dsh/connect', {}) }
     catch (error) { throw new Error(JSON.stringify({ error: String(error), status: plugin.getStatus(), startupErrors, stderr: capturedSdk ? Reflect.get(capturedSdk.client, 'stderrTail') : null })) }
     onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: selfId, user_id: userId, message_id: 99701, message: '只通过已授权的通用echo查询，不委派、不发送。' })
-    await until(() => host.harness.getStatus().accepted === 1 && object(plugin.getPublicConfiguration().runtimeStatus).busy === false, () => ({ status: plugin.getStatus(), requests: settledDecisions(model.decisions), errors: model.errors, stderr: sdkStderr(plugin) }), model.errors)
+    await until(() => host.harness.getStatus().accepted === 1 && object(plugin.getPublicConfiguration().runtimeStatus).busy === false && settledDecisions(model.decisions).length === 2, () => ({ status: plugin.getStatus(), requests: settledDecisions(model.decisions), errors: model.errors, stderr: sdkStderr(plugin) }), model.errors)
     expect(settledDecisions(model.decisions)).toHaveLength(2)
     expect(directCalls).toEqual([{ value: 'ACTUAL-DIRECT-MAIN-ECHO' }])
     expect(model.errors).toEqual([])

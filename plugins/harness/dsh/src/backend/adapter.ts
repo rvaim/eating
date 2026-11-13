@@ -517,6 +517,7 @@ export class DshPlugin implements BackendPlugin {
     lifetimeSignal?.addEventListener('abort', abort, { once: true })
     const previousMetadata = this.metadata!
     let metadataPrepared = false
+    let registryPrepared = false
     let sent = false
     let runFinished = false
     try {
@@ -530,6 +531,7 @@ export class DshPlugin implements BackendPlugin {
       const identity = { nonce: this.nonce, sessionId: this.metadata!.sessionId, batchId: batch.batchId, digest }
       const content = JSON.stringify({ eating: { magic: 'eating-harness-delivery', protocolVersion: 1, ...identity }, ...body })
       const owner = this.host.readOwnerConfiguration()
+      registryPrepared = true
       this.deliveries.publish({ batchId: batch.batchId, digest, ownerRevision: policy.revision, bindings: bindings.map(({ contextRef, binding, error }): JsonObject => binding
         ? { contextRef, agentId: binding.scope.agentId, agentTypeId: binding.scope.agentTypeId, label: agentInstanceLabel(binding.scope, owner.agentTypes.find(type => type.id === binding.scope.agentTypeId)?.pluginName) }
         : { contextRef, routingError: { ...error } }) }, this.nonce, identity.sessionId)
@@ -583,8 +585,8 @@ export class DshPlugin implements BackendPlugin {
     } finally {
       signal.removeEventListener('abort', abort)
       lifetimeSignal?.removeEventListener('abort', abort)
-      if (!sent && metadataPrepared) {
-        try { this.deliveries.withdraw(batch.batchId); this.saveMetadata(previousMetadata) }
+      if (!sent && registryPrepared) {
+        try { this.deliveries.withdraw(batch.batchId); if (metadataPrepared) this.saveMetadata(previousMetadata) }
         catch { this.runtimeReady = false; this.state = 'error'; this.lastError = 'DSH 未发送批次的元数据恢复失败，已停止接收消息。' }
       }
       if (this.delivery === controller) this.delivery = null

@@ -1,7 +1,7 @@
 import { readImageLimits } from '@eating/plugin-sdk'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { AlertCircle, Check, ChevronLeft, ChevronRight, ImageOff, ImagePlus, LoaderCircle, RefreshCw, X } from 'lucide-react'
+import { AlertCircle, Check, ChevronLeft, ChevronRight, ImageOff, ImagePlus, LoaderCircle, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import type { JsonObject } from '@eating/plugin-sdk'
 import { ActionButton, createRequestId, formatNumber, hostRequest, useI18n } from '@eating/ui-sdk'
 import type { PluginPanelProps } from '@eating/ui-sdk'
@@ -11,7 +11,7 @@ import type {
 } from '../types'
 import { IMAGE_GENERATION_LIMITS } from '../types'
 import {
-  errorTextFrom, fetchConfiguration, imageBlob, jobErrorText, localImage, manage, readAssetPage, readJob, readJobPage, readPreview, updateConfiguration,
+  errorTextFrom, fetchConfiguration, imageBlob, jobErrorText, localImage, manage, readAssetPage, readDeleteResult, readJob, readJobPage, readPreview, updateConfiguration,
 } from './data'
 import type { ImageGenerationUpload } from './data'
 import { it } from './i18n'
@@ -29,6 +29,7 @@ interface ConfigDraft {
 }
 interface RequestIdentity { readonly key: string; readonly id: string }
 interface SourceDraft { readonly image: ImageGenerationUpload; readonly name: string; readonly bytes: number; readonly key: string }
+interface DeleteSelection { readonly revision: number; readonly items: readonly GeneratedImageItem[] }
 
 const pageLimit = 20
 const formats: readonly ImageGenerationResponseFormat[] = ['', 'b64_json', 'url']
@@ -64,8 +65,20 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
   const [fieldErrors, setFieldErrors] = useState<Readonly<Record<string, string>>>({})
   const [jobsPage, setJobsPage] = useState<ImageGenerationPage<ImageGenerationJob> | null>(null)
   const [assetsPage, setAssetsPage] = useState<ImageGenerationPage<GeneratedImageItem> | null>(null)
-  const [listLoading, setListLoading] = useState(false)
+  const [jobsLoading, setJobsLoading] = useState(false)
+  const [assetsLoading, setAssetsLoading] = useState(false)
+  const listLoading = jobsLoading || assetsLoading
   const [listFailure, setListFailure] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const searchQuery = useRef('')
+  const [checkedIds, setCheckedIds] = useState<readonly string[]>([])
+  const [deleteSelection, setDeleteSelection] = useState<DeleteSelection | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const deletingRef = useRef(false)
+  const [deleteFailure, setDeleteFailure] = useState<string | null>(null)
+  const deleteDialog = useRef<HTMLDialogElement | null>(null)
+  const selectPage = useRef<HTMLInputElement | null>(null)
+  const deleteController = useRef<AbortController | null>(null)
   const [prompt, setPrompt] = useState('')
   const [source, setSource] = useState<SourceDraft | null>(null)
   const [sourceFailure, setSourceFailure] = useState<string | null>(null)
@@ -102,6 +115,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
   feedback.current = onFeedback
 
   const cancelAll = useCallback(() => {
+    deleteController.current?.abort()
     sourceReadController.current?.abort(); sourceReadController.current = null
     configController.current?.abort(); configController.current = null
     jobsController.current?.abort(); jobsController.current = null
@@ -120,6 +134,14 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
     if (previewOpen) dialog?.showModal()
     else if (dialog?.open) dialog.close()
   }, [previewOpen])
+  useEffect(() => {
+    const dialog = deleteDialog.current
+    if (deleteSelection) dialog?.showModal()
+    else if (dialog?.open) dialog.close()
+  }, [deleteSelection])
+  useEffect(() => {
+    if (selectPage.current) selectPage.current.indeterminate = checkedIds.length > 0 && checkedIds.length < (assetsPage?.items.length ?? 0)
+  }, [checkedIds, assetsPage])
   const clearSource = useCallback(() => {
     if (sourcePreviewUrl.current) URL.revokeObjectURL(sourcePreviewUrl.current)
     sourcePreviewUrl.current = null
@@ -158,7 +180,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
     const ticket = ++jobsGeneration.current
     jobsController.current?.abort()
     const controller = new AbortController(); jobsController.current = controller
-    if (!quiet) setListLoading(true)
+    if (!quiet) setJobsLoading(true)
     try {
       const page = readJobPage(await manage('jobs', { offset, limit: pageLimit }, controller.signal))
       if (!mounted.current || controller.signal.aborted || ticket !== jobsGeneration.current) return
@@ -171,7 +193,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
     } catch (error) {
       if (mounted.current && !controller.signal.aborted && ticket === jobsGeneration.current) setListFailure(errorTextFrom(error, it('common.loadFailed')))
     } finally {
-      if (mounted.current && ticket === jobsGeneration.current) { setListLoading(false); if (jobsController.current === controller) jobsController.current = null }
+      if (mounted.current && ticket === jobsGeneration.current) { setJobsLoading(false); if (jobsController.current === controller) jobsController.current = null }
     }
   }, [])
 
@@ -180,16 +202,18 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
     const ticket = ++assetsGeneration.current
     assetsController.current?.abort()
     const controller = new AbortController(); assetsController.current = controller
-    if (!quiet) setListLoading(true)
+    setCheckedIds([])
+    if (!quiet) setAssetsLoading(true)
     try {
-      const page = readAssetPage(await manage('list', { offset, limit: pageLimit }, controller.signal))
+      let page = readAssetPage(await manage('list', { offset, limit: pageLimit, query: searchQuery.current }, controller.signal))
+      if (page.offset > 0 && !page.items.length) page = readAssetPage(await manage('list', { offset: Math.max(0, Math.floor((page.total - 1) / pageLimit) * pageLimit), limit: pageLimit, query: searchQuery.current }, controller.signal))
       if (!mounted.current || controller.signal.aborted || ticket !== assetsGeneration.current) return
       assetsOffsetRef.current = page.offset
       setAssetsPage(page); setListFailure(null)
     } catch (error) {
       if (mounted.current && !controller.signal.aborted && ticket === assetsGeneration.current) setListFailure(errorTextFrom(error, it('common.loadFailed')))
     } finally {
-      if (mounted.current && ticket === assetsGeneration.current) { setListLoading(false); if (assetsController.current === controller) assetsController.current = null }
+      if (mounted.current && ticket === assetsGeneration.current) { setAssetsLoading(false); if (assetsController.current === controller) assetsController.current = null }
     }
   }, [])
 
@@ -203,10 +227,12 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
       cancelAll()
       setDraft(current => current ? { ...current, apiKey: '' } : current)
       setConfigSaving(false); setGenerating(false); setPreviewLoading(false)
+      setCheckedIds([]); setDeleteSelection(null)
       clearPreview(); clearSource()
     }
     const pagehide = () => {
       cancelAll()
+      setCheckedIds([]); setDeleteSelection(null); clearPreview()
       if (previewUrl.current) URL.revokeObjectURL(previewUrl.current)
       previewUrl.current = null
       if (sourcePreviewUrl.current) URL.revokeObjectURL(sourcePreviewUrl.current)
@@ -235,6 +261,38 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
     const timer = window.setInterval(() => { if (!document.hidden) void loadJobs(jobsPage?.offset ?? 0, true) }, 2500)
     return () => window.clearInterval(timer)
   }, [visible, hasActiveJob, jobsPage?.offset, loadJobs])
+
+  function searchAssets(event: FormEvent) {
+    event.preventDefault()
+    searchQuery.current = query.trim()
+    setDeleteFailure(null)
+    void loadAssets(0)
+  }
+  function confirmDelete(items: readonly GeneratedImageItem[]) {
+    if (!assetsPage || !items.length || deletingRef.current) return
+    setDeleteFailure(null)
+    setDeleteSelection({ revision: assetsPage.revision, items })
+  }
+  async function deleteImages() {
+    if (!deleteSelection || deletingRef.current) return
+    const target = deleteSelection
+    deletingRef.current = true; setDeleting(true)
+    const controller = new AbortController(); deleteController.current = controller
+    clearPreview()
+    try {
+      const result = readDeleteResult(await manage('delete', { assetIds: target.items.map(item => item.assetId), expectedRevision: target.revision, confirmed: true }, controller.signal))
+      if (result.revision !== target.revision + 1 || result.deletedAssetIds.length !== target.items.length || result.deletedAssetIds.some(id => !target.items.some(item => item.assetId === id))) throw new Error('Unexpected deletion receipt')
+      if (mounted.current && !controller.signal.aborted) feedback.current(it('resources.deleted', { count: result.deletedAssetIds.length }))
+    } catch (error) {
+      if (mounted.current && !controller.signal.aborted) setDeleteFailure(errorTextFrom(error, it('resources.deleteUnknown')))
+    } finally {
+      deletingRef.current = false; deleteController.current = null
+      if (mounted.current) {
+        setDeleting(false); setDeleteSelection(null); setCheckedIds([])
+        void loadAssets(assetsOffsetRef.current); void loadJobs(jobsPage?.offset ?? 0, true)
+      }
+    }
+  }
 
   function updateDraft<K extends keyof ConfigDraft>(key: K, value: ConfigDraft[K]) {
     setDraft(current => current ? { ...current, [key]: value, ...(key === 'clearApiKey' && value === true ? { apiKey: '' } : {}) } : current)
@@ -321,7 +379,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
   function resetRequestIdentity() { requestIdentity.current = null; setConfirming(false); setGenerateFailure(null) }
 
   async function submitGeneration() {
-    if (!config?.ready || configDirty || hasActive || generating || !prompt.trim()) return
+    if (!config?.ready || configDirty || hasActive || generating || deletingRef.current || !prompt.trim()) return
     if ([...prompt.trim()].length > IMAGE_GENERATION_LIMITS.prompt) { setGenerateFailure(it('generate.promptTooLong', { max: formatNumber(IMAGE_GENERATION_LIMITS.prompt) })); return }
     const key = JSON.stringify([prompt.trim(), useServiceSize ? '' : overrideSize.trim() || null, overrideQuality.trim(), overrideFormat, source?.key ?? null])
     if (requestIdentity.current?.key !== key) requestIdentity.current = { key, id: createRequestId() }
@@ -335,7 +393,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
         ...(overrideFormat ? { response_format: overrideFormat } : {}) }, controller.signal))
       if (!mounted.current || controller.signal.aborted) return
       requestIdentity.current = null; setConfirming(false); setPrompt(''); clearSource(); setGenerateFailure(null)
-      setJobsPage(current => current ? { ...current, items: [job, ...current.items].slice(0, pageLimit), total: current.total + 1 } : { items: [job], offset: 0, limit: pageLimit, total: 1, hasMore: false, nextOffset: null })
+      setJobsPage(current => current ? { ...current, items: [job, ...current.items].slice(0, pageLimit), total: current.total + 1 } : { revision: 0, items: [job], offset: 0, limit: pageLimit, total: 1, hasMore: false, nextOffset: null })
       feedback.current(it('generate.submitted'))
       void loadJobs(0, true)
     } catch (error) {
@@ -347,7 +405,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
   }
 
   const hasActive = Boolean(jobsPage?.items.some(job => isBusyStatus(job.status))) || generating
-  const canGenerate = Boolean(config?.ready && !configDirty && !hasActive && prompt.trim())
+  const canGenerate = Boolean(config?.ready && !configDirty && !hasActive && !deleting && prompt.trim())
   const jobs = jobsPage?.items ?? []
   const assets = assetsPage?.items ?? []
   const prerequisite = !config || config.ready ? null : !config.baseUrl.trim() && !config.model.trim() ? 'prerequisite.baseUrlModel' : !validUrl(config.baseUrl) ? 'prerequisite.baseUrl' : !config.model.trim() ? 'prerequisite.model' : 'prerequisite.inactive'
@@ -397,17 +455,30 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
         {listFailure && <div className="image-notice" role="alert"><AlertCircle size={16} aria-hidden="true" /><span>{listFailure}</span></div>}
         {listLoading && !jobsPage && <p className="image-loading" role="status"><LoaderCircle size={15} aria-hidden="true" />{t('jobs.loading')}</p>}
         {jobsPage && jobs.length === 0 && <div className="image-empty"><ImageOff size={26} aria-hidden="true" /><h4>{t('jobs.empty')}</h4><p>{t('jobs.emptyHelp')}</p></div>}
-        {jobs.length > 0 && <ol className="image-jobs">{jobs.map(job => <li key={job.jobId} className="image-job"><div className="image-job-head"><span className={`status-badge image-job-status image-job-status-${job.status}`}>{t(`jobs.status.${job.status}`)}</span><time dateTime={job.createdAt}>{formatDateTime(job.createdAt)}</time></div><p className="image-job-prompt" dir="auto">{job.prompt}</p><div className="image-job-meta"><span>{t('jobs.model', { model: job.model })}</span>{job.source && <span>{t(job.source.kind === 'received' ? 'jobs.source.received' : job.source.kind === 'asset' ? 'jobs.source.asset' : 'jobs.source.upload')}</span>}{job.assetIds.length > 0 && <span>{t('jobs.assets', { count: job.assetIds.length, value: formatNumber(job.assetIds.length) })}</span>}</div>{job.error && <p className="image-error">{t('jobs.error', { message: jobErrorText(job.error) })}</p>}{job.status === 'unknown' && <p className="image-warning">{t('jobs.unknownNotice')}</p>}{job.assetIds.length > 0 && <div className="image-asset-links">{job.assetIds.map(assetId => <ActionButton reasonCode="preview" key={assetId} type="button" className="text-button" onClick={() => void openAsset(assetId)}>{t('jobs.viewAssets')}</ActionButton>)}</div>}</li>)}</ol>}
+        {jobs.length > 0 && <ol className="image-jobs">{jobs.map(job => <li key={job.jobId} className="image-job"><div className="image-job-head"><span className={`status-badge image-job-status image-job-status-${job.status}`}>{t(`jobs.status.${job.status}`)}</span><time dateTime={job.createdAt}>{formatDateTime(job.createdAt)}</time></div><p className="image-job-prompt" dir="auto">{job.prompt}</p><div className="image-job-meta"><span>{t('jobs.model', { model: job.model })}</span>{job.source && <span>{t(job.source.kind === 'received' ? 'jobs.source.received' : job.source.kind === 'asset' ? 'jobs.source.asset' : 'jobs.source.upload')}</span>}{job.assetIds.length > 0 && <span>{t('jobs.assets', { count: job.assetIds.length, value: formatNumber(job.assetIds.length) })}</span>}</div>{job.status === 'succeeded' && job.assetIds.length === 0 && <p className="image-deleted-note">{t('jobs.imageDeleted')}</p>}{job.error && <p className="image-error">{t('jobs.error', { message: jobErrorText(job.error) })}</p>}{job.status === 'unknown' && <p className="image-warning">{t('jobs.unknownNotice')}</p>}{job.assetIds.length > 0 && <div className="image-asset-links">{job.assetIds.map(assetId => <ActionButton reasonCode="preview" key={assetId} type="button" className="text-button" onClick={() => void openAsset(assetId)}>{t('jobs.viewAssets')}</ActionButton>)}</div>}</li>)}</ol>}
         {jobsPage && jobsPage.total > 0 && <nav className="image-pagination" aria-label={t('jobs.title')}><span>{t('jobs.page', { start: formatNumber(jobsPage.total ? jobsPage.offset + 1 : 0), end: formatNumber(Math.min(jobsPage.offset + jobsPage.items.length, jobsPage.total)), total: formatNumber(jobsPage.total) })}</span><div><ActionButton reasonCode={listLoading ? 'loading' : 'firstPage'} type="button" className="button button-secondary" aria-label={t('jobs.previous')} disabled={listLoading || jobsPage.offset === 0} onClick={() => void loadJobs(Math.max(0, jobsPage.offset - jobsPage.limit))}><ChevronLeft size={16} aria-hidden="true" /></ActionButton><ActionButton reasonCode={listLoading ? 'loading' : 'lastPage'} type="button" className="button button-secondary" aria-label={t('jobs.next')} disabled={listLoading || !jobsPage.hasMore} onClick={() => void loadJobs(jobsPage.nextOffset ?? 0)}><ChevronRight size={16} aria-hidden="true" /></ActionButton></div></nav>}
       </section>
 
-      <section className="image-block" aria-labelledby={`${prefix}-assets-title`}>
-        <div className="image-block-heading"><div><h3 id={`${prefix}-assets-title`}>{t('resources.title')}</h3><p>{t('resources.description')}</p></div><ActionButton reasonCode="busy" type="button" className="text-button" disabled={listLoading} onClick={() => void loadAssets(assetsPage?.offset ?? 0)}><RefreshCw size={14} aria-hidden="true" />{t('resources.refresh')}</ActionButton></div>
-        {assetsPage && assets.length === 0 && <div className="image-empty"><ImageOff size={26} aria-hidden="true" /><h4>{t('resources.empty')}</h4><p>{t('resources.emptyHelp')}</p></div>}
-        {assets.length > 0 && <ul className="image-assets">{assets.map(asset => <li key={asset.assetId}><ActionButton reasonCode="preview" type="button" className="image-asset-row" onClick={() => void openAsset(asset.assetId)}><span className="image-asset-copy"><strong dir="auto">{asset.prompt}</strong><small>{t('resources.bytes', { size: bytesLabel(asset.bytes), type: asset.mimeType })} · {t('resources.created', { time: formatDateTime(asset.createdAt) })}</small></span><ChevronRight size={15} aria-hidden="true" /></ActionButton></li>)}</ul>}
-        {assetsPage && assetsPage.total > 0 && <nav className="image-pagination" aria-label={t('resources.title')}><span>{t('resources.page', { start: formatNumber(assetsPage.total ? assetsPage.offset + 1 : 0), end: formatNumber(Math.min(assetsPage.offset + assetsPage.items.length, assetsPage.total)), total: formatNumber(assetsPage.total) })}</span><div><ActionButton reasonCode={listLoading ? 'loading' : 'firstPage'} type="button" className="button button-secondary" aria-label={t('resources.previous')} disabled={listLoading || assetsPage.offset === 0} onClick={() => void loadAssets(Math.max(0, assetsPage.offset - assetsPage.limit))}><ChevronLeft size={16} aria-hidden="true" /></ActionButton><ActionButton reasonCode={listLoading ? 'loading' : 'lastPage'} type="button" className="button button-secondary" aria-label={t('resources.next')} disabled={listLoading || !assetsPage.hasMore} onClick={() => void loadAssets(assetsPage.nextOffset ?? 0)}><ChevronRight size={16} aria-hidden="true" /></ActionButton></div></nav>}
+      <section className="image-block image-history" aria-labelledby={`${prefix}-assets-title`}>
+        <div className="image-block-heading"><div><h3 id={`${prefix}-assets-title`}>{t('resources.title')}{assetsPage && <span className="image-history-count">{formatNumber(assetsPage.total)}</span>}</h3><p>{t('resources.description')}</p></div><ActionButton reasonCode="busy" type="button" className="text-button" disabled={listLoading || deleting} onClick={() => void loadAssets(assetsPage?.offset ?? 0)}><RefreshCw size={14} aria-hidden="true" />{t('resources.refresh')}</ActionButton></div>
+        <form className="image-history-search" role="search" onSubmit={searchAssets}><label htmlFor={`${prefix}-search`}>{t('resources.search')}</label><div><input id={`${prefix}-search`} type="search" maxLength={200} value={query} placeholder={t('resources.searchPlaceholder')} onChange={event => setQuery(event.target.value)} /><button type="submit" className="button button-secondary" disabled={assetsLoading || deleting}><Search size={16} aria-hidden="true" />{t('resources.searchButton')}</button>{searchQuery.current && <button type="button" className="text-button" disabled={assetsLoading || deleting} onClick={() => { setQuery(''); searchQuery.current = ''; void loadAssets(0) }}>{t('resources.clearSearch')}</button>}</div></form>
+        {deleteFailure && <p className="image-error" role="alert">{deleteFailure}</p>}
+        {assetsLoading && <p className="image-loading" role="status">{t('resources.loading')}</p>}
+        {assetsPage && assets.length === 0 && <div className="image-empty"><ImageOff size={26} aria-hidden="true" /><h4>{t(searchQuery.current ? 'resources.noMatches' : 'resources.empty')}</h4><p>{t(searchQuery.current ? 'resources.noMatchesHelp' : 'resources.emptyHelp')}</p></div>}
+        {assets.length > 0 && <>
+          <div className="image-selection-bar"><label><input ref={selectPage} type="checkbox" checked={checkedIds.length === assets.length} disabled={assetsLoading || deleting} onChange={event => setCheckedIds(event.target.checked ? assets.map(item => item.assetId) : [])} />{t('resources.selectPage')}</label><span aria-live="polite">{t('resources.selected', { count: checkedIds.length })}</span><ActionButton reasonCode={hasActive ? 'active' : 'empty'} type="button" className="button button-danger" disabled={!checkedIds.length || listLoading || deleting || hasActive} onClick={() => confirmDelete(assets.filter(item => checkedIds.includes(item.assetId)))}><Trash2 size={15} aria-hidden="true" />{t('resources.deleteSelected')}</ActionButton></div>
+          <ul className="image-assets">{assets.map(asset => <li key={asset.assetId} className={checkedIds.includes(asset.assetId) ? 'is-selected' : ''}>
+            <label className="image-row-check"><input type="checkbox" aria-label={t('resources.selectImage', { prompt: asset.prompt })} checked={checkedIds.includes(asset.assetId)} disabled={assetsLoading || deleting} onChange={event => setCheckedIds(current => event.target.checked ? [...current, asset.assetId] : current.filter(id => id !== asset.assetId))} /></label>
+            <button type="button" className="image-asset-row" onClick={() => void openAsset(asset.assetId)}><span className="image-asset-copy"><strong dir="auto">{asset.prompt}</strong><small>{asset.model} · {bytesLabel(asset.bytes)}<br />{formatDateTime(asset.createdAt)}</small></span><ChevronRight size={15} aria-hidden="true" /></button>
+            <ActionButton reasonCode={hasActive ? 'active' : 'busy'} type="button" className="text-button image-row-delete" aria-label={t('resources.deleteImage', { prompt: asset.prompt })} disabled={listLoading || deleting || hasActive} onClick={() => confirmDelete([asset])}><Trash2 size={16} aria-hidden="true" /></ActionButton>
+          </li>)}</ul>
+        </>}
+        {assetsPage && assetsPage.total > 0 && <nav className="image-pagination" aria-label={t('resources.title')}><span>{t('resources.page', { start: formatNumber(assetsPage.total ? assetsPage.offset + 1 : 0), end: formatNumber(Math.min(assetsPage.offset + assetsPage.items.length, assetsPage.total)), total: formatNumber(assetsPage.total) })}</span><div><ActionButton reasonCode={assetsLoading ? 'loading' : 'firstPage'} type="button" className="button button-secondary" aria-label={t('resources.previous')} disabled={assetsLoading || deleting || assetsPage.offset === 0} onClick={() => void loadAssets(Math.max(0, assetsPage.offset - assetsPage.limit))}><ChevronLeft size={16} aria-hidden="true" /></ActionButton><ActionButton reasonCode={assetsLoading ? 'loading' : 'lastPage'} type="button" className="button button-secondary" aria-label={t('resources.next')} disabled={assetsLoading || deleting || !assetsPage.hasMore} onClick={() => void loadAssets(assetsPage.nextOffset ?? 0)}><ChevronRight size={16} aria-hidden="true" /></ActionButton></div></nav>}
       </section>
     </div>
+    <dialog ref={deleteDialog} className="image-delete-dialog" aria-labelledby={`${prefix}-delete-title`} onCancel={event => { event.preventDefault(); if (!deleting) setDeleteSelection(null) }}>
+      {deleteSelection && <><h3 id={`${prefix}-delete-title`}>{t('resources.deleteTitle', { count: deleteSelection.items.length })}</h3><p>{t('resources.deleteHelp')}</p><ul>{deleteSelection.items.map(item => <li key={item.assetId} dir="auto">{item.prompt}</li>)}</ul><p className="image-delete-size">{t('resources.deleteSize', { size: bytesLabel(deleteSelection.items.reduce((sum, item) => sum + item.bytes, 0)) })}</p><div className="image-form-actions"><button type="button" className="button button-secondary" autoFocus disabled={deleting} onClick={() => setDeleteSelection(null)}>{t('generate.cancel')}</button><button type="button" className="button button-danger" disabled={deleting} onClick={() => void deleteImages()}>{t(deleting ? 'resources.deleting' : 'resources.confirmDelete', { count: deleteSelection.items.length })}</button></div></>}
+    </dialog>
     <dialog ref={previewDialog} className="image-preview" aria-labelledby={`${prefix}-preview-title`}
       onCancel={event => { event.preventDefault(); clearPreview() }}
       onClick={event => {
@@ -421,6 +492,7 @@ export function ImageGenerationPanel({ onFeedback, onRefresh }: PluginPanelProps
         {!previewLoading && selected && previewUrl.current && <img src={previewUrl.current} alt={t('resources.previewAlt')} />}
         {previewFailure && <p className="image-error" role="alert">{previewFailure}</p>}
       </div>
+      {selected && assets.some(item => item.assetId === selected.item.assetId) && <div className="image-preview-navigation"><button type="button" className="text-button" disabled={previewLoading || assets[0]?.assetId === selected.item.assetId} onClick={() => { const index = assets.findIndex(item => item.assetId === selected.item.assetId); if (index > 0) void openAsset(assets[index - 1]!.assetId) }}><ChevronLeft size={18} aria-hidden="true" />{t('resources.previousImage')}</button><span>{assets.findIndex(item => item.assetId === selected.item.assetId) + 1} / {assets.length}</span><button type="button" className="text-button" disabled={previewLoading || assets.at(-1)?.assetId === selected.item.assetId} onClick={() => { const index = assets.findIndex(item => item.assetId === selected.item.assetId); if (index >= 0 && index + 1 < assets.length) void openAsset(assets[index + 1]!.assetId) }}>{t('resources.nextImage')}<ChevronRight size={18} aria-hidden="true" /></button></div>}
       {selected && <div className="image-preview-caption"><p dir="auto">{selected.item.prompt}</p><small>{t('resources.bytes', { size: bytesLabel(selected.item.bytes), type: selected.item.mimeType })} · {t('resources.created', { time: formatDateTime(selected.item.createdAt) })}</small></div>}
     </dialog>
   </section>

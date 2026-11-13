@@ -67,12 +67,18 @@ export interface GeneratedImageItem {
   readonly createdAt: string
 }
 export interface ImageGenerationPage<T> {
+  readonly revision: number
   readonly items: readonly T[]
   readonly offset: number
   readonly limit: number
   readonly total: number
   readonly hasMore: boolean
   readonly nextOffset: number | null
+}
+export interface ImageGenerationDeleteResult {
+  readonly revision: number
+  readonly deletedAssetIds: readonly string[]
+  readonly deletedBytes: number
 }
 export interface ImageGenerationSendable { readonly type: 'image'; readonly data: { readonly file: string } }
 export interface ImageGenerationPreview {

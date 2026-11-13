@@ -3,7 +3,7 @@ import type { ImageMimeType, JsonObject } from '@eating/plugin-sdk'
 import { HostApiError, hostRequest } from '@eating/ui-sdk'
 import type {
   GeneratedImageItem, ImageGenerationConfiguration, ImageGenerationJob, ImageGenerationJobError,
-  ImageGenerationPage, ImageGenerationPreview, ImageGenerationResponseFormat, ImageGenerationSourceKind, ImageGenerationSourceSummary,
+  ImageGenerationDeleteResult, ImageGenerationPage, ImageGenerationPreview, ImageGenerationResponseFormat, ImageGenerationSourceKind, ImageGenerationSourceSummary,
 } from '../types'
 import { IMAGE_GENERATION_LIMITS } from '../types'
 import { it } from './i18n'
@@ -69,7 +69,7 @@ export function readAsset(value: unknown): GeneratedImageItem {
 }
 
 function readPage<T>(value: unknown, readItem: (entry: unknown) => T): ImageGenerationPage<T> {
-  if (!isJsonObject(value) || !onlyKeys(value, ['items', 'offset', 'limit', 'total', 'hasMore', 'nextOffset'])
+  if (!isJsonObject(value) || !onlyKeys(value, ['revision', 'items', 'offset', 'limit', 'total', 'hasMore', 'nextOffset']) || !integer(value.revision)
     || !Array.isArray(value.items) || value.items.length > IMAGE_GENERATION_LIMITS.page
     || !integer(value.offset) || !integer(value.limit) || value.limit < 1 || value.limit > IMAGE_GENERATION_LIMITS.page
     || !integer(value.total) || typeof value.hasMore !== 'boolean'
@@ -77,7 +77,13 @@ function readPage<T>(value: unknown, readItem: (entry: unknown) => T): ImageGene
   const items = value.items.map(readItem)
   if (items.length > value.limit || value.hasMore !== (value.offset + items.length < value.total)
     || value.nextOffset !== (value.hasMore ? value.offset + items.length : null)) return invalid()
-  return { items, offset: value.offset, limit: value.limit, total: value.total, hasMore: value.hasMore, nextOffset: value.nextOffset as number | null }
+  return { revision: value.revision, items, offset: value.offset, limit: value.limit, total: value.total, hasMore: value.hasMore, nextOffset: value.nextOffset as number | null }
+}
+export function readDeleteResult(value: unknown): ImageGenerationDeleteResult {
+  if (!isJsonObject(value) || !onlyKeys(value, ['revision', 'deletedAssetIds', 'deletedBytes']) || !integer(value.revision) || !integer(value.deletedBytes)
+    || !Array.isArray(value.deletedAssetIds) || !value.deletedAssetIds.length || value.deletedAssetIds.length > IMAGE_GENERATION_LIMITS.page
+    || value.deletedAssetIds.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) || new Set(value.deletedAssetIds).size !== value.deletedAssetIds.length) return invalid()
+  return { revision: value.revision, deletedAssetIds: value.deletedAssetIds as string[], deletedBytes: value.deletedBytes }
 }
 export function readJobPage(value: unknown): ImageGenerationPage<ImageGenerationJob> { return readPage(value, readJob) }
 export function readAssetPage(value: unknown): ImageGenerationPage<GeneratedImageItem> { return readPage(value, readAsset) }
@@ -117,11 +123,15 @@ export async function fetchConfiguration(signal?: AbortSignal): Promise<ImageGen
 export async function updateConfiguration(patch: JsonObject, signal?: AbortSignal): Promise<ImageGenerationConfiguration> {
   return readConfiguration(await hostRequest<unknown>('/plugins/image-generation/configuration', { method: 'POST', body: patch, signal }))
 }
-export async function manage(operation: 'generate' | 'job' | 'jobs' | 'list' | 'get', input: JsonObject, signal?: AbortSignal): Promise<unknown> {
+export async function manage(operation: 'generate' | 'job' | 'jobs' | 'list' | 'get' | 'delete', input: JsonObject, signal?: AbortSignal): Promise<unknown> {
   return hostRequest<unknown>('/plugins/image-generation/manage', { method: 'POST', body: { operation, input }, signal })
 }
 
 const errorKeys: Readonly<Record<string, ImageGenerationTranslationKey>> = {
+  IMAGE_GENERATION_BUSY: 'error.busy',
+  IMAGE_GENERATION_REVISION_CONFLICT: 'error.listChanged',
+  IMAGE_GENERATION_DELETE_CONFIRMATION_REQUIRED: 'error.deleteConfirmation',
+  IMAGE_GENERATION_DELETE_INCOMPLETE: 'error.deleteIncomplete',
   IMAGE_GENERATION_INVALID_INPUT: 'error.invalidInput',
   IMAGE_GENERATION_INVALID_SIZE: 'error.invalidSize',
   IMAGE_GENERATION_INVALID_CONFIGURATION: 'error.invalidConfiguration',

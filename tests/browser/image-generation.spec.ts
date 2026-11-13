@@ -8,6 +8,8 @@ import { createInstalledHost } from '../../apps/host/src/installed-host'
 import { installPluginPackage } from '../../apps/host/src/plugin-installation'
 import type { EatingHost } from '../../apps/host/src/app'
 import { startImagesProviderFixture } from '../fixtures/images-provider'
+import { createImageFixturePng } from '../fixtures/image'
+import { ImageGenerationStore } from '../../plugins/capabilities/image-generation/src/backend/store'
 
 const staticDirectory = fileURLToPath(new URL('../../dist/', import.meta.url))
 const pluginDirectory = fileURLToPath(new URL('../../plugins/capabilities/image-generation/dist/', import.meta.url))
@@ -48,6 +50,123 @@ test.describe('生图插件真实临时 Host', () => {
     await page.goto(url + '/#plugins/image-generation')
     await expect(page.getByLabel('Base URL', { exact: true })).toBeVisible({ timeout: 20_000 })
   }
+  async function seedHistory(page: Page, count: number) {
+    await host.close()
+    const store = new ImageGenerationStore(join(directory, 'capabilities/image-generation'))
+    for (let index = 1; index <= count; index++) {
+      const job = store.enqueue(`history-fixture-${index}`, String(index).padStart(64, '0'), `历史图片 ${index}：晨光花园`, index % 2 ? 'watercolor' : 'photo')
+      store.complete(job.jobId, { bytes: createImageFixturePng([index * 10 % 255, 165, 94, 255]), mimeType: 'image/png' }, () => {})
+    }
+    host = await createInstalledHost({ dataDirectory: directory, staticDirectory, port: 0, allowedUiOrigins: [], autoConnectOnStartup: false })
+    url = await host.listen()
+    const bootstrap = await page.request.get(url + '/api/bootstrap')
+    csrf = (await bootstrap.json() as { csrfToken: string }).csrfToken
+  }
+
+  test('历史图片单删、批量选择、翻页和搜索，确认后才删除原图并保留任务', async ({ page }, info) => {
+    await seedHistory(page, 22); await open(page)
+    const history = page.locator('.image-history'), rows = history.locator('.image-assets > li')
+    await expect(rows).toHaveCount(20)
+    const deletes: unknown[] = []
+    page.on('request', request => { if (request.method() === 'POST' && request.url().endsWith('/image-generation/manage') && request.postDataJSON().operation === 'delete') deletes.push(request.postDataJSON()) })
+    await rows.first().getByRole('checkbox').check()
+    await rows.nth(1).getByRole('checkbox').check()
+    await expect(history.getByRole('checkbox', { name: '选择本页', exact: true })).toHaveJSProperty('indeterminate', true)
+    await history.getByRole('button', { name: '删除所选', exact: true }).click()
+    const confirm = page.getByRole('dialog', { name: '删除 2 张图片？', exact: true })
+    await expect(confirm).toBeVisible()
+    await expect(confirm.getByRole('button', { name: '取消', exact: true })).toBeFocused()
+    expect(deletes).toHaveLength(0)
+    await confirm.screenshot({ path: info.outputPath('image-delete-confirm-desktop.png') })
+    await page.keyboard.press('Escape')
+    await expect(confirm).not.toBeVisible()
+    await history.getByRole('button', { name: '删除所选', exact: true }).click()
+    await confirm.getByRole('button', { name: '确认删除 2 张', exact: true }).click()
+    await expect(history.locator('.image-history-count')).toHaveText('20')
+    await expect(rows).toHaveCount(20)
+    expect(deletes).toHaveLength(1)
+    await expect(page.getByText('图片已删除，生成记录保留', { exact: true })).toHaveCount(2)
+    await rows.first().getByRole('checkbox').check()
+    await history.getByLabel('搜索历史图片', { exact: true }).fill('watercolor')
+    await history.getByRole('button', { name: '搜索', exact: true }).click()
+    await expect(rows).toHaveCount(10)
+    await expect(history.getByText('已选 0 张', { exact: true })).toBeVisible()
+    await history.getByRole('button', { name: '清除搜索', exact: true }).click()
+    await expect(rows).toHaveCount(20)
+    await history.getByRole('checkbox', { name: '选择本页', exact: true }).check()
+    await expect(history.getByText('已选 20 张', { exact: true })).toBeVisible()
+    await history.getByRole('checkbox', { name: '选择本页', exact: true }).uncheck()
+    await rows.first().getByRole('button', { name: /^删除图片：/ }).click()
+    const single = page.getByRole('dialog', { name: '删除 1 张图片？', exact: true })
+    await single.getByRole('button', { name: '确认删除 1 张', exact: true }).click()
+    await expect(rows).toHaveCount(19); expect(deletes).toHaveLength(2)
+    await history.scrollIntoViewIfNeeded()
+    await page.screenshot({ path: info.outputPath('image-history-desktop.png') })
+    await page.setViewportSize({ width: 390, height: 844 }); await page.emulateMedia({ colorScheme: 'dark' })
+    await history.scrollIntoViewIfNeeded()
+    await rows.first().getByRole('checkbox').check()
+    await history.getByRole('button', { name: '删除所选', exact: true }).click()
+    await expect(single).toBeInViewport({ ratio: 1 })
+    await page.screenshot({ path: info.outputPath('image-delete-confirm-mobile-dark.png') })
+    await single.getByRole('button', { name: '取消', exact: true }).click()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0)
+    await page.locator('#display-language').selectOption('en-US')
+    await history.getByRole('button', { name: 'Delete selected', exact: true }).click()
+    await expect(page.getByRole('dialog', { name: 'Delete 1 image?', exact: true })).toBeVisible()
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')) })
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')) })
+    await expect(history.getByText('0 selected', { exact: true })).toBeVisible()
+    expect(deletes).toHaveLength(2); expect(provider.requests).toHaveLength(0)
+    await host.close()
+    const store = new ImageGenerationStore(join(directory, 'capabilities/image-generation'))
+    expect(store.images({}).total).toBe(19); expect(store.jobs({}).total).toBe(22)
+  })
+
+  test('翻页清除选择，删除最后一页后返回有效页；列表变动时旧确认不删除', async ({ page }) => {
+    await seedHistory(page, 21); await open(page)
+    const history = page.locator('.image-history'), rows = history.locator('.image-assets > li')
+    await rows.first().getByRole('checkbox').check()
+    await history.getByRole('button', { name: '下一页', exact: true }).click()
+    await expect(rows).toHaveCount(1)
+    await expect(history.getByText('已选 0 张', { exact: true })).toBeVisible()
+    const selectedName = await rows.first().locator('strong').innerText()
+    await rows.first().getByRole('button', { name: /^删除图片：/ }).click()
+    await page.getByRole('dialog').getByRole('button', { name: '确认删除 1 张', exact: true }).click()
+    await expect(rows).toHaveCount(20)
+    await expect(history.getByRole('button', { name: '上一页', exact: true })).toBeDisabled()
+    expect(await rows.allTextContents()).not.toContain(selectedName)
+    await rows.first().getByRole('checkbox').check()
+    await history.getByRole('button', { name: '删除所选', exact: true }).click()
+    const response = await page.request.post(url + '/api/plugins/image-generation/manage', { headers: { 'X-Eating-Csrf': csrf }, data: { operation: 'list', input: {} } })
+    const list = await response.json() as { revision: number; items: { assetId: string }[] }
+    const otherDelete = await page.request.post(url + '/api/plugins/image-generation/manage', { headers: { 'X-Eating-Csrf': csrf }, data: { operation: 'delete', input: { assetIds: [list.items[1]!.assetId], expectedRevision: list.revision, confirmed: true } } })
+    expect(otherDelete.status()).toBe(200)
+    await page.getByRole('dialog').getByRole('button', { name: '确认删除 1 张', exact: true }).click()
+    await expect(history.getByRole('alert')).toContainText('图片列表已变化')
+    await expect(rows).toHaveCount(19)
+    const selectedStillPresent = await page.request.post(url + '/api/plugins/image-generation/manage', { headers: { 'X-Eating-Csrf': csrf }, data: { operation: 'get', input: { assetId: list.items[0]!.assetId } } })
+    expect(selectedStillPresent.status()).toBe(200)
+    expect(provider.requests).toHaveLength(0)
+  })
+
+  test('删除已生效但响应丢失时只读核对列表，不自动再次删除', async ({ page }) => {
+    await seedHistory(page, 2); await open(page)
+    let deletions = 0
+    await page.route('**/api/plugins/image-generation/manage', async route => {
+      if (route.request().postDataJSON().operation !== 'delete') { await route.continue(); return }
+      deletions++
+      const response = await route.fetch(); expect(response.status()).toBe(200)
+      await route.abort('failed')
+    })
+    const history = page.locator('.image-history')
+    await history.getByRole('checkbox', { name: '选择本页', exact: true }).check()
+    await history.getByRole('button', { name: '删除所选', exact: true }).click()
+    await page.getByRole('dialog').getByRole('button', { name: '确认删除 2 张', exact: true }).click()
+    await expect(history.getByRole('alert')).toContainText('删除结果待核对')
+    await expect(history.locator('.image-asset-row')).toHaveCount(0)
+    await expect(page.getByText('图片已删除，生成记录保留', { exact: true })).toHaveCount(2)
+    expect(deletions).toBe(1); expect(provider.requests).toHaveLength(0)
+  })
 
   test('英文错误态按后端 code 映射固定文案，不显示原始中文', async ({ page }) => {
     await open(page)
@@ -216,7 +335,7 @@ test.describe('生图插件真实临时 Host', () => {
     await page.route('**/api/plugins/image-generation/manage', async route => {
       const body = route.request().postDataJSON() as { operation: string; input: { assetId?: string } }
       if (body.operation === 'list') {
-        await route.fulfill({ json: { items, total: items.length, offset: 0, limit: 20, hasMore: false, nextOffset: null } }); return
+        await route.fulfill({ json: { revision: 1, items, total: items.length, offset: 0, limit: 20, hasMore: false, nextOffset: null } }); return
       }
       if (body.operation !== 'get') { await route.continue(); return }
       previewRequests++
@@ -243,6 +362,12 @@ test.describe('生图插件真实临时 Host', () => {
       await expect(preview.getByRole('button', { name: '关闭预览', exact: true })).toBeFocused()
       await page.getByLabel('Base URL', { exact: true }).evaluate(element => element.focus())
       await expect(preview.getByRole('button', { name: '关闭预览', exact: true })).toBeFocused()
+      if (width === 1440 && theme === 'light') {
+        await preview.getByRole('button', { name: '下一张', exact: true }).click()
+        await expect(preview.locator('.image-preview-caption')).toContainText('预览示例 4')
+        await preview.getByRole('button', { name: '上一张', exact: true }).click()
+        await expect(preview.locator('.image-preview-caption')).toContainText('预览示例 3')
+      }
       await page.screenshot({ path: info.outputPath(`image-preview-${width}-${theme}.png`) })
       await preview.getByRole('button', { name: '关闭预览', exact: true }).click()
       await expect(preview).not.toBeVisible()

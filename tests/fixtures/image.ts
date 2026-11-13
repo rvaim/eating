@@ -21,7 +21,7 @@ function chunk(type: string, data: Buffer): Buffer {
 }
 
 /** One real opaque green pixel, with a lossless scanline and valid CRC for every chunk. */
-export function createImageFixturePng(): Buffer {
+export function createImageFixturePng(rgba: readonly [number, number, number, number] = [38, 165, 94, 255]): Buffer {
   const header = Buffer.alloc(13)
   header.writeUInt32BE(1, 0)
   header.writeUInt32BE(1, 4)
@@ -29,7 +29,7 @@ export function createImageFixturePng(): Buffer {
   header[9] = 6
   return Buffer.concat([
     Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-    chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.from([0, 38, 165, 94, 255]))), chunk('IEND', Buffer.alloc(0)),
+    chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.from([0, ...rgba]))), chunk('IEND', Buffer.alloc(0)),
   ])
 }
 

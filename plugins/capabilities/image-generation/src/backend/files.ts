@@ -54,5 +54,11 @@ export function removeOwnBlob(directory: string, assetId: string): void {
   if (dirname(path) !== root) throw new ImageStorageError()
   const stat = lstatSync(path, { throwIfNoEntry: false })
   if (stat && (!stat.isFile() || stat.isSymbolicLink())) throw new ImageStorageError()
-  if (stat) unlinkSync(path)
+  if (stat) {
+    unlinkSync(path)
+    if (process.platform !== 'win32') {
+      const descriptor = openSync(root, constants.O_RDONLY)
+      try { fsyncSync(descriptor) } finally { closeSync(descriptor) }
+    }
+  }
 }

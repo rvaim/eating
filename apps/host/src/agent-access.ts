@@ -58,7 +58,7 @@ export function collectAgentContributions(plugins: Iterable<BackendPlugin>, enab
 
 interface Actor {
   readonly harnessId: string
-  readonly baseScope: AgentInvocationScope
+  baseScope: AgentInvocationScope
   scope: AgentInvocationScope
   returnedMessageIds: readonly string[]
   receipts: Map<string, AgentActionReceipt>
@@ -196,6 +196,17 @@ export class AgentAccessRegistry {
   }
   actions(harnessId: string, agentId: string): readonly AgentActionReceipt[] {
     return structuredClone([...this.actors.get(this.actorKey(harnessId, agentId))?.receipts.values() ?? []])
+  }
+  extendScope(harnessId: string, scope: AgentInvocationScope, validateOnly = false): void {
+    const actor = this.actors.get(this.actorKey(harnessId, scope.agentId))
+    if (!actor || !actor.tokenHash || !this.leases.has(actor.tokenHash)
+      || ['agentTypeId', 'pluginId', 'instanceId', 'accountId', 'conversationId', 'kind', 'targetId', 'readOnly'].some(key => actor.baseScope[key as keyof AgentInvocationScope] !== scope[key as keyof AgentInvocationScope])
+      || !validReferences(scope.messageIds, scope.resourceIds)
+      || actor.baseScope.messageIds.some(id => !scope.messageIds.includes(id)) || actor.baseScope.resourceIds.some(id => !scope.resourceIds.includes(id))) forbidden()
+    if (validateOnly) return
+    const baseScope = { ...structuredClone(scope) }
+    actor.baseScope = baseScope
+    actor.scope = { ...baseScope, messageIds: [...new Set([...baseScope.messageIds, ...actor.returnedMessageIds])] }
   }
   revokeAgent(harnessId: string, agentId: string) {
     const actor = this.actors.get(this.actorKey(harnessId, agentId))

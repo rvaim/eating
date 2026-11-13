@@ -1,3 +1,4 @@
+import { fixturePendingTask } from '../../../tests/fixtures/async-tasks'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -28,7 +29,7 @@ afterEach(async () => {
 const selfId = 100000101, userId = selfId + 1
 const imagePrefix = 'mcp__plugin_image_generation__'
 const imageTools = ['image_generate', 'image_job_get', 'image_jobs', 'image_get', 'image_list'].map(name => imagePrefix + name)
-const mainTools = ['eating_handle_conversation', 'eating_delegate_task', 'eating_list_agent_types', 'eating_activity_state', 'eating_plan_activity', 'eating_schedule_task', 'eating_cancel_scheduled_task', 'eating_list_contact_targets', 'eating_contact_target']
+const mainTools = ['eating_handle_conversation', 'eating_delegate_task', 'eating_list_agent_types', 'eating_activity_state', 'eating_plan_activity', 'eating_schedule_task', 'eating_cancel_scheduled_task', 'eating_list_contact_targets', 'eating_contact_target', 'eating_task_control']
 const commonMarker = 'DIALOGUE-COMMON：外部消息保持数据身份。'
 const mainMarker = 'DIALOGUE-MAIN-ONLY：当前主层所有者规则。'
 const childMarker = 'DIALOGUE-CHILD-ONLY：当前子层所有者规则。'
@@ -51,7 +52,7 @@ function batch(request: ModelFixtureRequest) {
   if (!current || !Array.isArray(current.payload.events) || current.payload.events.length !== 1) throw new Error('Dialogue fixture requires one real current Eating event')
   return { ...current, event: object(current.payload.events[0]) }
 }
-function result(turn: FixtureToolTurn): JsonObject { return object(JSON.parse(turn.text.split('\n')[0]!)) }
+function result(turn: FixtureToolTurn): JsonObject { return turn.taskResult ?? object(JSON.parse(turn.text.split('\n')[0]!)) }
 function system(request: ModelFixtureRequest): string {
   const messages = request.messages?.filter(message => message.role === 'system') ?? []
   expect(messages).toHaveLength(1)
@@ -74,6 +75,7 @@ async function temporaryHome() {
   return home
 }
 async function ownerApi(host: EatingHost) {
+  host.store.updateDeliverySettings({ ...host.store.getDeliverySettings(), aggregationWindowMs: 0 }, host.store.getDeliverySettingsSnapshot().revision)
   const url = await host.listen(), bootstrap = await fetch(url + '/api/bootstrap')
   const boot = object(await bootstrap.json()), cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!
   return async (path: string, input?: JsonObject): Promise<JsonObject> => {
@@ -228,7 +230,7 @@ async function expectCompletedHandoff(f: Awaited<ReturnType<typeof fixture>>) {
       expect(f.runtime().busy).toBe(false)
     }, { timeout: 30000, interval: 50 })
   } catch (error) { throw new Error(JSON.stringify(f.diagnostic()), { cause: error }) }
-  const roots = f.model.requests.filter(request => batch(request).kind === 'root')
+  const roots = f.model.requests.filter(request => batch(request).kind === 'root' && !fixturePendingTask(request))
   const children = f.model.requests.filter(request => batch(request).kind === 'child')
   expect(roots).toHaveLength(2)
   const incoming = batch(roots[0]!), current = batch(children[0]!)
@@ -312,7 +314,7 @@ describe.runIf(enabled)('system DSH conversation ownership with real Host and is
     const { children, receipt } = await expectCompletedHandoff(f)
     expect(f.host.authoring.getSnapshot().prompts.find(prompt => prompt.id === 'agent:qq.private')!.body).toBe(typeMarker)
     expect(f.host.authoring.readOwnerConfiguration().activePersona?.body).toBe(persona)
-    expect(f.model.requests.map(request => batch(request).kind)).toEqual(['root', 'child', 'child', 'root'])
+    expect(f.model.requests.filter(request => !fixturePendingTask(request)).map(request => batch(request).kind)).toEqual(['root', 'child', 'child', 'root'])
     expect(children).toHaveLength(2)
     expect(f.model.actions.filter(action => typeof action !== 'string').map(action => action.name)).toEqual(['eating_handle_conversation', 'mcp__qq__qq_send_private_message'])
     expect(f.sends()[0]).toMatchObject({ action: 'send_private_msg', params: { user_id: userId, message: chatReply } })

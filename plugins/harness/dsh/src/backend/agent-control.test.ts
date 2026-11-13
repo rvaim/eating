@@ -1,3 +1,4 @@
+import { DEFAULT_DELIVERY_SETTINGS } from '@eating/plugin-sdk'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -22,14 +23,33 @@ function fixture() {
   ], agentTypes: [{ id: 'qq.private', title: 'Private', description: 'Private target', conversationKind: 'private', defaultPrompt: 'PRIVATE', availableTools: ['send'], defaultTools: ['send'], enabledTools: ['send'], pluginId: 'qq', pluginName: 'QQ', enabled: true, identity: { owners: [], administrators: [] } }] }
   const host: HarnessHostServices = { registerSink: () => () => {}, wake: () => {}, readOwnerConfiguration: () => owner,
     getCapabilityMcpConnections: () => [], getMcpConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1/mcp', headers: { Authorization: 'Bearer fixture-scoped-only-token' }, toolNames: ['send'] })),
-    readAgentActions: vi.fn(() => [{ requestId: 'request-1', tool: 'send', outcome: 'succeeded' as const }]), revokeAgentAccess: vi.fn() }
-  const control = new DshAgentControl(directory, host); stops.push(() => control.close())
-  const batch: HarnessDeliveryBatch = { protocolVersion: 1, batchId: 'a'.repeat(64), conversationId: 'qq:100:private:200', createdAt: '2026-10-28T00:00:00Z', reason: 'quiet-window', events: [{ protocolVersion: 1, eventId: 'event', pluginId: 'qq', instanceId: 'instance', platform: 'qq', accountId: '100', conversationId: 'qq:100:private:200', senderId: '200', targetId: '200', messageId: '300', resourceIds: ['https://fixture.invalid/file'], receivedAt: '2026-10-28T00:00:00Z', source: { trust: 'external', kind: 'private', senderRole: 'user' }, content: 'EXTERNAL-MESSAGE-BODY', text: 'EXTERNAL-MESSAGE-BODY' }] }
+    readDeliverySettings: () => ({ ...DEFAULT_DELIVERY_SETTINGS, aggregationWindowMs: 0 }), deliveryReceiptAccepted: () => false, extendAgentScope: vi.fn(), readAgentActions: vi.fn(() => [{ requestId: 'request-1', tool: 'send', outcome: 'succeeded' as const }]), revokeAgentAccess: vi.fn() }
+  const control = new DshAgentControl(directory, host); control.setAutonomy(new DshAutonomy(directory, () => true, () => {}, () => {}), () => parentId, () => true); stops.push(() => control.close())
+  const batch: HarnessDeliveryBatch = { protocolVersion: 1, batchId: 'a'.repeat(64), conversationId: 'qq:100:private:200', createdAt: '2026-10-28T00:00:00Z', reason: 'aggregation-window', events: [{ protocolVersion: 1, eventId: 'event', pluginId: 'qq', instanceId: 'instance', platform: 'qq', accountId: '100', conversationId: 'qq:100:private:200', senderId: '200', targetId: '200', messageId: '300', resourceIds: ['https://fixture.invalid/file'], receivedAt: '2026-10-28T00:00:00Z', source: { trust: 'external', kind: 'private', senderRole: 'user' }, content: 'EXTERNAL-MESSAGE-BODY', text: 'EXTERNAL-MESSAGE-BODY' }] }
   const post = async (path: string, value: object, headers: Record<string, string> = {}) => fetch(control.url + path, { method: 'POST', headers: { Authorization: `Bearer ${control.token}`, 'X-Eating-Runtime': 'fixture-runtime-nonce', 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(value) })
   return { directory, control, host, owner, batch, post }
 }
 
 describe('trusted native Agent control boundary', () => {
+  it.each(['reply', 'verify'] as const)('lets only main append a same-target batch to a live %s task, preserving its mode and both batches', async mode => {
+    const f = fixture(); await f.control.start('fixture-runtime-nonce')
+    const first = f.control.bind(f.batch, parentId)
+    const task = { agentId: first.scope.agentId, agentTypeId: 'qq.private', contextRef: f.batch.batchId, taskId: '1'.repeat(64), mode }
+    expect((await f.post('/prepare-task', task)).status).toBe(200)
+    const batch = { ...f.batch, batchId: 'b'.repeat(64), events: f.batch.events.map(event => ({ ...event, messageId: 'new-message', resourceIds: ['new-image'] })) }
+    f.control.bind(batch, parentId)
+    const update = { agentId: parentId, taskId: task.taskId, contextRef: batch.batchId }
+    expect((await f.post('/append-task', { ...update, agentId: task.agentId })).status).toBe(409)
+    expect((await f.post('/append-task', update)).status).toBe(200)
+    expect(f.host.extendAgentScope).toHaveBeenLastCalledWith(expect.objectContaining({ agentId: task.agentId, messageIds: ['300', 'new-message'], resourceIds: ['https://fixture.invalid/file', 'new-image'], ...(mode === 'verify' ? { readOnly: true } : {}) }))
+    f.control.bind({ ...batch, batchId: 'c'.repeat(64), conversationId: 'other', events: batch.events.map(event => ({ ...event, targetId: '999', conversationId: 'other' })) }, parentId)
+    expect((await f.post('/append-task', { ...update, contextRef: 'c'.repeat(64) })).status).toBe(409)
+    const list = await f.post('/tasks', { agentId: parentId, taskId: task.taskId })
+    expect(await list.json()).toMatchObject({ tasks: [{ taskId: task.taskId, status: 'running' }] })
+    expect((await f.post('/actions', { agentId: task.agentId, contextRef: task.contextRef, taskId: task.taskId })).status).toBe(200)
+    expect(f.host.getMcpConnection).toHaveBeenCalledOnce()
+  })
+
   async function restorationFixture(options: { eventCount?: number; mixed?: boolean; pending?: boolean } = {}) {
     const f = fixture()
     const events = Array.from({ length: options.eventCount ?? 301 }, (_, index) => ({ ...f.batch.events[0]!, eventId: `event-${index}`, messageId: `message-${index}`, resourceIds: [`resource-${index}`] }))
@@ -52,8 +72,8 @@ describe('trusted native Agent control boundary', () => {
     const capabilities = vi.spyOn(f.host, 'getCapabilityMcpConnections')
     await control.start('restored-runtime-nonce')
     mkdirSync(join(f.directory, 'bridge'), { recursive: true })
-    const expectedFile = join(f.directory, 'bridge', 'expected.json')
-    const expected = { schemaVersion: 1, nonce: 'restored-runtime-nonce', sessionId: parentId, batchId: batch.batchId, digest }
+    const expectedFile = join(f.directory, 'bridge', `expected-${batch.batchId}.json`)
+    const expected = { schemaVersion: 1, nonce: 'restored-runtime-nonce', sessionId: parentId, batchId: batch.batchId, digest, ownerRevision: f.owner.revision, bindings: [] }
     writeFileSync(expectedFile, JSON.stringify(expected))
     const post = (path: string, value: object, headers: Record<string, string> = {}) => fetch(control.url + path, { method: 'POST', headers: { Authorization: `Bearer ${control.token}`, 'X-Eating-Runtime': 'restored-runtime-nonce', 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(value) })
     const restore = (value: object = { agentId: parentId, payload }, headers: Record<string, string> = {}) => post('/restore-delivery', value, headers)
@@ -388,6 +408,7 @@ describe('trusted native Agent control boundary', () => {
   it('preserves an unknown contact while fresh inbound tasks use the shared UUID and owner review leaves their scope intact', async () => {
     const f = await ordinaryFixture(), contact = await (await f.prepare()).json()
     await f.post('/contact-turn-end', { agentId: parentId, turn: 1, cycleId: f.id })
+    f.control.revokeProactive()
     const ordinary = f.control.bind(f.batch, parentId)
     expect(ordinary.scope.agentId).toBe(contact.agentId)
     const input = { agentId: ordinary.scope.agentId, agentTypeId: 'qq.private', mode: 'reply', contextRef: f.batch.batchId, taskId: '2'.repeat(64) }
@@ -440,7 +461,7 @@ describe('trusted native Agent control boundary', () => {
     expect(lease.active()).toBe(true)
     f.changePolicy(); expect(lease.active()).toBe(false)
     await f.post('/contact-turn-end', { agentId: parentId, turn: 1, cycleId: f.id })
-    expect(f.control.proactiveStatus()).toMatchObject([{ state: 'unknown' }])
+    expect(f.control.proactiveStatus()).toMatchObject([{ state: 'pending' }])
   })
 
   it('keeps same-turn begin idempotent and old begin/end calls cannot affect the newer turn', async () => {
@@ -460,7 +481,7 @@ describe('trusted native Agent control boundary', () => {
     expect((await f.prepare()).status).toBe(200)
     const lease = vi.mocked(f.host.getMcpConnection).mock.calls[0]![2]!
     const end = await f.post('/contact-turn-end', { agentId: parentId, turn: 2, cycleId: null })
-    expect(end.status).toBe(200); expect(lease.active()).toBe(false)
+    expect(end.status).toBe(200); expect(lease.active()).toBe(true)
     expect((await f.post('/contact-turn-start', { agentId: parentId, turn: 2, autonomyCycleId: null })).status).toBe(409)
     expect((await f.post('/contact-turn-start', { agentId: parentId, turn: 1, autonomyCycleId: null })).status).toBe(409)
     const current = await f.begin(3)
@@ -537,7 +558,7 @@ describe('trusted native Agent control boundary', () => {
     }
     expect(vi.mocked(f.host.getMcpConnection).mock.calls.map(call => call[1].targetId)).toEqual(['200', '201'])
     f.control.bind({ ...f.batch, batchId: 'b'.repeat(64) }, parentId)
-    expect((await f.post('/actions', { agentId: secondInput.agentId, contextRef: secondInput.contextRef, taskId: secondInput.taskId })).status).toBe(409)
+    expect((await f.post('/actions', { agentId: secondInput.agentId, contextRef: secondInput.contextRef, taskId: secondInput.taskId })).status).toBe(200)
     for (const input of [secondInput, firstInput]) expect((await f.post('/finish-task', { agentId: input.agentId, contextRef: input.contextRef, taskId: input.taskId, status: 'completed' })).status).toBe(200)
   })
 
@@ -570,6 +591,7 @@ describe('trusted native Agent control boundary', () => {
     expect((await f.post('/memory-start', input)).status).toBe(200)
     expect(memory.begin).toHaveBeenCalledExactlyOnceWith({ agentId: parentId, agentTypeId: 'main', turnId: input.turnId, batch }, expect.any(AbortSignal))
     expect((await f.post('/memory-end', { agentId: parentId, turnId: input.turnId })).status).toBe(200)
+    await f.post('/retire-deliveries', { agentId: parentId, batchIds: [batch.batchId] })
     expect((await f.post('/memory-start', input)).status).toBe(409)
   })
 
@@ -665,7 +687,7 @@ describe('trusted native Agent control boundary', () => {
     control.setAutonomy(new DshAutonomy(f.directory, () => true, () => {}, () => {}), () => parentId, () => true)
     await control.start('fixture-runtime-nonce')
     mkdirSync(join(f.directory, 'bridge'), { recursive: true })
-    writeFileSync(join(f.directory, 'bridge', 'expected.json'), JSON.stringify({ schemaVersion: 1, nonce: 'fixture-runtime-nonce', sessionId: parentId, batchId: batch.batchId, digest }))
+    writeFileSync(join(f.directory, 'bridge', `expected-${batch.batchId}.json`), JSON.stringify({ schemaVersion: 1, nonce: 'fixture-runtime-nonce', sessionId: parentId, batchId: batch.batchId, digest, ownerRevision: f.owner.revision, bindings: [] }))
     const post = (path: string, value: object) => fetch(control.url + path, { method: 'POST', headers: { Authorization: `Bearer ${control.token}`, 'X-Eating-Runtime': 'fixture-runtime-nonce', 'Content-Type': 'application/json' }, body: JSON.stringify(value) })
     const before = readFileSync(join(f.directory, 'agent-bindings.json'), 'utf8')
     const response = await post('/restore-delivery', { agentId: parentId, payload })
@@ -950,7 +972,7 @@ describe('trusted native Agent control boundary', () => {
       const blocked = await prepare('b'.repeat(64), taskId)
       expect(blocked.status).toBe(409); expect(await blocked.json()).toMatchObject({ code: 'AGENT_TASK_PENDING', outcome: 'not-sent' })
     }
-    expect((await f.post('/actions', old)).status).toBe(409)
+    expect((await f.post('/actions', old)).status).toBe(200)
     expect((await f.post('/finish-task', { ...old, taskId: '3'.repeat(64), status })).status).toBe(409)
     expect(f.host.getMcpConnection).toHaveBeenCalledTimes(1)
     expect(f.host.revokeAgentAccess).not.toHaveBeenCalled()
@@ -1002,6 +1024,7 @@ describe('trusted native Agent control boundary', () => {
       f.control.bind({ ...f.batch, batchId: contextRef }, parentId)
       expect((await f.post('/prepare-task', { agentId, agentTypeId: 'qq.private', mode: 'reply', contextRef, taskId })).status).toBe(200)
       expect((await f.post('/finish-task', { agentId, contextRef, taskId, status: index === 0 ? 'unknown' : 'completed' })).status).toBe(200)
+      expect((await f.post('/retire-deliveries', { agentId: parentId, batchIds: [contextRef] })).status).toBe(200)
     }
     expect(f.control.list()[0]!.taskRefs).toHaveLength(32)
     expect(f.control.list()[0]!.taskRefs[0]).toMatchObject({ contextRef: '0'.repeat(64), taskId: (100).toString(16).padStart(64, '0'), state: 'unknown' })
@@ -1012,6 +1035,7 @@ describe('trusted native Agent control boundary', () => {
       f.control.bind({ ...f.batch, batchId: contextRef }, parentId)
       expect((await f.post('/prepare-task', { agentId, agentTypeId: 'qq.private', mode: 'reply', contextRef, taskId })).status).toBe(200)
       expect((await f.post('/finish-task', { agentId, contextRef, taskId, status: 'unknown' })).status).toBe(200)
+      expect((await f.post('/retire-deliveries', { agentId: parentId, batchIds: [contextRef] })).status).toBe(200)
     }
     expect(f.control.list()[0]!.taskRefs).toHaveLength(32)
     expect(f.control.list()[0]!.taskRefs.every(task => task.state === 'unknown')).toBe(true)
@@ -1039,6 +1063,7 @@ describe('trusted native Agent control boundary', () => {
     expect(f.control.list()[0]?.taskRefs).toHaveLength(32)
     expect((await f.post('/prepare-task', { ...input, taskId: 'f'.repeat(64) })).status).toBe(409)
     expect((await f.post('/prepare-task', { ...input, taskId: '0'.repeat(64) })).status).toBe(409)
+    await f.post('/retire-deliveries', { agentId: parentId, batchIds: [f.batch.batchId] })
     f.control.bind({ ...f.batch, batchId: 'b'.repeat(64) }, parentId)
     expect((await f.post('/prepare-task', { ...input, contextRef: 'b'.repeat(64), taskId: 'f'.repeat(64) })).status).toBe(200)
     expect(f.control.list()[0]?.taskRefs).toHaveLength(32)

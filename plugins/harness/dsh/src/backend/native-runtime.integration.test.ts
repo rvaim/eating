@@ -75,7 +75,8 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('system DSH nati
     let plugin!: DshPlugin
     const entry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) { plugin = new DshPlugin(context, { locateSystemDsh: testSystemDsh }); return plugin } }
     const host = new EatingHost({ dataDirectory: home, entries: [qqEntry, entry], port: 0, allowedUiOrigins: [] }); stops.push(() => host.close())
-    const url = await host.listen(), bootstrap = await fetch(url + '/api/bootstrap'), cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!, boot = object(await bootstrap.json())
+    host.store.updateDeliverySettings({ ...host.store.getDeliverySettings(), aggregationWindowMs: 0 }, host.store.getDeliverySettingsSnapshot().revision)
+  const url = await host.listen(), bootstrap = await fetch(url + '/api/bootstrap'), cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!, boot = object(await bootstrap.json())
     const api = async (path: string, body: JsonObject) => { const response = await fetch(url + '/api' + path, { method: 'POST', headers: { Cookie: cookie, 'X-Eating-Csrf': String(boot.csrfToken), 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const result = await response.json(); if (!response.ok) throw new Error(JSON.stringify(result)); return result }
     await api('/plugins/qq/configuration', { endpoint: onebot.endpoint, timeoutMs: 1000, forwardToHarness: true, receiveGroups: true, autoConnect: false })
     await api('/plugins/qq/connect', {})
@@ -108,7 +109,7 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('system DSH nati
       const start = requests.length; cycles++
       onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: 12345678, user_id: 87654321, message_id: 81000 + cycles, message: 'Isolated native access cycle ' + cycles })
       const deadline = Date.now() + 20000
-      while ((host.harness.getStatus().accepted !== cycles || !plugin.isReady()) && Date.now() < deadline) await new Promise<void>(resolve => setTimeout(resolve, 20))
+      while ((host.harness.getStatus().accepted !== cycles || object(plugin.getPublicConfiguration().runtimeStatus).busy !== false) && Date.now() < deadline) await new Promise<void>(resolve => setTimeout(resolve, 20))
       expect(host.harness.getStatus().accepted, JSON.stringify(plugin.getStatus())).toBe(cycles); expect(plugin.isReady()).toBe(true)
       const current = requests.slice(start), first = (kind: string) => current.find(request => readModelFixtureBatch(request)?.kind === kind)
       for (const [kind, allowed] of [['root', main], ['child', child]] as const) {

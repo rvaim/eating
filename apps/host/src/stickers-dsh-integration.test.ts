@@ -35,7 +35,15 @@ afterEach(async () => {
 })
 const selfId = 123456789, userId = 987654321
 const stickerPrefix = 'mcp__plugin_stickers__'
-const rootTools = ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task']
+function settledDecisions(requests: ModelFixtureRequest[]): ModelFixtureRequest[] {
+  return requests.filter((request, index) => {
+    const current = readModelFixtureBatch(request)
+    if (!current || current.kind !== 'root') return true
+    const matching = requests.map((candidate, i) => ({ batch: readModelFixtureBatch(candidate), i })).filter(item => item.batch?.kind === 'root' && item.batch.contextRef === current.contextRef)
+    return index === matching[0]?.i || index === matching.at(-1)?.i
+  })
+}
+const rootTools = ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_task_control']
 const capabilityTools = ['sticker_add', 'sticker_get', 'sticker_list', 'sticker_list_tags', 'sticker_update', 'sticker_delete'].map(name => stickerPrefix + name).sort()
 const childTools = [...capabilityTools, 'mcp__qq__qq_send_private_message', 'mcp__qq__qq_view_received_image'].sort()
 function object(value: unknown): JsonObject { if (!isJsonObject(value)) throw new Error('Expected actual structured integration result'); return value }
@@ -51,7 +59,7 @@ function batch(request: ModelFixtureRequest) {
   if (!value || !Array.isArray(value.payload.events) || value.payload.events.length !== 1) throw new Error('Expected exactly one actual Eating event')
   return { ...value, event: object(value.payload.events[0]) }
 }
-function result(turn: FixtureToolTurn): JsonObject { return object(JSON.parse(turn.text)) }
+function result(turn: FixtureToolTurn): JsonObject { return turn.taskResult ?? object(JSON.parse(turn.text)) }
 function noImageData(value: unknown, images: readonly Buffer[]) {
   const text = JSON.stringify(value)
   for (const bytes of images) expect(text).not.toContain(bytes.toString('base64'))
@@ -121,6 +129,7 @@ function sendableFromActualTool(turn: FixtureToolTurn): JsonObject {
 }
 
 async function ownerApi(host: EatingHost) {
+  host.store.updateDeliverySettings({ ...host.store.getDeliverySettings(), aggregationWindowMs: 0 }, host.store.getDeliverySettingsSnapshot().revision)
   const url = await host.listen(), bootstrap = await fetch(url + '/api/bootstrap')
   const token = object(await bootstrap.json()).csrfToken, cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!
   return async (path: string, body?: JsonObject): Promise<JsonObject> => {
@@ -214,19 +223,19 @@ describe.runIf(enabled)('系统DSH → 能力MCP → 表情库与QQ真实链', (
     await api('/plugins/dsh/manage', { operation: 'save-model-capabilities', input: { expectedRevision: 0, imageInput: true } })
     await api('/plugins/dsh/connect', {})
     const runtime = () => object(plugin.getPublicConfiguration().runtimeStatus), rootId = String(runtime().sessionId)
-    const diagnostics = () => ({ runtime: runtime(), status: plugin.getStatus(), delivery: host.harness.getStatus(), errors: model.errors, requests: model.requests.map(request => ({ kind: readModelFixtureBatch(request)?.kind, tools: names(request), last: request.messages?.at(-1) })), stderr: sdkStderr(plugin) })
+    const diagnostics = () => ({ runtime: runtime(), status: plugin.getStatus(), delivery: host.harness.getStatus(), errors: model.errors, requests: settledDecisions(model.decisions).map(request => ({ kind: readModelFixtureBatch(request)?.kind, tools: names(request), last: request.messages?.at(-1) })), stderr: sdkStderr(plugin) })
     const sends = () => onebot.requests.filter(request => request.action.startsWith('send_'))
     onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: selfId, user_id: userId, message_id: 99601, message: 'UNTRUSTED-STICKER-REQUEST。请发一个招呼表情。' })
-    await until(() => host.harness.getStatus().accepted === 1 && plugin.isReady(), diagnostics, model.errors)
-    expect(model.requests).toHaveLength(9)
-    expect(model.requests.map(request => batch(request).kind)).toEqual(['root', 'child', 'child', 'child', 'child', 'child', 'child', 'child', 'root'])
+    await until(() => host.harness.getStatus().accepted === 1 && object(plugin.getPublicConfiguration().runtimeStatus).busy === false, diagnostics, model.errors)
+    expect(settledDecisions(model.decisions)).toHaveLength(9)
+    expect(settledDecisions(model.decisions).map(request => batch(request).kind)).toEqual(['root', 'child', 'child', 'child', 'child', 'child', 'child', 'child', 'root'])
     expect(model.actions.filter(action => typeof action !== 'string').map(action => action.name)).toEqual(['eating_delegate_task', stickerPrefix + 'sticker_list_tags', stickerPrefix + 'sticker_list', stickerPrefix + 'sticker_list', stickerPrefix + 'sticker_get', 'mcp__qq__qq_send_private_message', 'mcp__qq__qq_send_private_message'])
     expect(sends()).toHaveLength(1)
     const selectedGet = model.actions.find(action => typeof action !== 'string' && action.name === stickerPrefix + 'sticker_get')
     if (!selectedGet || typeof selectedGet === 'string') throw new Error('No actual fixture sticker_get action')
     const selectedAsset = String(selectedGet.arguments.assetId), expectedBytes = object(addedA.item).assetId === selectedAsset ? pngA : pngB
     expect(sends()[0]).toMatchObject({ action: 'send_private_msg', params: { user_id: userId, message: { type: 'image', data: { file: 'base64://' + expectedBytes.toString('base64') } } } })
-    const imageBlocks = model.requests[5]!.messages?.flatMap(message => Array.isArray(message.content) ? message.content.filter(isJsonObject).filter(block => block.type === 'image_url') : [])
+    const imageBlocks = settledDecisions(model.decisions)[5]!.messages?.flatMap(message => Array.isArray(message.content) ? message.content.filter(isJsonObject).filter(block => block.type === 'image_url') : [])
     expect(imageBlocks).toEqual([expect.objectContaining({ image_url: { url: 'data:image/png;base64,' + expectedBytes.toString('base64') } })])
     const firstBindings = await readTestAgentBindings(home), childId = String(object(firstBindings[0]!.scope).agentId)
     expect(firstBindings).toHaveLength(1)
@@ -234,15 +243,15 @@ describe.runIf(enabled)('系统DSH → 能力MCP → 表情库与QQ真实链', (
 
     onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: selfId, user_id: userId, message_id: 99602,
       message: [{ type: 'text', data: { text: '收藏这张图片，附上描述和标签。' } }, { type: 'image', data: { file: imageId } }] })
-    await until(() => host.harness.getStatus().accepted === 2 && plugin.isReady(), diagnostics, model.errors)
-    expect(model.requests).toHaveLength(15)
-    expect(model.requests.slice(9).map(request => batch(request).kind)).toEqual(['root', 'child', 'child', 'child', 'child', 'root'])
+    await until(() => host.harness.getStatus().accepted === 2 && object(plugin.getPublicConfiguration().runtimeStatus).busy === false, diagnostics, model.errors)
+    expect(settledDecisions(model.decisions)).toHaveLength(15)
+    expect(settledDecisions(model.decisions).slice(9).map(request => batch(request).kind)).toEqual(['root', 'child', 'child', 'child', 'child', 'root'])
     expect(sends()).toHaveLength(1)
     expect(onebot.requests.filter(request => request.action === 'get_msg')).toEqual([expect.objectContaining({ params: { message_id: 99602 } })])
     expect(imageServer.requests).toHaveLength(1)
     expect(imageServer.requests[0]!.headers.authorization).toBeUndefined(); expect(imageServer.requests[0]!.headers.cookie).toBeUndefined()
     expect(object((await readTestAgentBindings(home))[0]!.scope).agentId).toBe(childId)
-    for (const request of model.requests) {
+    for (const request of settledDecisions(model.decisions)) {
       const current = batch(request)
       if (current.kind === 'root') expectMainTools(request, capabilityTools)
       else expect(names(request)).toEqual(childTools)
@@ -270,7 +279,7 @@ describe.runIf(enabled)('系统DSH → 能力MCP → 表情库与QQ真实链', (
     expect(await web.listSessions()).toEqual(expect.arrayContaining([expect.objectContaining({ sessionId: rootId }), expect.objectContaining({ sessionId: childId, parentSessionId: rootId })]))
     expect(JSON.stringify(await web.events(childId, rootId))).toContain('stickers-ai-add-99602')
     expect(JSON.stringify(await web.events(rootId))).toContain('MAIN-STICKERS-SUMMARY:')
-    expect(model.requests).toHaveLength(15)
+    expect(settledDecisions(model.decisions)).toHaveLength(15)
     expect(model.errors).toEqual([])
     expect(sends()).toHaveLength(1)
     await host.close()
@@ -354,8 +363,8 @@ describe.runIf(enabled)('系统DSH → 能力MCP → 表情库与QQ真实链', (
     try { await api('/plugins/dsh/connect', {}) }
     catch (error) { throw new Error(JSON.stringify({ error: String(error), status: plugin.getStatus(), startupErrors, stderr: capturedSdk ? Reflect.get(capturedSdk.client, 'stderrTail') : null })) }
     onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: selfId, user_id: userId, message_id: 99701, message: '只通过已授权的通用echo查询，不委派、不发送。' })
-    await until(() => host.harness.getStatus().accepted === 1 && plugin.isReady(), () => ({ status: plugin.getStatus(), requests: model.requests, errors: model.errors, stderr: sdkStderr(plugin) }), model.errors)
-    expect(model.requests).toHaveLength(2)
+    await until(() => host.harness.getStatus().accepted === 1 && object(plugin.getPublicConfiguration().runtimeStatus).busy === false, () => ({ status: plugin.getStatus(), requests: settledDecisions(model.decisions), errors: model.errors, stderr: sdkStderr(plugin) }), model.errors)
+    expect(settledDecisions(model.decisions)).toHaveLength(2)
     expect(directCalls).toEqual([{ value: 'ACTUAL-DIRECT-MAIN-ECHO' }])
     expect(model.errors).toEqual([])
     expect(onebot.requests.filter(request => request.action.startsWith('send_'))).toEqual([])

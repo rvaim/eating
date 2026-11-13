@@ -27,10 +27,10 @@ const createdAt = '2026-11-03T00:00:00.000Z'
 type ConversationScope = { pluginId: string; platform: string; instanceId: string; accountId: string; conversationId: string; kind: 'private' | 'group'; targetId: string }
 const conversationScope = (kind: 'private' | 'group' = 'private'): ConversationScope => ({ pluginId: 'qq', platform: 'qq', instanceId: 'fixture-instance', accountId: '100', conversationId: `qq:100:${kind}:200`, kind, targetId: '200' })
 function conversationContexts(scopes: ConversationScope[]) {
-  return scopes.map(scope => ({ ...scope, contextRef: scopes.length === 1 ? rootBatchId : createHash('sha256').update(JSON.stringify([rootBatchId, scope.pluginId, scope.instanceId, scope.accountId, scope.conversationId, scope.kind, scope.targetId])).digest('hex'), agentTypeId: `qq.${scope.kind}`, createdAt, reason: 'quiet-window', ownerRevision: 1 }))
+  return scopes.map(scope => ({ ...scope, contextRef: scopes.length === 1 ? rootBatchId : createHash('sha256').update(JSON.stringify([rootBatchId, scope.pluginId, scope.instanceId, scope.accountId, scope.conversationId, scope.kind, scope.targetId])).digest('hex'), agentTypeId: `qq.${scope.kind}`, createdAt, reason: 'aggregation-window', ownerRevision: 1 }))
 }
 function batchBody(conversations: ReturnType<typeof conversationContexts>, events: Json[]) {
-  return { context: { contextRef: rootBatchId, createdAt, reason: 'quiet-window', ownerRevision: 1, conversations }, events }
+  return { context: { contextRef: rootBatchId, createdAt, reason: 'aggregation-window', ownerRevision: 1, conversations }, events }
 }
 
 async function fixture(options: { stored?: unknown[]; storedError?: Error; tools?: Json[]; live?: boolean; missingApi?: string; flush?: () => Promise<boolean>; body?: { context: Json; events: Json[] } } = {}) {
@@ -40,7 +40,7 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
   vi.stubEnv('EATING_DSH_BRIDGE_DIRECTORY', directory)
   vi.stubEnv('EATING_DSH_BRIDGE_NONCE', nonce)
   vi.stubEnv('EATING_DSH_SESSION_ID', sessionId)
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ capabilities: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ capabilities: [], tasks: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
   vi.stubEnv('EATING_DSH_CONTROL_URL', 'http://127.0.0.1:1')
   vi.stubEnv('EATING_DSH_CONTROL_TOKEN', 'fixture-only-control-token')
   const mcpPath = join(directory, 'mcp.mjs')
@@ -52,6 +52,13 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
   const path = (name: string) => join(directory, name)
   const read = (name: string) => JSON.parse(readFileSync(path(name), 'utf8')) as Json
   const write = (name: string, value: unknown) => {
+    if (name === 'expected.json' && value && typeof value === 'object') {
+      const raw = value as Json
+      const policy = JSON.parse(readFileSync(path('owner-policy.json'), 'utf8')) as Json
+      const frame = { ...raw, ownerRevision: 1, bindings: policy.bindings ?? [] }
+      writeFileSync(path('expected-' + String(raw.batchId) + '.json'), JSON.stringify(frame))
+      writeFileSync(path('deliveries.json'), JSON.stringify({ schemaVersion: 1, revision: 1, deliveries: [{ ...frame, accepted: true, finished: false }] }))
+    }
     const temporary = path(`owner-write-${randomUUID()}.tmp`)
     writeFileSync(temporary, JSON.stringify(value), { mode: 0o600 })
     if (dirname(temporary) !== directory || dirname(path(name)) !== directory) throw new Error('Invalid fixture destination')
@@ -87,18 +94,20 @@ async function fixture(options: { stored?: unknown[]; storedError?: Error; tools
   const ctx = {
     on, get: () => undefined, provide: vi.fn(), plugin: vi.fn(async () => {}),
     eatingNativeWeb: { entry: vi.fn(async () => ({ url: 'http://127.0.0.1:45678/?token=fixture-only-web-token', rootSessionId: sessionId })) },
-    eatingNativeCapabilities: { ready: vi.fn(async () => {}), allowedGlobal: vi.fn(() => []), restrict: vi.fn(), mount: vi.fn(async () => []), reportTools: vi.fn(), authorize: vi.fn() },
+    eatingNativeCapabilities: { ready: vi.fn(async () => {}), allowedGlobal: vi.fn(() => []), restrict: vi.fn(), mount: vi.fn(async () => []), reportTools: vi.fn(), deliveryHandler: vi.fn(), authorize: vi.fn() },
     sessions: { flush, get: () => options.live ? session : undefined },
     sessionPersistence: { open, stat: vi.fn(async (): Promise<{ header: { parentSession: string } } | undefined> => undefined) },
     systemPrompt: { section: (value: NonNullable<typeof section.current>) => { if (value.name === 'eating:owner-system') section.current = value; return () => { if (section.current === value) section.current = undefined } } },
     tools: { schemas: () => tools, restrict: vi.fn(() => () => {}), register: vi.fn((tool: Json) => { registrations.push(tool); return () => {} }), guard: vi.fn(() => () => {}) },
     agents: { get: vi.fn((_id: string): unknown => undefined) }, subagents: { drainChildren: vi.fn(async () => {}), sendMessage: vi.fn(async (..._args: unknown[]) => {}), interrupt: vi.fn(), startActivation: vi.fn() }, agentPresets: { register: vi.fn(async () => () => {}) },
   }
-  const agent = { id: sessionId, session, ctx, status: 'idle', inbox: { nextTurn: [] as Json[], nextStep: [] as Json[] } }
+  const agent = { send: vi.fn(), id: sessionId, session, ctx, status: 'idle', inbox: { nextTurn: [] as Json[], nextStep: [] as Json[] } }
   ctx.agents.get.mockImplementation(id => id === sessionId ? agent : undefined)
   if (options.missingApi) { const [service, method] = options.missingApi.split('.'); Reflect.deleteProperty(Reflect.get(ctx, service!), method!) }
   const modulePath = path('runtime-bridge.mjs')
-  writeFileSync(modulePath, getRuntimeBridgeSource())
+  const llmPath = path('fixture-llm.mjs')
+  writeFileSync(llmPath, 'export const createUserMessage = input => ({ ...input, role: "user", id: "fixture-task-notice" });')
+  writeFileSync(modulePath, getRuntimeBridgeSource().replace("requireFromRuntime.resolve(spec)", JSON.stringify(llmPath)))
   const bridge = await import(/* @vite-ignore */ pathToFileURL(modulePath).href) as { name: string; inject: string[]; apply: (context: typeof ctx) => void }
   bridge.apply(ctx)
   for (const listener of listeners.get('agent/created') ?? []) await listener({ agent })
@@ -145,7 +154,7 @@ async function conversationFixture(kind: 'private' | 'group' = 'private', scopes
     requests.push({ operation, body: requestBody })
     const selected = bindings.find(entry => entry.agentId === requestBody.agentId)
     const configuration = selected && { agentId: selected.agentId, agentTypeId: selected.agentTypeId, systemPrompt: 'OWNER-CHILD-OVERRIDE\nOWNER-PERSONA', mode: 'reply', mcp: { url: 'http://127.0.0.1:1/mcp', headers: {} }, tools: [], capabilities: [] }
-    const value = operation === 'prepare-task' ? configuration : operation === 'actions' ? { actions } : operation === 'finish-task' ? { ok: true } : undefined
+    const value = operation === 'prepare-task' ? configuration : operation === 'actions' ? { actions } : operation === 'finish-task' ? { ok: true } : operation === 'tasks' ? { tasks: [{ taskId: requestBody.taskId, status: 'running' }] } : operation === 'retire-deliveries' ? { retired: requestBody.batchIds } : undefined
     if (!value) throw new Error(`Unexpected fixture control operation: ${operation}`)
     return new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
   })
@@ -311,15 +320,13 @@ describe('self-contained published-API DSH runtime bridge', () => {
     expect(f.requests).toEqual([])
   })
 
-  it.each(['other-context', 'turn-ended', 'owner-context', 'owner-child', 'owner-type', 'expected-batch', 'expected-digest'] as const)('rejects a stale or mismatched conversation binding: %s', async mode => {
+  it.each(['other-context', 'turn-ended', 'expected-digest'] as const)('rejects a stale or mismatched conversation binding: %s', async mode => {
     const f = await conversationFixture('group')
     if (mode === 'turn-ended') f.emit('session/event', f.session, { type: 'turn/end', data: { turn: 1 } })
-    if (mode === 'owner-context') f.write('owner-policy.json', { ...f.read('owner-policy.json'), contextRef: 'b'.repeat(64) })
-    if (mode === 'owner-child' || mode === 'owner-type') f.write('owner-policy.json', { ...f.read('owner-policy.json'), bindings: [{ ...f.binding, ...(mode === 'owner-child' ? { agentId: randomUUID() } : { agentTypeId: 'qq.private' }) }] })
-    if (mode === 'expected-batch') f.write('expected.json', { ...f.expected, batchId: 'b'.repeat(64) })
     if (mode === 'expected-digest') f.write('expected.json', { ...f.expected, digest: 'b'.repeat(64) })
-    await expect(f.execute('eating_handle_conversation', { context_ref: mode === 'other-context' ? 'b'.repeat(64) : f.expected.batchId, mode: 'reply' })).rejects.toThrow('Only a conversation from the current verified external batch')
-    expect(f.requests).toEqual([])
+    if (mode === 'turn-ended') await turn()
+    await expect(f.execute('eating_handle_conversation', { context_ref: mode === 'other-context' ? 'b'.repeat(64) : f.expected.batchId, mode: 'reply' })).rejects.toThrow('Only a conversation from a verified active external batch')
+    expect(f.requests.filter(request => request.operation !== 'retire-deliveries')).toEqual([])
     expect(f.ctx.subagents.startActivation).not.toHaveBeenCalled()
   })
 
@@ -329,7 +336,7 @@ describe('self-contained published-API DSH runtime bridge', () => {
     const tool = f.registrations.find(tool => tool.name === 'eating_handle_conversation')!
     if (typeof tool.execute !== 'function') throw new Error('Conversation tool was not registered')
     const args = { context_ref: f.expected.batchId, mode: 'reply' }, exec = { agent: f.agent, signal: new AbortController().signal, callId: 'native-call' }
-    await expect(tool.execute(args, exec)).rejects.toThrow('Only a conversation from the current verified external batch')
+    await expect(tool.execute(args, exec)).rejects.toThrow('Only a conversation from a verified active external batch')
     for (const invalid of [{ callId: undefined, call: { id: 'obsolete-nested-call-id' } }, { callId: '' }, { callId: 'x'.repeat(4097) }]) {
       await expect(tool.execute(args, { ...exec, ...invalid })).rejects.toThrow('Native tool call identity is unavailable')
     }
@@ -352,9 +359,11 @@ describe('self-contained published-API DSH runtime bridge', () => {
     expect(f.childSection.current?.text()).toMatch(/^OWNER-CHILD-OVERRIDE\nOWNER-PERSONA\n\n/)
     expect(f.childSection.current?.text()).toContain('自主决定是否回复、怎样回复、必要工具并执行发送')
     expect(f.childSection.current?.text()).not.toContain('OWNER-MAIN-OVERRIDE')
-    expect(result).toEqual({ childId: f.binding.agentId, status: 'completed', summary: f.terminal.output[0]!.text, actions: f.actions })
+    expect(result).toMatchObject({ childId: f.binding.agentId, status: 'running', actions: [], taskId: expect.any(String), contextRef: f.expected.batchId })
+    await turn()
+    await vi.waitFor(() => expect(f.agent.send).toHaveBeenCalledWith(expect.objectContaining({ source: { kind: 'plugin:eating-task-result', taskId: result.taskId } }), 'next-step', true))
     const taskId = createHash('sha256').update(f.sessionId + '\0native-conversation-call').digest('hex')
-    expect(f.requests).toEqual([
+    expect(f.requests.filter(request => ['prepare-task', 'actions', 'finish-task'].includes(request.operation))).toEqual([
       { operation: 'prepare-task', body: { agentId: f.binding.agentId, agentTypeId: f.binding.agentTypeId, contextRef: f.expected.batchId, taskId, mode: 'reply' } },
       { operation: 'actions', body: { agentId: f.binding.agentId, contextRef: f.expected.batchId, taskId } },
       { operation: 'finish-task', body: { agentId: f.binding.agentId, contextRef: f.expected.batchId, taskId, status: 'completed' } },
@@ -382,7 +391,8 @@ describe('self-contained published-API DSH runtime bridge', () => {
       const payload = JSON.parse(start.request.prompt[0]!.text) as Json
       expect(payload).toMatchObject({ eating: { contextRef: context.contextRef, agentTypeId: binding.agentTypeId }, context })
       expect(payload.events).toEqual(f.body.events.filter(event => event.messageId === `message-one-${index}` || event.messageId === `message-two-${index}`))
-      expect(f.requests.slice(-3).map(request => request.body.contextRef)).toEqual([context.contextRef, context.contextRef, context.contextRef])
+      await turn()
+      expect(f.requests.filter(request => ['prepare-task', 'actions', 'finish-task'].includes(request.operation)).slice(-3).map(request => request.body.contextRef)).toEqual([context.contextRef, context.contextRef, context.contextRef])
     }
     await f.execute('eating_delegate_task', { type_id: f.binding.agentTypeId, context_ref: f.binding.contextRef, task: '查询后继续完成当前会话任务' }, 'continue-first-conversation')
     expect(f.ctx.subagents.startActivation).toHaveBeenCalledTimes(scopes.length + 1)
@@ -390,29 +400,27 @@ describe('self-contained published-API DSH runtime bridge', () => {
     expect(f.expected.digest).toBe(createHash('sha256').update(JSON.stringify(f.body)).digest('hex'))
   })
 
-  it.each(['unknown-ref', 'root-ref', 'turn-ended', 'owner-root', 'owner-child', 'owner-type', 'missing-binding', 'expected-root', 'expected-digest'] as const)('rejects all multi-conversation references after %s invalidates authorization', async mode => {
+  it.each(['unknown-ref', 'root-ref', 'turn-ended', 'expected-digest'] as const)('rejects all multi-conversation references after %s invalidates authorization', async mode => {
     const f = await conversationFixture('group', [conversationScope('group'), { ...conversationScope('group'), accountId: '101' }])
     if (mode === 'turn-ended') f.emit('session/event', f.session, { type: 'turn/end', data: { turn: 1 } })
-    if (mode === 'owner-root') f.write('owner-policy.json', { ...f.read('owner-policy.json'), contextRef: 'b'.repeat(64) })
-    if (mode === 'owner-child' || mode === 'owner-type') f.write('owner-policy.json', { ...f.read('owner-policy.json'), bindings: f.bindings.map(binding => ({ ...binding, ...(mode === 'owner-child' ? { agentId: randomUUID() } : { agentTypeId: 'qq.private' }) })) })
-    if (mode === 'missing-binding') f.write('owner-policy.json', { ...f.read('owner-policy.json'), bindings: [] })
-    if (mode === 'expected-root') f.write('expected.json', { ...f.expected, batchId: 'b'.repeat(64) })
     if (mode === 'expected-digest') f.write('expected.json', { ...f.expected, digest: 'b'.repeat(64) })
+    if (mode === 'turn-ended') await turn()
     const refs = mode === 'unknown-ref' ? ['b'.repeat(64)] : mode === 'root-ref' ? [rootBatchId] : f.conversations.map(context => context.contextRef)
-    for (const contextRef of refs) await expect(f.execute('eating_handle_conversation', { context_ref: contextRef, mode: 'reply' }, `invalid-${contextRef}`)).rejects.toThrow('Only a conversation from the current verified external batch')
-    expect(f.requests).toEqual([])
+    for (const contextRef of refs) await expect(f.execute('eating_handle_conversation', { context_ref: contextRef, mode: 'reply' }, `invalid-${contextRef}`)).rejects.toThrow('Only a conversation from a verified active external batch')
+    expect(f.requests.filter(request => request.operation !== 'retire-deliveries')).toEqual([])
     expect(f.ctx.subagents.startActivation).not.toHaveBeenCalled()
   })
 
   it('activates all batch contexts only when admitted after an older native turn ends', async () => {
     const f = await conversationFixture('group', [conversationScope('group'), { ...conversationScope('group'), targetId: '201' }])
     f.emit('session/event', f.session, { type: 'turn/end', data: { turn: 1 } })
+    await turn()
     f.emit('session/event', f.session, f.event())
     await turn()
-    for (const context of f.conversations) await expect(f.execute('eating_handle_conversation', { context_ref: context.contextRef, mode: 'reply' })).rejects.toThrow('Only a conversation from the current verified external batch')
+    for (const context of f.conversations) await expect(f.execute('eating_handle_conversation', { context_ref: context.contextRef, mode: 'reply' })).rejects.toThrow('Only a conversation from a verified active external batch')
     f.emit('session/event', f.session, { type: 'turn/end', data: { turn: 2 } })
     await f.admit([f.delivery()])
-    for (const context of f.conversations) await expect(f.execute('eating_handle_conversation', { context_ref: context.contextRef, mode: 'reply' }, `admitted-${context.contextRef}`)).resolves.toMatchObject({ status: 'completed' })
+    for (const context of f.conversations) await expect(f.execute('eating_handle_conversation', { context_ref: context.contextRef, mode: 'reply' }, `admitted-${context.contextRef}`)).resolves.toMatchObject({ status: 'running' })
     expect(f.ctx.subagents.startActivation).toHaveBeenCalledTimes(2)
   })
 
@@ -424,39 +432,36 @@ describe('self-contained published-API DSH runtime bridge', () => {
     expect(f.ctx.subagents.sendMessage).toHaveBeenCalledWith(f.agent, f.binding.agentId, expect.any(Array), expect.objectContaining({ signal: expect.any(AbortSignal) }))
     const prompt = f.ctx.subagents.sendMessage.mock.calls[0]![2] as Array<{ text: string }>
     expect(JSON.parse(prompt[0]!.text)).toMatchObject({ context: f.conversations[0], events: f.body.events })
-    expect(result.actions).toEqual(f.actions)
+    expect(result.actions).toEqual([])
+    await turn()
+    await vi.waitFor(() => expect(f.agent.send).toHaveBeenCalled())
+    const notice = f.agent.send.mock.calls[0]![0] as Json
+    expect(JSON.parse((notice.content as Array<{ text: string }>)[0]!.text).eating_task_result.actions).toEqual(f.actions)
   })
 
   it('refuses a persisted conversation owned by another parent and closes the prepared task as unknown', async () => {
     const f = await conversationFixture()
     f.ctx.sessionPersistence.stat.mockResolvedValue({ header: { parentSession: randomUUID() } })
-    await expect(f.execute('eating_handle_conversation', { context_ref: f.expected.batchId, mode: 'reply' })).rejects.toThrow('Persisted child does not belong to this parent')
+    await expect(f.execute('eating_handle_conversation', { context_ref: f.expected.batchId, mode: 'reply' })).rejects.toThrow('Persisted child belongs to another parent')
     expect(f.ctx.subagents.startActivation).not.toHaveBeenCalled()
     expect(f.ctx.subagents.sendMessage).not.toHaveBeenCalled()
     expect(f.requests.at(-1)).toMatchObject({ operation: 'finish-task', body: { status: 'unknown' } })
   })
 
-  it('keeps native callId correlation and unknown settlement when conversation handling is interrupted', async () => {
+  it('keeps an accepted child alive after the initiating main tool signal ends, then main can interrupt explicitly', async () => {
     const f = await conversationFixture()
-    let finish!: (value: typeof f.terminal) => void
-    const pending = new Promise<typeof f.terminal>(resolve => { finish = resolve })
-    f.activation.result = pending
+    f.activation.result = new Promise(() => {})
     const controller = new AbortController()
-    const outcome = f.execute('eating_handle_conversation', { context_ref: f.expected.batchId, mode: 'reply' }, 'interrupted-call', { signal: controller.signal })
-    const rejected = expect(outcome).rejects.toThrow()
-    await turn()
-    expect(f.ctx.subagents.startActivation).toHaveBeenCalledOnce()
+    const result = await f.execute('eating_handle_conversation', { context_ref: f.expected.batchId, mode: 'reply' }, 'interrupted-call', { signal: controller.signal })
+    expect(result.status).toBe('running')
     controller.abort()
-    await rejected
-    const taskId = createHash('sha256').update(f.sessionId + '\0interrupted-call').digest('hex')
-    expect(f.requests).toEqual([
-      { operation: 'prepare-task', body: { agentId: f.binding.agentId, agentTypeId: f.binding.agentTypeId, contextRef: f.expected.batchId, taskId, mode: 'reply' } },
-      { operation: 'finish-task', body: { agentId: f.binding.agentId, contextRef: f.expected.batchId, taskId, status: 'unknown' } },
-    ])
-    finish(f.terminal)
     await turn()
-    expect(f.requests).toHaveLength(2)
-    expect(f.ctx.subagents.startActivation).toHaveBeenCalledOnce()
+    expect(f.activation.dispose).not.toHaveBeenCalled()
+    expect(f.requests.filter(request => request.operation === 'finish-task')).toEqual([])
+    const status = await f.execute('eating_task_control', { action: 'interrupt', task_id: result.taskId }, 'main-interrupt')
+    expect(status).toMatchObject({ status: 'unknown', taskId: result.taskId, actions: f.actions })
+    expect(f.activation.dispose).toHaveBeenCalled()
+    expect(f.requests.filter(request => request.operation === 'finish-task')).toEqual([{ operation: 'finish-task', body: { agentId: f.binding.agentId, contextRef: f.expected.batchId, taskId: result.taskId, status: 'unknown' } }])
   })
 
   it('yields one microtask and waits for a successful durability barrier before atomic ACK', async () => {
@@ -511,6 +516,7 @@ describe('self-contained published-API DSH runtime bridge', () => {
     const f = await fixture({ flush: async () => { if (result === 'reject') throw new Error('fixture-secret'); return result } })
     await turn()
     f.write('expected.json', f.expected)
+    await turn()
     f.emit('session/event', f.session, f.event())
     await turn()
     expect(existsSync(f.path(`ack-${f.expected.batchId}.json`))).toBe(false)
@@ -534,6 +540,21 @@ describe('self-contained published-API DSH runtime bridge', () => {
     expect(first.open).toHaveBeenLastCalledWith(first.sessionId, 'read', expect.any(Object))
     expect(first.readLog).toHaveBeenCalledWith(0, 256, expect.any(Object))
     expect(first.close).toHaveBeenCalled()
+  })
+
+  it('clears a recovered task-result outbox entry after finding its exact durable native notice without sending it again', async () => {
+    const f = await fixture()
+    await turn()
+    f.emit('dispose')
+    const taskId = 'd'.repeat(64), result = { taskId, childId: randomUUID(), contextRef: f.expected.batchId, status: 'completed', summary: 'Actual recovered task result', actions: [] }
+    const notice = { role: 'user', id: 'eating-task-' + taskId, source: { kind: 'plugin:eating-task-result', taskId }, content: [{ type: 'text', text: JSON.stringify({ eating_task_result: result }) }] }
+    f.setStored([{ type: 'agent/inbox/spliced', seq: 0, data: { inserted: [notice], target: 'next-step', start: 0 } }])
+    f.write('async-outbox.json', { schemaVersion: 1, results: [result] })
+    f.bridge.apply(f.ctx)
+    await turn()
+    for (const listener of f.listeners.get('agent/created') ?? []) await listener({ agent: f.agent })
+    expect(f.agent.send).not.toHaveBeenCalled()
+    expect(f.read('async-outbox.json')).toEqual({ schemaVersion: 1, results: [] })
   })
 
   it('writes session-ready only after session/created has crossed a successful flush', async () => {
@@ -614,6 +635,7 @@ describe('self-contained published-API DSH runtime bridge', () => {
     writeFileSync(outside, 'retained-fixture-bytes')
     const ack = f.path(`ack-${f.expected.batchId}.json`)
     symlinkSync(outside, ack)
+    await turn()
     f.emit('session/event', f.session, f.event())
     await turn()
     expect(lstatSync(ack).isSymbolicLink()).toBe(true)

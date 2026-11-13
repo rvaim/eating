@@ -249,7 +249,7 @@ describe('generic Host Harness services and management boundary', () => {
     expect(Object.isFrozen(configuration.activePersona)).toBe(true)
     expect(Reflect.set(configuration.prompts[0]!, 'body', 'override')).toBe(false)
     expect(Reflect.set(configuration.activePersona!, 'body', 'override')).toBe(false)
-    expect(Object.keys(services).sort()).toEqual(['getCapabilityMcpConnections', 'getMcpConnection', 'hasPendingMessages', 'memory', 'prepareProactiveScope', 'readAgentActions', 'readOwnerConfiguration', 'readProactiveChannels', 'readProactiveContacts', 'registerSink', 'revokeAgentAccess', 'wake'])
+    expect(Object.keys(services).sort()).toEqual(['deliveryReceiptAccepted', 'extendAgentScope', 'getCapabilityMcpConnections', 'getMcpConnection', 'hasPendingMessages', 'memory', 'prepareProactiveScope', 'readAgentActions', 'readDeliverySettings', 'readOwnerConfiguration', 'readProactiveChannels', 'readProactiveContacts', 'registerSink', 'revokeAgentAccess', 'wake'])
     expect(Object.keys(services.memory!).sort()).toEqual(['append', 'begin', 'end', 'finish', 'flush'])
     expect(Object.isFrozen(services.memory)).toBe(true)
     const updated = context.host.authoring.updatePersona(persona.id, persona.name, '主人新设定', persona.revision)
@@ -601,21 +601,21 @@ describe('real Eating Host → QQ OneBot → SQLite → authenticated MCP', () =
     expect((await http(context.url, '/api/settings')).status).toBe(401)
     const initial = await context.api('/api/settings')
     expect(initial.status).toBe(200)
-    expect(initial.body).toMatchObject({ protocolVersion: 1, revision: 0, values: { storageMode: 'persistent', quietWindowMs: 500, maxWaitMs: 2000 }, queue: { queuedMessages: 0 } })
-    const values = { ...object(initial.body.values), quietWindowMs: 800, maxWaitMs: 2500 }
+    expect(initial.body).toMatchObject({ protocolVersion: 1, revision: 0, values: { storageMode: 'persistent', aggregationWindowMs: 10000, appendWhileBusy: true }, queue: { queuedMessages: 0 } })
+    const values = { ...object(initial.body.values), aggregationWindowMs: 800, appendWhileBusy: true }
     expect((await http(context.url, '/api/settings', { method: 'POST', headers: { Cookie: context.cookie }, body: { expectedRevision: 0, values } })).status).toBe(403)
     const saved = await context.api('/api/settings', { method: 'POST', body: { expectedRevision: 0, values } })
     expect(saved.status).toBe(200)
-    expect(saved.body).toMatchObject({ revision: 1, values: { quietWindowMs: 800, maxWaitMs: 2500 } })
+    expect(saved.body).toMatchObject({ revision: 1, values: { aggregationWindowMs: 800, appendWhileBusy: true } })
     const stale = await context.api('/api/settings', { method: 'POST', body: { expectedRevision: 0, values } })
     expect(stale.status).toBe(409)
     expect(object(stale.body.error).code).toBe('DELIVERY_SETTINGS_CONFLICT')
-    const invalid = await context.api('/api/settings', { method: 'POST', body: { expectedRevision: 1, values: { ...values, maxWaitMs: 1 } } })
+    const invalid = await context.api('/api/settings', { method: 'POST', body: { expectedRevision: 1, values: { ...values, aggregationWindowMs: -1 } } })
     expect(invalid.status).toBe(400)
-    expect((await context.api('/api/settings')).body).toMatchObject({ revision: 1, values: { quietWindowMs: 800, maxWaitMs: 2500 } })
+    expect((await context.api('/api/settings')).body).toMatchObject({ revision: 1, values: { aggregationWindowMs: 800, appendWhileBusy: true } })
     await context.host.close()
     const reopened = await createHost(context.home)
-    expect((await reopened.api('/api/settings')).body).toMatchObject({ revision: 1, values: { quietWindowMs: 800, maxWaitMs: 2500 } })
+    expect((await reopened.api('/api/settings')).body).toMatchObject({ revision: 1, values: { aggregationWindowMs: 800, appendWhileBusy: true } })
   })
 
   it('keeps memory-mode bodies out of SQLite and loses only outstanding RAM deliveries on restart', async () => {
@@ -636,7 +636,7 @@ describe('real Eating Host → QQ OneBot → SQLite → authenticated MCP', () =
   it('reports capacity rejection without storing the rejected body or disabling active QQ reception', async () => {
     const context = await configuredHost()
     const initial = (await context.api('/api/settings')).body
-    expect((await context.api('/api/settings', { method: 'POST', body: { expectedRevision: initial.revision!, values: { ...object(initial.values), maxQueuedMessages: 1, maxBatchMessages: 1 } } })).status).toBe(200)
+    expect((await context.api('/api/settings', { method: 'POST', body: { expectedRevision: initial.revision!, values: { ...object(initial.values), maxQueuedMessages: 1 } } })).status).toBe(200)
     await connectHost(context)
     for (const [message_id, message] of [[62001, 'accepted-to-queue'], [62002, 'rejected-from-queue']] as const) context.fixture.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id, message })
     await vi.waitFor(() => expect(context.host.store.getDeliverySettingsSnapshot().queue.rejected).toBe(1))
@@ -650,7 +650,7 @@ describe('real Eating Host → QQ OneBot → SQLite → authenticated MCP', () =
   it('requires explicit queue clearing and refuses to clear a delivery already in flight', async () => {
     const context = await configuredHost()
     const initial = (await context.api('/api/settings')).body
-    expect((await context.api('/api/settings', { method: 'POST', body: { expectedRevision: initial.revision!, values: { ...object(initial.values), quietWindowMs: 0 } } })).status).toBe(200)
+    expect((await context.api('/api/settings', { method: 'POST', body: { expectedRevision: initial.revision!, values: { ...object(initial.values), aggregationWindowMs: 0 } } })).status).toBe(200)
     await connectHost(context)
     const send = (message_id: number) => context.fixture.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id, message: 'pending-clear-test' })
     send(63001)

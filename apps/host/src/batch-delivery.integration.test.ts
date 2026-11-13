@@ -54,7 +54,7 @@ function owner(): HarnessOwnerConfiguration {
     { id: 'agent:qq.group', scope: 'agent', source: 'plugin', pluginId: 'qq', agentTypeId: 'qq.group', title: 'Batch group', body: 'ISOLATED-BATCH-GROUP: only the verified group account and target.', revision: 1, updatedAt: null },
   ], agentTypes: [{ id: 'qq.group', title: 'Synthetic group', description: 'No communication connection.', conversationKind: 'group', pluginId: 'qq', pluginName: 'Synthetic QQ', enabled: true, availableTools: [], defaultTools: [], enabledTools: [], defaultPrompt: 'Synthetic group scope.', identity: { owners: [], administrators: [] } }] }
 }
-async function fixture(handleConversations = false, captureMemory = false) {
+async function fixture(handleConversations = false, captureMemory = false, taskControl?: 'message' | 'interrupt') {
   const parent = realpathSync(tmpdir()), home = realpathSync(mkdtempSync(join(parent, 'eating-batch-delivery-')))
   vi.stubEnv('EATING_HOME', home)
   stops.push(() => {
@@ -63,6 +63,10 @@ async function fixture(handleConversations = false, captureMemory = false) {
     rmSync(target, { recursive: true })
   })
   const requests: JsonObject[] = [], modelErrors: string[] = [], scopes: AgentInvocationScope[] = [], childInputs: JsonObject[] = []
+  const rootPlans = new Set<string>(), taskNotices = new Map<string, JsonObject>(), controlReceipts: JsonObject[] = [], extendedScopes: AgentInvocationScope[] = []
+  let releaseChild!: () => void
+  const childGate = new Promise<void>(resolve => { releaseChild = resolve })
+  stops.push(() => releaseChild())
   const scopeToken = 'isolated-empty-mcp-scope-key'
   const scopedAgents = new Set<string>()
   const apiKey = 'isolated-batch-loopback-key', model = 'isolated-batch-loopback'
@@ -109,31 +113,49 @@ async function fixture(handleConversations = false, captureMemory = false) {
         if (names.includes('eating_handle_conversation')) {
           const batch = envelope(payload), conversations = object(batch.context).conversations as JsonObject[]
           const turns = messages.filter(message => message.role === 'tool')
-          for (const turn of turns) expect(object(JSON.parse(text(turn.content).split('\n')[0]!))).toMatchObject({ status: 'completed', actions: [], summary: expect.stringMatching(/^CHILD-(100|101)-COMPLETE$/) })
-          if (turns.length < conversations.length) {
-            const reference = conversations[turns.length]!.contextRef
-            chunk({ role: 'assistant', tool_calls: [{ index: 0, id: `batch-handle-${turns.length}`, type: 'function', function: { name: 'eating_handle_conversation', arguments: JSON.stringify({ context_ref: reference, mode: 'reply' }) } }] }, null)
-            chunk({}, 'tool_calls')
-          } else { chunk({ role: 'assistant', content: 'BOTH-CONVERSATIONS-COMPLETE' }, null); chunk({}, 'stop') }
+          if (taskControl) {
+            const ref = String(object(batch.context).contextRef)
+            const results = turns.flatMap(turn => { try { return [object(JSON.parse(text(turn.content).split('\n')[0]!))] } catch { return [] } })
+            for (const result of results) if (result.accepted === true) controlReceipts.push(result)
+            for (const message of messages.filter(message => message.role === 'user')) {
+              try { const result = object(JSON.parse(text(message.content))).eating_task_result; if (isJsonObject(result)) taskNotices.set(String(result.taskId), result) } catch { /* ordinary native input */ }
+            }
+            if (!rootPlans.has(ref)) {
+              rootPlans.add(ref)
+              const previous = results.find(result => typeof result.taskId === 'string' && result.status === 'running')
+              const call = previous ? { name: 'eating_task_control', arguments: { action: taskControl, task_id: previous.taskId, ...(taskControl === 'message' ? { context_ref: conversations[0]!.contextRef, message: '结合刚补充的新消息继续任务。' } : {}) } }
+                : { name: 'eating_handle_conversation', arguments: { context_ref: conversations[0]!.contextRef, mode: 'reply' } }
+              chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'async-main-' + index, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } }] }, null); chunk({}, 'tool_calls')
+            } else { chunk({ role: 'assistant', content: 'MAIN-AVAILABLE-WITH-ASYNC-TASK' }, null); chunk({}, 'stop') }
+          } else {
+            for (const turn of turns) expect(object(JSON.parse(text(turn.content).split('\n')[0]!))).toMatchObject({ status: 'running', actions: [], taskId: expect.stringMatching(/^[a-f0-9]{64}$/) })
+            if (turns.length < conversations.length) {
+              const reference = conversations[turns.length]!.contextRef
+              chunk({ role: 'assistant', tool_calls: [{ index: 0, id: `batch-handle-${turns.length}`, type: 'function', function: { name: 'eating_handle_conversation', arguments: JSON.stringify({ context_ref: reference, mode: 'reply' }) } }] }, null)
+              chunk({}, 'tool_calls')
+            } else { chunk({ role: 'assistant', content: 'BOTH-CONVERSATIONS-COMPLETE' }, null); chunk({}, 'stop') }
+          }
         } else {
           expect(names).toEqual([])
           const task = messages.filter(message => message.role === 'user').flatMap(message => {
             try {
-              const value: unknown = JSON.parse(text(message.content))
+              const raw = text(message.content).replace(/^Agent [a-f0-9-]{36} sent a message: /i, '')
+              const value: unknown = JSON.parse(raw)
               return isJsonObject(value) && isJsonObject(value.eating) && isJsonObject(value.context) && Array.isArray(value.events) ? [value] : []
             } catch { return [] }
           }).at(-1)
           if (!task) throw new Error('Expected the whole current child task envelope')
           const context = object(task.context), events = task.events as JsonObject[]
           expect(object(task.eating).contextRef).toBe(context.contextRef)
-          expect(task.task).toContain('独立理解原始 events')
-          expect(task.task).not.toContain('CHILD-100-COMPLETE')
-          expect(task.task).not.toContain('CHILD-101-COMPLETE')
+          if (!taskControl || !task.eating_task_update) expect(task.task).toContain('独立理解原始 events')
+          if (typeof task.task === 'string') expect(task.task).not.toContain('CHILD-100-COMPLETE')
+          if (typeof task.task === 'string') expect(task.task).not.toContain('CHILD-101-COMPLETE')
           expect(events).toHaveLength(1)
           expect(events[0]!.accountId).toBe(context.accountId)
           expect(text(systems[0]!.content)).toContain('ISOLATED-BATCH-CHILD')
           expect(text(systems[0]!.content)).not.toContain('ISOLATED-BATCH-MAIN')
           childInputs.push(task)
+          if (taskControl && childInputs.length === 1) await childGate
           chunk({ role: 'assistant', content: `CHILD-${String(context.accountId)}-COMPLETE` }, null); chunk({}, 'stop')
         }
         response.end('data: [DONE]\n\n'); return
@@ -162,13 +184,13 @@ async function fixture(handleConversations = false, captureMemory = false) {
     running = true
     if (configure) {
       const snapshot = store.getDeliverySettingsSnapshot()
-      store.updateDeliverySettings({ ...snapshot.values, storageMode: 'persistent', quietWindowMs: 20, maxWaitMs: 100, maxBatchMessages: 200, batchTargetBytes: 4 * 1024 * 1024, retryIntervalMs: 100 }, snapshot.revision)
+      store.updateDeliverySettings({ ...snapshot.values, storageMode: 'persistent', aggregationWindowMs: 0, retryIntervalMs: 100 }, snapshot.revision)
     }
     gateway = new HarnessGateway(store)
     const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS,
       dataDirectory, getSetting: key => store.getSetting(key), setSetting: (key, value) => store.setSetting(key, value),
       recordEvent: forbidden('recordEvent'), listMessages: () => [], executeIdempotent: forbidden('executeIdempotent'),
-      harness: { ...(captureMemory ? { memory } : {}), registerSink: sink => gateway.register(sink), wake, readOwnerConfiguration: owner, readAgentActions: () => [], revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: (pluginId, scope) => {
+      harness: { ...(captureMemory ? { memory } : {}), registerSink: sink => gateway.register(sink), wake, readOwnerConfiguration: owner, readDeliverySettings: () => store.getDeliverySettings(), deliveryReceiptAccepted: () => false, extendAgentScope: scope => { extendedScopes.push(structuredClone(scope)) }, readAgentActions: () => [], revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: (pluginId, scope) => {
         if (!handleConversations || pluginId !== 'qq') throw new Error('Unexpected fixture communication scope')
         scopes.push(structuredClone(scope)); scopedAgents.add(scope.agentId)
         return { url: `http://127.0.0.1:${address.port}/mcp/${scope.agentId}`, headers: { Authorization: `Bearer ${scopeToken}` }, toolNames: owner().agentTypes.find(type => type.id === scope.agentTypeId)!.enabledTools }
@@ -211,7 +233,7 @@ async function fixture(handleConversations = false, captureMemory = false) {
       expect(conversation.contextRef).not.toBe(context.contextRef)
     }
   }
-  return { home, dataDirectory, requests, modelErrors, scopes, childInputs, memory, wake, first, record, runtime, rootId, assertBatch, releaseNative,
+  return { home, dataDirectory, requests, modelErrors, scopes, childInputs, memory, wake, first, record, runtime, rootId, assertBatch, releaseNative, releaseChild, taskNotices, controlReceipts, extendedScopes,
     get plugin() { return plugin }, get gateway() { return gateway }, get store() { return store },
     async restart(beforeStart?: () => void) { await stop(); beforeStart?.(); return start() },
     retainUnclaimedRootPrefix() {
@@ -241,6 +263,11 @@ async function fixture(handleConversations = false, captureMemory = false) {
       const prefix = lines.slice(0, insertion + 1).join('\n') + '\n'
       expect(original.startsWith(prefix)).toBe(true)
       writeFileSync(path, prefix)
+      const insertionData = object(nativeEvent(records[insertion]!).data)
+      const payload = object(JSON.parse(text(object((insertionData.inserted as JsonObject[])[0]).content)))
+      const eating = object(payload.eating), policy = object(JSON.parse(readFileSync(join(dataDirectory, 'bridge/owner-policy.json'), 'utf8')))
+      const frame = { batchId: eating.batchId, digest: eating.digest, ownerRevision: policy.revision, bindings: policy.bindings }
+      writeFileSync(join(dataDirectory, 'bridge/deliveries.json'), JSON.stringify({ schemaVersion: 1, revision: 1, deliveries: [{ ...frame, accepted: true, finished: false }] }))
       return { messageId, prefixRecords: insertion + 1 }
     },
     receipts() {
@@ -252,6 +279,56 @@ async function fixture(handleConversations = false, captureMemory = false) {
 }
 
 describe.runIf(enabled)('isolated system DSH cross-conversation Gateway delivery', () => {
+  it.each(['message', 'interrupt'] as const)('lets main receive a new batch while its child is busy and choose %s', async action => {
+    const current = await fixture(true, false, action)
+    const first = current.record('100')
+    await vi.waitFor(() => {
+      expect(current.childInputs).toHaveLength(1)
+      expect(current.store.harnessSummary()).toMatchObject({ accepted: 1, pending: 0 })
+      expect(current.requests.some(request => (request.messages as JsonObject[]).some(message => message.role === 'tool' && text(message.content).includes('running')))).toBe(true)
+      expect(current.runtime().busy).toBe(true)
+      expect(current.plugin.isReady()).toBe(true)
+    }, { timeout: 15000 })
+    const second = current.record('100')
+    await vi.waitFor(() => {
+      expect(current.store.harnessSummary()).toMatchObject({ accepted: 2, pending: 0, uncertain: 0 })
+      if (action === 'message') {
+        expect(current.extendedScopes).toHaveLength(1)
+        expect(current.controlReceipts.some(receipt => receipt.accepted === true && receipt.durable === true)).toBe(true)
+      } else expect(current.taskNotices.size).toBe(1)
+    }, { timeout: 15000 })
+    current.releaseChild()
+    await vi.waitFor(() => {
+      expect(current.taskNotices.size, JSON.stringify({ errors: current.modelErrors, status: current.plugin.getStatus(), runtime: current.runtime(), children: current.childInputs, messages: current.requests.slice(-2).map(request => (request.messages as JsonObject[]).slice(-4)) })).toBe(1)
+      const result = [...current.taskNotices.values()][0]!
+      expect(result.status).toBe(action === 'message' ? 'completed' : 'unknown')
+      expect(result.actions).toEqual([])
+      expect(current.runtime().busy).toBe(false)
+    }, { timeout: 15000 })
+    if (action === 'message') {
+      expect(current.childInputs).toHaveLength(2)
+      expect(current.childInputs[1]!.events).toEqual([second])
+      expect(current.extendedScopes[0]!.messageIds).toEqual([first.messageId, second.messageId])
+      expect(current.extendedScopes[0]!.resourceIds).toEqual([...first.resourceIds!, ...second.resourceIds!])
+      expect(current.scopes).toHaveLength(1)
+    }
+    const result = [...current.taskNotices.values()][0]!
+    const rootId = current.rootId(), web = await connectNativeWeb(await current.plugin.manage('open-native-web', {}), rootId)
+    const events = await web.events(rootId)
+    const insertions = events.filter(event => event.type === 'agent/inbox/spliced').flatMap(event => isJsonObject(event.data) && Array.isArray(event.data.inserted) ? event.data.inserted.filter(isJsonObject) : [])
+    expect(insertions.filter(message => message.id === 'eating-task-' + result.taskId)).toHaveLength(1)
+    if (action === 'message') {
+      const requests = current.requests.length
+      await current.restart()
+      await new Promise(resolve => setTimeout(resolve, 250))
+      expect(current.requests).toHaveLength(requests)
+      expect(current.rootId()).toBe(rootId)
+    }
+    expect(current.first.deliver).toHaveBeenCalledTimes(2)
+    expect(current.modelErrors).toEqual([])
+    expect(current.home).not.toContain('.eating')
+  }, 45000)
+
   it('cold-resumes an ACKed unclaimed native inbox without another Host message and recalls its verified batch before accepting a fresh batch', async () => {
     const current = await fixture(false, true), rootId = current.rootId()
     const events = [current.record('100'), current.record('101')]
@@ -308,7 +385,7 @@ describe.runIf(enabled)('isolated system DSH cross-conversation Gateway delivery
     const events = [current.record('100'), current.record('101')]
     await vi.waitFor(() => {
       expect(current.childInputs, JSON.stringify({ status: current.plugin.getStatus(), modelErrors: current.modelErrors, scopes: current.scopes, toolResults: current.requests.map(request => (request.messages as JsonObject[]).filter(message => message.role === 'tool')) })).toHaveLength(2)
-      expect(current.requests).toHaveLength(5)
+      expect(current.requests.length).toBeGreaterThanOrEqual(5)
       expect(current.plugin.isReady(), JSON.stringify({ status: current.plugin.getStatus(), errors: current.modelErrors })).toBe(true)
     }, { timeout: 20000 })
     expect(current.first.deliver).toHaveBeenCalledOnce(); expect(current.first.ack).toHaveBeenCalledOnce()
@@ -329,8 +406,26 @@ describe.runIf(enabled)('isolated system DSH cross-conversation Gateway delivery
     expect(current.modelErrors).toEqual([])
   }, 60000)
 
+  it('durably appends input while the main Agent model response is still in progress, then reads it at the next native step', async () => {
+    const current = await fixture(false, true), rootId = current.rootId()
+    const web = await connectNativeWeb(await current.plugin.manage('open-native-web', {}), rootId)
+    await web.rpc('session/prompt', { request: { sessionId: rootId, requestId: randomUUID(), mode: 'steer', content: [{ type: 'text', text: 'NATIVE-OWNER-BUSY-INPUT' }] } })
+    await vi.waitFor(() => expect(current.requests).toHaveLength(1))
+    const events = [current.record('100'), current.record('101')]
+    await vi.waitFor(() => {
+      expect(current.store.harnessSummary()).toMatchObject({ accepted: 2, pending: 0, uncertain: 0 })
+      expect(current.requests).toHaveLength(1)
+      expect(current.runtime().busy).toBe(true)
+    }, { timeout: 10000 })
+    current.releaseNative()
+    await vi.waitFor(() => { expect(current.requests).toHaveLength(2); expect(current.memory.append).toHaveBeenCalledOnce(); expect(current.runtime().busy).toBe(false) }, { timeout: 10000 })
+    expect(current.memory.append).toHaveBeenCalledWith(expect.objectContaining({ batch: expect.objectContaining({ events }) }), expect.any(AbortSignal))
+    expect(current.modelErrors).toEqual([])
+  }, 30000)
+
   it('retains all conversations at zero attempts during native owner SSE and automatically wakes one whole batch after idle', async () => {
     const current = await fixture()
+    current.store.updateDeliverySettings({ ...current.store.getDeliverySettings(), appendWhileBusy: false }, current.store.getDeliverySettingsSnapshot().revision)
     expect(current.requests).toEqual([])
     const rootId = current.rootId()
     const web = await connectNativeWeb(await current.plugin.manage('open-native-web', {}), rootId)

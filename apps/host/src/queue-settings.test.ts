@@ -43,8 +43,6 @@ function record(store: HostStore, key: string, text = key) { return store.record
 function configure(store: HostStore, patch: Partial<DeliverySettings>) {
   const snapshot = store.getDeliverySettingsSnapshot()
   const values = { ...snapshot.values, ...patch }
-  values.maxBatchMessages = Math.min(values.maxBatchMessages, values.maxQueuedMessages)
-  values.batchTargetBytes = Math.min(values.batchTargetBytes, values.maxQueuedBytes)
   return store.updateDeliverySettings(values, snapshot.revision)
 }
 function payloads(test: ReturnType<typeof fixture>): Buffer {
@@ -64,12 +62,12 @@ describe('HostStore queue settings and content retention', () => {
     expect(store.getDeliverySettingsSnapshot()).toMatchObject({ protocolVersion: 1, revision: 0, values: DEFAULT_DELIVERY_SETTINGS,
       queue: { storageMode: 'persistent', queuedMessages: 0, queuedBytes: 0, accepted: 0, rejected: 0, discarded: 0, overCapacity: false } })
     const values = store.getDeliverySettings() as { -readonly [K in keyof DeliverySettings]: DeliverySettings[K] }
-    values.maxWaitMs = 9999
-    expect(store.getDeliverySettings().maxWaitMs).toBe(DEFAULT_DELIVERY_SETTINGS.maxWaitMs)
-    expect(() => store.updateDeliverySettings({ ...DEFAULT_DELIVERY_SETTINGS, maxWaitMs: 1 }, 0)).toThrow(expect.objectContaining({ code: 'INVALID_DELIVERY_SETTINGS' }))
+    values.aggregationWindowMs = 9999
+    expect(store.getDeliverySettings().aggregationWindowMs).toBe(DEFAULT_DELIVERY_SETTINGS.aggregationWindowMs)
+    expect(() => store.updateDeliverySettings({ ...DEFAULT_DELIVERY_SETTINGS, aggregationWindowMs: -1 }, 0)).toThrow(expect.objectContaining({ code: 'INVALID_DELIVERY_SETTINGS' }))
     expect(() => store.updateDeliverySettings(DEFAULT_DELIVERY_SETTINGS, 1)).toThrow(expect.objectContaining({ statusCode: 409 }))
     expect(store.getDeliverySettingsSnapshot().revision).toBe(0)
-    expect(configure(store, { quietWindowMs: 0, maxWaitMs: 1 }).revision).toBe(1)
+    expect(configure(store, { aggregationWindowMs: 0 }).revision).toBe(1)
     expect(() => store.updateDeliverySettings(DEFAULT_DELIVERY_SETTINGS, 0)).toThrow(expect.objectContaining({ code: 'DELIVERY_SETTINGS_CONFLICT', statusCode: 409 }))
   })
 

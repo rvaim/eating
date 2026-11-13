@@ -23,6 +23,7 @@ async function home() {
   return root
 }
 async function owner(host: EatingHost) {
+  host.store.updateDeliverySettings({ ...host.store.getDeliverySettings(), aggregationWindowMs: 0 }, host.store.getDeliverySettingsSnapshot().revision)
   const url = await host.listen(), bootstrap = await fetch(url + '/api/bootstrap'), boot = await bootstrap.json(), cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!
   return async (path: string, body?: object) => {
     const response = await fetch(url + '/api' + path, { method: body ? 'POST' : 'GET', headers: { Cookie: cookie, 'X-Eating-Csrf': boot.csrfToken, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) })
@@ -79,14 +80,14 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('speech through 
           }
           throw new Error('No current conversation')
         }
-        expect(turns.at(-1)!.text).toContain('message_id'); return 'SPEECH-MAIN-DONE'
+        expect(JSON.stringify(turns.at(-1)!.taskResult)).toContain('message_id'); return 'SPEECH-MAIN-DONE'
       }
       const prefix = names.find(name => name.endsWith('__speech_generate'))!.slice(0, -'speech_generate'.length)
       expect(names).toContain('mcp__qq__qq_send_private_message')
       const system = fixtureText(request.messages?.find(message => message.role === 'system')?.content)
       expect(system).toContain('音色由主人保存'); expect(system).toContain('delivery只描述本段临时语气')
       if (!turns.length) return { name: prefix + 'speech_generate', arguments: { text: '今天先休息一下吧。', delivery: '轻柔、平稳', request_id: 'native-speech-generate-001' } }
-      const last = turns.at(-1)!, result = object(JSON.parse(last.text.split('\n')[0]!))
+      const last = turns.at(-1)!, result = (last.taskResult ?? object(JSON.parse(last.text.split('\n')[0]!)))
       if (last.name.endsWith('__speech_generate')) return { name: prefix + 'speech_job_get', arguments: { jobId: result.jobId!, waitMs: 1000 } }
       if (last.name.endsWith('__speech_job_get')) {
         if (result.status !== 'succeeded') return { name: prefix + 'speech_job_get', arguments: { jobId: result.jobId!, waitMs: 1000 } }

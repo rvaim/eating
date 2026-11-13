@@ -1,3 +1,4 @@
+import { fixturePendingTask } from './async-tasks'
 import { createServer } from 'node:http'
 import { isJsonObject } from '@eating/plugin-sdk'
 import type { JsonObject } from '@eating/plugin-sdk'
@@ -87,7 +88,7 @@ export async function startOpenAiFixture(options: {
         if (batch.kind !== 'root') throw new Error('Root model request has no root delivery envelope')
         const previous = plans.get(batch.contextRef)
         if (previous) {
-          if (previous.reply && !JSON.stringify(payload.messages?.slice(batch.messageIndex + 1).filter(message => message.role === 'tool')).includes(`CHILD-SUMMARY:${batch.contextRef}`)) throw new Error('Root continuation is missing its actual child summary tool result')
+          if (previous.reply && !payload.messages?.some(message => message.role === 'tool' && JSON.stringify(message.content).includes('running')) && !JSON.stringify(payload.messages).includes('eating_task_result')) throw new Error('Root continuation is missing its async task handle or result notification')
           text = previous.reply ? `MAIN-SUMMARY:${batch.contextRef}` : text
         } else {
           const reply = options.chooseReply?.(payload, requests.length - 1) ?? null
@@ -133,7 +134,7 @@ export async function startOpenAiFixture(options: {
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => resolve()) })
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Model fixture did not bind a port')
-  return { endpoint: `http://127.0.0.1:${address.port}/v1`, requests, errors, async close(): Promise<void> {
+  return { get settledRequests() { return requests.filter(request => !fixturePendingTask(request)) }, endpoint: `http://127.0.0.1:${address.port}/v1`, requests, errors, async close(): Promise<void> {
     const closed = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
     server.closeAllConnections(); await closed
   } }

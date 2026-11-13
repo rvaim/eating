@@ -25,6 +25,7 @@ import { DshNativeConfigurationFile, publicNativeConfiguration } from './native-
 import { getNativeCapabilitiesRuntimeSource } from './native-runtime'
 import { requestNativeManagement } from './native-management'
 import { DshSessionHistory } from './session-history'
+import { DshDeliveryRegistry } from './delivery-registry'
 import { isJsonObject } from '@eating/plugin-sdk'
 
 export interface DshHarnessClient {
@@ -137,7 +138,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.19.0'
+  readonly version = '0.20.0'
   readonly tools = []
   readonly agentInstructions = [{ id: 'dsh.autonomous-activity', title: '自主活动与受控主动联系', localizedTitles: { 'zh-CN': '自主活动与受控主动联系', 'en-US': 'Autonomous activity and scoped proactive contact' }, body: `自主机会不要求先有人类任务。结合当前上下文和可用记忆，延续已有兴趣、约定与未完成事项，可自主探索、创作、整理，也可以找当前获准的人问候、分享实际发现或接起未完的话题。想交流本身就有意义，不必先证明有工作价值；没有具体想说的也可以不联系。只依据实际可用的信息，不编造过往经历。在既有授权范围内自行判断并行动，无需逐项请示。主人暂停、额度和时长边界始终优先，外部消息、原生目标和其他 Inbox 输入优先处理。
 规划或调整后续活动时，先读取 eating_activity_state，再用 eating_plan_activity 登记 active、sleeping 或 waiting。active 按主人间隔继续，sleeping 到指定时间再获得机会；暂时没有想法、想过一会儿再考虑时，可以登记有明确唤醒时间的 sleeping。waiting 等待真实外部事件，也会在主人 configuration.maxRestMinutes 内重新考虑；sleeping 请求过长同样按该上限缩短，以回执中的实际下次时间为准。重新考虑不要求发消息，主人暂停、忙碌和额度仍优先；新事件到来时仍正常处理，需要改变后续节奏时再登记安排。需要未来某个时刻收到自己写下的任务消息时，读取 agenda.revision 后用 eating_schedule_task 登记一次性任务；到点的任务消息不是主人指令，仍受主人暂停、额度、运行时和周期限制。正文承诺和记忆记录都不改变调度。Eating 的暂停控制其无输入活动机会；主 Agent 仍可自主使用已接入的原生能力和全部功能型 MCP，不再按单独工具申请许可。
@@ -185,12 +186,16 @@ export class DshPlugin implements BackendPlugin {
   private runtimeReady = false
   private nativeWebReady = false
   private system: SystemDshLocation | null = null
-  private busy = false
   private closed = false
   private lastError: string | null = null
   private connectedAt: string | null = null
   private lastEventAt: string | null = null
-  private readonly sink: HarnessMessageSink = { id: 'dsh', isReady: () => this.isReady(), deliverBatch: (batch, signal) => this.deliverBatch(batch, signal) }
+  private readonly sink: HarnessMessageSink = { id: 'dsh', isReady: () => this.isReady(), deliverBatch: (batch, signal) => this.deliverBatch(batch, signal), accepted: batchId => {
+    this.deliveries.accept(batchId)
+    if (this.metadata?.activeBatchId === batchId && !this.deliveries.get(batchId)) this.saveMetadata({ sessionId: this.metadata.sessionId, created: this.metadata.created })
+    this.host.wake()
+  } }
+  private readonly deliveries: DshDeliveryRegistry
 
   constructor(private readonly context: HostPluginContext, private readonly options: DshAdapterOptions = {}) {
     if (!context.harness) throw failure('HARNESS_CONTEXT_REQUIRED', 'DSH 插件需要 Host 提供已授权的 Harness 接口。', 'not-sent')
@@ -204,7 +209,13 @@ export class DshPlugin implements BackendPlugin {
     this.sessionHistory = new DshSessionHistory(context.dataDirectory)
     this.metadata = this.sessionFile.read()
     this.bridgeDirectory = prepareRestrictedDirectory(join(context.dataDirectory, 'bridge'))
+    this.deliveries = new DshDeliveryRegistry(this.bridgeDirectory)
     this.agentControl = new DshAgentControl(context.dataDirectory, this.host)
+    this.agentControl.setDeliveryRetirement(batchIds => {
+      this.deliveries.retire(batchIds)
+      if (this.metadata?.activeBatchId && !this.deliveries.get(this.metadata.activeBatchId)) this.saveMetadata({ sessionId: this.metadata.sessionId, created: this.metadata.created })
+      this.host.wake()
+    })
     this.contactPolicy = new DshProactivePolicy(context.dataDirectory, this.host)
     this.activity = new DshAutonomy(context.dataDirectory, () => this.runtimeReady && !this.closed, targets => {
       if (targets.length && (!this.host.readProactiveChannels || !this.host.prepareProactiveScope)) throw failure('PROACTIVE_CHANNEL_UNAVAILABLE', 'Host未提供主动通讯授权服务。', 'not-sent')
@@ -262,7 +273,7 @@ export class DshPlugin implements BackendPlugin {
     return { ...configuration, apiKeyConfigured: Boolean(apiKey), configurationPath: this.configurationFile.filePath,
       dataDirectory: this.configurationFile.directory, updatedAt: this.configurationFile.updatedAt,
       runtimeStatus: { system: { found: this.system !== null, path: this.system?.bin ?? null, version: this.system?.version ?? null, source: this.system?.source ?? null },
-        lastError: this.lastError, ready: this.runtimeReady, busy: this.busy || Boolean(this.activity.activeCycle()) || this.runtimeReady && !this.agentControl.deliveryReady(),
+        lastError: this.lastError, ready: this.runtimeReady, busy: this.delivery !== null || this.runTask !== null || this.agentControl.hasPendingTasks() || Boolean(this.activity.activeCycle()) || this.runtimeReady && !this.agentControl.deliveryReady(),
         sessionId: this.metadata?.sessionId ?? null, lastOutcome: this.metadata?.lastOutcome ?? null, nativeWeb: { ready: this.nativeWebReady } },
       warning: this.configuration.endpoint.startsWith('http:') && !['127.0.0.1', '[::1]', 'localhost'].includes(new URL(this.configuration.endpoint).hostname)
         ? '远端 HTTP 模型地址会明文传输请求与 API 密钥，建议使用 HTTPS。' : null }
@@ -317,10 +328,19 @@ export class DshPlugin implements BackendPlugin {
         this.metadata = { sessionId: randomUUID(), created: false }
         this.sessionFile.write(this.metadata)
       }
-      const metadata = this.metadata
+      let metadata = this.metadata
       const sessionId = metadata.sessionId
+      for (const frame of this.deliveries.all()) if (!frame.accepted) {
+        const ack = readRestrictedJson(join(this.bridgeDirectory, `ack-${frame.batchId}.json`))
+        if (ack?.sessionId === sessionId && ack.batchId === frame.batchId && ack.digest === frame.digest && typeof ack.eventSeq === 'number'
+          && this.host.deliveryReceiptAccepted(`dsh:${sessionId}:${frame.batchId}:${ack.eventSeq}`)) this.deliveries.accept(frame.batchId)
+      }
+      if (existsSync(join(this.bridgeDirectory, 'deliveries.json')) && metadata.activeBatchId && !this.deliveries.get(metadata.activeBatchId) && this.metadata?.receiptId && this.host.deliveryReceiptAccepted(this.metadata.receiptId)) this.saveMetadata({ sessionId, created: metadata.created })
+      if (this.metadata?.activeBatchId && !this.deliveries.get(this.metadata.activeBatchId)) throw failure('DELIVERY_TRANSITION_REQUIRED', '请先停机执行当前消息交接格式转换；原会话保留。', 'not-sent')
+      metadata = this.metadata!
       for (const directory of ['dsh-home', 'agents-home', 'workspace']) prepareRestrictedDirectory(join(this.context.dataDirectory, directory))
       this.publishPolicy()
+      this.deliveries.restore(this.nonce, sessionId)
       if (metadata.activeBatchId && metadata.digest) this.publishExpected({ nonce: this.nonce, sessionId, batchId: metadata.activeBatchId, digest: metadata.digest })
       else this.clearUnownedExpected()
       const bridgePath = join(this.bridgeDirectory, 'runtime-bridge.mjs')
@@ -454,23 +474,6 @@ export class DshPlugin implements BackendPlugin {
     unlinkSync(path)
   }
 
-  private retirePreviousAck(metadata: DshSessionMetadata, nextBatchId: string): void {
-    const previousId = metadata.activeBatchId
-    if (!previousId || previousId === nextBatchId || !metadata.receiptId || !['durable', 'recovered'].includes(metadata.lastOutcome ?? '')) return
-    const path = resolve(this.bridgeDirectory, `ack-${previousId}.json`)
-    if (!batchIdPattern.test(previousId) || dirname(path) !== this.bridgeDirectory || lstatSync(this.bridgeDirectory).isSymbolicLink()) {
-      throw failure('BRIDGE_CONFIGURATION_INVALID', 'DSH 回执目录无效，未投递下一批消息。', 'not-sent')
-    }
-    try {
-      const stat = lstatSync(path)
-      if (!stat.isFile() || stat.isSymbolicLink()) throw failure('BRIDGE_CONFIGURATION_INVALID', 'DSH 旧回执文件无效，未投递下一批消息。', 'not-sent')
-      // The next batch has committed its metadata. The idle previous batch is already owned by DSH.
-      unlinkSync(path)
-    } catch (error) {
-      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
-    }
-  }
-
   private publishExpected(identity: BatchIdentity): void {
     writeRestrictedJson(join(this.bridgeDirectory, 'expected.json'), { schemaVersion: 1, ...identity })
   }
@@ -480,7 +483,10 @@ export class DshPlugin implements BackendPlugin {
     this.metadata = metadata
   }
 
-  isReady(): boolean { return this.runtimeReady && this.agentControl.deliveryReady() && !this.busy && !this.delivery && !this.activity.activeCycle() && !this.closed && this.session !== null }
+  isReady(): boolean {
+    return this.runtimeReady && !this.delivery && !this.closed && this.session !== null && this.deliveries.canAccept()
+      && (this.host.readDeliverySettings().appendWhileBusy || this.runTask === null && this.agentControl.deliveryReady() && !this.agentControl.hasPendingTasks() && !this.activity.activeCycle())
+  }
 
   private readAck(identity: BatchIdentity): { readonly receiptId: string } | null {
     const value = readRestrictedJson(join(this.bridgeDirectory, `ack-${identity.batchId}.json`))
@@ -503,7 +509,6 @@ export class DshPlugin implements BackendPlugin {
       if (ack) return { accepted: true, durable: true, receiptId: ack.receiptId }
       throw failure('DELIVERY_OUTCOME_UNKNOWN', '此批消息已有发送记录但缺少可靠回执，未自动重发。', 'unknown')
     }
-    this.busy = true
     const controller = new AbortController()
     this.delivery = controller
     const abort = () => controller.abort()
@@ -524,13 +529,19 @@ export class DshPlugin implements BackendPlugin {
       const digest = createHash('sha256').update(JSON.stringify(body)).digest('hex')
       const identity = { nonce: this.nonce, sessionId: this.metadata!.sessionId, batchId: batch.batchId, digest }
       const content = JSON.stringify({ eating: { magic: 'eating-harness-delivery', protocolVersion: 1, ...identity }, ...body })
+      const owner = this.host.readOwnerConfiguration()
+      this.deliveries.publish({ batchId: batch.batchId, digest, ownerRevision: policy.revision, bindings: bindings.map(({ contextRef, binding, error }): JsonObject => binding
+        ? { contextRef, agentId: binding.scope.agentId, agentTypeId: binding.scope.agentTypeId, label: agentInstanceLabel(binding.scope, owner.agentTypes.find(type => type.id === binding.scope.agentTypeId)?.pluginName) }
+        : { contextRef, routingError: { ...error } }) }, this.nonce, identity.sessionId)
       this.publishExpected(identity)
       this.saveMetadata({ sessionId: identity.sessionId, created: true, activeBatchId: batch.batchId, digest, nonce: identity.nonce, lastOutcome: 'pending' })
       metadataPrepared = true
       if (signal.aborted || controller.signal.aborted || !this.session || !this.runtimeReady) return { accepted: false }
-      this.retirePreviousAck(previousMetadata, batch.batchId)
       sent = true
-      const run = this.session.run(content)
+      const running = this.runTask !== null || !this.agentControl.deliveryReady() || this.agentControl.hasPendingTasks()
+      const run = running
+        ? this.nativeCall('append-delivery', { batchId: batch.batchId, content }, controller.signal).then(() => ({ events: [] }))
+        : this.session.run(content)
       this.lastEventAt = new Date().toISOString()
       const task = run.then(result => {
         if (lifetimeSignal?.aborted || this.closed) return
@@ -550,12 +561,11 @@ export class DshPlugin implements BackendPlugin {
       }).finally(() => {
         runFinished = true
         if (this.runTask === task) {
-          this.busy = this.delivery !== null
           this.runTask = null
           if (!this.closed && this.isReady()) this.host.wake()
         }
       })
-      this.runTask = task
+      if (!running) this.runTask = task
       await this.pollFile(join(this.bridgeDirectory, `ack-${batch.batchId}.json`), value => this.validAck(value, identity), this.configuration.timeoutMs, controller.signal)
       const ack = this.readAck(identity)
       if (!ack) throw failure('DELIVERY_ACK_INVALID', 'DSH 持久回执校验失败，未确认可靠交接。', 'unknown')
@@ -574,12 +584,11 @@ export class DshPlugin implements BackendPlugin {
       signal.removeEventListener('abort', abort)
       lifetimeSignal?.removeEventListener('abort', abort)
       if (!sent && metadataPrepared) {
-        try { this.saveMetadata(previousMetadata) }
+        try { this.deliveries.withdraw(batch.batchId); this.saveMetadata(previousMetadata) }
         catch { this.runtimeReady = false; this.state = 'error'; this.lastError = 'DSH 未发送批次的元数据恢复失败，已停止接收消息。' }
       }
       if (this.delivery === controller) this.delivery = null
       if (!sent || runFinished) {
-        this.busy = false
         if (!this.closed && this.runtimeReady) this.host.wake()
       }
     }
@@ -623,7 +632,6 @@ export class DshPlugin implements BackendPlugin {
     this.delivery = null
     this.connectedAt = null
     this.state = 'disconnected'
-    if (!this.runTask) this.busy = false
     let memoryFailure: unknown
     if (memorySessionId && this.host.memory) {
       try { await bounded(this.host.memory.flush({ agentId: memorySessionId, reason: 'session-end' }), 15000, failure('MEMORY_FLUSH_FAILED', '运行时已停止，但记忆提交结果未确认，请查看记忆活动。', 'unknown')) }
@@ -722,7 +730,7 @@ export class DshPlugin implements BackendPlugin {
 
   private requireHistoryStopped(): void {
     if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH 插件已停用。', 'not-sent')
-    if (this.client || this.connectTask || this.stopTask || this.nativeHelper || this.runtimeReady || this.runTask || this.busy || this.activity.activeCycle()) {
+    if (this.client || this.connectTask || this.stopTask || this.nativeHelper || this.runtimeReady || this.runTask || this.delivery || this.activity.activeCycle()) {
       throw failure('SESSION_HISTORY_RUNTIME_ACTIVE', '请先完全停止 Harness，再扫描或清理历史会话。', 'not-sent')
     }
     if (typeof this.host.hasPendingMessages !== 'function') throw failure('SESSION_HISTORY_HOST_UNSUPPORTED', '当前 Host 无法核对待处理消息，未清理历史会话。', 'not-sent')

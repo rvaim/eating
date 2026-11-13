@@ -1,3 +1,4 @@
+import { fixturePendingTask } from '../../../tests/fixtures/async-tasks'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -32,7 +33,7 @@ function batch(request: ModelFixtureRequest) {
   return { ...value, event: object(value.payload.events[0]) }
 }
 const selfId = 100000301, userId = selfId + 1
-const mainTools = ['eating_handle_conversation', 'eating_delegate_task', 'eating_list_agent_types', 'eating_activity_state', 'eating_plan_activity', 'eating_schedule_task', 'eating_cancel_scheduled_task', 'eating_list_contact_targets', 'eating_contact_target'].sort()
+const mainTools = ['eating_handle_conversation', 'eating_delegate_task', 'eating_list_agent_types', 'eating_activity_state', 'eating_plan_activity', 'eating_schedule_task', 'eating_cancel_scheduled_task', 'eating_list_contact_targets', 'eating_contact_target', 'eating_task_control'].sort()
 const requestId = (id: string) => `delegation-recovery-send-${id}`
 
 /** Scripted loopback responses exercise native execution and receipts, not real LLM decision quality. */
@@ -67,12 +68,13 @@ async function startRecoveryModel() {
     }
     if (current.kind === 'root') {
       expect(tools).toEqual(mainTools)
+      if (fixturePendingTask(payload)) { chunk({ role: 'assistant', content: 'Waiting for native child result.' }); chunk({}, 'stop'); response.end('data: [DONE]\n\n'); return }
       if (!turns.length) tool('eating_handle_conversation', { context_ref: current.contextRef, mode: 'reply' })
       else {
         expect(turns).toHaveLength(1)
         expect(turns[0]!.name).toBe('eating_handle_conversation')
-        if (id === '99301') expect(turns[0]!.text).toMatch(/unknown|interrupted|未知|中断/i)
-        else expect(object(JSON.parse(turns[0]!.text))).toMatchObject({ status: 'completed', actions: [{ requestId: requestId(id), outcome: 'succeeded', result: { message_id: 1002 } }] })
+        if (id === '99301') expect(JSON.stringify(turns[0]!.taskResult ?? turns[0]!.text)).toMatch(/unknown|interrupted|未知|中断/i)
+        else expect((turns[0]!.taskResult ?? object(JSON.parse(turns[0]!.text)))).toMatchObject({ status: 'completed', actions: [{ requestId: requestId(id), outcome: 'succeeded', result: { message_id: 1002 } }] })
         completed.push(id)
         chunk({ role: 'assistant', content: `RECOVERY-MAIN-DONE:${id}` }); chunk({}, 'stop')
       }
@@ -82,7 +84,7 @@ async function startRecoveryModel() {
       if (!turns.length) tool('mcp__qq__qq_send_private_message', { user_id: String(userId), message: `RECOVERY-REPLY:${id}`, request_id: requestId(id) })
       else {
         expect(turns).toHaveLength(1)
-        expect(object(JSON.parse(turns[0]!.text))).toEqual({ message_id: id === '99301' ? 1001 : 1002 })
+        expect((turns[0]!.taskResult ?? object(JSON.parse(turns[0]!.text)))).toEqual({ message_id: id === '99301' ? 1001 : 1002 })
         if (id === '99301') {
           // Hang only after the real OneBot success. Cleanup owns and releases this
           // deferred even when the runtime has already cancelled the HTTP stream.
@@ -129,7 +131,8 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('ordinary delega
     const host = new EatingHost({ dataDirectory: home, entries: [qqEntry, entry], port: 0, allowedUiOrigins: [] }); stops.push(() => host.close())
     // Release our fixture before Host disposal, including assertion failure paths.
     stops.push(() => model.release())
-    const url = await host.listen(), bootstrap = await fetch(url + '/api/bootstrap')
+    host.store.updateDeliverySettings({ ...host.store.getDeliverySettings(), aggregationWindowMs: 0 }, host.store.getDeliverySettingsSnapshot().revision)
+  const url = await host.listen(), bootstrap = await fetch(url + '/api/bootstrap')
     const boot = object(await bootstrap.json()), cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!
     const api = async (path: string, input: JsonObject) => {
       const response = await fetch(url + '/api' + path, { method: 'POST', signal: AbortSignal.timeout(20000), headers: { Cookie: cookie, 'X-Eating-Csrf': String(boot.csrfToken), 'Content-Type': 'application/json', Origin: url }, body: JSON.stringify(input) })
@@ -200,8 +203,8 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('ordinary delega
     expect(nextLedger).toContainEqual(expect.objectContaining({ plugin_id: 'qq', state: 'succeeded', result_json: JSON.stringify({ message_id: 1002 }) }))
     expect(sends()).toHaveLength(2)
     expect(sends().map(send => send.params)).toEqual(['99301', '99302'].map(id => ({ user_id: userId, message: `RECOVERY-REPLY:${id}`, auto_escape: true })))
-    expect(model.requests.map(request => `${batch(request).event.messageId}:${batch(request).kind}`)).toEqual(['99301:root', '99301:child', '99301:child', '99301:root', '99302:root', '99302:child', '99302:child', '99302:root'])
-    expect(batch(model.requests[5]!).nativeParentId).toBe(rootId)
+    expect(model.requests.filter(request => !fixturePendingTask(request)).map(request => `${batch(request).event.messageId}:${batch(request).kind}`)).toEqual(['99301:root', '99301:child', '99301:child', '99301:root', '99302:root', '99302:child', '99302:child', '99302:root'])
+    expect(batch(model.requests.filter(request => !fixturePendingTask(request))[5]!).nativeParentId).toBe(rootId)
     expect(scopes).toHaveLength(2)
     for (const scope of scopes) expect(scope).toMatchObject({ agentId: childId, agentTypeId: 'qq.private', accountId: String(selfId), targetId: String(userId), kind: 'private' })
     expect(model.errors).toEqual([])

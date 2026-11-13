@@ -1,3 +1,4 @@
+import { fixturePendingTask, fixtureResolveTaskTurns } from '../../../tests/fixtures/async-tasks'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -76,9 +77,9 @@ function turns(request: ModelFixtureRequest): FixtureToolTurn[] {
       results.push({ ...call, content: message.content, text: fixtureText(message.content) })
     }
   }
-  return results
+  return fixtureResolveTaskTurns(request, results)
 }
-function result(turn: FixtureToolTurn): JsonObject { return object(JSON.parse(turn.text.split('\n')[0]!)) }
+function result(turn: FixtureToolTurn): JsonObject { return turn.taskResult ?? object(JSON.parse(turn.text.split('\n')[0]!)) }
 function system(request: ModelFixtureRequest): string {
   const systems = request.messages?.filter(message => message.role === 'system') ?? []
   expect(systems).toHaveLength(1)
@@ -215,6 +216,7 @@ async function fixture(kind: 'quiet' | 'bubbles' | 'verify') {
   const created = host.authoring.createPersona('小禾', persona)
   host.authoring.setPersonaEnabled(created.persona.id, true, created.snapshot.revision)
   const ownerSystem = composeAgentPrompt(host.authoring.readOwnerConfiguration(), null, {}).systemPrompt
+  host.store.updateDeliverySettings({ ...host.store.getDeliverySettings(), aggregationWindowMs: 0 }, host.store.getDeliverySettingsSnapshot().revision)
   const url = await host.listen(), bootstrap = await fetch(url + '/api/bootstrap')
   const boot = object(await bootstrap.json()), cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!
   const api = async (path: string, input?: JsonObject): Promise<JsonObject> => {
@@ -291,7 +293,7 @@ describe.runIf(enabled)('scripted system DSH conversation policy delivery and re
     f.emit(quietText, 88001)
     await completed(f)
     expectSystemPolicies(f)
-    expect(f.model.requests.map(request => envelope(request).kind)).toEqual(['root', 'child', 'root'])
+    expect(f.model.requests.filter(request => !fixturePendingTask(request)).map(request => envelope(request).kind)).toEqual(['root', 'child', 'root'])
     expect(f.sends()).toEqual([])
     const final = f.model.requests.at(-1)!
     expect(result(turns(final)[0]!)).toMatchObject({ status: 'completed', summary: childDone, actions: [] })
@@ -305,7 +307,7 @@ describe.runIf(enabled)('scripted system DSH conversation policy delivery and re
     f.emit(chatText, 88002)
     await completed(f)
     expectSystemPolicies(f)
-    expect(f.model.requests.map(request => envelope(request).kind)).toEqual(['root', 'child', 'child', 'child', 'root'])
+    expect(f.model.requests.filter(request => !fixturePendingTask(request)).map(request => envelope(request).kind)).toEqual(['root', 'child', 'child', 'child', 'root'])
     const children = f.model.requests.filter(request => envelope(request).kind === 'child')
     const actualCalls = turns(children.at(-1)!)
     expect(actualCalls.map(turn => ({ name: turn.name, arguments: turn.arguments }))).toEqual(bubbles.map((message, index) => ({ name: 'mcp__qq__qq_send_private_message', arguments: { user_id: String(ownerId), message, request_id: requestIds[index] } })))

@@ -28,7 +28,7 @@ async function fixture(start?: Promise<{ id: string }>, autonomous = false) {
   })
   const runDelegation = vi.fn(async () => ({ childId: 'child', status: 'completed', actions: [] }))
   const context = { sessionId: 'root', ctx, releases, initialization, disposed: false, failed: false, control, runDelegation, createHash,
-    autonomyDriver: autonomous ? { agent, flight: { entered: true, cycle: { id: 'autonomous-cycle' } } } : undefined,
+    autonomyDriver: autonomous ? { agent, flight: { entered: true, turn: 1, cycle: { id: 'autonomous-cycle' } } } : undefined,
     record: (value: unknown) => value !== null && typeof value === 'object' && !Array.isArray(value), opaque: (value: unknown) => typeof value === 'string' && value.length > 0 }
   const mount = new Function(...Object.keys(context), getContactRuntimeSource() + '\nreturn mountContacts;')(...Object.values(context)) as (agent: Value) => Promise<string[]>
   await mount(agent)

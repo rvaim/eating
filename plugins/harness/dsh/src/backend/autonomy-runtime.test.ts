@@ -73,7 +73,7 @@ describe('native autonomous driver publication lifecycle', () => {
     try {
       const cycle = { id: 'fixture-budget-cycle', deadline: Date.now() + 1500, budgetLimited }
       const agent = { id: 'root', status: 'idle', session: { id: 'root' }, followup: () => {}, cancel: () => {}, inbox: { nextTurn: [], nextStep: [], remove: () => true }, ctx: { tools: { register: () => {} } } }
-      const context = { process: { env: { EATING_DSH_AUTONOMY: 'true' } }, sessionId: 'root', nonce: 'fixture-runtime', releases, initialization,
+      const context = { process: { env: { EATING_DSH_AUTONOMY: 'true' } }, sessionId: 'root', taskFlights: new Map(), waitForAutonomyTasks: async () => {}, nonce: 'fixture-runtime', releases, initialization,
         ctx: { agents: { get: () => agent }, sessions: { flush: async () => true }, on: () => () => {}, get: () => undefined },
         loadModule: async () => ({ createUserMessage: () => ({ id: 'fixture-budget-message' }) }), record: (value: unknown) => value !== null && typeof value === 'object', opaque: () => true,
         control: async (operation: string, body: unknown) => {
@@ -105,7 +105,7 @@ describe('native autonomous driver publication lifecycle', () => {
       const createUserMessage = vi.fn((message: { content: { type: string; text: string }[]; source: { kind: string; cycleId: string; nonce: string } }) => ({ id: 'fixture-message', ...message }))
       let scheduledTask: unknown
       const context = {
-        process: { env: { EATING_DSH_AUTONOMY: 'true' } }, sessionId: 'root', ctx, releases, initialization, nonce: 'fixture-runtime',
+        process: { env: { EATING_DSH_AUTONOMY: 'true' } }, sessionId: 'root', taskFlights: new Map(), waitForAutonomyTasks: async () => {}, ctx, releases, initialization, nonce: 'fixture-runtime',
         loadModule: async () => ({ createUserMessage }),
         control: async (operation: string, body?: { task?: unknown }) => operation === 'autonomy-snapshot' ? { ready: true, configuration: { enabled: true, targets: [{ id: 'legacy-target' }] }, state: { ownerPaused: false, errorCode: null, active: null, contactLimit: { limit: 6, used: 6, remaining: 0, exhausted: true, windowStartedAt: 1700000000000, resetAt: 1700003600000 } }, contactPolicy: { mode: 'all', entryCount: 1 } }
           : operation === 'autonomy-claim' ? { admitted: true, cycle, activity, limits }
@@ -157,7 +157,7 @@ describe('native autonomous driver publication lifecycle', () => {
       const newAgent = () => ({ id: 'root', followup: () => {}, cancel: () => {}, inbox: { nextTurn: [], nextStep: [], remove: () => false }, ctx: { tools: { register: vi.fn() }, systemPrompt: { section: () => {} } } })
       const initialization = new AbortController()
       const context = {
-        process: { env: { EATING_DSH_AUTONOMY: 'true' } }, sessionId: 'root', ctx, releases, initialization, nonce: 'fixture-runtime',
+        process: { env: { EATING_DSH_AUTONOMY: 'true' } }, sessionId: 'root', taskFlights: new Map(), waitForAutonomyTasks: async () => {}, ctx, releases, initialization, nonce: 'fixture-runtime',
         loadModule: async () => ({ createUserMessage: () => ({ id: 'fixture-message' }) }),
         control: async (operation: string) => { reads.push(operation); return { ready: true, configuration: { enabled: false }, state: { ownerPaused: true, errorCode: null, active: null } } },
         record: (value: unknown) => value !== null && typeof value === 'object', opaque: () => true, runDelegation: () => {}, createHash: () => {},

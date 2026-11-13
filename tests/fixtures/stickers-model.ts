@@ -1,11 +1,13 @@
 import { createServer } from 'node:http'
 import { isJsonObject } from '@eating/plugin-sdk'
 import type { JsonObject } from '@eating/plugin-sdk'
+import { fixturePendingTask, fixtureResolveTaskTurns } from './async-tasks'
 import { readModelFixtureBatch } from './openai'
 import type { ModelFixtureRequest } from './openai'
 
 export type FixtureModelAction = string | { readonly name: string; readonly arguments: JsonObject }
 export interface FixtureToolTurn {
+  readonly taskResult?: JsonObject
   readonly name: string
   readonly arguments: JsonObject
   readonly content: unknown
@@ -38,12 +40,12 @@ export function fixtureToolTurns(request: ModelFixtureRequest): FixtureToolTurn[
       turns.push({ ...call, content: message.content, text: fixtureText(message.content) })
     }
   }
-  return turns
+  return fixtureResolveTaskTurns(request, turns)
 }
 
 /** Only the loopback model protocol is fixed; every emitted call must traverse the real native tool executor. */
 export async function startStickersModel(choose: (request: ModelFixtureRequest) => FixtureModelAction) {
-  const requests: ModelFixtureRequest[] = []
+  const requests: ModelFixtureRequest[] = [], decisions: ModelFixtureRequest[] = []
   const actions: FixtureModelAction[] = []
   const errors: string[] = []
   const apiKey = 'stickers-actual-sdk-local-fixture'
@@ -59,7 +61,9 @@ export async function startStickersModel(choose: (request: ModelFixtureRequest) 
       }
       const payload = JSON.parse(Buffer.concat(chunks).toString('utf8')) as ModelFixtureRequest
       requests.push(payload)
-      const action = choose(payload)
+      const pending = payload.tools?.some(tool => tool.function?.name === 'eating_task_control') && fixturePendingTask(payload)
+      if (!pending) decisions.push(payload)
+      const action = pending ? 'Waiting for the native child task result.' : choose(payload)
       actions.push(action)
       if (typeof action !== 'string' && !payload.tools?.some(tool => tool.function?.name === action.name)) throw new Error(`Fixture attempted a tool absent from the actual request: ${action.name}`)
       const id = `stickers-fixture-${requests.length}`
@@ -77,7 +81,7 @@ export async function startStickersModel(choose: (request: ModelFixtureRequest) 
   await new Promise<void>((accept, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', accept) })
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Model fixture did not bind loopback')
-  return { apiKey, endpoint: `http://127.0.0.1:${address.port}/v1`, requests, actions, errors, async close() {
+  return { apiKey, endpoint: `http://127.0.0.1:${address.port}/v1`, requests, decisions, actions, errors, async close() {
     const closed = new Promise<void>((accept, reject) => server.close(error => error ? reject(error) : accept()))
     server.closeAllConnections(); await closed
   } }

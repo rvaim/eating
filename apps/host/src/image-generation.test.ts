@@ -26,6 +26,7 @@ async function home() {
   return root
 }
 async function ownerApi(host: EatingHost) {
+  host.store.updateDeliverySettings({ ...host.store.getDeliverySettings(), aggregationWindowMs: 0 }, host.store.getDeliverySettingsSnapshot().revision)
   const url = await host.listen(), bootstrap = await fetch(url + '/api/bootstrap'), boot = await bootstrap.json(), cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!
   return async (path: string, body?: object): Promise<JsonObject> => {
     const response = await fetch(url + '/api' + path, { method: body ? 'POST' : 'GET', headers: { Cookie: cookie, 'X-Eating-CSRF': boot.csrfToken, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) })
@@ -158,8 +159,8 @@ describe.skipIf(!process.env.EATING_DSH_TEST_SYSTEM_BIN)('system DSH uses OpenAI
       const batch = readModelFixtureBatch(request)!, turns = fixtureToolTurns(request)
       if (batch.kind === 'root') {
         if (!turns.length) return { name: 'eating_handle_conversation', arguments: { context_ref: batch.contextRef, mode: 'reply' } }
-        expect(turns.at(-1)!.text).toContain('completed')
-        expect(turns.at(-1)!.text).toContain('succeeded')
+        expect(JSON.stringify(turns.at(-1)!.taskResult)).toContain('completed')
+        expect(JSON.stringify(turns.at(-1)!.taskResult)).toContain('succeeded')
         return '已核对图片发送回执。'
       }
       const system = JSON.stringify(request.messages?.filter(message => message.role === 'system'))
@@ -168,9 +169,9 @@ describe.skipIf(!process.env.EATING_DSH_TEST_SYSTEM_BIN)('system DSH uses OpenAI
       expect(JSON.stringify(sendTool)).toContain('QQ_IMAGE_MESSAGE_REQUIRED')
       if (!turns.length) return { name: prefix + 'image_generate', arguments: { prompt: 'IMAGE-FORMAT-CORRECTION-FIXTURE', request_id: 'native-image-generation-once' } }
       const last = turns.at(-1)!
-      if (last.name.endsWith('__image_generate')) return { name: prefix + 'image_job_get', arguments: { jobId: object(JSON.parse(last.text)).jobId!, waitMs: 1000 } }
+      if (last.name.endsWith('__image_generate')) return { name: prefix + 'image_job_get', arguments: { jobId: (last.taskResult ?? object(JSON.parse(last.text))).jobId!, waitMs: 1000 } }
       if (last.name.endsWith('__image_job_get')) {
-        const job = object(JSON.parse(last.text))
+        const job = (last.taskResult ?? object(JSON.parse(last.text)))
         if (job.status !== 'succeeded') return { name: prefix + 'image_job_get', arguments: { jobId: job.jobId!, waitMs: 1000 } }
         return { name: prefix + 'image_get', arguments: { assetId: (job.assetIds as string[])[0]! } }
       }
@@ -198,7 +199,7 @@ describe.skipIf(!process.env.EATING_DSH_TEST_SYSTEM_BIN)('system DSH uses OpenAI
     await api('/plugins/dsh/connect', {})
     onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id: 99902, message: '生成一张图片并发送。' })
     const deadline = Date.now() + 40000
-    while (!(host.harness.getStatus().accepted === 1 && plugin.isReady()) && !model.errors.length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25))
+    while (!(host.harness.getStatus().accepted === 1 && object(plugin.getPublicConfiguration().runtimeStatus).busy === false) && !model.errors.length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25))
     expect(model.errors, model.errors.join('\n')).toEqual([]); expect(plugin.isReady()).toBe(true); expect(host.harness.getStatus().accepted).toBe(1)
     expect(provider.requests).toHaveLength(1)
     const sends = onebot.requests.filter(request => request.action.startsWith('send_'))
@@ -214,12 +215,12 @@ describe.skipIf(!process.env.EATING_DSH_TEST_SYSTEM_BIN)('system DSH uses OpenAI
     const prefix = 'mcp__plugin_image_generation__'
     const model = await startStickersModel((request): FixtureModelAction => {
       const names = (request.tools ?? []).map(tool => tool.function?.name ?? '').sort()
-      expect(names.filter(name => name.startsWith('eating_') || name.startsWith('mcp__'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', ...grants.map(name => prefix + name)].sort())
+      expect(names.filter(name => name.startsWith('eating_') || name.startsWith('mcp__'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_task_control', ...grants.map(name => prefix + name)].sort())
       expect(names.filter(name => !name.startsWith('eating_') && !name.startsWith('mcp__'))).toEqual([])
       expect(names.some(name => name.startsWith('mcp__qq__'))).toBe(false)
       const turns = fixtureToolTurns(request)
       if (!turns.length) return { name: prefix + 'image_generate', arguments: { prompt: 'NATIVE-IMAGES-FIXTURE', request_id: 'native-images-stable-0001' } }
-      const last = turns.at(-1)!, value = object(JSON.parse(last.text.split('\n')[0]!))
+      const last = turns.at(-1)!, value = (last.taskResult ?? object(JSON.parse(last.text.split('\n')[0]!)))
       if (last.name.endsWith('__image_generate')) return { name: prefix + 'image_job_get', arguments: { jobId: value.jobId!, waitMs: 1000 } }
       if (last.name.endsWith('__image_job_get')) {
         if (value.status !== 'succeeded') return { name: prefix + 'image_job_get', arguments: { jobId: value.jobId!, waitMs: 1000 } }
@@ -240,7 +241,7 @@ describe.skipIf(!process.env.EATING_DSH_TEST_SYSTEM_BIN)('system DSH uses OpenAI
     await api('/plugins/dsh/connect', {})
     onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id: 99901, message: '仅生成测试图片并核对结果，不发送到聊天。' })
     const deadline = Date.now() + 30000
-    while (!(host.harness.getStatus().accepted === 1 && plugin.isReady()) && !model.errors.length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25))
+    while (!(host.harness.getStatus().accepted === 1 && object(plugin.getPublicConfiguration().runtimeStatus).busy === false) && !model.errors.length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25))
     expect(model.errors).toEqual([]); expect(plugin.isReady()).toBe(true)
     expect(provider.requests).toHaveLength(1); expect(model.requests.length).toBeGreaterThanOrEqual(4)
     expect(onebot.requests.filter(request => request.action.startsWith('send_'))).toEqual([])

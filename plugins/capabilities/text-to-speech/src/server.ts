@@ -8,7 +8,7 @@ import type { SpeechJob } from './types'
 
 const asJson = (value: unknown) => value as JsonObject
 export class SpeechPlugin implements BackendPlugin {
-  readonly id = 'text-to-speech'; readonly kind = 'capability' as const; readonly name = '语音合成'; readonly version = '0.1.2'
+  readonly id = 'text-to-speech'; readonly kind = 'capability' as const; readonly name = '语音合成'; readonly version = '0.1.3'
   readonly tools = speechTools
   readonly capabilities = this.tools.map(tool => ({ id: tool.name, name: tool.title, description: tool.description, support: 'supported' as const, toolName: tool.name }))
   readonly agentInstructions = [{ id: 'text-to-speech.instructions', title: '语音合成与发送', body: '由会话子Agent结合原话、人格和语境决定是否用语音，先组织要说的短口语文本，再调用speech_generate；音色只由主人保存，delivery是本次临时语气，不改全局设置。默认自然口语，需要时才表达情绪，不每句夸张或撒娇。语音为AI合成，首次使用应向听者明确说明，不冒充真人录音。服务只获得待朗读文本和语气，不获得会话历史或工具。提交可能计费，用稳定request_id防重；speech_job_get确认succeeded后，speech_get取得sendable。QQ发送直接传message:[sendable]，其中type=record、data.file为eating-audio引用，不JSON.stringify或当text发。每次语音独立发送，配文另发；只有真实发送成功回执才称已发送。unknown不自动重新生成或重发；已有音频复用资源引用。最多1000字符／60秒，长内容先由会话Agent按语义精简，不机械截断。朗读文本核对失败则不提供可发送音频。' }]

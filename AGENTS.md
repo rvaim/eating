@@ -1,5 +1,7 @@
 # Eating 开发规则
 
+2026-11-14 消息聚合与主Agent异步协调：**实现与本地验证完成，Git发布及云端部署待本轮执行**。应用0.23.0／SDK4.12.0／DSH0.20.0，固定聚合默认10秒、忙碌追加默认开启，主Agent可查询、给同会话子任务追加消息或中断；不自动转发或重发unknown。多个批次双确认后退休，通讯／图片权限只增量扩展且verify不升级。旧投递设置须停机全量备份后显式转换，保主UUID及全部会话。QQ0.16.2、表情0.3.1、生图0.6.1、记忆0.3.3、语音0.1.3仅随SDK打包字节变化升补丁；无新依赖／锁文件不变。全量1949项通过／11项条件跳过，32项相关浏览器通过，最后有界通知补充81项通过；真实消息／付费调用0。见[ADR-0058](docs/decisions/ADR-0058-固定聚合窗口与主Agent异步协调.md)与[报告](docs/reports/2026-11-14-消息聚合与异步协调部署报告.md)。
+
 2026-11-13 生图请求参数：**实现、提交／push及云端保留数据部署完成**。运行源码`6b326fc`、生图0.6.0，主人可配置请求参数JSON，默认moderation=low，文生图及编辑均实际传递；独立schema1／revision，默认只读不落盘，原配置／历史不迁移。云端451项控制层及147项专项通过，226文件私有备份核对、配置／数据库／会话保持，六插件connected、DSH／nativeWeb ready、异常restart0；公网默认low、双语桌面手机已核验，真实生成0。见[ADR-0057](docs/decisions/ADR-0057-生图请求参数配置.md)与[报告](docs/reports/2026-11-13-生图请求参数配置部署报告.md)。
 
 2026-11-13 历史图片删除：**实现、提交／push及云端保留数据部署完成**。源码`171d93c`由GitHub拉取构建，生图0.5.0支持单张／多选／选择本页删除、确认范围、搜索、有界列表、末页回退及预览前后切换。仅owner入口，revision核对、已提交删除恢复，保留任务幂等。云端451项控制层及127项专项通过，249文件私有备份核对，原37图／53任务、配置、数据库和会话保持；六插件connected、DSH／nativeWeb ready、异常restart0，公网桌面手机及双语通过、真实delete0。见[ADR-0056](docs/decisions/ADR-0056-历史图片选择与删除.md)与[报告](docs/reports/2026-11-13-历史图片删除与列表交互部署报告.md)。
@@ -67,7 +69,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`、`plugins/capabilities/text-to-speech`。
 
-当前源码应用／Host／Web0.22.0，plugin-sdk4.11.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.16.1、DSH0.19.0、表情包0.3.0、生图0.6.0、记忆源码0.3.2、语音text-to-speech0.1.2（本机原记忆安装0.1.1保持）；插件唯一 API4。UI SDK新增必填面板enabled类型，无新增依赖，本轮锁文件零差异；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
+当前源码应用／Host／Web0.23.0，plugin-sdk4.12.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.16.2、DSH0.20.0、表情包0.3.1、生图0.6.1、记忆源码0.3.3、语音text-to-speech0.1.3（本机原记忆安装0.1.1保持）；插件唯一 API4。UI SDK新增必填面板enabled类型，无新增依赖，本轮锁文件零差异；六插件四处version同步，封存产物同版本不可改写。工具resultFormat必填json或content；清单assets必填，所有附加客户端资产参与路径、文件树、大小和哈希校验。后台入口、实际实例和清单的种类必须一致，不缺省猜成 communication。Host按验证后的安装产物加载，插件只导入公开SDK，不引用应用内部或其他插件实现。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 
@@ -95,7 +97,7 @@ Eating 不建立聊天历史库；只保存有界未交接规范化信封。send
 
 DSH主提供会话处理／列类型／明确任务委派、活动状态／安排、联系对象／联系委派工具。普通会话优先eating_handle_conversation，仅{context_ref}；核对真实root／当前批次及digest／owner绑定／callId后，固定中立task＋原始context/events交绑定子，main不预写完整回复或未经核对的能力结论。eating_delegate_task用于明确执行任务或用户明确逐字内容。新Harness仅time默认开启并供主子使用，文件、shell、网页、目标等原生feature默认关闭且可按需配置；main非reserved全局工具、所有Agent功能型native Profile MCP默认自动可用，其他子非MCP仍精确名称／指纹选择。主人可用同名toolAccessOverrides按精确指纹＋类型覆盖默认及toolGrants，可关main、空列表禁用；指纹变化仍限制，不回落开放，reserved／来源／scope不绕过。UI逐项自动／自定义可保存，catalog.automaticAccess说明默认；tools/change更新native.restrict。Host功能MCP默认all，custom来源只按精确类型＋工具，新增项不自动获该例外source。子按真实账号／会话／目标／类型绑定独立原生会话，挂受限通讯及当前有效功能能力。deliverBatch仍唯一交接接口，scope／真实回执／撤权服务必需，不回退主人全权令牌。
 
-同批允许查询→主判断→继续委派同子。内部以公开 `ToolExecutionInput.callId` 防重；不把任意 system／scope／tools 参数交模型，不用任务文本 hash 代替调用 ID。普通入站最多32引用；pending拒并发，unknown只拒原contextRef或原taskId，新context＋新call允许复用同child并重取scope；仅淘汰旧completed／failed，unknown／当前批次不淘汰，满则capacity。启动旧pending转unknown保原nonce；迟到actions／finish须匹配当前pending任务，不能覆盖新任务或撤新权限。详见[ADR-0037](docs/decisions/ADR-0037-未知委派隔离与受控图片发送预算.md)。当前正文在主 turn/end 清理，不能在第一次委派后清掉。
+同批允许查询→主判断→继续委派同子。内部以公开 `ToolExecutionInput.callId` 防重；不把任意 system／scope／tools 参数交模型，不用任务文本 hash 代替调用 ID。普通入站最多32引用；pending拒新委派并发，主Agent可显式用eating_task_control对运行中的同会话追加消息或中断；unknown只拒原contextRef或原taskId，新context＋新call允许复用同child并重取scope；仅淘汰旧completed／failed，unknown／当前批次不淘汰，满则capacity。启动旧pending转unknown保原nonce；迟到actions／finish须匹配当前pending任务，不能覆盖新任务或撤新权限。详见[ADR-0037](docs/decisions/ADR-0037-未知委派隔离与受控图片发送预算.md)。当前正文在主 turn/end 清理，不能在第一次委派后清掉。
 
 QQ保留39项标准JSON工具，另有qq_view_received_image内容扩展，共40项。手动副作用需确认和稳定request_id；子只用当前类型可范围化的已选集合，每次核对账号、目标及消息／图片引用配对，异步查询和下载后复查权限。保存读取不自动给已保存权限补新工具；本次显式部署的必要许可更新使用完整字段＋CAS且保留其他选择。
 

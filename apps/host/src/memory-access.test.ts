@@ -10,13 +10,32 @@ function fixture() {
   const plugins = [qq, plugin]
   const access = new MemoryAccess({ plugins: () => plugins, enabled: id => enabled.has(id) })
   const memory = access.services('harness')
-  const batch: HarnessDeliveryBatch = { protocolVersion: 1, batchId: 'a'.repeat(64), conversationId: 'qq:100:private:200', reason: 'quiet-window', createdAt: '2026-11-01T00:00:00Z', events: [{ protocolVersion: 1, eventId: 'event', pluginId: 'qq', platform: 'qq', instanceId: 'instance', accountId: '100', conversationId: 'qq:100:private:200', senderId: '200', targetId: '200', receivedAt: '2026-11-01T00:00:00Z', source: { trust: 'external', kind: 'private', senderRole: 'owner' }, content: 'User statement', text: 'User statement' }] }
+  const batch: HarnessDeliveryBatch = { protocolVersion: 1, batchId: 'a'.repeat(64), conversationId: 'qq:100:private:200', reason: 'aggregation-window', createdAt: '2026-11-01T00:00:00Z', events: [{ protocolVersion: 1, eventId: 'event', pluginId: 'qq', platform: 'qq', instanceId: 'instance', accountId: '100', conversationId: 'qq:100:private:200', senderId: '200', targetId: '200', receivedAt: '2026-11-01T00:00:00Z', source: { trust: 'external', kind: 'private', senderRole: 'owner' }, content: 'User statement', text: 'User statement' }] }
   const begin = (turnId = 'turn1', value = batch) => memory.begin({ agentId: 'root', agentTypeId: 'main', turnId, batch: value })
   const finish = (turnId = 'turn1') => memory.finish({ agentId: 'root', turnId, assistantText: 'Visible reply', actions: [{ tool: 'send', outcome: 'returned' }], outcome: 'completed' })
   return { access, memory, provider, enabled, plugins, batch, begin, finish }
 }
 
 describe('trusted current-turn memory coordination', () => {
+  it('attributes appended external batches to their actual peers and captures each once without self or cross-peer leakage', async () => {
+    const f = fixture(), first = f.batch.events[0]!
+    await f.begin()
+    const same = { ...f.batch, batchId: 'b'.repeat(64), events: [{ ...first, eventId: 'second', text: 'Second peer statement', messageId: 'second' }] }
+    const other = { ...f.batch, batchId: 'c'.repeat(64), conversationId: 'other', events: [{ ...first, eventId: 'other', senderId: '999', targetId: '999', conversationId: 'other', text: 'Other peer statement', messageId: 'other' }] }
+    await f.memory.append({ agentId: 'root', turnId: 'turn1', batch: same })
+    await f.memory.append({ agentId: 'root', turnId: 'turn1', batch: same })
+    await f.memory.append({ agentId: 'root', turnId: 'turn1', batch: other })
+    expect(f.access.context('harness', 'root')).toBeNull()
+    await f.finish()
+    const captures = vi.mocked(f.provider.capture).mock.calls.map(call => call[0])
+    expect(captures).toHaveLength(2)
+    expect(captures[0]!.messages.map(message => message.text)).toEqual(['User statement', 'Second peer statement'])
+    expect(captures[0]!.context.scope).toMatchObject({ kind: 'private', targetId: '200', owner: true })
+    expect(captures[1]!.context.scope).toMatchObject({ kind: 'private', targetId: '999', owner: false })
+    expect(captures[1]!.messages.map(message => message.text)).toEqual(['Other peer statement'])
+    expect(captures.every(capture => capture.actions.length === 0)).toBe(true)
+  })
+
   it('forwards native lifecycle commit boundaries only to connected enabled providers', async () => {
     const f = fixture()
     await f.memory.flush({ agentId: 'root', reason: 'compaction' })

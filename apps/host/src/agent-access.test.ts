@@ -59,6 +59,22 @@ async function setup() {
 }
 
 describe('Host scoped agent MCP and plugin prompt registry', () => {
+  it.each([false, true])('adds references to a live MCP without rotating its token or changing verify=%s', async readOnly => {
+    const f = await setup(), source = { ...f.scope(), ...(readOnly ? { readOnly: true } : {}) }
+    const lease = await f.client(source)
+    const token = lease.connection.headers.Authorization
+    expect(await lease.mcp.callTool({ name: 'qq_get_message', arguments: { message_id: '43' } })).toMatchObject({ isError: true })
+    f.services.extendAgentScope({ ...source, messageIds: [...source.messageIds, '43'], resourceIds: [...source.resourceIds, 'new-image'] })
+    expect(lease.connection.headers.Authorization).toBe(token)
+    expect(await lease.mcp.callTool({ name: 'qq_get_message', arguments: { message_id: '43' } })).toMatchObject({ isError: false })
+    expect(await lease.mcp.callTool({ name: 'qq_get_message', arguments: { message_id: '42' } })).toMatchObject({ isError: false })
+    for (const patch of [{ targetId: 'other' }, { resourceIds: [] }, ...(readOnly ? [{ readOnly: false }] : [])]) expect(() => f.services.extendAgentScope({ ...source, ...patch })).toThrow()
+    if (readOnly) expect((await lease.mcp.listTools()).tools.some(tool => tool.name === 'qq_send_private_message')).toBe(false)
+    f.services.revokeAgentAccess(source.agentId)
+    await expect(lease.mcp.listTools()).rejects.toThrow()
+    expect(f.onebot.requests.filter(request => request.action.startsWith('send_'))).toEqual([])
+  })
+
   it.each(['scope', 'policy'] as const)('enforces %s verify reads on real MCP calls and restores writes only with a fresh reply lease', async mode => {
     const f = await setup(), binding = f.scope()
     const original = await f.client(binding)

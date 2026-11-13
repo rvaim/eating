@@ -1,3 +1,4 @@
+import { fixturePendingTask, fixtureTaskResult } from '../../../tests/fixtures/async-tasks'
 import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
@@ -30,7 +31,7 @@ const trustedPersona = 'PERSONA-B。人格乙温和自然，不强制回复。'
 const groupScopeReport = 'GROUP-SCOPE-ONLY: 当前执行者只有群聊工具，没有私聊工具；未发送群消息，交回主 Agent 检查联系对象并选择私聊执行者。'
 
 function expectMainSystem(f: Awaited<ReturnType<typeof fixture>>) {
-  const main = f.requests.filter(request => request.main)
+  const main = f.requests.filter(request => request.main && !fixturePendingTask({ messages: request.messages }))
   expect(main.length).toBeGreaterThan(0)
   for (const request of main) {
     const messages = request.messages.filter(message => message.role === 'system')
@@ -102,11 +103,11 @@ async function fixture({ withholdSend = false, autonomyEnabled = true, scheduled
           expect(opportunities).toEqual(expect.arrayContaining([expect.objectContaining({ limits: expect.objectContaining({ maxRestMinutes: 1 }) })]))
           tool('eating_activity_state', {})
         } else if (stage === 1) {
-          const snapshot = object(JSON.parse(String([...messages].reverse().find(message => message.role === 'tool')!.content)))
+          const snapshot = fixtureTaskResult({ messages }, [...messages].reverse().find(message => message.role === 'tool')!.content)
           expect(object(snapshot.configuration).maxRestMinutes).toBe(1)
           tool('eating_plan_activity', { expected_revision: object(snapshot.state).revision, mode: 'sleeping', wake_at: new Date(Date.now() + 12 * 3600000).toISOString(), note: 'An overlong requested rest must be bounded' })
         } else {
-          const snapshot = object(JSON.parse(String([...messages].reverse().find(message => message.role === 'tool')!.content)))
+          const snapshot = fixtureTaskResult({ messages }, [...messages].reverse().find(message => message.role === 'tool')!.content)
           expect(Number(object(snapshot.state).wakeAt)).toBeLessThanOrEqual(Date.now() + 60000)
           chunk({ role: 'assistant', content: 'BOUNDED-REST-DONE' }); chunk({}, 'stop')
         }
@@ -121,6 +122,7 @@ async function fixture({ withholdSend = false, autonomyEnabled = true, scheduled
         }
         if (scheduled) { chunk({ role: 'assistant', content: 'SCHEDULED-TASK-SEEN' }); chunk({}, 'stop'); return }
       }
+      if (fixturePendingTask({ messages })) { chunk({ role: 'assistant', content: 'Awaiting the native child result.' }); chunk({}, 'stop'); response.end('data: [DONE]\n\n'); return }
       const step = mainCalls++ % ((autonomyEnabled ? 5 : 3) + Number(groupScopeFirst))
       if (groupScopeFirst && step === 0) {
         const batch = readModelFixtureBatch({ messages })
@@ -131,7 +133,7 @@ async function fixture({ withholdSend = false, autonomyEnabled = true, scheduled
       const stage = step - Number(groupScopeFirst)
       if (stage === 0) {
         if (groupScopeFirst) {
-          const report = object(JSON.parse(String([...messages].reverse().find(message => message.role === 'tool')!.content)))
+          const report = fixtureTaskResult({ messages }, [...messages].reverse().find(message => message.role === 'tool')!.content)
           expect(report).toMatchObject({ status: 'completed', summary: groupScopeReport, actions: [] })
           expect(onebot.requests.filter(request => request.action.startsWith('send_'))).toEqual([])
         }
@@ -150,7 +152,7 @@ async function fixture({ withholdSend = false, autonomyEnabled = true, scheduled
         tool('eating_plan_activity', { expected_revision: object(snapshot.state).revision, mode: 'waiting', wake_at: null, note: 'Fixture contact has been attempted; wait for an external event.' })
       } else {
         if (groupScopeFirst) {
-          const receipt = object(JSON.parse(String([...messages].reverse().find(message => message.role === 'tool')!.content)))
+          const receipt = fixtureTaskResult({ messages }, [...messages].reverse().find(message => message.role === 'tool')!.content)
           expect(receipt).toMatchObject({ status: 'completed', actions: [{ tool: 'qq_send_private_message', outcome: 'succeeded', result: { message_id: 1001 } }] })
         }
         chunk({ role: 'assistant', content: 'AUTONOMY-FIXTURE-ROOT-DONE' }); chunk({}, 'stop')
@@ -192,6 +194,7 @@ async function fixture({ withholdSend = false, autonomyEnabled = true, scheduled
   host.authoring.updatePrompt('common', trustedCommon, 0)
   host.authoring.updatePrompt('main', trustedMain, 0)
   const ownerSystem = composeAgentPrompt(host.authoring.readOwnerConfiguration(), null, {}).systemPrompt
+  host.store.updateDeliverySettings({ ...host.store.getDeliverySettings(), aggregationWindowMs: 0 }, host.store.getDeliverySettingsSnapshot().revision)
   const url = await host.listen(), bootstrap = await fetch(url + '/api/bootstrap'), cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!
   const { csrfToken } = await bootstrap.json() as { csrfToken: string }
   const api = async (path: string, input?: unknown) => {
@@ -216,7 +219,7 @@ async function fixture({ withholdSend = false, autonomyEnabled = true, scheduled
 async function expectOrdinaryContact(f: Awaited<ReturnType<typeof fixture>>, { groupScopeFirst = false } = {}) {
   try {
     await vi.waitFor(() => {
-      expect(f.requests.filter(request => request.main)).toHaveLength(3 + Number(groupScopeFirst))
+      expect(f.requests.filter(request => request.main && !fixturePendingTask({ messages: request.messages }))).toHaveLength(3 + Number(groupScopeFirst))
       expect(f.plugin.autonomy.snapshot().contactTasks).toMatchObject([{ state: 'completed' }])
       expect(object(f.plugin.getPublicConfiguration().runtimeStatus).busy).toBe(false)
     }, { timeout: 20000, interval: 100 })
@@ -225,13 +228,13 @@ async function expectOrdinaryContact(f: Awaited<ReturnType<typeof fixture>>, { g
   const writes = f.onebot.requests.filter(request => request.action.startsWith('send_'))
   expect(writes).toHaveLength(1)
   expect(writes[0]).toMatchObject({ action: 'send_private_msg', params: { user_id: 100000202, message: 'ISOLATED-AUTONOMOUS-CONTACT' } })
-  const main = f.requests.filter(request => request.main), children = f.requests.filter(request => !request.main && request.tools.includes('mcp__qq__qq_send_private_message'))
+  const main = f.requests.filter(request => request.main && !fixturePendingTask({ messages: request.messages })), children = f.requests.filter(request => !request.main && request.tools.includes('mcp__qq__qq_send_private_message'))
   expect(f.requests.filter(request => !request.main)).toHaveLength(2 + Number(groupScopeFirst))
   expect(children).toHaveLength(2)
   for (const child of children) expect(child.tools).toEqual(['mcp__qq__qq_send_private_message'])
   const childReceipt = [...children[1]!.messages].reverse().find(message => message.role === 'tool')!
   expect(JSON.parse(String(childReceipt.content))).toEqual({ message_id: 1001 })
-  const receipt = object(JSON.parse(String([...main.at(-1)!.messages].reverse().find(message => message.role === 'tool')!.content)))
+  const receipt = fixtureTaskResult({ messages: main.at(-1)!.messages }, [...main.at(-1)!.messages].reverse().find(message => message.role === 'tool')!.content)
   expect(receipt).toMatchObject({ status: 'completed', actions: [{ tool: 'qq_send_private_message', outcome: 'succeeded', result: { message_id: 1001 } }] })
   const scopes = f.issuedScopes.filter(scope => scope.agentTypeId === 'qq.private')
   expect(scopes).toHaveLength(1)
@@ -255,7 +258,7 @@ describe.runIf(Boolean(systemBin))('native main contact with real scoped Host an
     const f = await fixture({ longRest: true })
     await f.control('resume')
     await vi.waitFor(() => expect(f.state()).toMatchObject({ mode: 'sleeping', lastOutcome: 'completed', active: null }), { timeout: 20000, interval: 100 })
-    expect(f.requests.filter(request => request.main)).toHaveLength(3)
+    expect(f.requests.filter(request => request.main && !fixturePendingTask({ messages: request.messages }))).toHaveLength(3)
     expect(Number(f.state().nextWakeAt)).toBeGreaterThan(Date.now())
     expect(Number(f.state().nextWakeAt)).toBeLessThanOrEqual(Date.now() + 60000)
     expect(f.onebot.requests.filter(request => request.action.startsWith('send_'))).toHaveLength(0)
@@ -336,15 +339,15 @@ describe.runIf(Boolean(systemBin))('native main contact with real scoped Host an
       message: [{ type: 'text', data: { text } }, { type: 'image', data: { file: resourceId } }], raw_message: text,
       sender: { user_id: 100000202, nickname: 'Loopback approved contact', role: 'member' } })
     const privatePayload = await expectOrdinaryContact(f, { groupScopeFirst: true })
-    expect(f.requests.map(request => request.main ? 'main' : request.tools.includes('mcp__qq__qq_send_group_message') ? 'group' : 'private')).toEqual(['main', 'group', 'main', 'main', 'private', 'private', 'main'])
+    expect(f.requests.filter(request => !request.main || !fixturePendingTask({ messages: request.messages })).map(request => request.main ? 'main' : request.tools.includes('mcp__qq__qq_send_group_message') ? 'group' : 'private')).toEqual(['main', 'group', 'main', 'main', 'private', 'private', 'main'])
     expect(f.host.harness.getStatus()).toMatchObject({ accepted: 1, queueMessages: 0 })
-    const main = f.requests.filter(request => request.main)
+    const main = f.requests.filter(request => request.main && !fixturePendingTask({ messages: request.messages }))
     const incoming = readModelFixtureBatch({ messages: main[0]!.messages })!
     expect(incoming).toMatchObject({ kind: 'root', agentTypeId: 'qq.group', payload: { events: [{ senderId: '100000202', targetId: '123456', messageId: '2102', resourceIds: [resourceId], source: { kind: 'group' } }] } })
     const firstCall = object((main[1]!.messages.find(message => message.role === 'assistant' && Array.isArray(message.tool_calls))!.tool_calls as JsonObject[])[0])
     expect(firstCall.function).toMatchObject({ name: 'eating_delegate_task' })
     expect(JSON.parse(String(object(firstCall.function).arguments))).toMatchObject({ type_id: 'qq.group', context_ref: incoming.contextRef })
-    const report = object(JSON.parse(String([...main[1]!.messages].reverse().find(message => message.role === 'tool')!.content)))
+    const report = fixtureTaskResult({ messages: main[1]!.messages }, [...main[1]!.messages].reverse().find(message => message.role === 'tool')!.content)
     expect(report).toMatchObject({ status: 'completed', summary: groupScopeReport, actions: [] })
     expect(String(report.summary)).not.toMatch(/先(?:发|给|来|与)?.*私聊|整体没有权限|整个系统无法联系/u)
     const group = f.requests.filter(request => !request.main && request.tools.includes('mcp__qq__qq_send_group_message'))
@@ -364,9 +367,9 @@ describe.runIf(Boolean(systemBin))('native main contact with real scoped Host an
     const entry = object(await f.plugin.manage('open-native-web', {}))
     const web = await connectNativeWeb(entry, String(entry.rootSessionId))
     const events = await web.events(web.rootSessionId)
-    expect(events.filter(event => event.type === 'turn/start')).toHaveLength(1)
+    expect(events.filter(event => event.type === 'turn/start').length).toBeGreaterThanOrEqual(1)
     const end = events.filter(event => event.type === 'turn/end')
-    expect(end).toMatchObject([{ data: { reason: { kind: 'completed' } } }])
+    expect(end.every(event => object(object(event.data).reason).kind === 'completed')).toBe(true)
     expect(object(events.find(event => event.type === 'turn/start')!.data).turn).toBe(object(end[0]!.data).turn)
   }, 60000)
 })

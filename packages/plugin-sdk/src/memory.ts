@@ -55,11 +55,10 @@ export interface MemoryBeginInput {
   readonly autonomous?: boolean
   readonly query?: string
 }
-export interface MemoryAppendInput {
-  readonly agentId: string
-  readonly turnId: string
-  readonly messages: readonly MemoryMessage[]
-}
+export type MemoryAppendInput = { readonly agentId: string; readonly turnId: string } & (
+  { readonly messages: readonly MemoryMessage[]; readonly batch?: never } |
+  { readonly batch: HarnessDeliveryBatch; readonly messages?: never }
+)
 export interface MemoryFinishInput {
   readonly agentId: string
   readonly turnId: string

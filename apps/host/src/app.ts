@@ -165,14 +165,17 @@ export class EatingHost {
     const requireCaller = () => this.requirePlugin(callerId, true)
     return {
       readReceivedAudio: async (scope, reference) => {
-        const caller = requireCaller(), source = this.requirePlugin(scope.pluginId, true), reader = source.readReceivedAudio
+        if (!scope.source) throw new PlatformError('ASSET_ACCESS_DENIED', '入站音频必须绑定原会话调用。', 403, 'not-sent')
+        const caller = requireCaller(), source = this.requirePlugin(scope.source.pluginId, true), reader = source.readReceivedAudio
+        const capabilityActive = this.capabilityAccess.pinService(scope, 'plugin.' + callerId)
         const assertAllowed = () => {
           if (this.closed || requireCaller() !== caller || this.requirePlugin(source.id, true) !== source || source.readReceivedAudio !== reader
-            || source.getStatus().state !== 'connected' || scope.signal?.aborted || !this.capabilityAccess.activeService({ agentId: scope.agentId, agentTypeId: scope.agentTypeId }, 'plugin.' + callerId)) throw new PlatformError('ASSET_ACCESS_DENIED', '入站语音授权已撤销。', 403, 'not-sent')
+            || source.getStatus().state !== 'connected' || scope.signal?.aborted || scope.source?.signal?.aborted || !capabilityActive()) throw new PlatformError('ASSET_ACCESS_DENIED', '入站语音授权已撤销。', 403, 'not-sent')
         }
         assertAllowed()
         if (source.kind !== 'communication' || !reader) throw new PlatformError('RECEIVED_AUDIO_UNAVAILABLE', '来源插件未提供受控入站语音。', 409, 'not-sent')
-        return verifiedReceivedAudio(await reader.call(source, reference, scope), assertAllowed)
+        const sourceScope = { ...scope.source, signal: scope.signal && scope.source.signal ? AbortSignal.any([scope.signal, scope.source.signal]) : scope.signal ?? scope.source.signal }
+        return verifiedReceivedAudio(await reader.call(source, reference, sourceScope), assertAllowed)
       },
       getAudioAsset: async (reference, scope) => {
         const caller = requireCaller(), source = this.requirePlugin(reference.pluginId, true), provider = source.audio

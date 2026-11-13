@@ -61,7 +61,7 @@ export interface PluginAudioProvider {
   getAsset(assetId: string): Promise<PluginAudioAsset>
 }
 export interface PluginResourceServices {
-  readReceivedAudio(scope: AgentInvocationScope, reference: ReceivedAudioReference): Promise<ReceivedAudioLease>
+  readReceivedAudio(scope: CapabilityInvocationScope, reference: ReceivedAudioReference): Promise<ReceivedAudioLease>
   readReceivedImage(scope: AgentInvocationScope, reference: ReceivedImageReference): Promise<ImageResource>
   readAsset(reference: ImageAssetReference, scope?: CapabilityInvocationScope): Promise<ImageResource>
   getAsset(reference: ImageAssetReference, scope?: CapabilityInvocationScope): Promise<ImageAssetLease>

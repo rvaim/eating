@@ -170,6 +170,17 @@ export class CapabilityAccess {
   activeService(scope: CapabilityInvocationScope, sourceId: string): boolean {
     return this.source(sourceId).tools.some(tool => this.activePermission(scope, sourceId, tool.name))
   }
+  /** Pin the actual caller lease so a later grant to the same Agent cannot revive an old resource. */
+  pinService(scope: CapabilityInvocationScope, sourceId: string): () => boolean {
+    const signature = (value: CapabilityInvocationScope) => {
+      const s = value.source
+      return JSON.stringify([value.agentId, value.agentTypeId, value.readOnly, s ? [s.pluginId, s.instanceId, s.accountId, s.conversationId, s.kind, s.targetId, s.messageIds, s.resourceIds, s.readOnly] : null])
+    }
+    const expected = signature(scope)
+    const lease = [...this.leases.values()].find(lease => lease.sourceId === sourceId && !lease.abort.signal.aborted && signature(lease.scope) === expected && (!scope.signal || scope.signal === lease.abort.signal))
+    return () => Boolean(lease && this.leases.get(lease.token) === lease && !lease.abort.signal.aborted && !scope.signal?.aborted && this.options.enabled(lease.harnessId)
+      && this.source(sourceId).tools.some(tool => this.allowed(lease.scope, sourceId, tool.name)))
+  }
   activePermission(scope: CapabilityInvocationScope, sourceId: string, toolName: string): boolean {
     return this.allowed(scope, sourceId, toolName) && [...this.leases.values()].some(lease => !lease.abort.signal.aborted && lease.scope.agentId === scope.agentId && lease.scope.agentTypeId === scope.agentTypeId && lease.sourceId === sourceId && this.options.enabled(lease.harnessId) && this.allowed(lease.scope, sourceId, toolName))
   }

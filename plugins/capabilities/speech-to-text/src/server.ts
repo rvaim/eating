@@ -44,7 +44,7 @@ export class RecognitionPlugin implements BackendPlugin {
     if (this.active) throw failure('ASR_BUSY')
     const authorize = () => { this.assertReady(); if (scope?.signal?.aborted || scope?.source?.signal?.aborted) throw failure('ASR_CANCELLED') }
     authorize()
-    const lease = source.kind === 'received' ? await this.context.resources!.readReceivedAudio(scope!.source!, { messageId: source.messageId, audioId: source.audioId }) : null
+    const lease = source.kind === 'received' ? await this.context.resources!.readReceivedAudio(scope!, { messageId: source.messageId, audioId: source.audioId }) : null
     const checked = checkedInputAudio(upload ?? await lease!.readBytes()); authorize(); lease?.assertCurrent()
     let accepted: NonNullable<RecognitionPlugin['active']> | null = null, receipt: JsonValue
     try { receipt = await this.context.executeIdempotent(this.id, 'asr_transcribe', intent, requestId, async () => {

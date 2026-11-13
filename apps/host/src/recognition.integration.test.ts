@@ -41,13 +41,14 @@ async function setup() {
 describe('ASR over Host resource leases, real MCP transport and OneBot', () => {
   it('reads a scoped converted cache file, transcribes once and revokes its incoming lease with the Agent', async () => {
     const f = await setup()
-    await expect(f.resources.readReceivedAudio(f.source, { messageId: '300', audioId: 'clip.silk' })).rejects.toMatchObject({ code: 'ASSET_ACCESS_DENIED' })
+    await expect(f.resources.readReceivedAudio({ agentId: f.source.agentId, agentTypeId: f.source.agentTypeId, source: f.source }, { messageId: '300', audioId: 'clip.silk' })).rejects.toMatchObject({ code: 'ASSET_ACCESS_DENIED' })
     const client = await f.client(), params = { messageId: '300', audioId: 'clip.silk', request_id: 'host-asr-request-001' }
     const accepted = await client.callTool({ name: 'asr_transcribe', arguments: params }), job = (accepted.structuredContent as { result: JsonObject }).result
     expect(accepted.isError).not.toBe(true); expect(job.jobId).toBeTypeOf('string')
     const result = await client.callTool({ name: 'asr_job_get', arguments: { jobId: job.jobId, waitMs: 2000 } })
     expect((result.structuredContent as { result: unknown }).result).toMatchObject({ status: 'succeeded', text: '上海今天天气怎么样？' }); await client.callTool({ name: 'asr_transcribe', arguments: params }); expect(f.provider.recognition).toHaveLength(1)
-    const lease = await f.resources.readReceivedAudio(f.source, { messageId: '300', audioId: 'clip.silk' }); expect(lease.durationMs).toBe(100)
+    const lease = await f.resources.readReceivedAudio({ agentId: f.source.agentId, agentTypeId: f.source.agentTypeId, source: f.source }, { messageId: '300', audioId: 'clip.silk' }); expect(lease.durationMs).toBe(100)
+    f.services.getCapabilityMcpConnections({ agentId: f.source.agentId, agentTypeId: f.source.agentTypeId, source: { ...f.source, messageIds: ['301'], resourceIds: ['new-clip.silk'] } }); await expect(lease.readBytes()).rejects.toMatchObject({ code: 'ASSET_ACCESS_DENIED' })
     f.services.revokeAgentAccess(f.source.agentId); await expect(lease.readBytes()).rejects.toMatchObject({ code: 'ASSET_ACCESS_DENIED' })
     expect(f.onebot.requests.filter(r => r.action === 'get_record').every(r => r.params.out_format === 'wav')).toBe(true)
   })

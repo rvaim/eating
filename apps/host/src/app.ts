@@ -669,6 +669,7 @@ export class EatingHost {
             this.requireHarnessAccess(id)
             return sink.deliverBatch(batch, signal)
           },
+          accepted: (batchId, receiptId) => sink.accepted?.(batchId, receiptId),
         })
         const registrations = this.sinkRegistrations.get(id) ?? new Set<() => void>()
         this.sinkRegistrations.set(id, registrations)
@@ -693,6 +694,15 @@ export class EatingHost {
         if (this.requirePlugin(pluginId, true).kind !== 'communication') throw new PlatformError('PLUGIN_SCOPE_VIOLATION', 'Harness 仅可取得已启用通讯插件的 MCP 连接。', 403)
         if (!scope || typeof scope !== 'object' || Array.isArray(scope)) throw new PlatformError('AGENT_SCOPE_VIOLATION', '请提供当前代理的完整调用范围。', 403, 'not-sent')
         return this.agentAccess.issue(id, pluginId, scope, this.url, policy)
+      },
+      readDeliverySettings: () => { this.requireHarnessAccess(id); return this.store.getDeliverySettings() },
+      deliveryReceiptAccepted: (receiptId: string) => { this.requireHarnessAccess(id); return this.store.deliveryReceiptAccepted(receiptId) },
+      extendAgentScope: (scope: import('@eating/plugin-sdk').AgentInvocationScope) => {
+        this.requireHarnessAccess(id)
+        this.agentAccess.extendScope(id, scope, true)
+        this.capabilityAccess.extendScope(id, scope, true)
+        this.agentAccess.extendScope(id, scope)
+        this.capabilityAccess.extendScope(id, scope)
       },
       readProactiveChannels: () => { this.requireHarnessAccess(id); return [...this.plugins.values()].filter(plugin => plugin.kind === 'communication' && this.enabled.has(plugin.id)).flatMap(plugin => [...(plugin.proactive?.channels() ?? [])]) },
       prepareProactiveScope: (pluginId: string, request: import('@eating/plugin-sdk').ProactiveScopeRequest) => {

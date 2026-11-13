@@ -23,7 +23,7 @@ interface Options {
 interface Lease {
   readonly harnessId: string
   readonly sourceId: string
-  readonly scope: CapabilityInvocationScope
+  scope: CapabilityInvocationScope
   readonly token: string
   readonly abort: AbortController
 }
@@ -172,12 +172,17 @@ export class CapabilityAccess {
   }
   /** Pin the actual caller lease so a later grant to the same Agent cannot revive an old resource. */
   pinService(scope: CapabilityInvocationScope, sourceId: string): () => boolean {
-    const signature = (value: CapabilityInvocationScope) => {
+    const identity = (value: CapabilityInvocationScope) => {
       const s = value.source
-      return JSON.stringify([value.agentId, value.agentTypeId, value.readOnly, s ? [s.pluginId, s.instanceId, s.accountId, s.conversationId, s.kind, s.targetId, s.messageIds, s.resourceIds, s.readOnly] : null])
+      return JSON.stringify([value.agentId, value.agentTypeId, value.readOnly === true, s ? [s.pluginId, s.instanceId, s.accountId, s.conversationId, s.kind, s.targetId, s.readOnly === true] : null])
     }
-    const expected = signature(scope)
-    const lease = [...this.leases.values()].find(lease => lease.sourceId === sourceId && !lease.abort.signal.aborted && signature(lease.scope) === expected && (!scope.signal || scope.signal === lease.abort.signal))
+    const expected = identity(scope)
+    const lease = [...this.leases.values()].find(lease => {
+      if (lease.sourceId !== sourceId || lease.abort.signal.aborted || identity(lease.scope) !== expected || scope.signal && scope.signal !== lease.abort.signal) return false
+      if (!scope.source || !lease.scope.source) return !scope.source && !lease.scope.source
+      const messages = new Set(lease.scope.source.messageIds), resources = new Set(lease.scope.source.resourceIds)
+      return scope.source.messageIds.every(id => messages.has(id)) && scope.source.resourceIds.every(id => resources.has(id))
+    })
     return () => Boolean(lease && this.leases.get(lease.token) === lease && !lease.abort.signal.aborted && !scope.signal?.aborted && this.options.enabled(lease.harnessId)
       && this.source(sourceId).tools.some(tool => this.allowed(lease.scope, sourceId, tool.name)))
   }
@@ -294,6 +299,16 @@ export class CapabilityAccess {
     this.receipts.set(key, receipts)
   }
   actions(harnessId: string, agentId: string): readonly AgentActionReceipt[] { return [...(this.receipts.get(harnessId + '\0' + agentId)?.values() ?? [])] }
+  extendScope(harnessId: string, scope: import('@eating/plugin-sdk').AgentInvocationScope, validateOnly = false): void {
+    for (const lease of this.leases.values()) {
+      if (lease.harnessId !== harnessId || lease.scope.agentId !== scope.agentId || !lease.scope.source) continue
+      const previous = lease.scope.source
+      if (['agentTypeId', 'pluginId', 'instanceId', 'accountId', 'conversationId', 'kind', 'targetId', 'readOnly'].some(key => previous[key as keyof typeof previous] !== scope[key as keyof typeof scope])
+        || previous.messageIds.some(id => !scope.messageIds.includes(id)) || previous.resourceIds.some(id => !scope.resourceIds.includes(id))) deny()
+    }
+    if (validateOnly) return
+    for (const lease of this.leases.values()) if (lease.harnessId === harnessId && lease.scope.agentId === scope.agentId && lease.scope.source) lease.scope = { ...lease.scope, source: structuredClone(scope) }
+  }
 
   private retire(lease: Lease): void {
     if (this.leases.get(lease.token) !== lease) return

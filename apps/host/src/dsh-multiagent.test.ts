@@ -1,3 +1,4 @@
+import { fixturePendingTask, fixtureTaskNotices } from '../../../tests/fixtures/async-tasks'
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { mkdtemp, realpath, rm, writeFile, mkdir, readFile } from 'node:fs/promises'
@@ -41,7 +42,7 @@ async function isolatedHome() {
 }
 
 async function modelFixture(choose: (request: ModelFixtureRequest, index: number) => { name: string; arguments: object } | string) {
-  const requests: ModelFixtureRequest[] = []
+  const requests: ModelFixtureRequest[] = [], decisions: ModelFixtureRequest[] = []
   const errors: string[] = []
   const server = createServer((request, response) => {
     void (async () => {
@@ -50,7 +51,9 @@ async function modelFixture(choose: (request: ModelFixtureRequest, index: number
       for await (const part of request) { length += part.length; if (length > 1024 * 1024) throw new Error('Fixture input too large'); parts.push(Buffer.from(part)) }
       const payload = JSON.parse(Buffer.concat(parts).toString('utf8')) as ModelFixtureRequest
       requests.push(payload)
-      const reply = choose(payload, requests.length - 1)
+      const pending = payload.tools?.some(tool => tool.function?.name === 'eating_task_control') && fixturePendingTask(payload)
+      if (!pending) decisions.push(payload)
+      const reply = pending ? 'Waiting for actual task result.' : choose(payload, decisions.length - 1)
       response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' })
       const chunk = (delta: object, finish: string | null) => response.write(`data: ${JSON.stringify({ id: `multiagent-${requests.length}`, object: 'chat.completion.chunk', created: 1, model: payload.model, choices: [{ index: 0, delta, finish_reason: finish }], ...(finish ? { usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } } : {}) })}\n\n`)
       if (typeof reply === 'string') { chunk({ role: 'assistant', content: reply }, null); chunk({}, 'stop') }
@@ -61,7 +64,7 @@ async function modelFixture(choose: (request: ModelFixtureRequest, index: number
   await new Promise<void>(accept => server.listen(0, '127.0.0.1', accept))
   cleanups.push(async () => { const closed = new Promise<void>(accept => server.close(() => accept())); server.closeAllConnections(); await closed })
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('No fixture port')
-  return { endpoint: `http://127.0.0.1:${address.port}/v1`, requests, errors }
+  return { endpoint: `http://127.0.0.1:${address.port}/v1`, requests, decisions, errors }
 }
 
 // Direct-import PoCs use the independent npm cache; product cases use only the explicit system launcher.
@@ -192,6 +195,7 @@ export function apply(ctx){
     let plugin!: DshPlugin
     const entry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) { plugin = new DshPlugin(context, { locateSystemDsh: systemDsh }); return plugin } }
     const host = new EatingHost({ dataDirectory: home, entries: [qqEntry, entry], port: 0, allowedUiOrigins: [] }); cleanups.push(() => host.close())
+    host.store.updateDeliverySettings({ ...host.store.getDeliverySettings(), aggregationWindowMs: 0 }, host.store.getDeliverySettingsSnapshot().revision)
     const url = await host.listen()
     const bootstrap = await fetch(url + '/api/bootstrap'), cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!
     const boot: unknown = await bootstrap.json(); if (!isJsonObject(boot)) throw new Error('Invalid bootstrap')
@@ -208,7 +212,7 @@ export function apply(ctx){
     const until = async (test: () => boolean, label: string) => { const end = Date.now() + 15000; while (!test() && Date.now() < end) await new Promise<void>(accept => setTimeout(accept, 20)); if (!test()) throw new Error(label) }
     const emit = (id: number, group = false) => onebot.emitEvent({ post_type: 'message', message_type: group ? 'group' : 'private', self_id: 123456789, user_id: 987654321, ...(group ? { group_id: 123456 } : {}), message_id: id, message: '外部上下文只进入user数据 api_key=production-bridge-fixture-key cookie=fixture-cookie-value' })
     emit(99301)
-    await until(() => host.harness.getStatus().accepted === 1 && plugin.isReady(), 'first production delegation timed out')
+    await until(() => host.harness.getStatus().accepted === 1 && object(plugin.getPublicConfiguration().runtimeStatus).busy === false, 'first production delegation timed out')
     const rootId = String(object(plugin.getPublicConfiguration().runtimeStatus).sessionId)
     let web = await connectNativeWeb(await plugin.manage('open-native-web', {}), rootId)
     const firstList = await web.listSessions()
@@ -224,13 +228,13 @@ export function apply(ctx){
     host.authoring.setPersonaEnabled(persona.persona.id, true, persona.snapshot.revision)
     await api('/plugins/qq/manage', { operation: 'save-agent-policy', input: { expectedRevision: qqConfiguration.policyRevision!, owners: [], administrators: [], agentTools: { ...qqConfiguration.agentTools, 'qq.private': ['qq_send_private_message'] } } })
     emit(99302)
-    await until(() => host.harness.getStatus().accepted === 2 && plugin.isReady(), 'child cold continuation timed out')
+    await until(() => host.harness.getStatus().accepted === 2 && object(plugin.getPublicConfiguration().runtimeStatus).busy === false, 'child cold continuation timed out')
     const secondList = await web.listSessions()
     expect(secondList).toHaveLength(2)
     expect(secondList.map(row => row.sessionId).sort()).toEqual(firstList.map(row => row.sessionId).sort())
     expect(object((await readTestAgentBindings(home))[0]!.scope).agentId).toBe(childId)
     expect(onebot.requests.filter(request => request.action === 'send_private_msg')).toHaveLength(2)
-    const privateRequests = model.requests.filter(request => request.tools?.some(tool => tool.function?.name === 'mcp__qq__qq_send_private_message'))
+    const privateRequests = model.decisions.filter(request => request.tools?.some(tool => tool.function?.name === 'mcp__qq__qq_send_private_message'))
     expect(privateRequests.at(-1)?.tools?.map(tool => tool.function?.name)).toEqual(['mcp__qq__qq_send_private_message'])
     const latestSystem = JSON.stringify(privateRequests.at(-1)?.messages?.filter(message => message.role === 'system'))
     expect(latestSystem).toContain('COMMON-UPDATED-ON-TASK-BOUNDARY')
@@ -248,7 +252,7 @@ export function apply(ctx){
     const descriptor = content.find(event => event.type === 'subagent/descriptor')
     expect(descriptor?.data).toMatchObject({ mode: 'continuable', label: 'QQ-' + accountId + '-私聊-' + String(scope.targetId) })
     // Official Web keeps original user content; reading does not invoke the model or QQ actions.
-    expect(model.requests).toHaveLength(8)
+    expect(model.decisions).toHaveLength(8)
     expect(onebot.requests.filter(request => request.action === 'send_private_msg')).toHaveLength(2)
     await plugin.disconnect()
     await expect(plugin.manage('open-native-web', {})).rejects.toMatchObject({ code: 'NATIVE_WEB_NOT_READY' })
@@ -258,10 +262,10 @@ export function apply(ctx){
     expect((await web.listSessions()).map(row => row.sessionId).sort()).toEqual(firstList.map(row => row.sessionId).sort())
     expect(JSON.stringify(await web.events(childId, rootId))).toContain('外部上下文只进入user数据')
     emit(99303, true)
-    await until(() => host.harness.getStatus().accepted === 3 && plugin.isReady(), 'group production delegation timed out')
+    await until(() => host.harness.getStatus().accepted === 3 && object(plugin.getPublicConfiguration().runtimeStatus).busy === false, 'group production delegation timed out')
     expect(onebot.requests.filter(request => request.action === 'send_group_msg')).toHaveLength(1)
     expect(model.errors).toEqual([])
-    const requests = model.requests
+    const requests = model.decisions
     expect(requests).toHaveLength(12)
     for (const request of requests) {
       const batch = readModelFixtureBatch(request)
@@ -275,9 +279,9 @@ export function apply(ctx){
       expect(tools.filter(name => !name?.startsWith('eating_') && !name?.startsWith('mcp__'))).toEqual([])
       expect(tools.some(name => name?.startsWith('mcp__qq__'))).toBe(false)
     }
-    expect(rootRequests.every(request => request.tools?.map(tool => tool.function?.name).filter(name => name?.startsWith('eating_')).sort().join(',') === ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task'].join(','))).toBe(true)
+    expect(rootRequests.every(request => request.tools?.map(tool => tool.function?.name).filter(name => name?.startsWith('eating_')).sort().join(',') === ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_task_control'].join(','))).toBe(true)
     expect(requests.filter(request => request.tools?.some(tool => tool.function?.name === 'mcp__qq__qq_send_private_message')).every(request => !request.tools?.some(tool => tool.function?.name === 'mcp__qq__qq_send_group_message'))).toBe(true)
-    expect(JSON.stringify(rootRequests.flatMap(request => request.messages?.filter(message => message.role === 'tool') ?? []))).toContain('succeeded')
+    expect(JSON.stringify(rootRequests.flatMap(request => [...fixtureTaskNotices(request).values()]))).toContain('succeeded')
   }, 90000)
 
   it.runIf(Boolean(systemDshBin))('lets the main Agent query then send through two native calls in one verified batch using the same child', async () => {
@@ -295,19 +299,20 @@ export function apply(ctx){
       if (index === 1) return { name: 'mcp__qq__qq_get_stranger_info', arguments: { user_id: '987654321' } }
       if (index === 2) return 'QUERY-SUMMARY：已查询当前私聊对象资料，下一步交主Agent决定。'
       if (index === 3) {
-        const previous: unknown = JSON.parse(String(request.messages?.find(message => message.role === 'tool' && String(message.content).includes('QUERY-SUMMARY'))?.content))
+        const previous: unknown = [...fixtureTaskNotices(request).values()].find(result => String(result.summary).includes('QUERY-SUMMARY'))
         if (!isJsonObject(previous) || previous.status !== 'completed' || !Array.isArray(previous.actions) || previous.actions.length) throw new Error('Main Agent did not receive the completed query result before deciding to send')
         return { name: 'eating_delegate_task', arguments: { type_id: 'qq.private', context_ref: contextRef, task: '根据刚才查询的资料，向同一对象发送一次确认。' } }
       }
       if (index === 4) return { name: 'mcp__qq__qq_send_private_message', arguments: { user_id: '987654321', message: '同批分阶段委派确认', request_id: 'same-batch-stage-send-0001' } }
       if (index === 5) return 'SEND-SUMMARY：发送已获得真实QQ工具回执。'
-      const sent: unknown = JSON.parse(String(request.messages?.find(message => message.role === 'tool' && String(message.content).includes('SEND-SUMMARY'))?.content))
+      const sent: unknown = [...fixtureTaskNotices(request).values()].find(result => String(result.summary).includes('SEND-SUMMARY'))
       if (!isJsonObject(sent) || sent.status !== 'completed' || !Array.isArray(sent.actions) || sent.actions.length !== 1 || !isJsonObject(sent.actions[0]) || sent.actions[0].outcome !== 'succeeded') throw new Error('Main Agent did not receive the actual successful Host send receipt')
       return 'MAIN-FINAL：已核对查询和发送的分阶段结果。'
     })
     let plugin!: DshPlugin
     const entry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) { plugin = new DshPlugin(context, { locateSystemDsh: systemDsh }); return plugin } }
     const host = new EatingHost({ dataDirectory: home, entries: [qqEntry, entry], port: 0, allowedUiOrigins: [] }); cleanups.push(() => host.close())
+    host.store.updateDeliverySettings({ ...host.store.getDeliverySettings(), aggregationWindowMs: 0 }, host.store.getDeliverySettingsSnapshot().revision)
     const url = await host.listen(), bootstrap = await fetch(url + '/api/bootstrap'), cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!
     const boot: unknown = await bootstrap.json(); if (!isJsonObject(boot)) throw new Error('Invalid bootstrap')
     const api = async (path: string, body: JsonObject) => {
@@ -320,24 +325,24 @@ export function apply(ctx){
     await api('/plugins/dsh/connect', {})
     onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id: 99401, message: '请先查询再由主代理决定是否发送。' })
     const deadline = Date.now() + 20000
-    while (Date.now() < deadline && !(host.harness.getStatus().accepted === 1 && plugin.isReady() && model.requests.length >= 7)) await new Promise<void>(accept => setTimeout(accept, 20))
+    while (Date.now() < deadline && !(host.harness.getStatus().accepted === 1 && object(plugin.getPublicConfiguration().runtimeStatus).busy === false && model.decisions.length >= 7)) await new Promise<void>(accept => setTimeout(accept, 20))
     expect(plugin.getStatus().lastError).toBeNull()
-    expect(model.requests).toHaveLength(7)
+    expect(model.decisions).toHaveLength(7)
     expect(model.errors).toEqual([])
     expect(plugin.isReady()).toBe(true)
-    const names = model.requests.map(request => request.tools?.map(tool => tool.function?.name) ?? [])
-    expect(names[0]?.filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task'])
+    const names = model.decisions.map(request => request.tools?.map(tool => tool.function?.name) ?? [])
+    expect(names[0]?.filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_task_control'])
     expect(names[0]?.filter(name => !name?.startsWith('eating_') && !name?.startsWith('mcp__'))).toEqual([])
     expect(names[0]?.some(name => name?.startsWith('mcp__qq__'))).toBe(false)
     expect(names[3]).toEqual(names[0])
     expect(names[6]).toEqual(names[0])
     expect(names[1]).toContain('mcp__qq__qq_get_stranger_info')
     expect(names[4]).toContain('mcp__qq__qq_send_private_message')
-    expect(JSON.stringify(model.requests[2]?.messages)).toContain('夹具陌生人')
-    const firstParentTools = model.requests[3]!.messages!.filter(message => message.role === 'tool')
-    const finalParentTools = model.requests[6]!.messages!.filter(message => message.role === 'tool')
-    const firstResult = JSON.parse(String(firstParentTools.find(message => String(message.content).includes('QUERY-SUMMARY'))?.content)) as Record<string, unknown>
-    const secondResult = JSON.parse(String(finalParentTools.find(message => String(message.content).includes('SEND-SUMMARY'))?.content)) as Record<string, unknown>
+    expect(JSON.stringify(model.decisions[2]?.messages)).toContain('夹具陌生人')
+    const firstParentTools = [...fixtureTaskNotices(model.decisions[3]!).values()]
+    const finalParentTools = [...fixtureTaskNotices(model.decisions[6]!).values()]
+    const firstResult = firstParentTools.find(result => String(result.summary).includes('QUERY-SUMMARY'))! as Record<string, unknown>
+    const secondResult = finalParentTools.find(result => String(result.summary).includes('SEND-SUMMARY'))! as Record<string, unknown>
     expect(firstResult.status).toBe('completed')
     expect(firstResult.actions).toEqual([])
     expect(secondResult.status).toBe('completed')

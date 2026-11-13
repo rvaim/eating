@@ -16,8 +16,8 @@ function fixture(unavailable = false) {
   })
   const bindings = conversations.map((conversation, index) => unavailable && index === 100 ? { contextRef: conversation.contextRef, routingError } : { contextRef: conversation.contextRef, agentId: index === 0 ? childId : randomUUID(), agentTypeId: 'qq.private', label: `Child ${index}` })
   const policy = { contextRef: batchId, bindings, systemPrompt: 'OWNER', agentTypes: [{ id: 'qq.private', title: 'Private', enabled: true }] }
-  const payload = { eating: { digest: 'b'.repeat(64) }, context: { contextRef: batchId, conversations }, events: conversations.map(conversation => ({ ...conversation, source: { trust: 'external', kind: 'private' }, text: `message ${conversation.targetId}` })) }
-  const expected = { batchId, digest: payload.eating.digest }
+  const payload = { eating: { batchId, digest: 'b'.repeat(64) }, context: { contextRef: batchId, ownerRevision: 1, conversations }, events: conversations.map(conversation => ({ ...conversation, source: { trust: 'external', kind: 'private' }, text: `message ${conversation.targetId}` })) }
+  const expected = { batchId, ownerRevision: 1, bindings, digest: payload.eating.digest }
   const resident = new Map<string, unknown>()
   const main = { id: sessionId, session: { id: sessionId } }
   resident.set(sessionId, main)
@@ -56,13 +56,13 @@ function fixture(unavailable = false) {
   const record = (value: unknown) => value !== null && typeof value === 'object' && !Array.isArray(value)
   const opaque = (value: unknown) => typeof value === 'string' && value.length > 0
   const bridgeError = (code: string) => Object.assign(new Error(code), { code })
-  const dependencies = { ctx, releases: [], sessionId, nonce: 'fixture-nonce', isAbsolute, opaque, record, bridgeError, createHash, initialization: new AbortController(), disposed: false, failed: false, HEX: /^[a-f0-9]{64}$/, readExpected: () => expected, readValidatedOwnerPolicy: () => policy, identifyCurrentDelivery: () => true }
+  const dependencies = { ctx, releases: [], sessionId, nonce: 'fixture-nonce', isAbsolute, opaque, record, bridgeError, createHash, initialization: new AbortController(), disposed: false, failed: false, HEX: /^[a-f0-9]{64}$/, readJson: () => undefined, atomicJson: vi.fn(), recoveredTaskNotices: new Set(), acknowledgedBatches: new Set(), restoredDeliveries: new Map(), fail: vi.fn(), failureCode: () => 'DURABILITY_FAILED', readExpected: () => expected, readValidatedOwnerPolicy: () => policy, identifyCurrentDelivery: () => true }
   const instantiate = new Function('dependencies', 'const {' + Object.keys(dependencies).join(',') + '} = dependencies;\n' + getRuntimeAgentSource() + '\nreturn { acceptContext, handleConversation, delegate, runDelegation, mainSystemPrompt };')
   const runtime = instantiate(dependencies) as {
     acceptContext(message: unknown, expected: unknown): void
     handleConversation(args: unknown, exec: unknown): Promise<unknown>
     delegate(args: unknown, exec: unknown): Promise<unknown>
-    runDelegation(context: unknown, typeId: string, task: string, taskId: string, exec: unknown, configuration: unknown): Promise<unknown>
+    runDelegation(context: unknown, typeId: string, task: string, taskId: string, exec: unknown, configuration: unknown, coordination?: unknown): Promise<unknown>
     mainSystemPrompt(): string
   }
   runtime.acceptContext({ content: [{ text: JSON.stringify(payload) }] }, expected)
@@ -82,7 +82,8 @@ describe('runtime per-conversation routing and child serialization', () => {
     const result = f.runtime.handleConversation({ context_ref: f.conversations[0]!.contextRef, mode: 'reply' }, f.exec('valid'))
     await vi.waitFor(() => expect(f.ctx.subagents.startActivation).toHaveBeenCalledOnce())
     f.deferred.resolve(f.completed)
-    await expect(result).resolves.toMatchObject({ status: 'completed' })
+    await expect(result).resolves.toMatchObject({ status: 'running' })
+    await vi.waitFor(() => expect(f.requests).toContainEqual(expect.objectContaining({ operation: 'finish-task', body: expect.objectContaining({ status: 'completed' }) })))
   })
 
   it.each(['source', 'missing-events', 'routing-error', 'error-binding'] as const)('rejects mismatched %s even for unavailable conversations', mode => {
@@ -99,11 +100,12 @@ describe('runtime per-conversation routing and child serialization', () => {
     const first = f.runtime.handleConversation(args, f.exec('first'))
     await vi.waitFor(() => expect(f.ctx.subagents.startActivation).toHaveBeenCalledOnce())
     await expect(f.runtime.handleConversation(args, f.exec('parallel'))).rejects.toMatchObject({ code: 'AGENT_TASK_PENDING', outcome: 'not-sent' })
-    expect(f.requests.filter(request => request.operation === 'prepare-task')).toHaveLength(2)
+    expect(f.requests.filter(request => request.operation === 'prepare-task')).toHaveLength(1)
     expect(f.requests.filter(request => request.operation === 'finish-task')).toHaveLength(0)
     expect(f.ctx.subagents.drainChildren).not.toHaveBeenCalled(); expect(f.activation.dispose).not.toHaveBeenCalled()
     f.deferred.resolve(f.completed)
-    await expect(first).resolves.toMatchObject({ status: 'completed' })
+    await expect(first).resolves.toMatchObject({ status: 'running' })
+    await vi.waitFor(() => expect(f.requests).toContainEqual(expect.objectContaining({ operation: 'finish-task', body: expect.objectContaining({ status: 'completed' }) })))
     expect(f.requests.at(-1)).toMatchObject({ operation: 'finish-task', body: { status: 'completed' } })
   })
 
@@ -112,9 +114,10 @@ describe('runtime per-conversation routing and child serialization', () => {
     const first = f.runtime.handleConversation(args, f.exec('first'))
     await vi.waitFor(() => expect(f.ctx.subagents.startActivation).toHaveBeenCalledOnce())
     const context = { contextRef: 'c'.repeat(64), binding: { agentId: f.childId }, payload: { context: {}, events: [] } }
-    await expect(f.runtime.runDelegation(context, 'qq.private', 'contact', 'd'.repeat(64), f.exec('contact'), f.configuration)).rejects.toMatchObject({ code: 'AGENT_TASK_PENDING', outcome: 'not-sent' })
+    await expect(f.runtime.runDelegation(context, 'qq.private', 'contact', 'd'.repeat(64), f.exec('contact'), f.configuration, { mode: 'reply', context_notes: '' })).rejects.toMatchObject({ code: 'AGENT_TASK_PENDING', outcome: 'not-sent' })
     expect(f.ctx.subagents.drainChildren).not.toHaveBeenCalled(); expect(f.activation.dispose).not.toHaveBeenCalled()
     f.deferred.resolve(f.completed)
-    await expect(first).resolves.toMatchObject({ status: 'completed' })
+    await expect(first).resolves.toMatchObject({ status: 'running' })
+    await vi.waitFor(() => expect(f.requests).toContainEqual(expect.objectContaining({ operation: 'finish-task', body: expect.objectContaining({ status: 'completed' }) })))
   })
 })

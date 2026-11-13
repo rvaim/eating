@@ -460,6 +460,9 @@ export class HostStore {
     this.memoryQueue = nextMemory
     if (this.deliverySettings.storageMode === 'persistent') this.reclaimPayloadSpace()
   }
+  deliveryReceiptAccepted(receiptId: string): boolean {
+    return typeof receiptId === 'string' && Boolean(this.db.prepare("SELECT 1 FROM event_dedup WHERE disposition='accepted' AND receipt_hash=? LIMIT 1").get(createHash('sha256').update(receiptId).digest('hex')))
+  }
 
   clearDeliveryQueue(): DeliverySettingsSnapshot {
     const rows = this.currentRows()

@@ -85,10 +85,8 @@ export interface DeliverySettings {
   readonly maxQueuedMessages: number
   readonly maxQueuedBytes: number
   readonly overflowPolicy: 'reject-new' | 'drop-oldest'
-  readonly quietWindowMs: number
-  readonly maxWaitMs: number
-  readonly maxBatchMessages: number
-  readonly batchTargetBytes: number
+  readonly aggregationWindowMs: number
+  readonly appendWhileBusy: boolean
   readonly deliveryTimeoutMs: number
   readonly retryIntervalMs: number
   readonly maxDeliveryAttempts: number
@@ -96,8 +94,7 @@ export interface DeliverySettings {
 
 export const DEFAULT_DELIVERY_SETTINGS: DeliverySettings = Object.freeze({
   storageMode: 'persistent', maxQueuedMessages: 1000, maxQueuedBytes: 10 * 1024 * 1024,
-  overflowPolicy: 'reject-new', quietWindowMs: 500, maxWaitMs: 2000,
-  maxBatchMessages: 10, batchTargetBytes: 32 * 1024, deliveryTimeoutMs: 15000,
+  overflowPolicy: 'reject-new', aggregationWindowMs: 10000, appendWhileBusy: true, deliveryTimeoutMs: 15000,
   retryIntervalMs: 10000, maxDeliveryAttempts: 5,
 })
 
@@ -128,7 +125,7 @@ export interface HarnessDeliveryBatch {
   readonly batchId: string
   readonly conversationId: string | null
   readonly createdAt: string
-  readonly reason: 'quiet-window' | 'max-wait' | 'max-messages' | 'target-bytes'
+  readonly reason: 'aggregation-window'
   readonly events: readonly HarnessEvent[]
 }
 
@@ -143,6 +140,7 @@ export interface HarnessMessageSink {
   readonly id: string
   isReady?(): boolean
   deliverBatch(batch: HarnessDeliveryBatch, signal: AbortSignal): Promise<HarnessDeliveryReceipt>
+  accepted?(batchId: string, receiptId: string): void
 }
 
 export function validateDeliverySettings(input: unknown): DeliverySettings {
@@ -152,18 +150,15 @@ export function validateDeliverySettings(input: unknown): DeliverySettings {
   if (!['persistent', 'memory'].includes(String(input.storageMode)) || !['reject-new', 'drop-oldest'].includes(String(input.overflowPolicy))) throw new PlatformError('INVALID_DELIVERY_SETTINGS', '队列存储方式或溢出处理无效。')
   const ranges: Readonly<Record<string, readonly [number, number]>> = {
     maxQueuedMessages: [1, 100000], maxQueuedBytes: [1024, 100 * 1024 * 1024],
-    quietWindowMs: [0, 60000], maxWaitMs: [1, 300000], maxBatchMessages: [1, 200],
-    batchTargetBytes: [256, 4 * 1024 * 1024], deliveryTimeoutMs: [100, 120000],
+    aggregationWindowMs: [0, 300000], deliveryTimeoutMs: [100, 120000],
     retryIntervalMs: [100, 300000], maxDeliveryAttempts: [1, 20],
   }
-  const labels: Readonly<Record<string, string>> = { maxQueuedMessages: '队列消息上限', maxQueuedBytes: '队列容量上限', quietWindowMs: '聚合静默时间', maxWaitMs: '最长聚合等待时间', maxBatchMessages: '提前发送消息数', batchTargetBytes: '提前发送目标大小', deliveryTimeoutMs: '投递超时', retryIntervalMs: '拒收重试间隔', maxDeliveryAttempts: '最大投递尝试次数' }
+  const labels: Readonly<Record<string, string>> = { maxQueuedMessages: '队列消息上限', maxQueuedBytes: '队列容量上限', aggregationWindowMs: '消息聚合窗口', deliveryTimeoutMs: '投递超时', retryIntervalMs: '拒收重试间隔', maxDeliveryAttempts: '最大投递尝试次数' }
   for (const [key, [minimum, maximum]] of Object.entries(ranges)) {
     const value = input[key]
     if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) throw new PlatformError('INVALID_DELIVERY_SETTINGS', `${labels[key] ?? '设置项'}需为 ${minimum} 至 ${maximum} 范围内的整数。`)
   }
-  if (Number(input.maxWaitMs) < Number(input.quietWindowMs)) throw new PlatformError('INVALID_DELIVERY_SETTINGS', '最长聚合等待时间不能小于聚合静默时间。')
-  if (Number(input.maxBatchMessages) > Number(input.maxQueuedMessages)) throw new PlatformError('INVALID_DELIVERY_SETTINGS', '提前发送消息数不能大于队列消息上限。')
-  if (Number(input.batchTargetBytes) > Number(input.maxQueuedBytes)) throw new PlatformError('INVALID_DELIVERY_SETTINGS', '批次目标大小不能大于队列容量上限。')
+  if (typeof input.appendWhileBusy !== 'boolean') throw new PlatformError('INVALID_DELIVERY_SETTINGS', '请明确选择执行中是否追加消息。')
   return Object.freeze({ ...input }) as unknown as DeliverySettings
 }
 
@@ -181,6 +176,9 @@ export interface HarnessHostServices {
   registerSink(sink: HarnessMessageSink): () => void
   wake(): void
   readOwnerConfiguration(): HarnessOwnerConfiguration
+  readDeliverySettings(): DeliverySettings
+  deliveryReceiptAccepted(receiptId: string): boolean
+  extendAgentScope(scope: import('./agents.js').AgentInvocationScope): void
   getMcpConnection(pluginId: string, scope: import('./agents.js').AgentInvocationScope, policy?: import('./autonomy.js').ScopedAccessPolicy): import('./agents.js').AgentMcpConnection
   /** Capability discovery is optional; an enabled autonomy implementation must require these services. */
   readProactiveChannels?(): readonly import('./autonomy.js').ProactiveChannel[]

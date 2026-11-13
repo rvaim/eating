@@ -1,3 +1,4 @@
+import { DEFAULT_DELIVERY_SETTINGS } from '@eating/plugin-sdk'
 import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs'
@@ -26,7 +27,7 @@ const cleanups: Array<() => Promise<void> | void> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
 
 function batch(id = 'a'.repeat(64), text = 'fixture external text'): HarnessDeliveryBatch {
-  return { protocolVersion: 1, batchId: id, conversationId: 'qq:100:group:200', createdAt: '2026-10-27T16:00:00.000Z', reason: 'quiet-window',
+  return { protocolVersion: 1, batchId: id, conversationId: 'qq:100:group:200', createdAt: '2026-10-27T16:00:00.000Z', reason: 'aggregation-window',
     events: [{ protocolVersion: 1, eventId: 'event-fixture', pluginId: 'qq', instanceId: 'fixture-instance', platform: 'qq', accountId: '100',
       conversationId: 'qq:100:group:200', senderId: '300', targetId: '200', messageId: '400', resourceIds: [], receivedAt: '2026-10-27T16:00:00.000Z', source: { trust: 'external', kind: 'group', senderRole: 'user' }, content: text, text }] }
 }
@@ -58,7 +59,7 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
   const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS,
     dataDirectory: directory,
     harness: { registerSink: vi.fn(sink => { registered = sink; return detach }), wake: vi.fn(), readOwnerConfiguration: () => owner,
-      readAgentActions: vi.fn(() => []), revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: vi.fn((_pluginId: string, scope: AgentInvocationScope) => ({ url: 'http://127.0.0.1:1/mcp/qq', headers: { Authorization: 'Bearer fixture-only-mcp-token' }, toolNames: owner.agentTypes.find(type => type.id === scope.agentTypeId)!.enabledTools })) },
+      readDeliverySettings: () => ({ ...DEFAULT_DELIVERY_SETTINGS, aggregationWindowMs: 0, appendWhileBusy: false }), deliveryReceiptAccepted: () => false, extendAgentScope: vi.fn(), readAgentActions: vi.fn(() => []), revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: vi.fn((_pluginId: string, scope: AgentInvocationScope) => ({ url: 'http://127.0.0.1:1/mcp/qq', headers: { Authorization: 'Bearer fixture-only-mcp-token' }, toolNames: owner.agentTypes.find(type => type.id === scope.agentTypeId)!.enabledTools })) },
     getSetting: vi.fn(() => null), setSetting: vi.fn(), recordEvent: vi.fn(() => { throw new Error('Adapter must not record a chat copy') }),
     listMessages: vi.fn(() => []), executeIdempotent: vi.fn(async () => { throw new Error('Adapter must never forward finalResponse') }),
   }
@@ -190,6 +191,19 @@ describe('DSH isolated runtime lifecycle', () => {
     await expect(setup.plugin.connect()).rejects.toMatchObject({ code: 'DSH_NOT_INSTALLED' })
     expect(setup.factory).not.toHaveBeenCalled()
     expect(existsSync(join(setup.directory, 'session.json'))).toBe(false)
+  })
+
+  it('refuses an old singleton handoff until the explicit offline transition even when its receipt is accepted', async () => {
+    const f = fixture()
+    await configure(f.plugin)
+    const session = new DshSessionFile(f.directory), value = { sessionId: '00000000-0000-4000-8000-000000000001', created: true, activeBatchId: 'a'.repeat(64), digest: 'b'.repeat(64), nonce: '00000000-0000-4000-8000-000000000002', receiptId: 'accepted-original', lastOutcome: 'durable' as const }
+    session.write(value)
+    const before = readFileSync(session.filePath, 'utf8')
+    Object.assign(f.context.harness!, { deliveryReceiptAccepted: () => true })
+    const plugin = new DshPlugin(f.context, { locateSystemDsh: () => ({ bin: '/fixture/system/dsh', source: 'override', version: 'fixture' }) })
+    cleanups.push(() => plugin.dispose())
+    await expect(plugin.connect()).rejects.toMatchObject({ code: 'DELIVERY_TRANSITION_REQUIRED', outcome: 'not-sent' })
+    expect(readFileSync(session.filePath, 'utf8')).toBe(before)
   })
 
   it('uses the official SDK options, a private environment, and a fixed persisted UUID', async () => {
@@ -384,7 +398,7 @@ describe('DSH reliable single-batch handoff', () => {
     expect(metadata).not.toContain('events')
   })
 
-  it('retires only the previous idle batch ACK after the next batch metadata commits', async () => {
+  it('keeps prior ACKs until Host acceptance and main retirement both commit', async () => {
     const setup = fixture()
     await configure(setup.plugin)
     await setup.plugin.connect()
@@ -403,6 +417,10 @@ describe('DSH reliable single-batch handoff', () => {
     expect(existsSync(firstAck)).toBe(true)
     expect(existsSync(secondAck)).toBe(false)
     expect(await setup.plugin.deliverBatch(batch('b'.repeat(64)), signal)).toMatchObject({ accepted: true, durable: true })
+    expect(existsSync(firstAck)).toBe(true)
+    setup.sink!.accepted!('a'.repeat(64), 'receipt')
+    const adapter = setup.plugin as unknown as { agentControl: DshAgentControl; deliveries: { retire(ids: string[]): void } }
+    adapter.deliveries.retire(['a'.repeat(64)])
     expect(existsSync(firstAck)).toBe(false)
     expect(existsSync(secondAck)).toBe(true)
     expect(readdirSync(join(setup.directory, 'bridge')).filter(name => /^ack-[a-f0-9]{64}\.json$/.test(name))).toEqual([`ack-${'b'.repeat(64)}.json`])

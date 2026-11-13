@@ -208,6 +208,8 @@ describe('owner controlled autonomous activity state', () => {
     expect(f.activity.validCycle('runtime', String(cycle.id))).toBe(false); expect(f.activity.contactTargetStillAllowed(target)).toBe(true)
     expect(() => f.activity.decide('runtime', { expectedActivityRevision: state(f.activity).revision, mode: 'active', wakeAt: null, note: 'Resume' })).toThrow()
     expect(f.revoke).toHaveBeenCalled()
+    f.activity.finish('runtime', String(cycle.id), 'completed', null)
+    expect(state(f.activity)).toMatchObject({ ownerPaused: true, active: null, lastOutcome: 'cancelled', history: [expect.objectContaining({ outcome: 'cancelled', code: 'AUTONOMY_OWNER_PAUSED' })] })
   })
   it('enforces hourly round and contact limits without invoking a model to poll', async () => {
     const f = fixture(); await f.configure({ maxCyclesPerHour: 1, maxContactsPerHour: 1, targets: [target] }); f.activity.startRuntime('runtime'); await f.control('resume')

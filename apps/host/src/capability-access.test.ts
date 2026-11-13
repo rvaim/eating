@@ -137,6 +137,26 @@ const scope = { agentId: 'main-fixture', agentTypeId: 'main' }
 const stdioArgs = [fileURLToPath(new URL('../../../tests/fixtures/direct-mcp-stdio.mjs', import.meta.url))]
 
 describe('capability MCP and cross-plugin sticker resources', () => {
+  it('extends an existing capability source without reconnecting or upgrading verify tools', async () => {
+    const entry = extraCapability()
+    const original = entry.create
+    const seen: CapabilityInvocationScope[] = []
+    const custom: BackendPluginEntry = { ...entry, create(context) { const plugin = original(context); return { ...plugin, getStatus: () => ({ state: 'connected' as const, accountId: null, accountName: null, lastError: null, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 }), invokeCapability: async (_name, _args, _id, scope) => { seen.push(scope); return { refs: [...scope.source?.resourceIds ?? []] } } } } }
+    const f = await fixture({ extraEntries: [custom] })
+    const source: AgentInvocationScope = { agentId: 'async-child', agentTypeId: 'qq.private', pluginId: 'qq', instanceId: 'fixture', accountId: 'fixture', conversationId: 'fixture', kind: 'private', targetId: 'fixture', messageIds: ['old'], resourceIds: ['old-image'], readOnly: true }
+    const client = await f.client({ agentId: source.agentId, agentTypeId: source.agentTypeId, source, readOnly: true }, 'plugin.new-source')
+    const access = Reflect.get(f.host, 'capabilityAccess') as CapabilityAccess
+    const leases = Reflect.get(access, 'leases') as Map<string, unknown>, tokens = [...leases.keys()]
+    access.extendScope('fixture', { ...source, messageIds: ['old', 'new'], resourceIds: ['old-image', 'new-image'] })
+    expect([...leases.keys()]).toEqual(tokens)
+    expect(await client.callTool({ name: 'new_source_read', arguments: {} })).toMatchObject({ isError: false, structuredContent: { result: { refs: ['old-image', 'new-image'] } } })
+    expect(seen[0]!.readOnly).toBe(true); expect(seen[0]!.source?.readOnly).toBe(true)
+    expect(() => access.extendScope('fixture', { ...source, readOnly: false })).toThrow()
+    expect(() => access.extendScope('fixture', { ...source, targetId: 'other' })).toThrow()
+    access.revokeAgent('fixture', source.agentId)
+    await expect(client.listTools()).rejects.toThrow()
+  })
+
   it.each(['scope', 'source'] as const)('limits %s verify capabilities to read tools under default all and restores reply writes', async mode => {
     const calls: string[] = []
     const entry: BackendPluginEntry = { id: 'verify-source', kind: 'capability', storageDirectory: 'verify-source', create: () => ({

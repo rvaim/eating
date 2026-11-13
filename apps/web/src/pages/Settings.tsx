@@ -10,8 +10,8 @@ import { AutonomySettings } from './AutonomySettings'
 import { ImageLimitsSettings } from './ImageLimitsSettings'
 
 export type SettingsSection = 'delivery' | 'queue' | 'autonomy' | 'images'
-type NumericKey = Exclude<keyof DeliverySettings, 'storageMode' | 'overflowPolicy'>
-type SettingsDraft = Record<NumericKey, string> & Pick<DeliverySettings, 'storageMode' | 'overflowPolicy'>
+type NumericKey = Exclude<keyof DeliverySettings, 'storageMode' | 'overflowPolicy' | 'appendWhileBusy'>
+type SettingsDraft = Record<NumericKey, string> & Pick<DeliverySettings, 'storageMode' | 'overflowPolicy' | 'appendWhileBusy'>
 type FieldErrors = Partial<Record<keyof DeliverySettings, string>>
 type Operation = 'read' | 'save' | 'clear'
 type Notice = { readonly kind: 'error' | 'success' | 'info'; readonly key: string }
@@ -27,10 +27,7 @@ interface NumericField {
 }
 
 const numericFields: readonly NumericField[] = [
-  { key: 'quietWindowMs', section: 'delivery', unitKey: 'unit.ms', scale: 1, minimum: 0, maximum: 60000 },
-  { key: 'maxWaitMs', section: 'delivery', unitKey: 'unit.ms', scale: 1, minimum: 1, maximum: 300000 },
-  { key: 'maxBatchMessages', section: 'delivery', unitKey: 'unit.messages', scale: 1, minimum: 1, maximum: 200 },
-  { key: 'batchTargetBytes', section: 'delivery', unitKey: 'unit.kb', scale: 1024, minimum: 256, maximum: 4 * 1024 * 1024 },
+  { key: 'aggregationWindowMs', section: 'delivery', unitKey: 'unit.seconds', scale: 1000, minimum: 0, maximum: 300000 },
   { key: 'deliveryTimeoutMs', section: 'delivery', unitKey: 'unit.ms', scale: 1, minimum: 100, maximum: 120000 },
   { key: 'retryIntervalMs', section: 'delivery', unitKey: 'unit.ms', scale: 1, minimum: 100, maximum: 300000 },
   { key: 'maxDeliveryAttempts', section: 'delivery', unitKey: 'unit.attempts', scale: 1, minimum: 1, maximum: 20 },
@@ -44,7 +41,7 @@ const rangeParams = (field: NumericField) => ({ minimum: formatNumber(field.mini
 function createDraft(values: DeliverySettings): SettingsDraft {
   const draft: SettingsDraft = {
     storageMode: values.storageMode, overflowPolicy: values.overflowPolicy,
-    quietWindowMs: '', maxWaitMs: '', maxBatchMessages: '', batchTargetBytes: '',
+    aggregationWindowMs: '', appendWhileBusy: values.appendWhileBusy,
     deliveryTimeoutMs: '', retryIntervalMs: '', maxDeliveryAttempts: '',
     maxQueuedMessages: '', maxQueuedBytes: '',
   }
@@ -62,17 +59,8 @@ function validateDraft(draft: SettingsDraft): { values: DeliverySettings | null;
     else if (amount < field.minimum || amount > field.maximum) errors[field.key] = settingsText('error.range', rangeParams(field))
     numbers[field.key] = amount
   }
-  if (!errors.maxWaitMs && !errors.quietWindowMs && numbers.maxWaitMs < numbers.quietWindowMs) errors.maxWaitMs = settingsText('error.maxWait')
-  if (!errors.maxBatchMessages && !errors.maxQueuedMessages && numbers.maxBatchMessages > numbers.maxQueuedMessages) {
-    errors.maxBatchMessages = settingsText('error.batchMessages')
-    errors.maxQueuedMessages = settingsText('error.queueMessages')
-  }
-  if (!errors.batchTargetBytes && !errors.maxQueuedBytes && numbers.batchTargetBytes > numbers.maxQueuedBytes) {
-    errors.batchTargetBytes = settingsText('error.batchBytes')
-    errors.maxQueuedBytes = settingsText('error.queueBytes')
-  }
   if (Object.keys(errors).length) return { values: null, errors }
-  try { return { values: validateDeliverySettings({ ...numbers, storageMode: draft.storageMode, overflowPolicy: draft.overflowPolicy }), errors } }
+  try { return { values: validateDeliverySettings({ ...numbers, storageMode: draft.storageMode, overflowPolicy: draft.overflowPolicy, appendWhileBusy: draft.appendWhileBusy }), errors } }
   catch { return { values: null, errors: { storageMode: settingsText('error.validation') } } }
 }
 
@@ -312,7 +300,14 @@ export function Settings({ section, onSectionChange, onFeedback }: {
           {section === 'delivery' ? <>
             <section className="settings-form-section" aria-labelledby="settings-aggregation-heading">
               <div className="section-heading"><h3 id="settings-aggregation-heading">{t('section.aggregation')}</h3><p>{t('section.aggregationHint')}</p></div>
-              {renderNumber('quietWindowMs')}{renderNumber('maxWaitMs')}{renderNumber('maxBatchMessages')}{renderNumber('batchTargetBytes')}
+              {renderNumber('aggregationWindowMs')}
+              <div className="settings-field">
+                <label htmlFor="settings-appendWhileBusy">{t('field.appendWhileBusy.label')}</label>
+                <div className="settings-field-content">
+                  <input id="settings-appendWhileBusy" type="checkbox" checked={draft.appendWhileBusy} disabled={busy} onChange={event => updateDraft('appendWhileBusy', event.target.checked)} aria-describedby="settings-appendWhileBusy-hint" />
+                  <p id="settings-appendWhileBusy-hint" className="settings-field-hint">{t('field.appendWhileBusy.hint')}</p>
+                </div>
+              </div>
             </section>
             <section className="settings-form-section" aria-labelledby="settings-delivery-heading">
               <div className="section-heading"><h3 id="settings-delivery-heading">{t('section.delivery')}</h3><p>{t('section.deliveryHint')}</p></div>

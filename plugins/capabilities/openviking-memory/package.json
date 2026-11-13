@@ -1,6 +1,6 @@
 {
   "name": "@eating/plugin-openviking-memory",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "type": "module",
   "description": "Eating OpenViking 记忆能力、自动提取与配置面板",
   "files": ["dist"],

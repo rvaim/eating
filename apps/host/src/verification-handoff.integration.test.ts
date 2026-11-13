@@ -1,3 +1,4 @@
+import { fixturePendingTask, fixtureResolveTaskTurns } from '../../../tests/fixtures/async-tasks'
 import { createServer } from 'node:http'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -71,9 +72,9 @@ function turns(request: ModelFixtureRequest): FixtureToolTurn[] {
       results.push({ ...call, content: message.content, text: fixtureText(message.content) })
     }
   }
-  return results
+  return fixtureResolveTaskTurns(request, results)
 }
-function result(turn: FixtureToolTurn): JsonObject { return object(JSON.parse(turn.text.split('\n')[0]!)) }
+function result(turn: FixtureToolTurn): JsonObject { return turn.taskResult ?? object(JSON.parse(turn.text.split('\n')[0]!)) }
 function system(request: ModelFixtureRequest): string {
   const systems = request.messages?.filter(message => message.role === 'system') ?? []
   expect(systems).toHaveLength(1)
@@ -103,7 +104,7 @@ async function scriptedModel(choose: (request: ModelFixtureRequest) => FixtureMo
       }
       const request = JSON.parse(Buffer.concat(chunks).toString('utf8')) as ModelFixtureRequest
       requests.push(request)
-      const action = choose(request); actions.push(action)
+      const action = request.tools?.some(tool => tool.function?.name === 'eating_task_control') && fixturePendingTask(request) ? 'Waiting for the native child result.' : choose(request); actions.push(action)
       const id = `verification-fixture-${requests.length}`
       response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' })
       const chunk = (delta: JsonObject, finish: string | null) => response.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created: 1, model: request.model,
@@ -265,6 +266,7 @@ async function createFixture(kind: 'current' | 'cross') {
   const created = host.authoring.createPersona('小禾', persona)
   host.authoring.setPersonaEnabled(created.persona.id, true, created.snapshot.revision)
   const ownerSystem = composeAgentPrompt(host.authoring.readOwnerConfiguration(), null, {}).systemPrompt
+  host.store.updateDeliverySettings({ ...host.store.getDeliverySettings(), aggregationWindowMs: 0 }, host.store.getDeliverySettingsSnapshot().revision)
   const url = await host.listen(), bootstrap = await fetch(url + '/api/bootstrap')
   const boot = object(await bootstrap.json()), cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!
   const api = async (path: string, input: JsonObject): Promise<JsonObject> => {

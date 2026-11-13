@@ -12,7 +12,7 @@ type BatchSelection = {
 type PendingFinalization = {
   readonly ids: readonly string[]
   readonly error: string | null
-} & ({ readonly kind: 'ack'; readonly receiptId: string } | {
+} & ({ readonly kind: 'ack'; readonly receiptId: string; readonly accepted?: () => void } | {
   readonly kind: 'mark'
   readonly updates: readonly {
     readonly ids: readonly string[]
@@ -144,6 +144,9 @@ export class HarnessGateway {
       this.pendingFinalization = null
       this.storageRetryAt = 0
       this.lastError = finalization.error
+      if (finalization.kind === 'ack') {
+        try { finalization.accepted?.() } catch { this.lastError = '消息已可靠交接，接收端清理确认未完成；不会重新发送。' }
+      }
       return true
     } catch { this.recordStorageFailure(); return false }
   }
@@ -183,29 +186,16 @@ export class HarnessGateway {
     for (const bucket of conversations.values()) {
       const first = bucket[0]!
       if (first.nextAttemptAt > now) {
-        selections.push({ items: [], reason: 'max-wait', readyAt: first.nextAttemptAt })
+        selections.push({ items: [], reason: 'aggregation-window', readyAt: first.nextAttemptAt })
         continue
       }
       const items: QueuedHarnessEvent[] = []
-      let bytes = 0
-      let threshold: { reason: HarnessDeliveryBatch['reason']; at: number } | null = null
       for (const item of bucket) {
         // A rejected head retains its order; newer arrivals cannot bypass its cooldown.
         if (item.nextAttemptAt > now) break
         items.push(item)
-        bytes += Buffer.byteLength(JSON.stringify(item.event), 'utf8')
-        if (!threshold) {
-          if (items.length >= settings.maxBatchMessages) threshold = { reason: 'max-messages', at: item.enqueuedAt }
-          else if (bytes >= settings.batchTargetBytes) threshold = { reason: 'target-bytes', at: item.enqueuedAt }
-        }
       }
-      const last = items[items.length - 1]!
-      const quietAt = last.enqueuedAt + settings.quietWindowMs
-      const maxWaitAt = first.enqueuedAt + settings.maxWaitMs
-      let readyAt = Math.min(quietAt, maxWaitAt)
-      let reason: HarnessDeliveryBatch['reason'] = maxWaitAt <= quietAt ? 'max-wait' : 'quiet-window'
-      if (threshold && threshold.at <= readyAt) { readyAt = threshold.at; reason = threshold.reason }
-      selections.push({ items, reason, readyAt })
+      selections.push({ items, reason: 'aggregation-window', readyAt: first.enqueuedAt + settings.aggregationWindowMs })
     }
     return selections
   }
@@ -271,7 +261,8 @@ export class HarnessGateway {
       return
     }
     if (receipt?.accepted === true && receipt.durable === true && typeof receipt.receiptId === 'string' && receipt.receiptId.trim()) {
-      this.persistOutcome({ kind: 'ack', ids, receiptId: receipt.receiptId, error: null })
+      const receiptId = receipt.receiptId
+      this.persistOutcome({ kind: 'ack', ids, receiptId, error: null, accepted: () => { if (this.registration === registration) registration.sink.accepted?.(batch.batchId, receiptId) } })
       return
     }
     if (receipt?.accepted === false) {

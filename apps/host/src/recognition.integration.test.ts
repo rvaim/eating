@@ -33,6 +33,7 @@ async function setup() {
   await api('/plugins/qq/manage', { operation: 'save-audio-input', input: { expectedRevision: 0, mapping: { onebotRoot: '/onebot-audio', hostRoot: cache, ownerConfirmed: true } } })
   const source: AgentInvocationScope = { agentId: 'audio-child', agentTypeId: 'qq.private', pluginId: 'qq', instanceId: config.instanceId, accountId: '100', conversationId: 'qq:100:private:200', kind: 'private', targetId: '200', messageIds: ['300'], resourceIds: ['clip.silk'] }
   const client = async () => {
+    services.getMcpConnection('qq', source)
     const connection = services.getCapabilityMcpConnections({ agentId: source.agentId, agentTypeId: source.agentTypeId, source }).find(c => c.id === 'plugin.speech-to-text')!
     const client = new Client({ name: 'audio-fixture', version: '1.0.0' }); await client.connect(new StreamableHTTPClientTransport(new URL(connection.url), { requestInit: { headers: { ...connection.headers } } })); stops.push(() => client.close()); return client
   }
@@ -48,6 +49,8 @@ describe('ASR over Host resource leases, real MCP transport and OneBot', () => {
     const result = await client.callTool({ name: 'asr_job_get', arguments: { jobId: job.jobId, waitMs: 2000 } })
     expect((result.structuredContent as { result: unknown }).result).toMatchObject({ status: 'succeeded', text: '上海今天天气怎么样？' }); await client.callTool({ name: 'asr_transcribe', arguments: params }); expect(f.provider.recognition).toHaveLength(1)
     const lease = await f.resources.readReceivedAudio({ agentId: f.source.agentId, agentTypeId: f.source.agentTypeId, source: f.source }, { messageId: '300', audioId: 'clip.silk' }); expect(lease.durationMs).toBe(100)
+    f.services.extendAgentScope({ ...f.source, messageIds: ['300', '301'], resourceIds: ['clip.silk', 'new-clip.silk'] }); expect((await lease.readBytes()).byteLength).toBe(4844)
+    const retained = await f.resources.readReceivedAudio({ agentId: f.source.agentId, agentTypeId: f.source.agentTypeId, source: f.source }, { messageId: '300', audioId: 'clip.silk' }); expect(retained.durationMs).toBe(100)
     f.services.getCapabilityMcpConnections({ agentId: f.source.agentId, agentTypeId: f.source.agentTypeId, source: { ...f.source, messageIds: ['301'], resourceIds: ['new-clip.silk'] } }); await expect(lease.readBytes()).rejects.toMatchObject({ code: 'ASSET_ACCESS_DENIED' })
     f.services.revokeAgentAccess(f.source.agentId); await expect(lease.readBytes()).rejects.toMatchObject({ code: 'ASSET_ACCESS_DENIED' })
     expect(f.onebot.requests.filter(r => r.action === 'get_record').every(r => r.params.out_format === 'wav')).toBe(true)

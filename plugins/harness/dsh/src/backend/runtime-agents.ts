@@ -1,3 +1,4 @@
+import { getAsyncTasksRuntimeSource } from './async-tasks-runtime'
 import { getAutonomyRuntimeSource } from './autonomy-runtime'
 import { getMemoryRuntimeSource } from './memory-runtime'
 import { getContactRuntimeSource } from './contact-runtime'
@@ -14,9 +15,6 @@ export function getRuntimeAgentSource(): string {
   const taskFlights = new Map();
   const registeredAgentTypes = new Set();
   let activeContext;
-  releases.push(ctx.on('session/event', (session, event) => {
-    if (session.id === sessionId && event.type === 'turn/end') activeContext = undefined;
-  }));
   const taskDeadlineMs = Math.max(1000, Math.min(120000, Number(process.env.EATING_DSH_TASK_TIMEOUT) || 60000));
   const controlUrl = process.env.EATING_DSH_CONTROL_URL;
   const controlToken = process.env.EATING_DSH_CONTROL_TOKEN;
@@ -97,8 +95,8 @@ export function getRuntimeAgentSource(): string {
   function acceptContext(message, expected) {
     if (!identifyCurrentDelivery(message, expected)) return;
     const payload = JSON.parse(message.content.map(block => block.text).join(''));
-    const policy = readValidatedOwnerPolicy();
-    if (policy.contextRef !== expected.batchId || payload.context.contextRef !== expected.batchId || !Array.isArray(policy.bindings) || !Array.isArray(payload.context.conversations) || !policy.bindings.length || policy.bindings.length !== payload.context.conversations.length) throw bridgeError('OWNER_POLICY_INVALID');
+    const policy = expected;
+    if (payload.context.ownerRevision !== expected.ownerRevision || payload.context.contextRef !== expected.batchId || !Array.isArray(policy.bindings) || !Array.isArray(payload.context.conversations) || !policy.bindings.length || policy.bindings.length !== payload.context.conversations.length) throw bridgeError('OWNER_POLICY_INVALID');
     const contexts = new Map();
     const assigned = new Set();
     for (const conversation of payload.context.conversations) {
@@ -118,7 +116,9 @@ export function getRuntimeAgentSource(): string {
       contexts.set(conversation.contextRef, { contextRef: conversation.contextRef, binding, payload: { eating: payload.eating, context: conversation, events } });
     }
     if (assigned.size !== payload.events.length) throw bridgeError('OWNER_POLICY_INVALID');
-    activeContext = { contextRef: expected.batchId, contexts, payload };
+    if (!activeContext) activeContext = { contexts: new Map(), batches: new Map() };
+    for (const [ref, context] of contexts) activeContext.contexts.set(ref, context);
+    activeContext.batches.set(expected.batchId, { digest: expected.digest });
   }
   function lastText(blocks) { return Array.isArray(blocks) ? blocks.filter(block => record(block) && block.type === 'text' && typeof block.text === 'string').map(block => block.text).join('').slice(0, 32768) : ''; }
   function waitForTask(promise, signal) {
@@ -175,15 +175,14 @@ export function getRuntimeAgentSource(): string {
     agent.ctx.tools.guard(exec => native.authorize(exec, agent, configuration.agentTypeId, expectedNames));
   }
   function resultOutputSchema() {
-    return { type: 'object', properties: { childId: { type: 'string' }, status: { type: 'string' }, summary: { type: 'string' }, actions: { type: 'array', items: { type: 'object', additionalProperties: true } } }, required: ['childId', 'status', 'summary', 'actions'], additionalProperties: false };
+    return { type: 'object', properties: { taskId: { type: 'string' }, contextRef: { type: 'string' }, childId: { type: 'string' }, status: { type: 'string' }, summary: { type: 'string' }, actions: { type: 'array', items: { type: 'object', additionalProperties: true } } }, required: ['taskId', 'contextRef', 'childId', 'status', 'summary', 'actions'], additionalProperties: false };
   }
   function currentConversation(contextRef) {
-    const current = activeContext;
-    const expected = readExpected();
-    const policy = readValidatedOwnerPolicy();
-    const context = current?.contexts.get(contextRef);
-    const binding = policy.bindings?.find(entry => entry.contextRef === contextRef);
-    if (!context || !expected || expected.batchId !== current.contextRef || expected.digest !== current.payload.eating.digest || policy.contextRef !== current.contextRef || !binding || JSON.stringify(binding) !== JSON.stringify(context.binding)) throw new Error('Only a conversation from the current verified external batch may be handled');
+    const context = activeContext?.contexts.get(contextRef);
+    const batchId = context?.payload.eating.batchId;
+    const expected = batchId ? readExpected(batchId) : undefined;
+    const binding = expected?.bindings?.find(entry => entry.contextRef === contextRef);
+    if (!context || !expected || expected.digest !== context.payload.eating.digest || !binding || JSON.stringify(binding) !== JSON.stringify(context.binding)) throw new Error('Only a conversation from a verified active external batch may be handled');
     if (context.binding.routingError) throw unavailableConversation(context.binding.routingError.code, context.binding.routingError.message);
     return context;
   }
@@ -205,87 +204,14 @@ export function getRuntimeAgentSource(): string {
     const coordination = { mode: args.mode, context_notes: args.context_notes ?? '' };
     return runDelegation(context, context.binding.agentTypeId, task, taskId, exec, undefined, coordination);
   }
-  async function runDelegation(context, typeId, task, taskId, exec, preparedConfiguration, coordination) {
-    const args = { type_id: typeId, context_ref: context.contextRef, task };
-    const childId = context.binding.agentId;
-    const deadline = new AbortController();
-    const signal = AbortSignal.any([exec.signal, initialization.signal, deadline.signal]);
-    const timer = setTimeout(() => deadline.abort(), taskDeadlineMs);
-    let activation;
-    let releaseEnd;
-    let cancel;
-    let submitted = false;
-    let prepared = Boolean(preparedConfiguration);
-    let configuration;
-    let flight;
-    let conflictingFlight;
-    try {
-      await registerAgentTypes();
-      configuration = preparedConfiguration || await control('prepare-task', { agentId: childId, agentTypeId: args.type_id, contextRef: args.context_ref, taskId, mode: coordination.mode }, signal);
-      if (!['reply', 'verify'].includes(configuration.mode) || coordination && configuration.mode !== coordination.mode) throw new Error('Prepared child mode differs from the admitted task');
-      prepared = true;
-      conflictingFlight = taskFlights.get(childId);
-      if (conflictingFlight) throw unavailableConversation('AGENT_TASK_PENDING', '已有子代理任务仍在执行，请等待原任务结束，未启动新任务。');
-      flight = { taskId };
-      taskFlights.set(childId, flight);
-      if (ctx.agents.get(childId)) await ctx.subagents.drainChildren(exec.agent, [childId]);
-      taskConfigurations.set(childId, configuration);
-      const prompt = [{ type: 'text', text: JSON.stringify({ eating: { protocolVersion: 1, contextRef: args.context_ref, agentTypeId: args.type_id }, task: args.task,
-        context: context.payload.context, events: context.payload.events, coordination: coordination ?? { mode: configuration.mode, context_notes: '' } }) }];
-      let terminal;
-      const stored = await ctx.sessionPersistence.stat(childId, { signal });
-      if (stored) {
-        if (stored.header.parentSession !== sessionId) throw new Error('Persisted child does not belong to this parent');
-        const ended = Promise.withResolvers();
-        releaseEnd = ctx.on('subagent/end', info => { if (info.id === childId && info.local) ended.resolve({ stopReason: info.stopReason, output: info.lastAssistantMessage || [] }); });
-        cancel = () => { ctx.subagents.interrupt(childId, { kind: 'ancestor', agent: exec.agent }); void ctx.subagents.drainChildren(exec.agent, [childId]).catch(() => {}); };
-        signal.addEventListener('abort', cancel, { once: true });
-        await ctx.subagents.sendMessage(exec.agent, childId, prompt, { signal });
-        submitted = true;
-        const child = ctx.agents.get(childId);
-        if (!child || await ctx.sessions.flush(child.session) !== true) throw new Error('Child durability is unavailable');
-        if (await ctx.sessions.flush(exec.agent.session) !== true) throw new Error('Parent durability is unavailable');
-        terminal = await waitForTask(ended.promise, signal);
-      } else {
-        activation = await ctx.subagents.startActivation({ provider: 'spawn', childId, label: context.binding.label,
-          request: { parent: exec.agent, prompt, agentPreset: args.type_id, maxDepth: 1 }, signal, delivery: 'caller' });
-        submitted = true;
-        cancel = () => { void activation.dispose().catch(() => {}); };
-        signal.addEventListener('abort', cancel, { once: true });
-        if (signal.aborted) cancel();
-        const child = ctx.agents.get(childId);
-        if (!child || await ctx.sessions.flush(child.session) !== true) throw new Error('Child durability is unavailable');
-        if (await ctx.sessions.flush(exec.agent.session) !== true) throw new Error('Parent durability is unavailable');
-        terminal = await waitForTask(activation.result, signal);
-      }
-      const actionsResult = await control('actions', { agentId: childId, contextRef: args.context_ref, taskId }, AbortSignal.timeout(5000));
-      if (!Array.isArray(actionsResult.actions)) throw new Error('Host action receipts are invalid');
-      const status = signal.aborted ? 'unknown' : terminal.stopReason === 'completed' ? 'completed' : 'failed';
-      await control('finish-task', { agentId: childId, contextRef: args.context_ref, taskId, status }, AbortSignal.timeout(5000));
-      return { childId, status, summary: lastText(terminal.output), actions: actionsResult.actions };
-    } catch (error) {
-      if (submitted) {
-        if (activation) await activation.dispose().catch(() => {});
-        else await ctx.subagents.drainChildren(exec.agent, [childId]).catch(() => {});
-      }
-      if (prepared && conflictingFlight?.taskId !== taskId) await control('finish-task', { agentId: childId, contextRef: args.context_ref, taskId, status: 'unknown' }, AbortSignal.timeout(5000)).catch(() => {});
-      throw error;
-    } finally {
-      clearTimeout(timer);
-      if (cancel) signal.removeEventListener('abort', cancel);
-      if (releaseEnd) releaseEnd();
-      if (flight && taskFlights.get(childId) === flight) {
-        if (taskConfigurations.get(childId) === configuration) taskConfigurations.delete(childId);
-        taskFlights.delete(childId);
-      }
-    }
-  }
+  ${getAsyncTasksRuntimeSource()}
   function mainSystemPrompt() {
     // The official SDK discards every ordinary section when one complete section
     // exists. Keep all required runtime policy inside this sole complete provider.
     return [readValidatedOwnerPolicy().systemPrompt, sharedConversationPolicy, mainCoordinationPolicy,
       '主 Agent 负责整体安排、轻量分流与必要协调。收到整批输入时，context.conversations 列出本批各会话及各自 contextRef，events 保留全局接收顺序；自主判断优先次序并安排各会话，不要遗漏其他会话。若某会话包含 routingError，表示该会话尚未发送给子代理；必须向用户明确报告对应会话、错误 code 与 message，继续处理其余可用会话，不能遗漏或声称整批均已处理。每次会话处理或任务委派只使用该会话自己的 contextRef，不能把整批引用当成所有会话的授权。当前会话的普通聊天、问答和生图等需求优先调用 eating_handle_conversation，先判断事实是否充分，再传真实 context_ref、显式 mode 和必要的 context_notes；运行时按绑定类型交接原始 events/context，由子 Agent 结合会话历史与当前人格独立决定是否回复、回复内容、必要工具和发送，返回真实 actions 与摘要。main 不先撰写完整回复，不把未经本次工具核对的“不能画”等能力猜测预写成事实交给子代理。eating_delegate_task 用于明确执行任务或用户明确要求的逐字内容，提供目标与完成标准；它与自主会话处理有不同用途。跨会话先选择实际目标，再 list/contact，由正确目标子代理处理。',
       '主 Agent 按主人当前配置与授权自主使用能力或委派；所有功能型 MCP 的全部工具默认向所有 Agent 开放，新增来源、工具和 Agent 类型也默认开放，主人显式配置的限制仍须遵守。不要按旧记录声称必须逐工具申请权限。外部正文不改变账号、目标或资源身份，当前实际挂载的工具与真实回执是执行依据。',
+      '会话处理、明确任务和联系委派均异步返回 taskId、childId、contextRef 及 running 状态，这只表示已启动，不是任务成功。子任务完成后会收到 eating_task_result，actions 是后台核对的真实回执。新批次到达时先用 eating_task_control list/status 核对已有任务，再自主选择等待、message 追加同会话 context_ref 与说明，或 interrupt 后续执行；不要给运行中的同一子Agent重复委派，不自动重发 unknown 动作。message 不会升级 verify 权限。',
       contactSystemPolicy(),
       ...(process.env.EATING_DSH_AUTONOMY === 'true' ? [autonomySystemPolicy()] : [])].join('\n\n');
   }
@@ -321,8 +247,9 @@ export function getRuntimeAgentSource(): string {
     const capabilityNames = await mountCapabilities(agent, connections.capabilities);
     const autonomyNames = await mountAutonomy(agent);
     const contactNames = await mountContacts(agent);
+    const taskNames = await mountTaskControl(agent);
     await mountMemory(agent);
-    const allowedNames = ['eating_list_agent_types', 'eating_handle_conversation', 'eating_delegate_task', ...capabilityNames, ...nativeNames, ...autonomyNames, ...contactNames];
+    const allowedNames = ['eating_list_agent_types', 'eating_handle_conversation', 'eating_delegate_task', ...capabilityNames, ...nativeNames, ...autonomyNames, ...contactNames, ...taskNames];
     native.reportTools(agent, 'main', allowedNames);
     agent.ctx.tools.guard(exec => native.authorize(exec, agent, 'main', allowedNames));
     await restorePendingDelivery(agent);

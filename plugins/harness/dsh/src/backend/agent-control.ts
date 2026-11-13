@@ -73,7 +73,6 @@ export function conversationContextRef(batchId: string, firstEvent: HarnessEvent
 export class DshAgentControl {
   private readonly file: string
   private readonly proactiveFile: string
-  private readonly expectedFile: string
   private proactiveBindings: ProactiveBinding[] = []
   private proactivePersistenceFailed = false
   private activity: DshAutonomy | null = null
@@ -91,6 +90,11 @@ export class DshAgentControl {
   private nonce = ''
   private readonly activeContext = new Map<string, string>()
   private readonly contextScopes = new Map<string, AgentInvocationScope>()
+  private readonly batches = new Map<string, HarnessDeliveryBatch>()
+  private readonly taskScopes = new Map<string, AgentInvocationScope>()
+  private readonly taskModes = new Map<string, 'reply' | 'verify'>()
+  private readonly autonomousTasks = new Set<string>()
+  private retireDeliveries: (batchIds: readonly string[]) => void = () => {}
   private memoryBatch: HarnessDeliveryBatch | null = null
   private readonly memoryTurns = new Map<string, string>()
   private readonly memoryTurnBatches = new Map<string, string>()
@@ -101,10 +105,9 @@ export class DshAgentControl {
   url = ''
 
   constructor(directory: string, private readonly host: HarnessHostServices) {
-    if (typeof host.getCapabilityMcpConnections !== 'function' || typeof host.getMcpConnection !== 'function' || typeof host.readAgentActions !== 'function' || typeof host.revokeAgentAccess !== 'function') fail('HARNESS_SERVICES_INVALID', 'Host 未提供当前必需的子代理权限与动作回执接口。')
+    if (typeof host.getCapabilityMcpConnections !== 'function' || typeof host.getMcpConnection !== 'function' || typeof host.readAgentActions !== 'function' || typeof host.revokeAgentAccess !== 'function' || typeof host.extendAgentScope !== 'function' || typeof host.readDeliverySettings !== 'function') fail('HARNESS_SERVICES_INVALID', 'Host 未提供当前必需的子代理权限与动作回执接口。')
     this.file = join(directory, 'agent-bindings.json')
     this.proactiveFile = join(directory, 'proactive-bindings.json')
-    this.expectedFile = join(directory, 'bridge', 'expected.json')
     try { if (statSync(this.proactiveFile).size > 256 * 1024) fail('PROACTIVE_BINDINGS_INVALID', '主动联系绑定文件过大。') } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     const proactive = readRestrictedJson(this.proactiveFile)
     if (proactive) {
@@ -164,7 +167,9 @@ export class DshAgentControl {
     if (changed) this.saveProactive()
   }
   revokeAutonomousContacts(): void {
-    if (this.contactTurn?.autonomyCycleId) this.revokeProactive(this.contactTurn.id)
+    let changed = false
+    for (const binding of this.proactiveBindings) if (this.autonomousTasks.has(binding.task.taskId)) changed = this.revokeContact(binding) || changed
+    if (changed) this.saveProactive()
   }
   private beginContactTurn(body: JsonObject): JsonObject {
     if (!this.runtimeReady() || body.agentId !== this.rootId() || Object.keys(body).length !== 3 || !Number.isSafeInteger(body.turn) || Number(body.turn) < 1 || body.autonomyCycleId !== null && !opaque(body.autonomyCycleId)) fail('CONTACT_TURN_INVALID', '联系任务缺少真实主 Agent 当前轮次。')
@@ -175,7 +180,6 @@ export class DshAgentControl {
       return { id: existing.id }
     }
     if (Number(body.turn) <= this.lastContactTurn) fail('CONTACT_TURN_EXPIRED', '主 Agent 旧轮次不能重新取得联系许可。')
-    if (this.contactTurn) this.revokeProactive(this.contactTurn.id)
     this.contactTurn = { id: randomUUID(), turn: Number(body.turn), autonomyCycleId: body.autonomyCycleId as string | null }
     this.lastContactTurn = Number(body.turn)
     return { id: this.contactTurn.id }
@@ -220,13 +224,16 @@ export class DshAgentControl {
     const task: ProactiveTask = { taskId: body.taskId, cycleId: body.cycleId, contextRef, nonce: this.nonce, state: 'pending' }
     let mcp, capabilities
     try {
-      mcp = this.host.getMcpConnection(target.pluginId, invocationScope, { toolNames: target.toolNames, ...(readOnly ? { readOnly: true } : {}), active: () => task.state === 'pending' && this.validContactTurn(turn) && Date.now() < deadline && this.contactPolicySummary?.().revision === policyRevision && activity.contactTargetStillAllowed(target) })
+      mcp = this.host.getMcpConnection(target.pluginId, invocationScope, { toolNames: target.toolNames, ...(readOnly ? { readOnly: true } : {}), active: () => task.state === 'pending' && task.nonce === this.nonce && !this.stopping && this.runtimeReady() && (!turn.autonomyCycleId || activity.validCycle(this.nonce, turn.autonomyCycleId)) && Date.now() < deadline && this.contactPolicySummary?.().revision === policyRevision && activity.contactTargetStillAllowed(target) })
       capabilities = this.host.getCapabilityMcpConnections({ agentId, agentTypeId: type.id, source: invocationScope, ...(readOnly ? { readOnly: true } : {}) })
       signal.throwIfAborted()
       const binding: ProactiveBinding = { key, parentId: rootId!, agentId, target, task, taskRefs: [...(previous?.taskRefs ?? []), task].slice(-MAX_TASK_REFERENCES) }
       activity.countContact()
       this.proactiveBindings = previous ? this.proactiveBindings.map(row => row === previous ? binding : row) : [...this.proactiveBindings, binding]
       this.saveProactive()
+      this.taskScopes.set(task.taskId, invocationScope)
+      this.taskModes.set(task.taskId, body.mode as 'reply' | 'verify')
+      if (turn.autonomyCycleId) this.autonomousTasks.add(task.taskId)
       const timer = setTimeout(() => {
         this.contactTimers.delete(agentId)
         if (binding.task.state === 'pending' && this.revokeContact(binding)) {
@@ -237,10 +244,12 @@ export class DshAgentControl {
     } catch (error) { this.host.revokeAgentAccess(agentId); throw error }
     const preview = composeAgentPrompt(owner, type.id, { 当前时间: new Date().toISOString(), 人格名称: owner.activePersona?.name ?? '', 平台: scope.pluginId, 机器人账号: scope.accountId, 会话编号: scope.conversationId, 会话类型: scope.kind, 目标编号: scope.targetId })
     this.actionBaselines.set(agentId, new Map(this.host.readAgentActions(agentId).map(action => [action.requestId, JSON.stringify(action)])))
-    return { agentId, agentTypeId: type.id, mode: body.mode, systemPrompt: preview.systemPrompt, revision: preview.revision, contextRef, label: target.label, scope: { pluginId: scope.pluginId, accountId: scope.accountId, targetId: scope.targetId, conversationId: scope.conversationId, kind: scope.kind }, tools: [...mcp.toolNames], mcp: { url: mcp.url, headers: { ...mcp.headers } }, capabilities: capabilities.map(connection => ({ ...connection, tools: [...connection.tools], headers: { ...connection.headers } })) }
+    return { agentId, agentTypeId: type.id, mode: body.mode, autonomyCycleId: turn.autonomyCycleId, systemPrompt: preview.systemPrompt, revision: preview.revision, contextRef, label: target.label, scope: { pluginId: scope.pluginId, accountId: scope.accountId, targetId: scope.targetId, conversationId: scope.conversationId, kind: scope.kind }, tools: [...mcp.toolNames], mcp: { url: mcp.url, headers: { ...mcp.headers } }, capabilities: capabilities.map(connection => ({ ...connection, tools: [...connection.tools], headers: { ...connection.headers } })) }
   }
 
   list(): readonly AgentBinding[] { return this.bindings }
+  setDeliveryRetirement(retire: (batchIds: readonly string[]) => void): void { this.retireDeliveries = retire }
+  hasPendingTasks(): boolean { return this.bindings.some(binding => binding.task?.state === 'pending') || this.proactiveBindings.some(binding => binding.task.state === 'pending') }
   deliveryReady(): boolean { return !this.stopping && this.deliveryState?.phase === 'idle' && Date.now() - this.deliveryState.observedAt < 3000 }
   get token(): string { return this.secret }
   private save(bindings: AgentBinding[]): void {
@@ -318,9 +327,9 @@ export class DshAgentControl {
       }
     })
     this.save(bindings)
-    this.activeContext.clear(); this.contextScopes.clear()
     for (const [contextRef, scope] of scopes) { this.activeContext.set(contextRef, scope.agentId); this.contextScopes.set(contextRef, scope) }
     this.memoryBatch = structuredClone(batch)
+    this.batches.set(batch.batchId, structuredClone(batch))
     return results
   }
 
@@ -330,11 +339,12 @@ export class DshAgentControl {
     if (!isJsonObject(eating) || !exactRecord(eating, ['magic', 'protocolVersion', 'nonce', 'sessionId', 'batchId', 'digest']) || eating.magic !== 'eating-harness-delivery' || eating.protocolVersion !== 1 || !opaque(eating.nonce) || eating.sessionId !== body.agentId || typeof eating.batchId !== 'string' || !DIGEST.test(eating.batchId) || typeof eating.digest !== 'string' || !DIGEST.test(eating.digest)) fail('RESTORE_DELIVERY_INVALID', '恢复批次运输标识无效。')
     let expected: JsonObject | null
     try {
-      if (statSync(this.expectedFile).size > 8192) fail('RESTORE_DELIVERY_INVALID', '恢复批次元数据过大。')
-      expected = readRestrictedJson(this.expectedFile)
+      const expectedFile = join(this.file, '..', 'bridge', `expected-${eating.batchId}.json`)
+      if (statSync(expectedFile).size > 1024 * 1024) fail('RESTORE_DELIVERY_INVALID', '恢复批次元数据过大。')
+      expected = readRestrictedJson(expectedFile)
     } catch { fail('RESTORE_DELIVERY_INVALID', '恢复批次缺少有效的当前持久交接记录。') }
-    if (!exactRecord(expected, ['schemaVersion', 'nonce', 'sessionId', 'batchId', 'digest']) || expected.schemaVersion !== 1 || expected.nonce !== this.nonce || expected.sessionId !== body.agentId || expected.batchId !== eating.batchId || expected.digest !== eating.digest) fail('RESTORE_DELIVERY_INVALID', '恢复批次与当前持久交接记录不匹配。')
-    if (!exactRecord(context, ['contextRef', 'createdAt', 'reason', 'ownerRevision', 'conversations']) || context.contextRef !== eating.batchId || typeof context.createdAt !== 'string' || !Number.isFinite(Date.parse(context.createdAt)) || !['quiet-window', 'max-wait', 'max-messages', 'target-bytes'].includes(String(context.reason)) || !Number.isSafeInteger(context.ownerRevision) || Number(context.ownerRevision) < 0 || !Array.isArray(context.conversations) || !Array.isArray(events) || !events.length || !events.every(validRestoreEvent)) fail('RESTORE_DELIVERY_INVALID', '恢复批次上下文或消息来源形状无效。')
+    if (!exactRecord(expected, ['schemaVersion', 'nonce', 'sessionId', 'batchId', 'digest', 'ownerRevision', 'bindings']) || expected.schemaVersion !== 1 || expected.nonce !== this.nonce || expected.sessionId !== body.agentId || expected.batchId !== eating.batchId || expected.digest !== eating.digest) fail('RESTORE_DELIVERY_INVALID', '恢复批次与当前持久交接记录不匹配。')
+    if (!exactRecord(context, ['contextRef', 'createdAt', 'reason', 'ownerRevision', 'conversations']) || context.contextRef !== eating.batchId || typeof context.createdAt !== 'string' || !Number.isFinite(Date.parse(context.createdAt)) || context.reason !== 'aggregation-window' || !Number.isSafeInteger(context.ownerRevision) || Number(context.ownerRevision) < 0 || !Array.isArray(context.conversations) || !Array.isArray(events) || !events.length || !events.every(validRestoreEvent)) fail('RESTORE_DELIVERY_INVALID', '恢复批次上下文或消息来源形状无效。')
     const digest = createHash('sha256').update(JSON.stringify({ context, events })).digest('hex')
     if (digest !== expected.digest) fail('RESTORE_DELIVERY_INVALID', '恢复批次正文摘要与原始交接不匹配。')
     const groups = groupHarnessEvents(events), owner = this.host.readOwnerConfiguration(), conversations = context.conversations
@@ -355,12 +365,10 @@ export class DshAgentControl {
       if (!binding) fail('RESTORE_BINDING_UNAVAILABLE', '恢复批次缺少已登记的当前主 Agent 会话绑定，未创建新身份。')
       return { contextRef, binding }
     })
-    if (this.memoryBatch && this.memoryBatch.batchId !== eating.batchId) fail('RESTORE_DELIVERY_CONFLICT', '已有其他当前消息批次，未覆盖其上下文。')
-    if (!this.memoryBatch) {
+    if (!this.batches.has(String(eating.batchId))) {
       const batch: HarnessDeliveryBatch = { protocolVersion: 1, batchId: eating.batchId, conversationId: groups.length === 1 ? groups[0]![0]!.conversationId : null, createdAt: context.createdAt, reason: context.reason as HarnessDeliveryBatch['reason'], events }
       if (bindings.every(entry => entry.binding)) this.bindBatch(batch, body.agentId)
       else {
-        this.activeContext.clear(); this.contextScopes.clear()
         for (const [index, entry] of bindings.entries()) {
           if (!entry.binding) continue
           const group = groups[index]!, first = group[0]!, previous = entry.binding.scope
@@ -371,6 +379,7 @@ export class DshAgentControl {
           this.activeContext.set(entry.contextRef, scope.agentId); this.contextScopes.set(entry.contextRef, scope)
         }
         this.memoryBatch = structuredClone(batch)
+        this.batches.set(batch.batchId, structuredClone(batch))
       }
     }
     return { bindings: bindings.map(({ contextRef, binding, routingError }): JsonObject => binding ? { contextRef, agentId: binding.scope.agentId, agentTypeId: binding.scope.agentTypeId, label: agentInstanceLabel(binding.scope, owner.agentTypes.find(type => type.id === binding.scope.agentTypeId)?.pluginName) } : { contextRef, routingError: { ...routingError } }) }
@@ -388,7 +397,7 @@ export class DshAgentControl {
     }
     if (operation === 'start') {
       if (Object.keys(body).some(key => !['agentId', 'turnId', 'contextRef', 'messages', 'autonomous', 'query'].includes(key))) fail('MEMORY_CONTEXT_INVALID', '记忆请求字段无效。')
-      const batch = body.contextRef === undefined ? undefined : this.memoryBatch
+      const batch = body.contextRef === undefined ? undefined : this.batches.get(String(body.contextRef))
       if (body.contextRef !== undefined && (agentId !== this.rootId() || !batch || body.contextRef !== batch.batchId || body.messages !== undefined || body.query !== undefined || body.autonomous !== undefined)) fail('MEMORY_CONTEXT_INVALID', '记忆上下文与真实入站批次不匹配。')
       if (!batch && (!Array.isArray(body.messages) || body.messages.length > 100 || body.messages.some(message => !isJsonObject(message) || message.role !== 'user' || typeof message.text !== 'string' || message.text.length > 32768 || typeof message.timestamp !== 'string' || !Number.isFinite(Date.parse(message.timestamp))) || body.autonomous !== undefined && typeof body.autonomous !== 'boolean' || body.query !== undefined && (typeof body.query !== 'string' || body.query.length > 4000))) fail('MEMORY_CONTEXT_INVALID', '原生记忆消息无效。')
       this.memoryTurns.set(agentId, turnId)
@@ -399,8 +408,11 @@ export class DshAgentControl {
     }
     if (this.memoryTurns.get(agentId) !== turnId) return { accepted: false }
     if (operation === 'append') {
-      if (Object.keys(body).length !== 3 || !Array.isArray(body.messages) || body.messages.length > 100 || body.messages.some(message => !isJsonObject(message) || message.role !== 'user' || typeof message.text !== 'string' || message.text.length > 32768 || typeof message.timestamp !== 'string' || !Number.isFinite(Date.parse(message.timestamp)))) fail('MEMORY_CONTEXT_INVALID', '追加的原生记忆消息无效。')
-      const recalled = await this.host.memory.append({ agentId, turnId, messages: body.messages as unknown as import('@eating/plugin-sdk').MemoryMessage[] }, signal)
+      const batch = body.contextRef === undefined ? undefined : this.batches.get(String(body.contextRef))
+      if (Object.keys(body).length !== 3 || (body.contextRef !== undefined
+        ? agentId !== this.rootId() || !batch || body.messages !== undefined
+        : !Array.isArray(body.messages) || body.messages.length > 100 || body.messages.some(message => !isJsonObject(message) || message.role !== 'user' || typeof message.text !== 'string' || message.text.length > 32768 || typeof message.timestamp !== 'string' || !Number.isFinite(Date.parse(message.timestamp))))) fail('MEMORY_CONTEXT_INVALID', '追加的记忆来源或原生消息无效。')
+      const recalled = await this.host.memory.append({ agentId, turnId, ...(batch ? { batch } : { messages: body.messages as unknown as import('@eating/plugin-sdk').MemoryMessage[] }) }, signal)
       return { text: recalled.text, items: recalled.items as unknown as JsonValue[], ...(recalled.errors?.length ? { errors: [...recalled.errors] } : {}) }
     }
     if (operation === 'finish') {
@@ -448,6 +460,39 @@ export class DshAgentControl {
           response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result)); return
         }
         if (!isJsonObject(body) || !opaque(body.agentId)) fail('CONTROL_REQUEST_INVALID', '运行时请求无效。')
+        if (request.url === '/tasks') {
+          if (body.agentId !== this.rootId() || !exactRecord(body, ['agentId'], ['taskId']) || body.taskId !== undefined && (typeof body.taskId !== 'string' || !DIGEST.test(body.taskId))) fail('AGENT_SCOPE_INVALID', '任务状态只供当前主 Agent 查询。')
+          const tasks = [
+            ...this.bindings.filter(binding => binding.parentId === body.agentId).flatMap(binding => binding.taskRefs.map(task => ({ taskId: task.taskId, childId: binding.scope.agentId, contextRef: task.contextRef, status: task.state === 'pending' ? 'running' : task.state, summary: '', actions: [] }))),
+            ...this.proactiveBindings.filter(binding => binding.parentId === body.agentId).flatMap(binding => binding.taskRefs.map(task => ({ taskId: task.taskId, childId: binding.agentId, contextRef: task.contextRef, status: task.state === 'pending' ? 'running' : task.state, summary: '', actions: [] }))),
+          ].filter(task => body.taskId === undefined || task.taskId === body.taskId)
+          if (body.taskId !== undefined && !tasks.length) fail('AGENT_TASK_UNAVAILABLE', '任务不属于当前主 Agent。')
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify({ tasks: body.taskId !== undefined ? tasks : [...tasks.filter(task => task.status === 'running'), ...tasks.filter(task => task.status !== 'running').slice(-Math.max(0, 256 - tasks.filter(task => task.status === 'running').length))] })); return
+        }
+        if (request.url === '/append-task') {
+          if (body.agentId !== this.rootId() || !exactRecord(body, ['agentId', 'taskId', 'contextRef']) || typeof body.taskId !== 'string' || !DIGEST.test(body.taskId) || typeof body.contextRef !== 'string' || !DIGEST.test(body.contextRef)) fail('AGENT_SCOPE_INVALID', '追加消息必须来自当前主 Agent。')
+          const binding = this.bindings.find(entry => entry.parentId === body.agentId && entry.task?.taskId === body.taskId)
+          const proactive = this.proactiveBindings.find(entry => entry.parentId === body.agentId && entry.task.taskId === body.taskId)
+          const addition = this.contextScopes.get(body.contextRef), task = binding?.task ?? proactive?.task
+          const source = this.taskScopes.get(body.taskId), mode = this.taskModes.get(body.taskId)
+          if (!task || task.state !== 'pending' || task.nonce !== this.nonce || !source || !mode || !addition || this.activeContext.get(body.contextRef) !== source.agentId || conversationIdentity(String(body.agentId), addition) !== conversationIdentity(String(body.agentId), source) || addition.conversationId !== source.conversationId) fail('AGENT_TASK_CONTEXT_MISMATCH', '只能给运行中的任务追加同一真实账号、会话、目标和类型的消息。')
+          const scope: AgentInvocationScope = { ...source, messageIds: [...new Set([...source.messageIds, ...addition.messageIds])], resourceIds: [...new Set([...source.resourceIds, ...addition.resourceIds])] }
+          if (scope.messageIds.length > 100000 || scope.resourceIds.length > 100000) fail('AGENT_SCOPE_CAPACITY', '任务引用达到容量，未扩展权限。')
+          this.host.extendAgentScope(scope)
+          if (binding) this.replace({ ...binding, scope })
+          this.taskScopes.set(task.taskId, scope)
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify({ accepted: true })); return
+        }
+        if (request.url === '/retire-deliveries') {
+          if (body.agentId !== this.rootId() || !exactRecord(body, ['agentId', 'batchIds']) || !Array.isArray(body.batchIds) || body.batchIds.length > 32 || body.batchIds.some(id => typeof id !== 'string' || !DIGEST.test(id))) fail('AGENT_SCOPE_INVALID', '批次清理请求无效。')
+          const ids = body.batchIds as string[]
+          const refs = [...this.contextScopes.keys()].filter(ref => ids.some(id => { const batch = this.batches.get(id); return batch && groupHarnessEvents(batch.events).some((events, _, groups) => conversationContextRef(id, events[0]!, groups.length === 1) === ref) }))
+          if (this.bindings.some(binding => binding.task?.state === 'pending' && refs.includes(binding.task.contextRef))) fail('AGENT_TASK_PENDING', '批次仍有运行中的任务，未清理。')
+          this.retireDeliveries(ids)
+          for (const ref of refs) { this.activeContext.delete(ref); this.contextScopes.delete(ref) }
+          for (const id of ids) this.batches.delete(id)
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify({ retired: ids })); return
+        }
         if (request.url?.startsWith('/memory-')) {
           const result = await this.memoryRequest(request.url.slice('/memory-'.length), body, controller.signal)
           response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result)); return
@@ -475,7 +520,7 @@ export class DshAgentControl {
           const current = this.contactTurn
           if (current && current.turn <= Number(body.turn)) {
             if (current.turn === body.turn && body.cycleId !== null && current.id !== body.cycleId) fail('CONTACT_TURN_INVALID', '联系轮次结束引用无效。')
-            this.contactTurn = null; this.revokeProactive(current.id)
+            this.contactTurn = null
           }
           // Also close an uncertain start whose response was lost. The native turn
           // tombstone rejects a delayed start without touching any newer turn.
@@ -515,6 +560,7 @@ export class DshAgentControl {
             if (task.state !== 'pending') fail('PROACTIVE_TASK_UNKNOWN', '主动任务已撤销或待核对，迟到回执不能覆盖。')
             const timer = this.contactTimers.get(proactive.agentId); if (timer) clearTimeout(timer); this.contactTimers.delete(proactive.agentId)
             this.host.revokeAgentAccess(proactive.agentId); this.actionBaselines.delete(proactive.agentId)
+            this.taskScopes.delete(task.taskId); this.taskModes.delete(task.taskId); this.autonomousTasks.delete(task.taskId)
             this.setProactiveState(proactive, body.status as 'completed'); this.saveProactive(); result = { ok: true }
           }
           response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result)); return
@@ -565,6 +611,8 @@ export class DshAgentControl {
             mcp = this.host.getMcpConnection(binding.scope.pluginId, invocationScope)
             capabilities = this.host.getCapabilityMcpConnections({ agentId: binding.scope.agentId, agentTypeId: type.id, source: invocationScope, ...(readOnly ? { readOnly: true } : {}) })
             this.replace({ ...binding, configurationRevision: preview.revision, task, taskRefs: [...retained, task] })
+            this.taskScopes.set(task.taskId, invocationScope)
+            this.taskModes.set(task.taskId, body.mode as 'reply' | 'verify')
           } catch (error) { this.host.revokeAgentAccess(binding.scope.agentId); throw error }
           const beforeActions = this.host.readAgentActions(binding.scope.agentId)
           this.actionBaselines.set(binding.scope.agentId, new Map(beforeActions.map(action => [action.requestId, JSON.stringify(action)])))
@@ -580,6 +628,7 @@ export class DshAgentControl {
           if (Object.keys(body).some(key => !['agentId', 'contextRef', 'status', 'taskId'].includes(key)) || typeof body.taskId !== 'string' || !DIGEST.test(body.taskId) || !['completed', 'failed', 'unknown'].includes(String(body.status)) || binding.task?.nonce !== this.nonce || binding.task.contextRef !== body.contextRef || binding.task.taskId !== body.taskId || binding.task.state !== 'pending') fail('CONTROL_REQUEST_INVALID', '运行时任务状态无效。')
           this.host.revokeAgentAccess(binding.scope.agentId)
           this.actionBaselines.delete(binding.scope.agentId)
+          this.taskScopes.delete(binding.task.taskId); this.taskModes.delete(binding.task.taskId)
           const task: AgentTaskReference = { ...binding.task, state: body.status as 'completed' | 'failed' | 'unknown' }
           this.replace({ ...binding, task, taskRefs: binding.taskRefs.map(reference => reference.contextRef === task.contextRef && reference.taskId === task.taskId ? task : reference) })
           result = { ok: true }
@@ -611,7 +660,7 @@ export class DshAgentControl {
     this.capabilityAgents.clear()
     for (const controller of this.active) controller.abort()
     for (const binding of this.bindings) this.host.revokeAgentAccess(binding.scope.agentId)
-    const server = this.server; this.server = null; this.activeContext.clear(); this.contextScopes.clear(); this.url = ''; this.secret = ''
+    const server = this.server; this.server = null; this.activeContext.clear(); this.contextScopes.clear(); this.batches.clear(); this.taskScopes.clear(); this.taskModes.clear(); this.autonomousTasks.clear(); this.url = ''; this.secret = ''
     if (server) { const closed = new Promise<void>((accept, reject) => server.close(error => error ? reject(error) : accept())); server.closeAllConnections(); await closed }
     if (persistenceError) throw persistenceError
   }

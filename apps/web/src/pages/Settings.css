@@ -18,7 +18,8 @@
 .settings-field { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 0 24px; margin-bottom: 23px; }
 .settings-field > label { padding-top: 9px; font-size: 13px; font-weight: 550; }
 .settings-field-content { min-width: 0; }
-.settings-field input, .settings-field select { width: 100%; min-width: 0; max-width: 670px; height: 42px; padding: 8px 12px; border: 1px solid var(--color-line-input); border-radius: 5px; background: var(--color-surface); color: var(--color-ink); font-size: 13px; }
+.settings-field input[type="checkbox"] { display: block; width: 18px; height: 18px; margin: 11px 0; padding: 0; accent-color: var(--color-primary); cursor: pointer; }
+.settings-field input:not([type="checkbox"]), .settings-field select { width: 100%; min-width: 0; max-width: 670px; height: 42px; padding: 8px 12px; border: 1px solid var(--color-line-input); border-radius: 5px; background: var(--color-surface); color: var(--color-ink); font-size: 13px; }
 .settings-field input:hover, .settings-field select:hover { border-color: var(--color-line-input-hover); }
 .settings-field input:focus, .settings-field select:focus { border-color: var(--color-primary); }
 .settings-field input:disabled, .settings-field select:disabled { background: var(--color-surface-sunken); color: var(--color-muted); cursor: not-allowed; }

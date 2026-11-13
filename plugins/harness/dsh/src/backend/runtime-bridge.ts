@@ -44,10 +44,11 @@ export function apply(ctx) {
 
   let disposed = false;
   let failed = false;
-  let acknowledgedBatch;
+  const acknowledgedBatches = new Set();
   let activeAck;
   let sessionBarrier;
-  let restoredDelivery;
+  const restoredDeliveries = new Map();
+  const recoveredTaskNotices = new Set();
   const releases = [];
   const initialization = new AbortController();
 
@@ -56,7 +57,7 @@ export function apply(ctx) {
     if (!actual.isDirectory() || actual.isSymbolicLink() || actual.dev !== directoryStat.dev || actual.ino !== directoryStat.ino || realpathSync(directory) !== directory) throw bridgeError('BRIDGE_FILE_FAILED');
   }
   function filePath(filename) {
-    if (basename(filename) !== filename || !/^(?:owner-policy|expected|ready|session-ready|native-web-ready|error)\.json$|^ack-[a-f0-9]{64}\.json$|^\.[a-z-]+-[a-f0-9-]{36}\.tmp$/.test(filename)) throw bridgeError('BRIDGE_FILE_FAILED');
+    if (basename(filename) !== filename || !/^(?:owner-policy|expected|deliveries|async-outbox|ready|session-ready|native-web-ready|error)\.json$|^(?:ack|expected)-[a-f0-9]{64}\.json$|^\.[a-z-]+-[a-f0-9-]{36}\.tmp$/.test(filename)) throw bridgeError('BRIDGE_FILE_FAILED');
     const file = resolve(directory, filename);
     if (dirname(file) !== directory) throw bridgeError('BRIDGE_FILE_FAILED');
     return file;
@@ -129,13 +130,21 @@ export function apply(ctx) {
     if (!record(policy) || policy.schemaVersion !== 1 || !Number.isSafeInteger(policy.revision) || policy.revision < 0 || typeof policy.systemPrompt !== 'string' || policy.systemPrompt.length > 250000 || !Array.isArray(policy.agentTypes) || policy.agentTypes.length > 100) throw bridgeError('OWNER_POLICY_INVALID');
     return policy;
   }
-  function readExpected() {
+  function readExpected(batchId) {
     let expected;
-    try { expected = readJson('expected.json', true, 8192); }
+    try { expected = readJson(batchId ? 'expected-' + batchId + '.json' : 'expected.json', true, 1024 * 1024); }
     catch { throw bridgeError('EXPECTED_DELIVERY_INVALID'); }
     if (expected === undefined) return undefined;
     if (!record(expected) || expected.schemaVersion !== 1 || expected.nonce !== nonce || expected.sessionId !== sessionId || !HEX.test(expected.batchId) || !HEX.test(expected.digest)) throw bridgeError('EXPECTED_DELIVERY_INVALID');
     return expected;
+  }
+  function expectedForMessage(message) {
+    if (!record(message) || !Array.isArray(message.content)) return undefined;
+    try {
+      const payload = JSON.parse(message.content.filter(block => block.type === 'text').map(block => block.text).join(''));
+      const batchId = payload?.eating?.batchId;
+      return HEX.test(batchId) ? readExpected(batchId) : undefined;
+    } catch { return undefined; }
   }
   function sameExpected(left, right) {
     return left && right && left.nonce === right.nonce && left.sessionId === right.sessionId && left.batchId === right.batchId && left.digest === right.digest;
@@ -153,18 +162,21 @@ export function apply(ctx) {
     return digest === expected.digest ? { messageId: message.id } : undefined;
   }
   function identifyCurrentDelivery(message, expected) {
-    return identifyMessage(message, expected, false) || (restoredDelivery?.batchId === expected.batchId && restoredDelivery.messageId === message.id ? identifyMessage(message, expected, true) : undefined);
+    return identifyMessage(message, expected, false) || (restoredDeliveries.get(expected.batchId)?.messageId === message.id ? identifyMessage(message, expected, true) : undefined);
   }
   async function restorePendingDelivery(agent) {
-    const expected = readExpected();
-    if (!expected || restoredDelivery?.batchId !== expected.batchId) return;
-    const message = [...agent.inbox.nextTurn, ...agent.inbox.nextStep].find(candidate => candidate.id === restoredDelivery.messageId && identifyMessage(candidate, expected, true));
-    if (!message) return;
+    let pending = false;
+    for (const [batchId, recovered] of restoredDeliveries) {
+      const expected = readExpected(batchId);
+      const restored = await control('restore-delivery', { agentId: sessionId, payload: recovered.payload }, AbortSignal.any([initialization.signal, AbortSignal.timeout(10000)]));
+      if (!expected || !Array.isArray(restored.bindings)) throw bridgeError('SESSION_RECOVERY_FAILED');
+      acceptContext(recovered.message, expected);
+      pending ||= [...agent.inbox.nextTurn, ...agent.inbox.nextStep].some(message => message.id === recovered.messageId);
+    }
+    await restoreTaskOutbox(agent);
+    if (!pending && !agent.inbox.nextTurn.length && !agent.inbox.nextStep.length) return;
     if (typeof agent.send !== 'function' || typeof agent.inbox.remove !== 'function') throw bridgeError('NATIVE_AGENT_API_UNAVAILABLE');
-    const payload = JSON.parse(message.content.map(block => block.text).join(''));
-    const restored = await control('restore-delivery', { agentId: sessionId, payload }, AbortSignal.any([initialization.signal, AbortSignal.timeout(10000)]));
-    if (disposed || failed || initialization.signal.aborted || ctx.agents.get(sessionId) !== agent || !sameExpected(expected, readExpected()) || !Array.isArray(restored.bindings)) throw bridgeError('SESSION_RECOVERY_FAILED');
-    atomicJson('owner-policy.json', { ...readValidatedOwnerPolicy(), contextRef: expected.batchId, bindings: restored.bindings });
+    if (disposed || failed || initialization.signal.aborted || ctx.agents.get(sessionId) !== agent) throw bridgeError('SESSION_RECOVERY_FAILED');
     const Llm = await loadModule('@deepseek-ai/dsh-llm');
     const sentinel = Llm.createUserMessage({ content: [{ type: 'text', text: 'Resume the verified unclaimed inbox.' }], source: { kind: 'plugin:eating-recovery' } });
     agent.send(sentinel, 'next-step', true);
@@ -173,11 +185,11 @@ export function apply(ctx) {
   async function classifyDelivery({ agent }, next) {
     const decision = await next();
     if (disposed || failed || agent.id !== sessionId || decision.kind !== 'enter') return decision;
-    const expected = readExpected();
-    if (!expected) return decision;
     // The SDK transport always enqueues kind=user. Attribute only the verified
     // external batch at the public admission boundary, preserving its receipt ID.
     return { ...decision, messages: decision.messages.map(message => {
+      const expected = expectedForMessage(message);
+      if (!expected) return message;
       if (!identifyCurrentDelivery(message, expected)) return message;
       acceptContext(message, expected);
       return { ...message, source: { kind: 'eating-external', batchId: expected.batchId } };
@@ -192,9 +204,9 @@ export function apply(ctx) {
     return undefined;
   }
   function writeAck(expected, found) {
-    if (disposed || failed || !sameExpected(expected, readExpected())) return;
+    if (disposed || failed || !sameExpected(expected, readExpected(expected.batchId))) return;
     atomicJson('ack-' + expected.batchId + '.json', { schemaVersion: 1, nonce, batchId: expected.batchId, sessionId, messageId: found.messageId, eventSeq: found.eventSeq, digest: expected.digest });
-    acknowledgedBatch = expected.batchId;
+    acknowledgedBatches.add(expected.batchId);
   }
   async function confirmSession(session) {
     await Promise.resolve();
@@ -210,22 +222,26 @@ export function apply(ctx) {
     sessionBarrier = confirmSession(session).finally(() => { sessionBarrier = undefined; });
   }
   function onEvent(session, event) {
-    if (disposed || failed || !session || session.id !== sessionId || activeAck) return;
+    if (disposed || failed || !session || session.id !== sessionId) return;
     let expected;
     let found;
     try {
-      expected = readExpected();
-      if (!expected || acknowledgedBatch === expected.batchId) return;
-      found = matchEvent(event, expected, false);
+      if (event.type !== 'agent/inbox/spliced' || !Array.isArray(event.data?.inserted)) return;
+      for (const message of event.data.inserted) {
+        expected = expectedForMessage(message);
+        if (!expected || acknowledgedBatches.has(expected.batchId)) continue;
+        found = matchEvent(event, expected, false);
+        if (found) break;
+      }
     } catch (error) { fail(failureCode(error, 'BRIDGE_FILE_FAILED')); return; }
     if (!found) return;
-    activeAck = (async () => {
+    activeAck = (activeAck || Promise.resolve()).then(async () => {
       // Every other synchronous session/event observer gets to enqueue this append first.
       await Promise.resolve();
       if (disposed || failed) return;
       if (await ctx.sessions.flush(session) !== true) throw bridgeError('DURABILITY_UNAVAILABLE');
       if (!disposed && !failed) writeAck(expected, found);
-    })().catch((error) => fail(failureCode(error, 'DURABILITY_FAILED'))).finally(() => { activeAck = undefined; });
+    }).catch((error) => fail(failureCode(error, 'DURABILITY_FAILED')));
   }
   function assertNoGlobalTools() {
     const schemas = ctx.tools.schemas();
@@ -233,6 +249,8 @@ export function apply(ctx) {
   }
   async function inspectStoredSession() {
     const expected = readExpected();
+    const registry = readJson('deliveries.json', true, 1024 * 1024);
+    const frames = registry?.deliveries?.map(frame => readExpected(frame.batchId)) || [];
     let handle;
     try { handle = await ctx.sessionPersistence.open(sessionId, 'read', { signal: initialization.signal }); }
     catch (error) {
@@ -241,7 +259,8 @@ export function apply(ctx) {
     }
     try {
       if (!handle || !record(handle.header) || handle.header.id !== sessionId || typeof handle.read !== 'function' || typeof handle.close !== 'function') throw bridgeError('SESSION_RECOVERY_FAILED');
-      let recovered;
+      const recovered = new Map();
+      const pendingNotices = new Set(taskOutbox().results.map(result => 'eating-task-' + result.taskId));
       let offset = 0;
       for (;;) {
         if (disposed || failed) return { recovery: 'absent' };
@@ -250,17 +269,25 @@ export function apply(ctx) {
         for (const event of slice.events) {
           if (!Number.isSafeInteger(event.seq) || event.seq !== offset) throw bridgeError('SESSION_RECOVERY_FAILED');
           offset += 1;
-          if (expected && !recovered) recovered = matchEvent(event, expected, true);
+          if (event.type === 'agent/inbox/spliced' && Array.isArray(event.data?.inserted)) for (const message of event.data.inserted) if (message.source?.kind === 'plugin:eating-task-result' && pendingNotices.has(message.id)) recoveredTaskNotices.add(message.id);
+          for (const frame of frames) if (!recovered.has(frame.batchId)) {
+            const found = matchEvent(event, frame, true);
+            if (found) {
+              const message = event.data.inserted.find(message => message.id === found.messageId);
+              recovered.set(frame.batchId, { ...found, message, payload: JSON.parse(message.content.map(block => block.text).join('')) });
+            }
+          }
         }
         if (slice.events.length < 256) break;
       }
       if (!disposed && !failed) {
         atomicJson('session-ready.json', { schemaVersion: 1, nonce, sessionId });
-        if (recovered && sameExpected(expected, readExpected())) {
-          restoredDelivery = { batchId: expected.batchId, messageId: recovered.messageId };
-          writeAck(expected, recovered);
-          return { recovery: 'persisted', batchId: expected.batchId };
+        for (const frame of frames) {
+          const found = recovered.get(frame.batchId);
+          if (!found) throw bridgeError('SESSION_RECOVERY_FAILED');
+          restoredDeliveries.set(frame.batchId, found); writeAck(frame, found);
         }
+        if (expected && recovered.has(expected.batchId)) return { recovery: 'persisted', batchId: expected.batchId };
       }
       return { recovery: 'absent' };
     } finally { await handle.close(); }

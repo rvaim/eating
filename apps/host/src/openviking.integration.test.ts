@@ -22,6 +22,7 @@ function object(value: unknown): JsonObject { if (!isJsonObject(value)) throw ne
 async function until(test: () => boolean | Promise<boolean>, label: string) { const deadline = Date.now() + 20000; while (Date.now() < deadline) { if (await test()) return; await new Promise(resolve => setTimeout(resolve, 40)) }; throw new Error(label) }
 async function home() { const parent = await realpath(tmpdir()), directory = await realpath(await mkdtemp(join(parent, 'Eating_openviking_'))); stops.push(async () => { if (await realpath(directory) !== directory || dirname(directory) !== parent || !basename(directory).startsWith('Eating_openviking_')) throw new Error('Unsafe cleanup'); await rm(directory, { recursive: true }) }); return directory }
 async function ownerApi(host: EatingHost) {
+  host.store.updateDeliverySettings({ ...host.store.getDeliverySettings(), aggregationWindowMs: 0 }, host.store.getDeliverySettingsSnapshot().revision)
   const url = await host.listen(), boot = await fetch(url + '/api/bootstrap'), csrf = object(await boot.json()).csrfToken, cookie = boot.headers.get('set-cookie')!.split(';')[0]!
   return async (path: string, body?: JsonObject) => { const response = await fetch(url + '/api' + path, { method: body ? 'POST' : 'GET', headers: { Cookie: cookie, 'X-Eating-CSRF': String(csrf), 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }); const value = object(await response.json()); if (!response.ok) throw new Error(path + ' ' + JSON.stringify(value)); return value }
 }
@@ -32,13 +33,13 @@ async function configureMemory(api: Awaited<ReturnType<typeof ownerApi>>, servic
 function expectMainMemoryTools(request: JsonObject) {
   if (!Array.isArray(request.tools)) throw new Error('Expected current main tools')
   const names = request.tools.map(tool => String(object(object(tool).function).name)).sort()
-  const eating = ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task']
+  const eating = ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_task_control']
   const memory = ['memory_search', 'memory_read', 'memory_save', 'memory_scopes'].map(name => 'mcp__plugin_openviking_memory__' + name)
   expect(names.filter(name => name.startsWith('eating_') || name.startsWith('mcp__'))).toEqual([...eating, ...memory].sort())
   expect(names.filter(name => !name.startsWith('eating_') && !name.startsWith('mcp__'))).toEqual([])
   expect(names.some(name => name.startsWith('mcp__qq__'))).toBe(false)
 }
-function batch(kind: 'private' | 'group', senderId = '200'): HarnessDeliveryBatch { const conversationId = `qq:100:${kind}:200`, stamp = new Date().toISOString(); return { protocolVersion: 1, batchId: 'a'.repeat(64), conversationId, createdAt: stamp, reason: 'quiet-window', events: [{ protocolVersion: 1, eventId: 'event', pluginId: 'qq', instanceId: 'fixture', platform: 'qq', accountId: '100', conversationId, senderId, targetId: '200', receivedAt: stamp, source: { trust: 'external', kind, senderRole: 'owner' }, content: 'fixture', text: 'fixture' }] } }
+function batch(kind: 'private' | 'group', senderId = '200'): HarnessDeliveryBatch { const conversationId = `qq:100:${kind}:200`, stamp = new Date().toISOString(); return { protocolVersion: 1, batchId: 'a'.repeat(64), conversationId, createdAt: stamp, reason: 'aggregation-window', events: [{ protocolVersion: 1, eventId: 'event', pluginId: 'qq', instanceId: 'fixture', platform: 'qq', accountId: '100', conversationId, senderId, targetId: '200', receivedAt: stamp, source: { trust: 'external', kind, senderRole: 'owner' }, content: 'fixture', text: 'fixture' }] } }
 
 describe('real Host default access and scoped OpenViking MCP', () => {
   it('opens current tools by default, binds them to the current main turn and isolates group reads', async () => {

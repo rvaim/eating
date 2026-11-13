@@ -225,6 +225,11 @@ export class DshAutonomy {
     const s = this.document.state, cycle = s.active
     if (!cycle || cycle.id !== cycleId || cycle.nonce !== nonce) return { accepted: false }
     if (code !== null && !/^[A-Z][A-Z0-9_]{0,99}$/.test(code)) fail('INVALID_AUTONOMY_INPUT')
+    // Revocation can finish a child before the native driver's next heartbeat.
+    // Settle from current authority so a late normal turn/end cannot undo pause.
+    if (outcome === 'completed' && (s.ownerPaused || !this.document.configuration.enabled || cycle.configurationRevision !== this.document.revision)) {
+      outcome = 'cancelled'; code = s.ownerPaused ? 'AUTONOMY_OWNER_PAUSED' : 'AUTONOMY_CYCLE_REVOKED'
+    }
     s.runUsedMs += this.elapsed(cycle)
     s.active = null; s.lastOutcome = outcome; s.lastFinishedAt = this.clock()
     s.history.push({ cycleId, startedAt: cycle.startedAt, finishedAt: s.lastFinishedAt, outcome, code }); s.history = s.history.slice(-20)

@@ -39,6 +39,7 @@ export function apply(ctx) {
   let readyError = null;
   let server;
   let mutation = false;
+  let deliveryHandler;
   const results = new Map();
   const restrictions = new Map();
   const scopedNativeTools = new WeakMap();
@@ -142,6 +143,7 @@ export function apply(ctx) {
   }
   const toolReport = (type, names) => ({ agentTypeId: type, nativeTools: names.filter(name => !name.startsWith('mcp__') && !name.startsWith('eating_')), mcpTools: names.filter(name => name.startsWith('mcp__')) });
   ctx.provide('eatingNativeCapabilities', { mount, restrict, allowedGlobal: nativeToolNames,
+    deliveryHandler(handler) { deliveryHandler = handler; },
     reportTools(agent, type, names) {
       const local = new Map();
       for (const name of names) {
@@ -205,6 +207,11 @@ export function apply(ctx) {
     ...(result.restartReason ? { restartReason: result.restartReason } : {}), ...(result.pendingBuilds?.length ? { pendingBuilds: result.pendingBuilds } : {}),
     ...(result.packageResult ? { package: { exitCode: result.packageResult.exitCode, kind: result.packageResult.kind || null, timedOut: result.packageResult.timedOut === true } } : {}) });
   async function dispatch(operation, input, signal) {
+    if (operation === 'append-delivery') {
+      fields(input, ['batchId', 'content']);
+      if (managementOnly || typeof deliveryHandler !== 'function' || !/^[a-f0-9]{64}$/.test(input.batchId) || typeof input.content !== 'string') invalid('NATIVE_DELIVERY_UNAVAILABLE');
+      return deliveryHandler(input, signal);
+    }
     if (operation === 'list') { fields(input, []); return list(); }
     if (operation === 'validate') { fields(input, ['configuration']); if (!managementOnly) invalid('NATIVE_STOP_FIRST'); return validate(input.configuration); }
     if (operation === 'inspect') {
@@ -266,7 +273,7 @@ export function apply(ctx) {
       const authorization = request.headers.authorization, expected = 'Bearer ' + secret;
       if (disposed || request.method !== 'POST' || request.url !== '/' || request.headers['x-eating-runtime'] !== nonce || typeof authorization !== 'string' || Buffer.byteLength(authorization) !== Buffer.byteLength(expected) || !timingSafeEqual(Buffer.from(authorization), Buffer.from(expected))) { response.writeHead(403); response.end(); return; }
       const chunks = []; let length = 0;
-      for await (const chunk of request) { length += chunk.length; if (length > 512 * 1024) invalid(); chunks.push(chunk); }
+      for await (const chunk of request) { length += chunk.length; if (length > (request.headers['x-eating-delivery'] === 'true' ? 101 * 1024 * 1024 : 512 * 1024)) invalid(); chunks.push(chunk); }
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8')); fields(body, ['protocolVersion', 'operation', 'input']);
       if (body.protocolVersion !== 1 || typeof body.operation !== 'string' || !record(body.input)) invalid();
       const result = await dispatch(body.operation, body.input, abort.signal);

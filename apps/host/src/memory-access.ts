@@ -3,7 +3,7 @@ import { groupHarnessEvents, PlatformError } from '@eating/plugin-sdk'
 import type { BackendPlugin, HarnessMemoryServices, MemoryAppendInput, MemoryBeginInput, MemoryContext, MemoryFinishInput, MemoryFlushInput, MemoryMessage, MemoryRecallResult } from '@eating/plugin-sdk'
 
 interface Source { readonly context: MemoryContext; readonly messages: readonly MemoryMessage[]; readonly label: string }
-interface Flight { readonly context: MemoryContext; current: MemoryContext | null; readonly sources: readonly Source[]; steering: MemoryMessage[]; readonly abort: AbortController }
+interface Flight { readonly context: MemoryContext; current: MemoryContext | null; sources: Source[]; readonly batches: Set<string>; steering: MemoryMessage[]; readonly abort: AbortController }
 interface Options { plugins(): Iterable<BackendPlugin>; enabled(id: string): boolean }
 const empty = (): MemoryRecallResult => ({ text: '', items: [] })
 const identifier = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\u0000-\u001f\u007f]/.test(value)
@@ -51,12 +51,7 @@ export class MemoryAccess {
   services(harnessId: string): HarnessMemoryServices {
     return { begin: (input, signal) => this.begin(harnessId, input, signal), append: (input, signal) => this.append(harnessId, input, signal), finish: input => this.finish(harnessId, input), flush: input => this.flush(harnessId, input), end: (agentId, turnId) => this.end(harnessId, agentId, turnId) }
   }
-  private async begin(harnessId: string, input: MemoryBeginInput, signal?: AbortSignal): Promise<MemoryRecallResult> {
-    if (!this.options.enabled(harnessId) || !identifier(input.agentId) || input.agentTypeId !== 'main' || !identifier(input.turnId)) return invalid()
-    const key = this.key(harnessId, input.agentId), previous = this.flights.get(key)
-    if (previous?.context.turnId === input.turnId) return empty()
-    if (previous) { previous.abort.abort(); this.flights.delete(key) }
-    if (this.flights.size >= 512) throw new PlatformError('MEMORY_CAPACITY', '当前记忆会话数量达到容量上限。', 429, 'not-sent')
+  private sources(input: MemoryBeginInput): Source[] {
     const sources: Source[] = []
     if (input.batch) {
       const batch = input.batch
@@ -83,8 +78,17 @@ export class MemoryAccess {
       const scope = selfScope(input.autonomous !== true)
       sources.push({ context: { agentId: input.agentId, agentTypeId: 'main', turnId: input.turnId, scope }, messages: messages(input.messages ?? []).filter(message => message.role === 'user'), label: label(scope) })
     }
+    return sources
+  }
+  private async begin(harnessId: string, input: MemoryBeginInput, signal?: AbortSignal): Promise<MemoryRecallResult> {
+    if (!this.options.enabled(harnessId) || !identifier(input.agentId) || input.agentTypeId !== 'main' || !identifier(input.turnId)) return invalid()
+    const key = this.key(harnessId, input.agentId), previous = this.flights.get(key)
+    if (previous?.context.turnId === input.turnId) return empty()
+    if (previous) { previous.abort.abort(); this.flights.delete(key) }
+    if (this.flights.size >= 512) throw new PlatformError('MEMORY_CAPACITY', '当前记忆会话数量达到容量上限。', 429, 'not-sent')
+    const sources = this.sources(input)
     const context = sources[0]!.context, abort = new AbortController()
-    const flight: Flight = { context, current: sources.length === 1 ? context : null, sources, steering: [], abort }
+    const flight: Flight = { context, current: sources.length === 1 ? context : null, sources, batches: new Set(input.batch ? [input.batch.batchId] : []), steering: [], abort }
     this.flights.set(key, flight)
     const results: MemoryRecallResult[] = []
     for (const source of sources) {
@@ -97,6 +101,22 @@ export class MemoryAccess {
   private async append(harnessId: string, input: MemoryAppendInput, signal?: AbortSignal): Promise<MemoryRecallResult> {
     const key = this.key(harnessId, input.agentId), flight = this.flights.get(key)
     if (!flight || flight.context.turnId !== input.turnId || flight.abort.signal.aborted || !this.options.enabled(harnessId)) return empty()
+    if (input.batch) {
+      if (input.messages !== undefined) return invalid()
+      if (flight.batches.has(input.batch.batchId)) return empty()
+      if (flight.batches.size >= 32) throw new PlatformError('MEMORY_CAPACITY', '当前轮次的记忆批次数达到上限。', 429, 'not-sent')
+      const additions = this.sources({ agentId: input.agentId, agentTypeId: 'main', turnId: input.turnId, batch: input.batch })
+      flight.batches.add(input.batch.batchId)
+      for (const addition of additions) {
+        const index = flight.sources.findIndex(source => source.label === addition.label)
+        if (index < 0) flight.sources.push(addition)
+        else { const source = flight.sources[index]!; flight.sources[index] = { ...source, messages: [...source.messages, ...addition.messages] } }
+      }
+      flight.current = flight.sources.length === 1 && !flight.steering.length ? flight.sources[0]!.context : null
+      const results = []
+      for (const source of additions) results.push(await this.recall(harnessId, key, flight, source.context, source.label, source.messages.map(message => message.text).join('\n').slice(0, 4000), signal))
+      return merged(results)
+    }
     const additions = messages(input.messages).filter(message => message.role === 'user')
     const seen = new Set([...flight.sources.filter(source => source.context.scope.kind === 'self').flatMap(source => source.messages), ...flight.steering].flatMap(message => message.messageId ? [message.messageId] : []))
     const fresh = additions.filter(message => { if (!message.messageId) return true; if (seen.has(message.messageId)) return false; seen.add(message.messageId); return true })

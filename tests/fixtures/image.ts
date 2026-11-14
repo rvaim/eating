@@ -51,14 +51,14 @@ export function createLargeImageFixturePng(byteLength = 1280 * 1024): Buffer {
 }
 
 /** Test-only transport routes an authorized source to the independent loopback fixture. */
-export async function startImageFixture() {
-  const bytes = createImageFixturePng()
+export async function startImageFixture(image?: { bytes: Buffer; mimeType: 'image/png' | 'image/jpeg' }) {
+  const bytes = image?.bytes ?? createImageFixturePng()
   const source = 'https://cdn.example.test/received-pixel.png?signature=fixture-image-only'
   const requests: Array<{ readonly path: string | undefined; readonly headers: IncomingHttpHeaders }> = []
   const server = createServer((request, response) => {
     requests.push({ path: request.url, headers: request.headers })
     if (request.url !== '/received-pixel.png?signature=fixture-image-only') { response.writeHead(404); response.end(); return }
-    response.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': bytes.length, 'Cache-Control': 'no-store' })
+    response.writeHead(200, { 'Content-Type': image?.mimeType ?? 'image/png', 'Content-Length': bytes.length, 'Cache-Control': 'no-store' })
     response.end(bytes)
   })
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })

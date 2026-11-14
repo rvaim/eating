@@ -7,6 +7,7 @@ import type { AgentInvocationScope, JsonObject, JsonValue } from '@eating/plugin
 import { downloadQQImage, qqReceivedMessageSegments, qqViewReceivedImageTool, readQQReceivedImage } from './media'
 import type { QQImageNetwork } from './media'
 import { qqTools, validateToolInput } from './operations'
+import { createJpegFixture } from '../../../../../tests/fixtures/jpeg'
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=', 'base64')
 const gif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64')
@@ -177,6 +178,27 @@ describe('received image download boundary', () => {
   it('accepts a real GIF fixture and canonical image bytes', async () => {
     const fixture = await networkFixture(response => { response.writeHead(200, { 'Content-Type': 'image/gif' }); response.end(gif) })
     expect(await downloadQQImage(signedUrl, {}, fixture.network)).toEqual({ mimeType: 'image/gif', bytes: gif })
+  })
+
+  it.each([false, true])('returns every byte of a complete progressive=%s JPEG, including its 24-byte outer trailer', async progressive => {
+    const jpeg = createJpegFixture(progressive), bytes = Buffer.concat([jpeg, Buffer.alloc(24, 0x42)])
+    const fixture = await networkFixture(response => { response.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': bytes.length }); response.end(bytes) })
+    const result = await readQQReceivedImage(params, { accountId: scope.accountId, scope }, {
+      getMessage: async () => received(), download: url => downloadQQImage(url, {}, fixture.network), assertActive: () => {},
+    })
+    expect(result.content).toContainEqual({ type: 'image', mimeType: 'image/jpeg', data: bytes.toString('base64') })
+    expect(result.structuredContent).toMatchObject({ mimeType: 'image/jpeg', bytes: bytes.length })
+    expect(fixture.requests).toEqual([{ path: '/image.png?signature=fixture-secret', authorization: undefined, cookie: undefined }])
+    await expect(downloadQQImage(signedUrl, { maxBytes: jpeg.length }, fixture.network)).rejects.toMatchObject({ code: 'MEDIA_TOO_LARGE' })
+  })
+
+  it.each([
+    Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+    Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe1, 0xff, 0xff]), createJpegFixture()]),
+    createJpegFixture().subarray(0, -2),
+  ])('rejects incomplete JPEG structure even when its MIME or final bytes look correct', async bytes => {
+    const fixture = await networkFixture(response => { response.writeHead(200, { 'Content-Type': 'image/jpeg' }); response.end(bytes) })
+    await expect(downloadQQImage(signedUrl, {}, fixture.network)).rejects.toMatchObject({ code: 'MEDIA_INVALID_IMAGE' })
   })
 
   it.each([

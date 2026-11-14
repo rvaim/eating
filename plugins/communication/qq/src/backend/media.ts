@@ -3,6 +3,7 @@ import { request as httpsRequest } from 'node:https'
 import type { ClientRequest, IncomingMessage, RequestOptions } from 'node:http'
 import { DEFAULT_IMAGE_LIMITS, MAX_IMAGE_RESOURCE_BYTES, isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { AgentInvocationScope, JsonObject, JsonValue, PluginToolDefinition } from '@eating/plugin-sdk'
+import { jpegImageEnd } from './jpeg'
 
 export const qqViewReceivedImageTool: PluginToolDefinition = {
   name: 'qq_view_received_image', title: '查看本会话图片',
@@ -91,7 +92,7 @@ function detectedImageMime(bytes: Buffer): QQImageMimeType | null {
     && bytes.readUInt32BE(8) === 13 && bytes.toString('ascii', 12, 16) === 'IHDR'
     && bytes.readUInt32BE(16) > 0 && bytes.readUInt32BE(20) > 0
     && bytes.subarray(-12).equals(Buffer.from([0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]))) return 'image/png'
-  if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9) return 'image/jpeg'
+  if (jpegImageEnd(bytes) !== null) return 'image/jpeg'
   if (bytes.length >= 26 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.readUInt32LE(4) + 8 === bytes.length
     && bytes.toString('ascii', 8, 12) === 'WEBP' && ['VP8 ', 'VP8L', 'VP8X'].includes(bytes.toString('ascii', 12, 16))) return 'image/webp'
   if (bytes.length >= 14 && ['GIF87a', 'GIF89a'].includes(bytes.toString('ascii', 0, 6))

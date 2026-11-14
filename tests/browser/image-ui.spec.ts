@@ -9,6 +9,7 @@ import type { JsonObject, JsonValue } from '@eating/plugin-sdk'
 import type { EatingHost } from '../../apps/host/src/app'
 import { createInstalledHost } from '../../apps/host/src/installed-host'
 import { installPluginPackage } from '../../apps/host/src/plugin-installation'
+import { createJpegFixture } from '../fixtures/jpeg'
 
 const staticDirectory = fileURLToPath(new URL('../../dist/', import.meta.url))
 // A complete 80x48 PNG with valid checksums, rather than a signature-only media stub.
@@ -71,6 +72,20 @@ test.describe('声明式图片结果预览与清理', () => {
   const image = (page: Page) => page.locator('.qq-result-image')
   async function loaded(page: Page) { await expect(image(page)).toBeVisible(); await expect.poll(() => image(page).evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(80) }
   async function hidden(page: Page, value: boolean) { await page.evaluate(hidden => { Object.defineProperty(document, 'hidden', { configurable: true, value: hidden }); document.dispatchEvent(new Event('visibilitychange')) }, value) }
+
+  test('JPEG尾部附加数据经当前安装面板正常解码，语言切换不重复读取', async ({ page }) => {
+    const bytes = Buffer.concat([createJpegFixture(true), Buffer.alloc(24, 0x42)])
+    imageResult = { content: [{ type: 'image', mimeType: 'image/jpeg', data: bytes.toString('base64') }], structuredContent: { mimeType: 'image/jpeg', bytes: bytes.length, messageId: '42', imageId: 'received-image-fixture' } }
+    await open(page); await chooseImage(page); await run(page)
+    await expect(image(page)).toBeVisible()
+    await expect.poll(() => image(page).evaluate((element: HTMLImageElement) => ({ width: element.naturalWidth, height: element.naturalHeight }))).toEqual({ width: 1, height: 1 })
+    expect(await image(page).getAttribute('src')).toMatch(/^blob:/)
+    await page.locator('#display-language').selectOption('en-US')
+    await page.setViewportSize({ width: 390, height: 844 })
+    expect(requests).toHaveLength(1)
+    expect(await page.content()).not.toContain(bytes.toString('base64'))
+    await expect(page.locator('.qq-history')).toHaveCount(0)
+  })
 
   test('标准39加一个content图片扩展，图像可真实解码且不进入普通JSON/记录，切语言不重读', async ({ page }, info) => {
     await open(page)

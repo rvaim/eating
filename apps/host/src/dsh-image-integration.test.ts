@@ -15,6 +15,7 @@ import { DshPlugin } from '../../../plugins/harness/dsh/src/backend/adapter'
 import { testSystemDsh } from '../../../tests/fixtures/system-dsh'
 import { connectNativeWeb } from '../../../tests/fixtures/native-web'
 import { startImageFixture } from '../../../tests/fixtures/image'
+import { createJpegFixture } from '../../../tests/fixtures/jpeg'
 import { readModelFixtureBatch } from '../../../tests/fixtures/openai'
 import type { ModelFixtureRequest } from '../../../tests/fixtures/openai'
 import { replyOneBot, startOneBotFixture } from '../../../tests/fixtures/onebot'
@@ -128,10 +129,12 @@ function imageQQEntry(image: Awaited<ReturnType<typeof startImageFixture>>, scop
         }
         assertActive()
         scopes.push(structuredClone(scope))
-        return readQQReceivedImage(params, { accountId, scope }, {
+        const result = await readQQReceivedImage(params, { accountId, scope }, {
           getMessage: id => target.invoke('qq_get_message', { message_id: id }, requestId),
           download: source => downloadQQImage(source, {}, image.network), assertActive,
         })
+        expect(result.content).toContainEqual(expect.objectContaining({ type: 'image', data: image.bytes.toString('base64') }))
+        return result
       }
       const value: unknown = Reflect.get(target, property, target)
       return typeof value === 'function' ? value.bind(target) : value
@@ -139,14 +142,16 @@ function imageQQEntry(image: Awaited<ReturnType<typeof startImageFixture>>, scop
   } }
 }
 
-async function runImageScenario(imageInput: boolean) {
+async function runImageScenario(imageInput: boolean, format: 'png' | 'jpeg' = 'png') {
   const home = await isolatedHome()
   const systemDsh = () => testSystemDsh()
-  const image = await startImageFixture()
+  const image = await startImageFixture(format === 'jpeg' ? { mimeType: 'image/jpeg', bytes: Buffer.concat([createJpegFixture(true), Buffer.alloc(24, 0x42)]) } : undefined)
   cleanups.push(() => image.close())
   // Prove this fixture contains an actual compressed RGBA scanline before SDK admission.
-  const idatLength = image.bytes.readUInt32BE(33)
-  expect(inflateSync(image.bytes.subarray(41, 41 + idatLength))).toEqual(Buffer.from([0, 38, 165, 94, 255]))
+  if (format === 'png') {
+    const idatLength = image.bytes.readUInt32BE(33)
+    expect(inflateSync(image.bytes.subarray(41, 41 + idatLength))).toEqual(Buffer.from([0, 38, 165, 94, 255]))
+  }
   const onebot = await startOneBotFixture({ onRequest(request, peer) {
     if (request.action !== 'get_msg') return false
     replyOneBot(peer, request, { message_id: Number(messageId), message_type: 'private', self_id: 123456789,
@@ -233,6 +238,19 @@ async function runImageScenario(imageInput: boolean) {
 
 // Opt-in real native SDK/Host/DSH attachment path; all account, image and model peers are local fixtures.
 describe.runIf(Boolean(systemDshBin))('真实 Host MCP 图片 → DSH 附件 → 模型请求', () => {
+  it('accepts a progressive JPEG with an outer trailer and supplies actual image input to the model', async () => {
+    const { continuation, bytes } = await runImageScenario(true, 'jpeg')
+    const blocks = imagesIn(continuation)
+    expect(blocks).toHaveLength(1)
+    const url = object(blocks[0]!.image_url).url
+    expect(String(url)).toMatch(/^data:image\/jpeg;base64,\/9j\//)
+    const projected = Buffer.from(String(url).slice('data:image/jpeg;base64,'.length), 'base64')
+    expect(projected.length).toBeGreaterThan(4)
+    // Native DSH may optimize/re-encode attachments after receiving the original MCP bytes.
+    expect(projected.subarray(-2)).toEqual(Buffer.from([0xff, 0xd9]))
+    expect(bytes.subarray(-24).equals(Buffer.alloc(24, 0x42))).toBe(true)
+    expect(JSON.stringify(continuation.messages)).not.toContain('image unavailable')
+  }, 60000)
   it('sends a decoded image_url block only after the owner explicitly enables image input', async () => {
     const { continuation, bytes } = await runImageScenario(true)
     const blocks = imagesIn(continuation)

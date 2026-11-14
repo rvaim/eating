@@ -1,5 +1,7 @@
 # Eating 开发规则
 
+2026-11-14 JPEG尾部数据误拒绝修复：**实现与完整本地验证完成，Git发布及已授权云端部署进行中**。QQ0.18.1按JPEG段／扫描结构识别真实EOI，允许外层尾部数据且保原字节；缺失／截断或非法结构仍拒绝，权限／大小／MIME与超时保持。全量2045通过／11条件跳过、12项相关浏览器通过；应用／SDK／DSH及其他六插件不变。见[ADR-0063](docs/decisions/ADR-0063-JPEG结构校验与尾部数据.md)与[报告](docs/reports/2026-11-14-JPEG尾部数据误拒绝修复部署报告.md)。
+
 2026-11-14 任务自动核对与无人值守恢复：**实现、提交／push及云端保留数据部署完成**。运行源码`813143c`，应用0.25.0／SDK4.14.0／DSH0.21.0新增持久任务动作回执，整任务与请求时限分开，后台自动核对已知中断，旧unknown只隔离原任务及动作、新任务可继续。截图旧任务4条回执经离线严格审计关联，正式启动已自动收尾，无需人工解除、未重发。全量2034通过／11条件跳过、15项自主设置浏览器通过；云端518项控制层及279项专项通过，343文件全量私有备份核对，配置／资源／全部原数据库行／会话和4份原生日志前缀保持。七插件connected、DSH／nativeWeb ready、异常restart0；公网双语桌面手机及实际安装运行时的model.system规则核验通过，无真实付费或真人试发。见[ADR-0062](docs/decisions/ADR-0062-任务回执自动核对与中断隔离.md)与[报告](docs/reports/2026-11-14-任务自动核对与无人值守恢复部署报告.md)。
 
 2026-11-14 QQ语音引用直传修复：**修复、提交／push及云端保留数据部署完成**。运行源码`b09415b`，QQ0.18.0／TTS0.2.1，现有发送工具直接传audio_ref，后台构造record并复用授权、预算与幂等。原4.88秒音频经实际安装后台和隔离OneBot回环核对：234284字节一致、只读一次、只投递一次，重复返回原回执。全量2021通过／11条件跳过，相关浏览器29项通过，云端514项控制层及493项专项通过；330文件私有全量备份核对，原配置／音频／图片／数据库／会话及4份日志前缀保持。七插件connected、DSH／nativeWeb ready、异常restart0；公网三类提示、工具参数与双语桌面手机通过，无真实付费或真人试发。见[ADR-0061](docs/decisions/ADR-0061-QQ语音引用直传.md)与[报告](docs/reports/2026-11-14-QQ语音引用直传修复部署报告.md)。
@@ -77,7 +79,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`、`plugins/capabilities/text-to-speech`、`plugins/capabilities/speech-to-text`。
 
-当前源码应用／Host／Web0.25.0，plugin-sdk4.14.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.18.0、DSH0.21.0、表情包0.3.2、生图0.6.2、记忆0.3.4、语音合成0.2.1、语音识别speech-to-text0.1.0（本机原记忆安装0.1.1保持）；插件唯一API4。七插件独立封存，同版本产物不可改写，无新外部依赖。当前功能及实际发布状态见顶部报告。
+当前源码应用／Host／Web0.25.0，plugin-sdk4.14.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.18.1、DSH0.21.0、表情包0.3.2、生图0.6.2、记忆0.3.4、语音合成0.2.1、语音识别speech-to-text0.1.0（本机原记忆安装0.1.1保持）；插件唯一API4。七插件独立封存，同版本产物不可改写，无新外部依赖。当前功能及实际发布状态见顶部报告。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 

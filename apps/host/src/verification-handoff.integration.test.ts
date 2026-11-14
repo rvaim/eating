@@ -248,8 +248,8 @@ async function createFixture(kind: 'current' | 'cross') {
   let plugin!: DshPlugin, services!: HarnessHostServices
   const entry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) {
     services = context.harness!
-    plugin = new DshPlugin({ ...context, harness: { ...services, getMcpConnection(pluginId, scope, policy) {
-      const connection = services.getMcpConnection(pluginId, scope, policy)
+    plugin = new DshPlugin({ ...context, harness: { ...services, getMcpConnection(pluginId, scope, policy, taskId) {
+      const connection = services.getMcpConnection(pluginId, scope, policy, taskId)
       const captured = { ...scope, signal: undefined }
       scopes.push(structuredClone(captured))
       connections.push({ scope: structuredClone(captured), toolNames: [...connection.toolNames] })

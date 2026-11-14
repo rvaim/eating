@@ -179,14 +179,16 @@ export interface HarnessHostServices {
   readDeliverySettings(): DeliverySettings
   deliveryReceiptAccepted(receiptId: string): boolean
   extendAgentScope(scope: import('./agents.js').AgentInvocationScope): void
-  getMcpConnection(pluginId: string, scope: import('./agents.js').AgentInvocationScope, policy?: import('./autonomy.js').ScopedAccessPolicy): import('./agents.js').AgentMcpConnection
+  getMcpConnection(pluginId: string, scope: import('./agents.js').AgentInvocationScope, policy?: import('./autonomy.js').ScopedAccessPolicy, taskId?: string): import('./agents.js').AgentMcpConnection
   /** Capability discovery is optional; an enabled autonomy implementation must require these services. */
   readProactiveChannels?(): readonly import('./autonomy.js').ProactiveChannel[]
   prepareProactiveScope?(pluginId: string, request: import('./autonomy.js').ProactiveScopeRequest): import('./agents.js').AgentInvocationScope
   readProactiveContacts?(pluginId: string, request: import('./autonomy.js').ProactiveContactChannel): Promise<readonly import('./autonomy.js').ProactiveContact[]>
   hasPendingMessages?(): boolean
-  getCapabilityMcpConnections(scope: CapabilityInvocationScope): readonly HarnessCapabilityConnection[]
+  getCapabilityMcpConnections(scope: CapabilityInvocationScope, taskId?: string): readonly HarnessCapabilityConnection[]
   readAgentActions(agentId: string): readonly import('./agents.js').AgentActionReceipt[]
+  readTaskActions(agentId: string, taskId: string): import('./agents.js').AgentTaskActions
+  finishTaskActions(agentId: string, taskId: string, reviewed?: boolean): import('./agents.js').AgentTaskActions
   revokeAgentAccess(agentId: string): void
 }
 

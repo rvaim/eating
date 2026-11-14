@@ -48,17 +48,35 @@ async function setup() {
   const configuration = await api('/plugins/qq/configuration')
   const instanceId = String(configuration.instanceId)
   const scope = (agentId = randomUUID(), kind: 'private' | 'group' = 'private'): AgentInvocationScope => ({ agentId, agentTypeId: `qq.${kind}`, pluginId: 'qq', instanceId, accountId: '123456789', conversationId: `qq:123456789:${kind}:${kind === 'private' ? '987654321' : '123456'}`, kind, targetId: kind === 'private' ? '987654321' : '123456', messageIds: ['42'], resourceIds: ['known-image.jpg'] })
-  const client = async (binding: AgentInvocationScope, policy?: ScopedAccessPolicy) => {
-    const connection = services.getMcpConnection('qq', binding, policy)
+  const client = async (binding: AgentInvocationScope, policy?: ScopedAccessPolicy, taskId?: string) => {
+    const connection = services.getMcpConnection('qq', binding, policy, taskId)
     const mcp = new Client({ name: 'Eating-scoped-agent-fixture', version: '1.0.0' })
     cleanups.push(() => mcp.close())
     await mcp.connect(new StreamableHTTPClientTransport(new URL(connection.url), { requestInit: { headers: { ...connection.headers, Origin: url } } }))
     return { mcp, connection }
   }
-  return { host, home, onebot, services, api, scope, client, url, configuration }
+  return { host, home, onebot, get services() { return services }, harness, api, scope, client, url, configuration }
 }
 
 describe('Host scoped agent MCP and plugin prompt registry', () => {
+  it('retains receipts for two tasks sharing a child across Host restart without repeating either send', async () => {
+    const f = await setup(), scope = f.scope(), firstId = 'a'.repeat(64), secondId = 'b'.repeat(64)
+    const first = await f.client(scope, undefined, firstId)
+    expect(await first.mcp.callTool({ name: 'qq_send_private_message', arguments: { user_id: scope.targetId, message: 'FIRST-TASK-FIXTURE', request_id: 'task-receipt-first-001' } })).toMatchObject({ isError: false })
+    expect(f.services.finishTaskActions(scope.agentId, firstId)).toMatchObject({ available: true, closed: true, actions: [{ outcome: 'succeeded', result: { message_id: 1001 } }] })
+    f.services.revokeAgentAccess(scope.agentId)
+    const second = await f.client(scope, undefined, secondId)
+    expect(await second.mcp.callTool({ name: 'qq_send_private_message', arguments: { user_id: scope.targetId, message: 'SECOND-TASK-FIXTURE', request_id: 'task-receipt-second-001' } })).toMatchObject({ isError: false })
+    f.services.finishTaskActions(scope.agentId, secondId)
+    await f.host.close()
+    const restored = new EatingHost({ dataDirectory: f.home, entries: [qqEntry, f.harness], port: 0, allowedUiOrigins: [] })
+    cleanups.push(() => restored.close()); await restored.listen()
+    expect(f.services.readTaskActions(scope.agentId, firstId)).toMatchObject({ actions: [{ requestId: 'task-receipt-first-001', result: { message_id: 1001 } }] })
+    expect(f.services.readTaskActions(scope.agentId, secondId)).toMatchObject({ actions: [{ requestId: 'task-receipt-second-001', result: { message_id: 1002 } }] })
+    expect(f.onebot.requests.filter(r => r.action === 'send_private_msg')).toHaveLength(2)
+    expect(f.services.readTaskActions('other-child', firstId).available).toBe(false)
+  })
+
   it.each([false, true])('adds references to a live MCP without rotating its token or changing verify=%s', async readOnly => {
     const f = await setup(), source = { ...f.scope(), ...(readOnly ? { readOnly: true } : {}) }
     const lease = await f.client(source)

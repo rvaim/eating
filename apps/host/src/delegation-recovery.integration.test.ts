@@ -68,10 +68,18 @@ async function startRecoveryModel() {
     }
     if (current.kind === 'root') {
       expect(tools).toEqual(mainTools)
-      if (fixturePendingTask(payload)) { chunk({ role: 'assistant', content: 'Waiting for native child result.' }); chunk({}, 'stop'); response.end('data: [DONE]\n\n'); return }
+      if (fixturePendingTask(payload)) {
+        if (id === '99301') {
+          const deadline = Date.now() + 10000
+          while (!hanging && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+          if (!hanging) throw new Error('Child did not reach its post-send fixture wait')
+          const running = object(JSON.parse(turns[0]!.text))
+          tool('eating_task_control', { action: 'interrupt', task_id: running.taskId! }); response.end('data: [DONE]\n\n'); return
+        }
+        chunk({ role: 'assistant', content: 'Waiting for native child result.' }); chunk({}, 'stop'); response.end('data: [DONE]\n\n'); return }
       if (!turns.length) tool('eating_handle_conversation', { context_ref: current.contextRef, mode: 'reply' })
       else {
-        expect(turns).toHaveLength(1)
+        expect(turns.length).toBe(id === '99301' ? 2 : 1)
         expect(turns[0]!.name).toBe('eating_handle_conversation')
         if (id === '99301') expect(JSON.stringify(turns[0]!.taskResult ?? turns[0]!.text)).toMatch(/unknown|interrupted|未知|中断/i)
         else expect((turns[0]!.taskResult ?? object(JSON.parse(turns[0]!.text)))).toMatchObject({ status: 'completed', actions: [{ requestId: requestId(id), outcome: 'succeeded', result: { message_id: 1002 } }] })
@@ -109,7 +117,7 @@ async function startRecoveryModel() {
 }
 
 describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('ordinary delegation unknown recovery through system DSH', () => {
-  it('keeps the first unknown and successful action while a fresh inbound context reuses the same child without replay', async () => {
+  it('settles the first interrupted task and successful action while a fresh inbound context reuses the same child without replay', async () => {
     const parent = await realpath(tmpdir()), home = await realpath(await mkdtemp(join(parent, 'Eating_delegation_recovery_')))
     stops.push(async () => {
       const target = await realpath(home)
@@ -122,8 +130,8 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('ordinary delega
     let plugin!: DshPlugin, services!: HarnessHostServices
     const entry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) {
       services = context.harness!
-      plugin = new DshPlugin({ ...context, harness: { ...services, getMcpConnection(pluginId, scope, policy) {
-        const connection = services.getMcpConnection(pluginId, scope, policy)
+      plugin = new DshPlugin({ ...context, harness: { ...services, getMcpConnection(pluginId, scope, policy, taskId) {
+        const connection = services.getMcpConnection(pluginId, scope, policy, taskId)
         scopes.push(structuredClone(scope)); return connection
       } } }, { locateSystemDsh: testSystemDsh })
       return plugin
@@ -143,8 +151,8 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('ordinary delega
     const qq = await api('/plugins/qq/configuration', { endpoint: onebot.endpoint, timeoutMs: 1000, forwardToHarness: true, receiveGroups: false, autoConnect: false })
     await api('/plugins/qq/manage', { operation: 'save-agent-policy', input: { expectedRevision: qq.policyRevision!, owners: [], administrators: [], agentTools: { 'qq.private': ['qq_send_private_message'], 'qq.group': [] } } })
     await api('/plugins/qq/connect', {})
-    // Public configuration range is 1000..120000; adapter maps timeoutMs to
-    // EATING_DSH_TASK_TIMEOUT. No production timeout or private runtime is patched.
+    // Public configuration range is 1000..120000; timeoutMs remains
+    // the individual request timeout. Main explicitly interrupts the held child.
     await api('/plugins/dsh/configuration', { endpoint: model.endpoint, model: 'recovery-scripted-model', apiKey: model.apiKey, maxTokens: 256, timeoutMs: 2000, autoConnect: false })
     await api('/plugins/dsh/connect', {})
     const runtime = () => object(plugin.getPublicConfiguration().runtimeStatus)
@@ -176,7 +184,7 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('ordinary delega
     const firstBindings = await readTestAgentBindings(home)
     expect(firstBindings).toHaveLength(1)
     const first = firstBindings[0]!, childId = object(first.scope).agentId, unknown = object(first.task)
-    expect(unknown).toMatchObject({ state: 'unknown', taskId: expect.any(String), contextRef: expect.any(String) })
+    expect(unknown).toMatchObject({ state: 'interrupted', taskId: expect.any(String), contextRef: expect.any(String) })
     expect(first.taskRefs).toEqual([unknown])
     const firstActions = structuredClone(services.readAgentActions(String(childId)))
     expect(firstActions).toMatchObject([{ requestId: requestId('99301'), outcome: 'succeeded', result: { message_id: 1001 } }])

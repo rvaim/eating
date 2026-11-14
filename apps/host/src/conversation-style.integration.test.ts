@@ -194,15 +194,16 @@ async function fixture(kind: 'quiet' | 'bubbles' | 'verify') {
   const entry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) {
     services = context.harness!
     plugin = new DshPlugin({ ...context, harness: { ...services,
-      getMcpConnection(pluginId, scope, policy) {
-        const connection = services.getMcpConnection(pluginId, scope, policy)
+      getMcpConnection(pluginId, scope, policy, taskId) {
+        const connection = services.getMcpConnection(pluginId, scope, policy, taskId)
         scopes.push(structuredClone(scope))
         return connection
       },
-      readAgentActions(agentId) {
-        const actions = services.readAgentActions(agentId)
+      readTaskActions(agentId, taskId) {
+        const snapshot = services.readTaskActions(agentId, taskId)
+        const actions = snapshot.actions
         actionReads.push({ agentId, actions: structuredClone(actions) })
-        return actions
+        return snapshot
       },
     } }, { locateSystemDsh: testSystemDsh })
     return plugin

@@ -1,3 +1,4 @@
+import { TaskActionJournal } from './task-actions'
 import { mkdtemp, realpath, rm, readFile, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -723,7 +724,7 @@ describe('capability MCP and cross-plugin sticker resources', () => {
     const store = new HostStore(join(home, 'fixture.sqlite'))
     stops.push(() => store.close())
     let context: null | undefined = null
-    const access = new CapabilityAccess({ store, direct, plugins: () => [plugin], enabled: () => true, memoryContext: () => context,
+    const access = new CapabilityAccess({ store, taskActions: new TaskActionJournal(store), direct, plugins: () => [plugin], enabled: () => true, memoryContext: () => context,
       executeIdempotent: async () => { throw new Error('Unused action') } })
     stops.push(() => access.close())
     access.connections('fixture-harness', { agentId: 'main', agentTypeId: 'main' }, 'http://127.0.0.1:1')
@@ -745,7 +746,7 @@ describe('capability MCP and cross-plugin sticker resources', () => {
       invokeCapability: async () => null, dispose: async () => {}, }
     const plugins = [plugin]
     const store = new HostStore(join(home, 'fixture.sqlite')); stops.push(() => store.close())
-    const access = new CapabilityAccess({ store, direct, plugins: () => plugins, enabled: id => id === 'fixture-harness' || enabled, executeIdempotent: async () => { throw new Error('unused fixture action') } }); stops.push(() => access.close())
+    const access = new CapabilityAccess({ store, taskActions: new TaskActionJournal(store), direct, plugins: () => plugins, enabled: id => id === 'fixture-harness' || enabled, executeIdempotent: async () => { throw new Error('unused fixture action') } }); stops.push(() => access.close())
     const future = { agentId: 'fixture-agent', agentTypeId: 'future.agent-type' }
     expect(access.connections('fixture-harness', future, 'http://127.0.0.1:1').map(item => item.tools)).toEqual([['memory_search']])
     ;(plugin.tools as PluginToolDefinition[]).push(tool('memory_new_tool'))

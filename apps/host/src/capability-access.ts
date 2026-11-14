@@ -10,8 +10,10 @@ import { DirectMcpConnections } from './mcp-connections'
 import type { HostStore } from './store'
 import { secret, sameSecret } from './security'
 import { toolResult } from './tool-results'
+import { TaskActionJournal } from './task-actions'
 
 interface Options {
+  readonly taskActions: TaskActionJournal
   readonly imageLimits?: () => import('@eating/plugin-sdk').ImageLimits
   readonly store: Pick<HostStore, 'getSetting' | 'setSetting'>
   readonly direct: DirectMcpConnections
@@ -21,6 +23,7 @@ interface Options {
   readonly executeIdempotent: (pluginId: string, action: string, params: JsonObject, requestId: string, execute: () => Promise<JsonValue>) => Promise<JsonValue>
 }
 interface Lease {
+  readonly taskId?: string
   readonly harnessId: string
   readonly sourceId: string
   scope: CapabilityInvocationScope
@@ -189,11 +192,12 @@ export class CapabilityAccess {
   activePermission(scope: CapabilityInvocationScope, sourceId: string, toolName: string): boolean {
     return this.allowed(scope, sourceId, toolName) && [...this.leases.values()].some(lease => !lease.abort.signal.aborted && lease.scope.agentId === scope.agentId && lease.scope.agentTypeId === scope.agentTypeId && lease.sourceId === sourceId && this.options.enabled(lease.harnessId) && this.allowed(lease.scope, sourceId, toolName))
   }
-  connections(harnessId: string, scope: CapabilityInvocationScope, baseUrl: string): readonly HarnessCapabilityConnection[] {
+  connections(harnessId: string, scope: CapabilityInvocationScope, baseUrl: string, taskId?: string): readonly HarnessCapabilityConnection[] {
     if (this.closed || !this.options.enabled(harnessId) || !identifier(scope.agentId) || !identifier(scope.agentTypeId)
       || scope.readOnly !== undefined && typeof scope.readOnly !== 'boolean' || scope.source?.readOnly !== undefined && typeof scope.source.readOnly !== 'boolean') return deny()
     if (scope.source && (scope.source.agentId !== scope.agentId || scope.source.agentTypeId !== scope.agentTypeId)) return deny()
     const sources = this.sources()
+    if (taskId !== undefined) this.options.taskActions.open(harnessId, scope.agentId, taskId)
     const result: HarnessCapabilityConnection[] = []
     for (const lease of this.leases.values()) if (lease.harnessId === harnessId && lease.scope.agentId === scope.agentId) this.retire(lease)
     for (const source of sources) {
@@ -202,7 +206,7 @@ export class CapabilityAccess {
       const tools = source.tools.filter(tool => this.allowed(scope, source.id, tool.name)).map(tool => tool.name)
       if (!tools.length) continue
       if (this.leases.size >= 1024) throw new PlatformError('MCP_LEASE_CAPACITY', '当前 MCP 代理连接已达到上限，请停止未使用的 Harness。', 429, 'not-sent')
-      const lease: Lease = { harnessId, sourceId: source.id, scope: structuredClone(scope), token: secret(), abort: new AbortController() }
+      const lease: Lease = { harnessId, sourceId: source.id, scope: structuredClone(scope), token: secret(), abort: new AbortController(), ...(taskId !== undefined ? { taskId } : {}) }
       this.leases.set(lease.token, lease)
       result.push({ id: source.id, serverName: source.id.length <= 24 ? source.id.replace(/[^a-zA-Z0-9_]/g, '_') : 'service_' + createHash('sha256').update(source.id).digest('hex').slice(0, 16), url: `${baseUrl}/mcp-services/${encodeURIComponent(source.id)}`, headers: { Authorization: 'Bearer ' + lease.token }, tools })
     }
@@ -253,11 +257,21 @@ export class CapabilityAccess {
     const server = new Server({ name: id, version: '1.0.0' }, { capabilities: { tools: {} } })
     server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: this.source(id).tools.filter(tool => this.allowed(lease.scope, id, tool.name)).map(tool => proxyTool(tool, source.source.kind === 'direct')) }))
     server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
+      let tracked: AgentActionReceipt | undefined
       try {
         this.requireLease(token, id)
         const args = params.arguments ?? {}
         if (!isJsonObject(args)) throw new PlatformError('INVALID_MCP_ARGUMENTS', '工具参数必须是对象。')
+        const definition = this.source(id).tools.find(tool => tool.name === params.name)
+        if (lease.taskId && definition?.readOnly === false && requestId(args.request_id)) {
+          const receipt: AgentActionReceipt = { requestId: args.request_id, tool: 'mcp__' + id.replace(/[^a-zA-Z0-9_]/g, '_') + '__' + params.name, outcome: 'unknown' }
+          const ledger = { pluginId: source.source.kind === 'plugin' ? source.source.pluginId : 'mcp.' + id, scopeKey: '',
+            requestId: 'agent-' + createHash('sha256').update(lease.harnessId + '\0' + lease.scope.agentId + '\0' + args.request_id).digest('hex') }
+          this.options.taskActions.begin(lease.harnessId, lease.scope.agentId, lease.taskId, id, ledger, receipt)
+          tracked = receipt
+        }
         const result = await this.invoke(lease, params.name, args)
+        if (tracked) this.recordTaskAction(lease, { ...tracked, outcome: result.isError ? 'unknown' : 'succeeded' })
         this.requireLease(token, id)
         if (!this.allowed(lease.scope, id, params.name)) return deny()
         const tool = this.source(id).tools.find(tool => tool.name === params.name)
@@ -265,6 +279,7 @@ export class CapabilityAccess {
         if (Buffer.byteLength(JSON.stringify(result)) > 12 * 1024 * 1024) throw new PlatformError('MCP_RESULT_TOO_LARGE', 'MCP 返回内容过大。', 502, 'unknown')
         return result
       } catch (error) {
+        if (tracked) this.recordTaskAction(lease, { ...tracked, outcome: error instanceof PlatformError ? error.outcome : 'unknown', ...(error instanceof PlatformError ? { code: error.code } : {}) })
         const args = params.arguments
         if (isJsonObject(args) && requestId(args.request_id) && this.leases.has(lease.token) && this.source(id).tools.find(tool => tool.name === params.name)?.readOnly === false
           && !(error instanceof PlatformError && error.code === 'MCP_ACTION_ALREADY_RECORDED')) {
@@ -289,6 +304,11 @@ export class CapabilityAccess {
     request.once('aborted', cancel); response.once('close', cancel)
     try { await server.connect(transport); await Promise.race([transport.handleRequest(request, response, body), stopped]) }
     finally { await cleanup() }
+  }
+  private recordTaskAction(lease: Lease, receipt: AgentActionReceipt): void {
+    if (!lease.taskId) return
+    try { this.options.taskActions.finish(lease.harnessId, lease.scope.agentId, lease.taskId, lease.sourceId, receipt) }
+    catch { throw new PlatformError('TASK_RECEIPT_UNCONFIRMED', '动作回执保存待核对，不要重发。', 500, 'unknown') }
   }
   private remember(lease: Lease, receipt: AgentActionReceipt): void {
     if (!this.leases.has(lease.token)) return

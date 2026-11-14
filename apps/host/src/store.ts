@@ -519,5 +519,11 @@ export class HostStore {
     } finally { this.runningActions.delete(key) }
   }
 
+  readActionReceipt(pluginId: string, scopeKey: string, requestId: string): { state: string; result?: JsonValue; code?: string } | null {
+    const row = this.db.prepare('SELECT state,result_json,error_code FROM actions WHERE plugin_id=? AND scope_key=? AND request_id=?').get(pluginId, scopeKey, requestId)
+    if (!row) return null
+    return { state: String(row.state), ...(row.result_json !== null ? { result: JSON.parse(String(row.result_json)) as JsonValue } : {}), ...(row.error_code !== null ? { code: String(row.error_code) } : {}) }
+  }
+
   close(): void { this.db.close(); this.memoryQueue.clear(); this.failedWriteDedup.clear() }
 }

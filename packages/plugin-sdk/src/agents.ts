@@ -63,6 +63,12 @@ export interface AgentActionReceipt {
   readonly code?: string
 }
 
+export interface AgentTaskActions {
+  readonly available: boolean
+  readonly closed: boolean
+  readonly actions: readonly AgentActionReceipt[]
+}
+
 export interface AgentMcpConnection {
   readonly toolNames: readonly string[]
   readonly url: string

@@ -154,7 +154,7 @@ async function conversationFixture(kind: 'private' | 'group' = 'private', scopes
     requests.push({ operation, body: requestBody })
     const selected = bindings.find(entry => entry.agentId === requestBody.agentId)
     const configuration = selected && { agentId: selected.agentId, agentTypeId: selected.agentTypeId, systemPrompt: 'OWNER-CHILD-OVERRIDE\nOWNER-PERSONA', mode: 'reply', mcp: { url: 'http://127.0.0.1:1/mcp', headers: {} }, tools: [], capabilities: [] }
-    const value = operation === 'prepare-task' ? configuration : operation === 'actions' ? { actions } : operation === 'finish-task' ? { ok: true } : operation === 'tasks' ? { tasks: [{ taskId: requestBody.taskId, status: 'running' }] } : operation === 'retire-deliveries' ? { retired: requestBody.batchIds } : undefined
+    const value = operation === 'prepare-task' ? configuration : operation === 'actions' ? { available: true, closed: false, actions } : operation === 'finish-task' ? { ok: true, status: requestBody.status, actions } : operation === 'tasks' ? { tasks: [{ taskId: requestBody.taskId, status: 'running' }] } : operation === 'retire-deliveries' ? { retired: requestBody.batchIds } : undefined
     if (!value) throw new Error(`Unexpected fixture control operation: ${operation}`)
     return new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })
   })
@@ -459,9 +459,9 @@ describe('self-contained published-API DSH runtime bridge', () => {
     expect(f.activation.dispose).not.toHaveBeenCalled()
     expect(f.requests.filter(request => request.operation === 'finish-task')).toEqual([])
     const status = await f.execute('eating_task_control', { action: 'interrupt', task_id: result.taskId }, 'main-interrupt')
-    expect(status).toMatchObject({ status: 'unknown', taskId: result.taskId, actions: f.actions })
+    expect(status).toMatchObject({ status: 'interrupted', taskId: result.taskId, actions: f.actions })
     expect(f.activation.dispose).toHaveBeenCalled()
-    expect(f.requests.filter(request => request.operation === 'finish-task')).toEqual([{ operation: 'finish-task', body: { agentId: f.binding.agentId, contextRef: f.expected.batchId, taskId: result.taskId, status: 'unknown' } }])
+    expect(f.requests.filter(request => request.operation === 'finish-task')).toEqual([{ operation: 'finish-task', body: { agentId: f.binding.agentId, contextRef: f.expected.batchId, taskId: result.taskId, status: 'interrupted' } }])
   })
 
   it('yields one microtask and waits for a successful durability barrier before atomic ACK', async () => {

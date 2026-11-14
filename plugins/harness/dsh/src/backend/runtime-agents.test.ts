@@ -32,8 +32,8 @@ function fixture(unavailable = false) {
       pending = body.taskId!
       return new Response(JSON.stringify(configuration))
     }
-    if (operation === 'finish-task') { if (pending === body.taskId) pending = null; return new Response('{}') }
-    if (operation === 'actions') return new Response(JSON.stringify({ actions: [] }))
+    if (operation === 'finish-task') { if (pending === body.taskId) pending = null; return new Response(JSON.stringify({ ok: true, status: body.status, actions: [] })) }
+    if (operation === 'actions') return new Response(JSON.stringify({ available: true, closed: false, actions: [] }))
     throw new Error(`Unexpected ${operation}`)
   })
   vi.stubGlobal('fetch', fetcher)

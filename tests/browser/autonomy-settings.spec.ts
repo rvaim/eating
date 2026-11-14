@@ -37,6 +37,34 @@ test.describe('自主运行设置与信息', () => {
     await expect(page.getByRole('heading', { name: '自主模式未启用', exact: true })).toBeVisible()
   }
   const plugin = () => Reflect.get(host, 'plugins').get('dsh')
+  test('已核对中断自动收尾，旧未知记录不阻塞新任务，只有未确认动作显示人工兜底', async ({ page }, info) => {
+    let state = 'interrupted', knownActions = 4, unknownActions = 0, receiptsAvailable = true
+    const writes: string[] = []
+    page.on('request', request => { if (new URL(request.url()).pathname === '/api/autonomy' && request.method() === 'POST') writes.push(request.postData() ?? '') })
+    await page.route('**/api/autonomy', async route => {
+      const response = await route.fetch(), value = await response.json()
+      value.harnesses[0].snapshot.contactTasks = [{ agentId: 'fixture-child', targetId: 'fixture-target', label: '夹具联系人', taskId: 'a'.repeat(64), state, receiptsAvailable, knownActions, unknownActions, reviewRequired: state === 'unknown' && unknownActions > 0 }]
+      await route.fulfill({ response, json: value })
+    })
+    await page.goto(url + '/#settings/autonomy')
+    await expect(page.getByText('夹具联系人：旧任务已中断，4 条动作回执已自动核对，新任务可继续。', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '人工标记已核对', exact: true })).toHaveCount(0)
+    await page.emulateMedia({ colorScheme: 'dark' }); await page.screenshot({ path: info.outputPath('task-auto-settled-zh.png') })
+    await page.locator('#display-language').selectOption('en-US'); await page.setViewportSize({ width: 390, height: 844 })
+    await expect(page.getByText('夹具联系人: old task interrupted; 4 action receipts checked automatically. New tasks can continue.', { exact: true })).toBeVisible()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.getByText('夹具联系人: old task interrupted; 4 action receipts checked automatically. New tasks can continue.', { exact: true }).scrollIntoViewIfNeeded()
+    await page.screenshot({ path: info.outputPath('task-auto-settled-mobile-en.png') })
+    state = 'unknown'; receiptsAvailable = false; knownActions = 0
+    await page.getByRole('button', { name: 'Refresh activity status', exact: true }).click()
+    await expect(page.getByText('夹具联系人: old task record isolated without replay. New tasks can continue.', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Mark manually reviewed', exact: true })).toHaveCount(0)
+    receiptsAvailable = true; unknownActions = 1
+    await page.getByRole('button', { name: 'Refresh activity status', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Mark manually reviewed', exact: true })).toBeVisible()
+    await expect(page.locator('.autonomy-review')).toContainText('New independent tasks can continue')
+    expect(writes).toEqual([])
+  })
   test('预算暂停与模型故障显示不同原因，恢复文案双语完整且不自动恢复', async ({ page }, info) => {
     let code = 'AUTONOMY_RUN_LIMIT'
     const writes: string[] = []

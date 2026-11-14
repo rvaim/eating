@@ -1,3 +1,4 @@
+import { withTaskReceipts } from '../../../../../tests/fixtures/task-receipts'
 import { DEFAULT_DELIVERY_SETTINGS } from '@eating/plugin-sdk'
 import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { createHash } from 'node:crypto'
@@ -58,8 +59,8 @@ function fixture(options: { autoAck?: boolean; persisted?: boolean; recovered?: 
   const detach = vi.fn(() => { registered = null })
   const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS,
     dataDirectory: directory,
-    harness: { registerSink: vi.fn(sink => { registered = sink; return detach }), wake: vi.fn(), readOwnerConfiguration: () => owner,
-      readDeliverySettings: () => ({ ...DEFAULT_DELIVERY_SETTINGS, aggregationWindowMs: 0, appendWhileBusy: false }), deliveryReceiptAccepted: () => false, extendAgentScope: vi.fn(), readAgentActions: vi.fn(() => []), revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: vi.fn((_pluginId: string, scope: AgentInvocationScope) => ({ url: 'http://127.0.0.1:1/mcp/qq', headers: { Authorization: 'Bearer fixture-only-mcp-token' }, toolNames: owner.agentTypes.find(type => type.id === scope.agentTypeId)!.enabledTools })) },
+    harness: withTaskReceipts({ registerSink: vi.fn(sink => { registered = sink; return detach }), wake: vi.fn(), readOwnerConfiguration: () => owner,
+      readDeliverySettings: () => ({ ...DEFAULT_DELIVERY_SETTINGS, aggregationWindowMs: 0, appendWhileBusy: false }), deliveryReceiptAccepted: () => false, extendAgentScope: vi.fn(), readAgentActions: vi.fn(() => []), revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: vi.fn((_pluginId: string, scope: AgentInvocationScope) => ({ url: 'http://127.0.0.1:1/mcp/qq', headers: { Authorization: 'Bearer fixture-only-mcp-token' }, toolNames: owner.agentTypes.find(type => type.id === scope.agentTypeId)!.enabledTools })) }),
     getSetting: vi.fn(() => null), setSetting: vi.fn(), recordEvent: vi.fn(() => { throw new Error('Adapter must not record a chat copy') }),
     listMessages: vi.fn(() => []), executeIdempotent: vi.fn(async () => { throw new Error('Adapter must never forward finalResponse') }),
   }

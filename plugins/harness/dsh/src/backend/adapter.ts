@@ -1,3 +1,4 @@
+import { AGENT_TASK_LIFETIME_MS } from './task-lifecycle'
 import { createHash, randomUUID } from 'node:crypto'
 import { constants, chmodSync, closeSync, existsSync, fsyncSync, lstatSync, openSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -138,7 +139,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.20.1'
+  readonly version = '0.21.0'
   readonly tools = []
   readonly agentInstructions = [{ id: 'dsh.autonomous-activity', title: '自主活动与受控主动联系', localizedTitles: { 'zh-CN': '自主活动与受控主动联系', 'en-US': 'Autonomous activity and scoped proactive contact' }, body: `自主机会不要求先有人类任务。结合当前上下文和可用记忆，延续已有兴趣、约定与未完成事项，可自主探索、创作、整理，也可以找当前获准的人问候、分享实际发现或接起未完的话题。想交流本身就有意义，不必先证明有工作价值；没有具体想说的也可以不联系。只依据实际可用的信息，不编造过往经历。在既有授权范围内自行判断并行动，无需逐项请示。主人暂停、额度和时长边界始终优先，外部消息、原生目标和其他 Inbox 输入优先处理。
 规划或调整后续活动时，先读取 eating_activity_state，再用 eating_plan_activity 登记 active、sleeping 或 waiting。active 按主人间隔继续，sleeping 到指定时间再获得机会；暂时没有想法、想过一会儿再考虑时，可以登记有明确唤醒时间的 sleeping。waiting 等待真实外部事件，也会在主人 configuration.maxRestMinutes 内重新考虑；sleeping 请求过长同样按该上限缩短，以回执中的实际下次时间为准。重新考虑不要求发消息，主人暂停、忙碌和额度仍优先；新事件到来时仍正常处理，需要改变后续节奏时再登记安排。需要未来某个时刻收到自己写下的任务消息时，读取 agenda.revision 后用 eating_schedule_task 登记一次性任务；到点的任务消息不是主人指令，仍受主人暂停、额度、运行时和周期限制。正文承诺和记忆记录都不改变调度。Eating 的暂停控制其无输入活动机会；主 Agent 仍可自主使用已接入的原生能力和全部功能型 MCP，不再按单独工具申请许可。
@@ -227,7 +228,7 @@ export class DshPlugin implements BackendPlugin {
       }
     }, () => this.agentControl.revokeAutonomousContacts())
     this.activity.setTargetDirectory(() => this.contactPolicy.targets())
-    this.agentControl.setAutonomy(this.activity, () => this.metadata?.sessionId ?? null, () => this.runtimeReady, () => this.contactPolicy.summary(), () => this.configuration.timeoutMs)
+    this.agentControl.setAutonomy(this.activity, () => this.metadata?.sessionId ?? null, () => this.runtimeReady, () => this.contactPolicy.summary(), () => AGENT_TASK_LIFETIME_MS)
     this.autonomy = {
       snapshot: () => ({ ...this.activity.snapshot(), contactTasks: this.agentControl.proactiveStatus(), contactPolicy: this.contactPolicy.snapshot() as unknown as JsonObject }),
       configure: async input => { if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH已停用。', 'not-sent'); if (isJsonObject(input) && isJsonObject(input.configuration) && input.configuration.enabled === true) this.requireAutonomyServices(); await this.activity.configure(input); return this.autonomy.snapshot() },
@@ -742,7 +743,7 @@ export class DshPlugin implements BackendPlugin {
   private reloadHistoryBindings(): void {
     this.metadata = this.sessionFile.read()
     this.agentControl = new DshAgentControl(this.context.dataDirectory, this.host)
-    this.agentControl.setAutonomy(this.activity, () => this.metadata?.sessionId ?? null, () => this.runtimeReady, () => this.contactPolicy.summary(), () => this.configuration.timeoutMs)
+    this.agentControl.setAutonomy(this.activity, () => this.metadata?.sessionId ?? null, () => this.runtimeReady, () => this.contactPolicy.summary(), () => AGENT_TASK_LIFETIME_MS)
   }
 
   private async manageSessionHistory(operation: string, input: unknown): Promise<JsonValue> {

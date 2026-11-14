@@ -249,7 +249,7 @@ describe('generic Host Harness services and management boundary', () => {
     expect(Object.isFrozen(configuration.activePersona)).toBe(true)
     expect(Reflect.set(configuration.prompts[0]!, 'body', 'override')).toBe(false)
     expect(Reflect.set(configuration.activePersona!, 'body', 'override')).toBe(false)
-    expect(Object.keys(services).sort()).toEqual(['deliveryReceiptAccepted', 'extendAgentScope', 'getCapabilityMcpConnections', 'getMcpConnection', 'hasPendingMessages', 'memory', 'prepareProactiveScope', 'readAgentActions', 'readDeliverySettings', 'readOwnerConfiguration', 'readProactiveChannels', 'readProactiveContacts', 'registerSink', 'revokeAgentAccess', 'wake'])
+    expect(Object.keys(services).sort()).toEqual(['deliveryReceiptAccepted', 'extendAgentScope', 'finishTaskActions', 'getCapabilityMcpConnections', 'getMcpConnection', 'hasPendingMessages', 'memory', 'prepareProactiveScope', 'readAgentActions', 'readDeliverySettings', 'readOwnerConfiguration', 'readProactiveChannels', 'readProactiveContacts', 'readTaskActions', 'registerSink', 'revokeAgentAccess', 'wake'])
     expect(Object.keys(services.memory!).sort()).toEqual(['append', 'begin', 'end', 'finish', 'flush'])
     expect(Object.isFrozen(services.memory)).toBe(true)
     const updated = context.host.authoring.updatePersona(persona.id, persona.name, '主人新设定', persona.revision)

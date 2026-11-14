@@ -6,6 +6,7 @@ import { resolve, extname, sep } from 'node:path'
 import type { BackendPlugin, BackendPluginEntry, HarnessHostServices, HarnessMessageSink, HarnessRemount, HarnessRemountReport, HostPluginContext, JsonObject, PluginResourceServices, CapabilityInvocationScope } from '@eating/plugin-sdk'
 import { PlatformError, checkedImageResource, composeAgentPrompt, isJsonObject, validateDeliverySettings } from '@eating/plugin-sdk'
 import { AgentAccessRegistry, collectAgentContributions } from './agent-access'
+import { TaskActionJournal } from './task-actions'
 import { CapabilityAccess } from './capability-access'
 import { MemoryAccess } from './memory-access'
 import { verifiedAudioAsset, verifiedImageAsset, verifiedReceivedAudio } from './media-assets'
@@ -74,6 +75,7 @@ export class EatingHost {
   private readonly mutations = new Map<string, string>()
   private readonly sinkRegistrations = new Map<string, Set<() => void>>()
   private readonly agentAccess: AgentAccessRegistry
+  private readonly taskActions: TaskActionJournal
   private readonly directMcp: DirectMcpConnections
   private readonly capabilityAccess: CapabilityAccess
   private readonly memoryAccess: MemoryAccess
@@ -107,7 +109,8 @@ export class EatingHost {
       this.store = openedStore = new HostStore(resolve(options.dataDirectory, 'host', 'Eating.sqlite'))
       this.imageLimits = new ImageLimitsService(this.store)
       this.harness = new HarnessGateway(this.store)
-      this.agentAccess = new AgentAccessRegistry(id => this.requirePlugin(id, true), id => !this.closed && this.enabled.has(id))
+      this.taskActions = new TaskActionJournal(this.store)
+      this.agentAccess = new AgentAccessRegistry(id => this.requirePlugin(id, true), id => !this.closed && this.enabled.has(id), this.taskActions)
       this.authoring = new AuthoringService(this.store, () => collectAgentContributions(this.plugins.values(), this.enabled))
       const enabledIds = persistedEnabledIds(this.store.getSetting('platforms.enabled'), options.entries.map(entry => entry.id))
       this.directMcp = new DirectMcpConnections(resolve(options.dataDirectory, 'host', 'mcp'), async (sourceId, refresh) => {
@@ -115,7 +118,7 @@ export class EatingHost {
         await this.changeCapabilityTopology(refresh)
       })
       this.memoryAccess = new MemoryAccess({ plugins: () => this.plugins.values(), enabled: id => !this.closed && this.enabled.has(id) })
-      this.capabilityAccess = new CapabilityAccess({ store: this.store, direct: this.directMcp, plugins: () => this.plugins.values(), enabled: id => !this.closed && this.enabled.has(id),
+      this.capabilityAccess = new CapabilityAccess({ store: this.store, taskActions: this.taskActions, direct: this.directMcp, plugins: () => this.plugins.values(), enabled: id => !this.closed && this.enabled.has(id),
         imageLimits: () => this.imageLimits.snapshot(),
         memoryContext: (harnessId, agentId) => this.memoryAccess.context(harnessId, agentId),
         executeIdempotent: (pluginId, action, params, requestId, execute) => this.store.executeIdempotent(pluginId, action, params, requestId, execute) })
@@ -688,12 +691,12 @@ export class EatingHost {
         this.requireHarnessAccess(id)
         return immutableConfiguration(this.authoring.readOwnerConfiguration())
       },
-      getMcpConnection: (pluginId: string, scope: import('@eating/plugin-sdk').AgentInvocationScope, policy?: import('@eating/plugin-sdk').ScopedAccessPolicy) => {
+      getMcpConnection: (pluginId: string, scope: import('@eating/plugin-sdk').AgentInvocationScope, policy?: import('@eating/plugin-sdk').ScopedAccessPolicy, taskId?: string) => {
         this.requireHarnessAccess(id)
         if (!this.url) throw new PlatformError('HOST_NOT_LISTENING', 'Host 尚未监听，无法登记 MCP 连接。', 503)
         if (this.requirePlugin(pluginId, true).kind !== 'communication') throw new PlatformError('PLUGIN_SCOPE_VIOLATION', 'Harness 仅可取得已启用通讯插件的 MCP 连接。', 403)
         if (!scope || typeof scope !== 'object' || Array.isArray(scope)) throw new PlatformError('AGENT_SCOPE_VIOLATION', '请提供当前代理的完整调用范围。', 403, 'not-sent')
-        return this.agentAccess.issue(id, pluginId, scope, this.url, policy)
+        return this.agentAccess.issue(id, pluginId, scope, this.url, policy, taskId)
       },
       readDeliverySettings: () => { this.requireHarnessAccess(id); return this.store.getDeliverySettings() },
       deliveryReceiptAccepted: (receiptId: string) => { this.requireHarnessAccess(id); return this.store.deliveryReceiptAccepted(receiptId) },
@@ -722,8 +725,12 @@ export class EatingHost {
         return contacts.map(contact => ({ ...contact }))
       },
       hasPendingMessages: () => { this.requireHarnessAccess(id); return this.store.hasPendingHarnessMessages() },
-      getCapabilityMcpConnections: (scope: CapabilityInvocationScope) => { this.requireHarnessAccess(id); if (!this.url) throw new PlatformError('HOST_NOT_LISTENING', 'Host 尚未监听。', 503); return this.capabilityAccess.connections(id, scope, this.url) },
+      getCapabilityMcpConnections: (scope: CapabilityInvocationScope, taskId?: string) => { this.requireHarnessAccess(id); if (!this.url) throw new PlatformError('HOST_NOT_LISTENING', 'Host 尚未监听。', 503); return this.capabilityAccess.connections(id, scope, this.url, taskId) },
       readAgentActions: (agentId: string) => { this.requireHarnessAccess(id); return [...this.agentAccess.actions(id, agentId), ...this.capabilityAccess.actions(id, agentId)] },
+      // A disabled Harness can still display its own saved receipts; this grants no tool lease.
+      readTaskActions: (agentId: string, taskId: string) => this.taskActions.read(id, agentId, taskId),
+      // Cleanup is also needed while a registered Harness is stopping; no lease is restored.
+      finishTaskActions: (agentId: string, taskId: string, reviewed?: boolean) => this.taskActions.read(id, agentId, taskId, true, reviewed === true),
       revokeAgentAccess: (agentId: string) => { this.agentAccess.revokeAgent(id, agentId); this.capabilityAccess.revokeAgent(id, agentId); this.memoryAccess.revokeAgent(id, agentId) },
     })
   }

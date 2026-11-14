@@ -1,3 +1,4 @@
+import { AGENT_TASK_LIFETIME_MS } from './task-lifecycle'
 import { getAsyncTasksRuntimeSource } from './async-tasks-runtime'
 import { getAutonomyRuntimeSource } from './autonomy-runtime'
 import { getMemoryRuntimeSource } from './memory-runtime'
@@ -15,7 +16,8 @@ export function getRuntimeAgentSource(): string {
   const taskFlights = new Map();
   const registeredAgentTypes = new Set();
   let activeContext;
-  const taskDeadlineMs = Math.max(1000, Math.min(120000, Number(process.env.EATING_DSH_TASK_TIMEOUT) || 60000));
+  const toolCallTimeoutMs = Math.max(1000, Math.min(120000, Number(process.env.EATING_DSH_TASK_TIMEOUT) || 60000));
+  const taskDeadlineMs = ${AGENT_TASK_LIFETIME_MS};
   const controlUrl = process.env.EATING_DSH_CONTROL_URL;
   const controlToken = process.env.EATING_DSH_CONTROL_TOKEN;
   const mcpEntry = process.env.EATING_DSH_MCP_ENTRY;
@@ -138,7 +140,7 @@ export function getRuntimeAgentSource(): string {
       if (!record(connection) || typeof connection.serverName !== 'string' || !/^[A-Za-z0-9_]+$/.test(connection.serverName) || !record(connection.headers)
         || !Array.isArray(connection.tools) || connection.tools.some(name => typeof name !== 'string') || typeof connection.url !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+\/mcp-services\//.test(connection.url)) throw new Error('Trusted MCP capability connection is invalid');
       await agent.ctx.plugin(Mcp, { transport: 'streamable-http', serverName: connection.serverName, url: connection.url, headers: connection.headers,
-        toolCallTimeoutMs: taskDeadlineMs, failOnStartupError: true, reconnect: { enabled: false } });
+        toolCallTimeoutMs, failOnStartupError: true, reconnect: { enabled: false } });
       // Current official MCP naming contract: preserve clean names, otherwise
       // append the identity hash after normalization to the provider's 64-char limit.
       const publicName = rawName => {
@@ -166,7 +168,7 @@ export function getRuntimeAgentSource(): string {
     const nativeNames = configuration.mode === 'verify' ? [] : await native.mount(agent, configuration.agentTypeId);
     const Mcp = await loadModule(mcpEntry);
     await agent.ctx.plugin(Mcp, { transport: 'streamable-http', serverName: 'qq', url: configuration.mcp.url, headers: configuration.mcp.headers,
-      toolCallTimeoutMs: taskDeadlineMs, failOnStartupError: true, reconnect: { enabled: false } });
+      toolCallTimeoutMs, failOnStartupError: true, reconnect: { enabled: false } });
     const capabilityNames = await mountCapabilities(agent, configuration.capabilities);
     const expectedNames = [...configuration.tools.map(name => 'mcp__qq__' + name), ...capabilityNames, ...nativeNames].sort();
     native.reportTools(agent, configuration.agentTypeId, expectedNames);

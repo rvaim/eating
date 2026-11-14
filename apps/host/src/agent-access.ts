@@ -4,6 +4,7 @@ import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { AgentActionReceipt, AgentInvocationScope, AgentMcpConnection, BackendPlugin, JsonObject, JsonValue, RegisteredAgentInstructions, RegisteredAgentType } from '@eating/plugin-sdk'
 import { createPluginMcpHandler } from './mcp'
 import { secret } from './security'
+import { TaskActionJournal } from './task-actions'
 
 const maximumAgents = 256
 const maximumReferences = 100000
@@ -65,6 +66,7 @@ interface Actor {
   tokenHash?: string
 }
 interface Lease {
+  readonly taskId?: string
   readonly abort: AbortController
   readonly actor: Actor
   readonly plugin: BackendPlugin
@@ -79,7 +81,7 @@ export class AgentAccessRegistry {
   private readonly leases = new Map<string, Lease>()
   private readonly closing = new Set<Promise<void>>()
   private closed = false
-  constructor(private readonly plugin: (id: string) => BackendPlugin, private readonly enabled: (id: string) => boolean) {}
+  constructor(private readonly plugin: (id: string) => BackendPlugin, private readonly enabled: (id: string) => boolean, private readonly taskActions: TaskActionJournal) {}
 
   private actorKey(harnessId: string, agentId: string) { return `${harnessId}\0${agentId}` }
   private requireLive(lease: Lease): Actor {
@@ -101,6 +103,11 @@ export class AgentAccessRegistry {
     if (isJsonObject(result) && (typeof result.message_id === 'string' || typeof result.message_id === 'number')) return { message_id: result.message_id }
     return undefined
   }
+  private recordTaskAction(lease: Lease, receipt: AgentActionReceipt): void {
+    if (!lease.taskId) return
+    try { this.taskActions.finish(lease.actor.harnessId, lease.actor.scope.agentId, lease.taskId, lease.plugin.id, receipt) }
+    catch { throw new PlatformError('TASK_RECEIPT_UNCONFIRMED', '动作回执保存待核对，不要重发。', 500, 'unknown') }
+  }
   private async invoke(lease: Lease, name: string, input: unknown, requestId: string): Promise<JsonValue> {
     const actor = this.requireLive(lease)
     const receipts = actor.receipts
@@ -113,11 +120,14 @@ export class AgentAccessRegistry {
       scopedRequestId = 'agent-' + createHash('sha256').update(actor.scope.agentId + '\0' + requestId).digest('hex')
       args.request_id = scopedRequestId
     }
+    if (!tool.readOnly && lease.taskId) this.taskActions.begin(actor.harnessId, actor.scope.agentId, lease.taskId, lease.plugin.id,
+      { pluginId: lease.plugin.id, scopeKey: `${actor.scope.instanceId}:${actor.scope.accountId}`, requestId: scopedRequestId }, { requestId, tool: name, outcome: 'unknown' })
     try {
       const result = await lease.plugin.invokeScoped!(name, args, scopedRequestId, { ...actor.scope, signal: lease.abort.signal })
       if (!tool.readOnly) {
         const metadata = this.responseMetadata(result)
-        this.remember(receipts, { requestId, tool: name, outcome: 'succeeded', ...(metadata !== undefined ? { result: metadata } : {}) })
+        const receipt: AgentActionReceipt = { requestId, tool: name, outcome: 'succeeded', ...(metadata !== undefined ? { result: metadata } : {}) }
+        this.recordTaskAction(lease, receipt); this.remember(receipts, receipt)
         if (isJsonObject(result) && (typeof result.message_id === 'string' || typeof result.message_id === 'number') && opaque(String(result.message_id), 2048)) {
           actor.returnedMessageIds = boundedReferences([...actor.returnedMessageIds, String(result.message_id)])
           actor.scope = { ...actor.baseScope, messageIds: [...new Set([...actor.baseScope.messageIds, ...actor.returnedMessageIds])] }
@@ -127,13 +137,14 @@ export class AgentAccessRegistry {
     } catch (cause) {
       if (!tool.readOnly) {
         const error = cause instanceof PlatformError ? cause : new PlatformError('ACTION_OUTCOME_UNKNOWN', '动作结果待核对。', 500, 'unknown')
-        this.remember(receipts, { requestId, tool: name, outcome: error.outcome, code: error.code })
+        const receipt: AgentActionReceipt = { requestId, tool: name, outcome: error.outcome, code: error.code }
+        this.recordTaskAction(lease, receipt); this.remember(receipts, receipt)
       }
       throw cause
     }
   }
 
-  issue(harnessId: string, pluginId: string, scope: AgentInvocationScope, baseUrl: string, policy?: import('@eating/plugin-sdk').ScopedAccessPolicy): AgentMcpConnection {
+  issue(harnessId: string, pluginId: string, scope: AgentInvocationScope, baseUrl: string, policy?: import('@eating/plugin-sdk').ScopedAccessPolicy, taskId?: string): AgentMcpConnection {
     if (policy && (typeof policy.active !== 'function' || !policy.active() || policy.readOnly !== undefined && typeof policy.readOnly !== 'boolean' || !Array.isArray(policy.toolNames) || policy.toolNames.length === 0 && policy.readOnly !== true && scope.readOnly !== true || policy.toolNames.some(name => !opaque(name, 160)))) forbidden()
     if (this.closed || !this.enabled(harnessId) || !this.enabled(pluginId) || scope.readOnly !== undefined && typeof scope.readOnly !== 'boolean' || scope.pluginId !== pluginId || !opaque(scope.agentId, 160) || !opaque(scope.agentTypeId, 160)
       || !opaque(scope.instanceId, 160) || !opaque(scope.accountId, 160) || !opaque(scope.conversationId) || !opaque(scope.targetId, 160)
@@ -152,6 +163,7 @@ export class AgentAccessRegistry {
     if (policy && policy.toolNames.some(name => !currentTools.some(tool => tool.name === name))) forbidden()
     const scopedPolicy = policy ? { toolNames: [...policy.toolNames], active: policy.active, ...(policy.readOnly !== undefined ? { readOnly: policy.readOnly } : {}) } : undefined
     const selectedTools = () => this.typeTools(actor, plugin).filter(tool => (!scopedPolicy || scopedPolicy.toolNames.includes(tool.name)) && (actor.scope.readOnly !== true || tool.readOnly === true))
+    if (taskId !== undefined) this.taskActions.open(harnessId, scope.agentId, taskId)
     const toolNames = Object.freeze(selectedTools().map(tool => tool.name))
     const token = secret(), tokenHash = createHash('sha256').update(token).digest('hex')
     let lease: Lease
@@ -163,7 +175,7 @@ export class AgentAccessRegistry {
       updateConfiguration: async () => forbidden(), connect: async () => forbidden(), disconnect: async () => {}, dispose: async () => {},
       invoke: (name, input, requestId) => registry.invoke(lease, name, input, requestId),
     }
-    lease = { actor, plugin, tokenHash, abort: new AbortController(), handler: createPluginMcpHandler(view), ...(scopedPolicy ? { policy: scopedPolicy } : {}) }
+    lease = { actor, plugin, tokenHash, abort: new AbortController(), handler: createPluginMcpHandler(view), ...(scopedPolicy ? { policy: scopedPolicy } : {}), ...(taskId !== undefined ? { taskId } : {}) }
     if (previous?.tokenHash) this.retire(previous.tokenHash)
     actor.tokenHash = tokenHash
     this.actors.set(key, actor)

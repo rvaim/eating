@@ -176,9 +176,9 @@ async function fixture({ withholdSend = false, autonomyEnabled = true, scheduled
   const issuedScopes: AgentInvocationScope[] = []
   const entry: BackendPluginEntry = { kind: 'harness', id: 'dsh', storageDirectory: 'dsh', create: context => {
     services = context.harness!
-    plugin = new DshPlugin({ ...context, harness: { ...services, getMcpConnection: (pluginId, scope, policy) => {
+    plugin = new DshPlugin({ ...context, harness: { ...services, getMcpConnection: (pluginId, scope, policy, taskId) => {
       // Observe the real Host issuance without replacing its scope checks or MCP.
-      const connection = services.getMcpConnection(pluginId, scope, policy)
+      const connection = services.getMcpConnection(pluginId, scope, policy, taskId)
       issuedScopes.push(structuredClone(scope))
       return connection
     } } }, { locateSystemDsh: () => ({ bin: systemBin!, version: version.stdout.trim(), source: 'override' }) }); return plugin

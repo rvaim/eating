@@ -1,3 +1,4 @@
+import { withTaskReceipts } from '../../../../../tests/fixtures/task-receipts'
 import { DEFAULT_DELIVERY_SETTINGS } from '@eating/plugin-sdk'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -21,9 +22,9 @@ function fixture() {
     { id: 'common', scope: 'common', source: 'owner', title: 'common', body: 'COMMON', revision: 1, updatedAt: null }, { id: 'subagent', scope: 'subagent', source: 'owner', title: 'subagent', body: 'SUBAGENT', revision: 1, updatedAt: null },
     { id: 'main', scope: 'main', source: 'owner', title: 'main', body: 'MAIN', revision: 1, updatedAt: null }, { id: 'agent:qq.private', agentTypeId: 'qq.private', scope: 'agent', source: 'plugin', title: 'private', body: 'PRIVATE {{目标编号}}', revision: 1, updatedAt: null, pluginId: 'qq' },
   ], agentTypes: [{ id: 'qq.private', title: 'Private', description: 'Private target', conversationKind: 'private', defaultPrompt: 'PRIVATE', availableTools: ['send'], defaultTools: ['send'], enabledTools: ['send'], pluginId: 'qq', pluginName: 'QQ', enabled: true, identity: { owners: [], administrators: [] } }] }
-  const host: HarnessHostServices = { registerSink: () => () => {}, wake: () => {}, readOwnerConfiguration: () => owner,
+  const host: HarnessHostServices = withTaskReceipts({ registerSink: () => () => {}, wake: () => {}, readOwnerConfiguration: () => owner,
     getCapabilityMcpConnections: () => [], getMcpConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1/mcp', headers: { Authorization: 'Bearer fixture-scoped-only-token' }, toolNames: ['send'] })),
-    readDeliverySettings: () => ({ ...DEFAULT_DELIVERY_SETTINGS, aggregationWindowMs: 0 }), deliveryReceiptAccepted: () => false, extendAgentScope: vi.fn(), readAgentActions: vi.fn(() => [{ requestId: 'request-1', tool: 'send', outcome: 'succeeded' as const }]), revokeAgentAccess: vi.fn() }
+    readDeliverySettings: () => ({ ...DEFAULT_DELIVERY_SETTINGS, aggregationWindowMs: 0 }), deliveryReceiptAccepted: () => false, extendAgentScope: vi.fn(), readAgentActions: vi.fn(() => [{ requestId: 'request-1', tool: 'send', outcome: 'succeeded' as const }]), revokeAgentAccess: vi.fn() })
   const control = new DshAgentControl(directory, host); control.setAutonomy(new DshAutonomy(directory, () => true, () => {}, () => {}), () => parentId, () => true); stops.push(() => control.close())
   const batch: HarnessDeliveryBatch = { protocolVersion: 1, batchId: 'a'.repeat(64), conversationId: 'qq:100:private:200', createdAt: '2026-10-28T00:00:00Z', reason: 'aggregation-window', events: [{ protocolVersion: 1, eventId: 'event', pluginId: 'qq', instanceId: 'instance', platform: 'qq', accountId: '100', conversationId: 'qq:100:private:200', senderId: '200', targetId: '200', messageId: '300', resourceIds: ['https://fixture.invalid/file'], receivedAt: '2026-10-28T00:00:00Z', source: { trust: 'external', kind: 'private', senderRole: 'user' }, content: 'EXTERNAL-MESSAGE-BODY', text: 'EXTERNAL-MESSAGE-BODY' }] }
   const post = async (path: string, value: object, headers: Record<string, string> = {}) => fetch(control.url + path, { method: 'POST', headers: { Authorization: `Bearer ${control.token}`, 'X-Eating-Runtime': 'fixture-runtime-nonce', 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(value) })
@@ -62,7 +63,10 @@ describe('trusted native Agent control boundary', () => {
     const payload = { eating: { magic: 'eating-harness-delivery', protocolVersion: 1, nonce: 'fixture-runtime-nonce', sessionId: parentId, batchId: batch.batchId, digest }, context, events }
     await f.control.start('fixture-runtime-nonce')
     const previousTask = { agentId: bound[0]!.binding.scope.agentId, agentTypeId: 'qq.private', mode: 'reply', contextRef: bound[0]!.contextRef, taskId: '1'.repeat(64) }
-    if (options.pending) expect((await f.post('/prepare-task', previousTask)).status).toBe(200)
+    if (options.pending) {
+      expect((await f.post('/prepare-task', previousTask)).status).toBe(200)
+      vi.mocked(f.host.readAgentActions).mockReturnValue([{ requestId: 'pending-request-001', tool: 'send', outcome: 'unknown' }])
+    }
     await f.control.close()
     const control = new DshAgentControl(f.directory, f.host); stops.push(() => control.close())
     const activity = new DshAutonomy(f.directory, () => true, () => {}, () => {})
@@ -82,7 +86,7 @@ describe('trusted native Agent control boundary', () => {
       writeFileSync(expectedFile, JSON.stringify({ ...expected, digest: value.eating.digest }))
       return value
     }
-    vi.mocked(f.host.getMcpConnection).mockClear(); vi.mocked(f.host.revokeAgentAccess).mockClear(); vi.mocked(f.host.readAgentActions).mockClear(); capabilities.mockClear()
+    vi.mocked(f.host.getMcpConnection).mockClear(); vi.mocked(f.host.revokeAgentAccess).mockClear(); vi.mocked(f.host.readAgentActions).mockClear(); vi.mocked(f.host.readTaskActions).mockClear(); vi.mocked(f.host.finishTaskActions).mockClear(); capabilities.mockClear()
     return { ...f, control, batch, bound, payload, expected, expectedFile, post, restore, memory, previousTask, resign, capabilities }
   }
 
@@ -160,7 +164,7 @@ describe('trusted native Agent control boundary', () => {
     expect(response.status).toBe(mode === 'old-auth' ? 403 : 409)
     if (mode === 'unregistered') expect(await response.json()).toMatchObject({ code: 'RESTORE_BINDING_UNAVAILABLE', outcome: 'not-sent' })
     expect(readFileSync(join(f.directory, 'agent-bindings.json'), 'utf8')).toBe(original); expect(f.control.list()).toEqual(bindings)
-    expect(f.host.getMcpConnection).not.toHaveBeenCalled(); expect(f.host.revokeAgentAccess).not.toHaveBeenCalled(); expect(f.host.readAgentActions).not.toHaveBeenCalled(); expect(f.capabilities).not.toHaveBeenCalled(); expect(f.memory.begin).not.toHaveBeenCalled(); expect(f.host.wake).not.toHaveBeenCalled()
+    expect(f.host.getMcpConnection).not.toHaveBeenCalled(); expect(f.host.revokeAgentAccess).not.toHaveBeenCalled(); expect(f.host.readTaskActions).not.toHaveBeenCalled(); expect(f.capabilities).not.toHaveBeenCalled(); expect(f.memory.begin).not.toHaveBeenCalled(); expect(f.host.wake).not.toHaveBeenCalled()
     expect((await f.post('/prepare-task', { ...f.previousTask, taskId: '2'.repeat(64) })).status).toBe(409)
     expect(f.host.getMcpConnection).not.toHaveBeenCalled()
     expect((await f.post('/memory-start', { agentId: parentId, turnId: `restored-runtime-nonce:${parentId}:1`, contextRef: f.batch.batchId })).status).toBe(409)
@@ -197,6 +201,8 @@ describe('trusted native Agent control boundary', () => {
     const binding = f.control.bind(f.batch, parentId)
     const readOwner = vi.spyOn(f.host, 'readOwnerConfiguration').mockReturnValue({ ...f.owner, agentTypes: f.owner.agentTypes.map(type => ({ ...type, enabledTools: ['send', 'read'] })) })
     vi.mocked(f.host.getMcpConnection).mockImplementation((_pluginId, scope) => ({ url: 'http://127.0.0.1:1/mcp', headers: {}, toolNames: scope.readOnly ? ['read'] : ['send', 'read'] }))
+    vi.mocked(f.host.readTaskActions).mockReturnValue({ available: true, closed: false, actions: [] })
+    vi.mocked(f.host.finishTaskActions).mockReturnValue({ available: true, closed: true, actions: [] })
     const capabilities = vi.spyOn(f.host, 'getCapabilityMcpConnections').mockImplementation(scope => [{ id: 'plugin.fixture', serverName: 'plugin_fixture', url: 'http://127.0.0.1:1/capability', headers: {}, tools: scope.readOnly ? ['fixture_read'] : ['fixture_read', 'fixture_write'] }])
     const input = { agentId: binding.scope.agentId, agentTypeId: 'qq.private', contextRef: f.batch.batchId, taskId: '1'.repeat(64), mode: 'verify' }
     const prepared = await f.post('/prepare-task', input)
@@ -322,19 +328,16 @@ describe('trusted native Agent control boundary', () => {
     expect(reopened.proactiveStatus()).toMatchObject([{ agentId: first.agentId, state: 'completed' }])
   })
 
-  it.each(['reply', 'verify'] as const)('keeps a revoked %s contact unknown and rejects its late completion before explicit owner review', async mode => {
+  it.each(['reply', 'verify'] as const)('automatically settles a revoked %s contact without requiring owner review', async mode => {
     const f = await autonomousFixture()
     const prepared = await f.post('/prepare-proactive', { agentId: parentId, mode, targetId: 'contact', cycleId: f.cycle.id, taskId: '3'.repeat(64) })
     const task = await prepared.json() as JsonObject
     await f.activity.control('pause', { expectedRevision: f.activity.snapshot().revision, expectedActivityRevision: (f.activity.snapshot().state as JsonObject).revision })
     expect(vi.mocked(f.host.getMcpConnection).mock.calls[0]![2]!.active()).toBe(false)
     expect((await f.post('/finish-task', { agentId: task.agentId, contextRef: task.contextRef, taskId: '3'.repeat(64), status: 'completed' })).status).toBe(409)
-    expect(f.control.proactiveStatus()).toMatchObject([{ state: 'unknown' }])
-    expect(() => f.control.acknowledgeProactive(String(task.agentId), '3'.repeat(64))).toThrow()
+    expect(f.control.proactiveStatus()).toMatchObject([{ state: 'interrupted', reviewRequired: false, unknownActions: 0 }])
     f.activity.finish('fixture-runtime-nonce', String(f.autonomyCycle.id), 'cancelled', null)
     await f.post('/contact-turn-end', { agentId: parentId, turn: 1, cycleId: f.cycle.id })
-    f.control.acknowledgeProactive(String(task.agentId), '3'.repeat(64))
-    expect(f.control.proactiveStatus()).toMatchObject([{ state: 'reviewed' }])
   })
 
   async function ordinaryFixture() {
@@ -408,6 +411,7 @@ describe('trusted native Agent control boundary', () => {
   it('preserves an unknown contact while fresh inbound tasks use the shared UUID and owner review leaves their scope intact', async () => {
     const f = await ordinaryFixture(), contact = await (await f.prepare()).json()
     await f.post('/contact-turn-end', { agentId: parentId, turn: 1, cycleId: f.id })
+    vi.mocked(f.host.readAgentActions).mockReturnValue([{ requestId: 'uncertain-contact-001', tool: 'send', outcome: 'unknown' }])
     f.control.revokeProactive()
     const ordinary = f.control.bind(f.batch, parentId)
     expect(ordinary.scope.agentId).toBe(contact.agentId)
@@ -438,13 +442,13 @@ describe('trusted native Agent control boundary', () => {
     const cycle = await (await post('/contact-turn-start', { agentId: parentId, turn: 1, autonomyCycleId: null })).json()
     expect(readFileSync(file, 'utf8')).toBe(original)
     const response = await post('/prepare-proactive', { agentId: parentId, mode: 'reply', cycleId: cycle.id, targetId: f.target.id, taskId: '1'.repeat(64) })
-    expect(response.status).toBe(state === 'unknown' ? 409 : 200)
-    if (state === 'completed') {
+    expect(response.status).toBe(200)
+    {
       expect((await response.json()).agentId).toBe(ordinary.scope.agentId)
       expect(JSON.parse(readFileSync(file, 'utf8')).bindings).toMatchObject([row, { agentId: ordinary.scope.agentId, task: { state: 'pending' } }])
       const reopened = new DshAgentControl(f.directory, f.host); stops.push(() => reopened.close())
       expect(reopened.proactiveStatus()).toHaveLength(2)
-    } else expect(readFileSync(file, 'utf8')).toBe(original)
+    }
     expect(control.list()[0]!.scope.agentId).toBe(ordinary.scope.agentId)
   })
 
@@ -514,28 +518,43 @@ describe('trusted native Agent control boundary', () => {
     expect(f.host.revokeAgentAccess).not.toHaveBeenCalled()
   })
 
-  it.each(['reply', 'verify'] as const)('times out an unconfirmed %s task as unknown and late completion cannot revoke a reviewed replacement', async mode => {
+  it.each(['reply', 'verify'] as const)('automatically settles an interrupted %s task and preserves a fresh replacement', async mode => {
     const f = await ordinaryFixture()
     f.control.setAutonomy(f.activity, () => parentId, () => true, () => ({ revision: 1 }), () => 1000)
     const first = await (await f.prepare(f.id, '1'.repeat(64), mode)).json()
-    await vi.waitFor(() => expect(f.control.proactiveStatus()).toMatchObject([{ state: 'unknown' }]), { timeout: 2000 })
+    await vi.waitFor(() => expect(f.control.proactiveStatus()).toMatchObject([{ state: 'interrupted', reviewRequired: false }]), { timeout: 2000 })
     expect(vi.mocked(f.host.getMcpConnection).mock.calls[0]![2]!.active()).toBe(false)
     await f.post('/contact-turn-end', { agentId: parentId, turn: 1, cycleId: f.id })
-    f.control.acknowledgeProactive(first.agentId, '1'.repeat(64))
     const next = await f.begin(2)
     expect((await f.prepare(next, '2'.repeat(64))).status).toBe(200)
     expect((await f.post('/finish-task', { agentId: first.agentId, contextRef: first.contextRef, taskId: '1'.repeat(64), status: 'completed' })).status).toBe(409)
     expect(vi.mocked(f.host.getMcpConnection).mock.calls[1]![2]!.active()).toBe(true)
   })
 
-  it('preserves unknown contact tasks across a fresh runtime without restoring expired authority', async () => {
+  it('settles an interrupted contact across a fresh runtime and permits a new task without restoring expired authority', async () => {
     const f = await ordinaryFixture()
     expect((await f.prepare()).status).toBe(200)
     await f.control.close()
     await f.control.start('fixture-runtime-nonce')
-    expect(f.control.proactiveStatus()).toMatchObject([{ state: 'unknown' }])
+    expect(f.control.proactiveStatus()).toMatchObject([{ state: 'interrupted', reviewRequired: false }])
     const next = await f.begin(2)
-    expect((await f.prepare(next, '2'.repeat(64))).status).toBe(409)
+    expect((await f.prepare(next, '2'.repeat(64))).status).toBe(200)
+  })
+
+  it('isolates a genuinely unconfirmed contact action while new tasks use the same child and keep the original replay guard', async () => {
+    const f = await ordinaryFixture(), first = await (await f.prepare()).json()
+    vi.mocked(f.host.readAgentActions).mockReturnValue([{ requestId: 'uncertain-contact-002', tool: 'send', outcome: 'unknown' }])
+    f.control.revokeProactive()
+    expect(f.control.proactiveStatus()).toMatchObject([{ state: 'unknown', reviewRequired: true, unknownActions: 1 }])
+    await f.post('/contact-turn-end', { agentId: parentId, turn: 1, cycleId: f.id })
+    const cycle = await f.begin(2), second = await f.prepare(cycle, '2'.repeat(64))
+    expect(second.status).toBe(200); expect((await second.json()).agentId).toBe(first.agentId)
+    expect((await f.prepare(cycle, '1'.repeat(64))).status).toBe(409)
+    const old = { agentId: first.agentId, taskId: '1'.repeat(64), contextRef: first.contextRef }
+    const revoked = vi.mocked(f.host.revokeAgentAccess).mock.calls.length
+    expect((await f.post('/finish-task', { ...old, status: 'completed' })).status).toBe(409)
+    expect(f.host.revokeAgentAccess).toHaveBeenCalledTimes(revoked)
+    expect(f.control.proactiveStatus()).toMatchObject([{ taskId: old.taskId, reviewRequired: true }])
   })
 
   it('binds every cross-session group and keeps each context active with isolated scope and receipts', async () => {
@@ -850,7 +869,7 @@ describe('trusted native Agent control boundary', () => {
     const accepted = await f.post('/prepare-task', input)
     expect(accepted.status).toBe(200)
     expect(await accepted.json()).toMatchObject({ systemPrompt: 'COMMON\n\nSUBAGENT\n\nPRIVATE 200\n\n', revision: 3, tools: ['send'] })
-    expect(f.host.getMcpConnection).toHaveBeenCalledWith('qq', binding.scope)
+    expect(f.host.getMcpConnection).toHaveBeenCalledWith('qq', binding.scope, undefined, '1'.repeat(64))
     expect((await f.post('/prepare-task', input)).status).toBe(409)
     const reopened = new DshAgentControl(f.directory, f.host); stops.push(() => reopened.close())
     expect(reopened.list()[0]?.task?.state).toBe('pending')
@@ -860,7 +879,7 @@ describe('trusted native Agent control boundary', () => {
     expect((await f.post('/prepare-task', input)).status).toBe(409)
     const next = f.control.bind({ ...f.batch, batchId: 'b'.repeat(64) }, parentId)
     expect(next.scope.agentId).toBe(input.agentId)
-    expect((await f.post('/prepare-task', { ...input, contextRef: 'b'.repeat(64) })).status).toBe(200)
+    expect((await f.post('/prepare-task', { ...input, contextRef: 'b'.repeat(64), taskId: '2'.repeat(64) })).status).toBe(200)
   })
 
   it.each(['MCP_SERVICE_NOT_READY', 'MCP_GRANTED_TOOL_MISSING'])('keeps a %s capability preparation failure retryable without persisting pending tasks or retaining issued QQ access', async code => {
@@ -874,10 +893,10 @@ describe('trusted native Agent control boundary', () => {
     const rejected = await f.post('/prepare-task', input)
     expect(rejected.status).toBe(409)
     expect(await rejected.json()).toMatchObject({ code })
-    expect(f.host.getMcpConnection).toHaveBeenCalledWith('qq', binding.scope)
-    expect(capabilities).toHaveBeenCalledWith({ agentId: binding.scope.agentId, agentTypeId: binding.scope.agentTypeId, source: binding.scope })
+    expect(f.host.getMcpConnection).toHaveBeenCalledWith('qq', binding.scope, undefined, '1'.repeat(64))
+    expect(capabilities).toHaveBeenCalledWith({ agentId: binding.scope.agentId, agentTypeId: binding.scope.agentTypeId, source: binding.scope }, input.taskId)
     expect(f.host.revokeAgentAccess).toHaveBeenCalledExactlyOnceWith(binding.scope.agentId)
-    expect(f.host.readAgentActions).not.toHaveBeenCalled()
+    expect(f.host.finishTaskActions).toHaveBeenCalledWith(binding.scope.agentId, input.taskId)
     expect(readFileSync(file, 'utf8')).toBe(before)
     expect(f.control.list()[0]?.task).toBeUndefined()
     expect(f.control.list()[0]?.taskRefs).toEqual([])
@@ -890,7 +909,7 @@ describe('trusted native Agent control boundary', () => {
     expect(f.control.list()[0]?.task).toMatchObject({ state: 'pending', taskId: input.taskId })
     expect(f.control.list()[0]?.taskRefs).toHaveLength(1)
     expect(f.host.getMcpConnection).toHaveBeenCalledTimes(2)
-    expect(f.host.readAgentActions).toHaveBeenCalledTimes(1)
+    expect(f.host.readTaskActions(binding.scope.agentId, input.taskId)).toMatchObject({ available: true, closed: false, actions: [] })
   })
 
   it('allows distinct completed or failed native calls in one context and refuses replayed or stale call identities', async () => {
@@ -911,6 +930,7 @@ describe('trusted native Agent control boundary', () => {
     expect((await finish(second, 'failed')).status).toBe(200)
     expect((await f.post('/prepare-task', { ...input, taskId: first })).status).toBe(409)
     expect((await f.post('/prepare-task', { ...input, taskId: third })).status).toBe(200)
+    vi.mocked(f.host.readAgentActions).mockReturnValue([{ requestId: 'uncertain-third-001', tool: 'send', outcome: 'unknown' }])
     expect((await finish(third, 'unknown')).status).toBe(200)
     expect((await f.post('/prepare-task', { ...input, taskId: '4'.repeat(64) })).status).toBe(409)
     const reopened = new DshAgentControl(f.directory, f.host); stops.push(() => reopened.close())
@@ -924,7 +944,8 @@ describe('trusted native Agent control boundary', () => {
     const old = { agentId: binding.scope.agentId, contextRef: f.batch.batchId, taskId: '1'.repeat(64) }
     const prepare = (contextRef: string, taskId: string) => f.post('/prepare-task', { agentId: old.agentId, agentTypeId: 'qq.private', mode, contextRef, taskId })
     expect((await prepare(old.contextRef, old.taskId)).status).toBe(200)
-    // The runtime reports unknown after its deadline interrupts and drains the child.
+    // A real side effect is unconfirmed when the runtime interrupts the child.
+    vi.mocked(f.host.readAgentActions).mockReturnValue([{ requestId: 'uncertain-old-call', tool: 'send', outcome: 'unknown' }])
     expect((await f.post('/finish-task', { ...old, status: 'unknown' })).status).toBe(200)
     const retry = await prepare(old.contextRef, '2'.repeat(64))
     expect(retry.status).toBe(409); expect(await retry.json()).toMatchObject({ code: 'AGENT_TASK_UNKNOWN', outcome: 'not-sent' })
@@ -989,6 +1010,7 @@ describe('trusted native Agent control boundary', () => {
     const binding = f.control.bind(f.batch, parentId)
     const old = { agentId: binding.scope.agentId, contextRef: f.batch.batchId, taskId: '1'.repeat(64) }
     expect((await f.post('/prepare-task', { ...old, mode: 'reply', agentTypeId: 'qq.private' })).status).toBe(200)
+    vi.mocked(f.host.readAgentActions).mockReturnValue([{ requestId: 'uncertain-before-restart', tool: 'send', outcome: 'unknown' }])
     if (state === 'unknown') expect((await f.post('/finish-task', { ...old, status: 'unknown' })).status).toBe(200)
     await f.control.close()
     const restarted = new DshAgentControl(f.directory, f.host); stops.push(() => restarted.close())
@@ -1023,6 +1045,7 @@ describe('trusted native Agent control boundary', () => {
       const contextRef = index.toString(16).padStart(64, '0'), taskId = (index + 100).toString(16).padStart(64, '0')
       f.control.bind({ ...f.batch, batchId: contextRef }, parentId)
       expect((await f.post('/prepare-task', { agentId, agentTypeId: 'qq.private', mode: 'reply', contextRef, taskId })).status).toBe(200)
+      if (index === 0) vi.mocked(f.host.readAgentActions).mockReturnValue([{ requestId: 'uncertain-capacity-first', tool: 'send', outcome: 'unknown' }])
       expect((await f.post('/finish-task', { agentId, contextRef, taskId, status: index === 0 ? 'unknown' : 'completed' })).status).toBe(200)
       expect((await f.post('/retire-deliveries', { agentId: parentId, batchIds: [contextRef] })).status).toBe(200)
     }
@@ -1034,6 +1057,7 @@ describe('trusted native Agent control boundary', () => {
       const contextRef = (index + 1000).toString(16).padStart(64, '0'), taskId = (index + 2000).toString(16).padStart(64, '0')
       f.control.bind({ ...f.batch, batchId: contextRef }, parentId)
       expect((await f.post('/prepare-task', { agentId, agentTypeId: 'qq.private', mode: 'reply', contextRef, taskId })).status).toBe(200)
+      vi.mocked(f.host.readAgentActions).mockReturnValue([{ requestId: 'uncertain-capacity-' + index, tool: 'send', outcome: 'unknown' }])
       expect((await f.post('/finish-task', { agentId, contextRef, taskId, status: 'unknown' })).status).toBe(200)
       expect((await f.post('/retire-deliveries', { agentId: parentId, batchIds: [contextRef] })).status).toBe(200)
     }
@@ -1096,7 +1120,7 @@ describe('trusted native Agent control boundary', () => {
     expect(readFileSync(file, 'utf8')).toBe(bytes)
   })
 
-  it.each(['getMcpConnection', 'readAgentActions', 'revokeAgentAccess'] as const)('rejects a Host missing required %s instead of treating it as an empty service', name => {
+  it.each(['getMcpConnection', 'readTaskActions', 'finishTaskActions', 'revokeAgentAccess'] as const)('rejects a Host missing required %s instead of treating it as an empty service', name => {
     const f = fixture()
     const incomplete: unknown = { ...f.host, [name]: undefined }
     expect(() => new DshAgentControl(f.directory, incomplete as HarnessHostServices)).toThrow(expect.objectContaining({ code: 'HARNESS_SERVICES_INVALID' }))

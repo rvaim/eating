@@ -1,3 +1,4 @@
+import { withTaskReceipts } from '../../../tests/fixtures/task-receipts'
 import { DEFAULT_IMAGE_LIMITS } from '@eating/plugin-sdk'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
@@ -190,11 +191,11 @@ async function fixture(handleConversations = false, captureMemory = false, taskC
     const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS,
       dataDirectory, getSetting: key => store.getSetting(key), setSetting: (key, value) => store.setSetting(key, value),
       recordEvent: forbidden('recordEvent'), listMessages: () => [], executeIdempotent: forbidden('executeIdempotent'),
-      harness: { ...(captureMemory ? { memory } : {}), registerSink: sink => gateway.register(sink), wake, readOwnerConfiguration: owner, readDeliverySettings: () => store.getDeliverySettings(), deliveryReceiptAccepted: () => false, extendAgentScope: scope => { extendedScopes.push(structuredClone(scope)) }, readAgentActions: () => [], revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: (pluginId, scope) => {
+      harness: withTaskReceipts({ ...(captureMemory ? { memory } : {}), registerSink: sink => gateway.register(sink), wake, readOwnerConfiguration: owner, readDeliverySettings: () => store.getDeliverySettings(), deliveryReceiptAccepted: () => false, extendAgentScope: scope => { extendedScopes.push(structuredClone(scope)) }, readAgentActions: () => [], revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: (pluginId, scope) => {
         if (!handleConversations || pluginId !== 'qq') throw new Error('Unexpected fixture communication scope')
         scopes.push(structuredClone(scope)); scopedAgents.add(scope.agentId)
         return { url: `http://127.0.0.1:${address.port}/mcp/${scope.agentId}`, headers: { Authorization: `Bearer ${scopeToken}` }, toolNames: owner().agentTypes.find(type => type.id === scope.agentTypeId)!.enabledTools }
-      }, hasPendingMessages: () => store.hasPendingHarnessMessages(), readProactiveChannels: () => [], prepareProactiveScope: forbidden('prepareProactiveScope') },
+      }, hasPendingMessages: () => store.hasPendingHarnessMessages(), readProactiveChannels: () => [], prepareProactiveScope: forbidden('prepareProactiveScope') }),
     }
     plugin = new DshPlugin(context, { locateSystemDsh: testSystemDsh })
     if (configure) await plugin.updateConfiguration({ endpoint: `http://127.0.0.1:${address.port}/v1`, model, apiKey, timeoutMs: 30000, maxTokens: 128, autoConnect: false })
@@ -301,7 +302,7 @@ describe.runIf(enabled)('isolated system DSH cross-conversation Gateway delivery
     await vi.waitFor(() => {
       expect(current.taskNotices.size, JSON.stringify({ errors: current.modelErrors, status: current.plugin.getStatus(), runtime: current.runtime(), children: current.childInputs, messages: current.requests.slice(-2).map(request => (request.messages as JsonObject[]).slice(-4)) })).toBe(1)
       const result = [...current.taskNotices.values()][0]!
-      expect(result.status).toBe(action === 'message' ? 'completed' : 'unknown')
+      expect(result.status).toBe(action === 'message' ? 'completed' : 'interrupted')
       expect(result.actions).toEqual([])
       expect(current.runtime().busy).toBe(false)
     }, { timeout: 15000 })

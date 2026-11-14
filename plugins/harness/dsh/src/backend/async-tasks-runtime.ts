@@ -9,7 +9,7 @@ export function getAsyncTasksRuntimeSource(): string {
     const value = readJson('async-outbox.json', true, 1024 * 1024);
     if (value === undefined) return { schemaVersion: 1, results: [] };
     if (!record(value) || Object.keys(value).length !== 2 || value.schemaVersion !== 1 || !Array.isArray(value.results) || value.results.length > 32) throw bridgeError('BRIDGE_FILE_FAILED');
-    for (const result of value.results) if (!record(result) || Object.keys(result).length !== 6 || !HEX.test(result.taskId) || !opaque(result.childId) || !HEX.test(result.contextRef) || !['completed', 'failed', 'unknown'].includes(result.status) || typeof result.summary !== 'string' || result.summary.length > 8192 || !Array.isArray(result.actions) || result.actions.length > 100) throw bridgeError('BRIDGE_FILE_FAILED');
+    for (const result of value.results) if (!record(result) || Object.keys(result).length !== 6 || !HEX.test(result.taskId) || !opaque(result.childId) || !HEX.test(result.contextRef) || !['completed', 'failed', 'interrupted', 'unknown'].includes(result.status) || typeof result.summary !== 'string' || result.summary.length > 8192 || !Array.isArray(result.actions) || result.actions.length > 100) throw bridgeError('BRIDGE_FILE_FAILED');
     if (new Set(value.results.map(result => result.taskId)).size !== value.results.length) throw bridgeError('BRIDGE_FILE_FAILED');
     return value;
   }
@@ -46,15 +46,19 @@ export function getAsyncTasksRuntimeSource(): string {
       status = terminal.stopReason === 'completed' ? 'completed' : 'failed';
       task.summary = lastText(terminal.output).slice(0, 8192);
     } catch {
-      status = 'unknown'; task.summary = '子任务已中断或未确认完成，请核对真实动作，不要自动重发。';
+      status = 'interrupted'; task.summary = '子任务已中断，正在自动核对已发生的动作；不重放原任务，新任务可继续。';
       try { if (task.activation) await task.activation.dispose(); else await ctx.subagents.drainChildren(task.parent, [task.childId]); } catch { task.summary = '子任务停止结果待核对，不要重发。'; }
     }
     try {
       const result = await control('actions', { agentId: task.childId, contextRef: task.contextRef, taskId: task.taskId }, AbortSignal.timeout(5000));
-      if (!Array.isArray(result.actions)) throw new Error('Invalid task receipts');
+      if (result.available !== true || !Array.isArray(result.actions)) throw new Error('Invalid task receipts');
       task.actions = result.actions.slice(0, 100);
     } catch { status = 'unknown'; task.summary = '子任务结果或动作回执未能完整核对，不要自动重发。'; task.actions = []; }
-    try { await control('finish-task', { agentId: task.childId, contextRef: task.contextRef, taskId: task.taskId, status }, AbortSignal.timeout(5000)); }
+    try {
+      const settled = await control('finish-task', { agentId: task.childId, contextRef: task.contextRef, taskId: task.taskId, status }, AbortSignal.timeout(5000));
+      if (!['completed', 'failed', 'interrupted', 'unknown'].includes(settled.status) || !Array.isArray(settled.actions)) throw new Error('Invalid task settlement');
+      status = settled.status; task.actions = settled.actions;
+    }
     catch { status = 'unknown'; task.summary = '子任务结束登记结果待核对，不要自动重发。'; }
     try {
       task.status = status;
@@ -150,11 +154,11 @@ export function getAsyncTasksRuntimeSource(): string {
       parameters: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'status', 'message', 'interrupt'] }, task_id: { type: 'string', pattern: '^[a-f0-9]{64}$' }, context_ref: { type: 'string', pattern: '^[a-f0-9]{64}$' }, message: { type: 'string', maxLength: 8000 } }, required: ['action'], additionalProperties: false }, output,
       async execute(args, exec) {
         if (exec.agent !== agent || ctx.agents.get(sessionId) !== agent || !record(args) || Object.keys(args).some(key => !['action', 'task_id', 'context_ref', 'message'].includes(key)) || !['list', 'status', 'message', 'interrupt'].includes(args.action)) throw new Error('Task control is not authorized');
-        if (args.action === 'list') { if (Object.keys(args).length !== 1) throw new Error('Task listing takes no task arguments'); const stored = await control('tasks', { agentId: sessionId }, exec.signal); return { tasks: stored.tasks.map(task => taskRecords.has(task.taskId) ? taskValue(taskRecords.get(task.taskId)) : task) }; }
+        if (args.action === 'list') { if (Object.keys(args).length !== 1) throw new Error('Task listing takes no task arguments'); const stored = await control('tasks', { agentId: sessionId }, exec.signal); return { tasks: stored.tasks.map(task => taskRecords.get(task.taskId)?.status === 'running' ? taskValue(taskRecords.get(task.taskId)) : task) }; }
         if (!HEX.test(args.task_id)) throw new Error('A real task_id is required');
         const stored = await control('tasks', { agentId: sessionId, taskId: args.task_id }, exec.signal);
         const task = taskRecords.get(args.task_id);
-        if (args.action === 'status') { if (Object.keys(args).length !== 2) throw new Error('Status takes only task_id'); return task ? taskValue(task) : stored.tasks[0]; }
+        if (args.action === 'status') { if (Object.keys(args).length !== 2) throw new Error('Status takes only task_id'); return task?.status === 'running' ? taskValue(task) : stored.tasks[0]; }
         if (!task || task.status !== 'running') return { ...(task ? taskValue(task) : stored.tasks[0]), accepted: false };
         if (args.action === 'interrupt') {
           if (Object.keys(args).length !== 2) throw new Error('Interrupt takes only task_id');

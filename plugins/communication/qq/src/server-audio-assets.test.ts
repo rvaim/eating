@@ -32,7 +32,8 @@ async function fixture(unknown = false) {
   const accountId = '123456789'
   const scope = { agentId: 'voice-child', agentTypeId: 'qq.private', pluginId: 'qq', instanceId: String(plugin.getPublicConfiguration().instanceId), accountId: String(accountId), kind: 'private' as const, targetId: '987654321', conversationId: `qq:${accountId}:private:987654321`, messageIds: [], resourceIds: [], signal: abort.signal }
   const send = (message: JsonValue = segment) => plugin.invokeScoped!('qq_send_private_message', { user_id: scope.targetId, message, request_id: 'qq-audio-request-001' }, 'qq-audio-request-001', scope)
-  return { send, remote, plugin, bytes, abort, executeIdempotent, getAudioAsset, revoke: () => { revoked = true }, corrupt: () => { corrupt = true } }
+  const sendAudio = () => plugin.invokeScoped!('qq_send_private_message', { user_id: scope.targetId, audio_ref: segment.data.file, request_id: 'qq-audio-request-001' }, 'qq-audio-request-001', scope)
+  return { send, sendAudio, remote, plugin, bytes, abort, executeIdempotent, getAudioAsset, revoke: () => { revoked = true }, corrupt: () => { corrupt = true } }
 }
 describe('QQ trusted audio transport and idempotency', () => {
   it('sends a 30 second WAV over the ordinary size limit exactly once using backend-resolved bytes', async () => {
@@ -61,18 +62,19 @@ describe('QQ trusted audio transport and idempotency', () => {
     expect(f.executeIdempotent).not.toHaveBeenCalled()
     expect(f.getAudioAsset).not.toHaveBeenCalled()
     expect(f.remote.requests.filter(request => request.action.startsWith('send_'))).toHaveLength(0)
-    await expect(f.send([segment])).resolves.toEqual({ message_id: 1001 })
+    await expect(f.sendAudio()).resolves.toEqual({ message_id: 1001 })
     await expect(f.send([segment])).resolves.toEqual({ message_id: 1001 })
     expect(f.getAudioAsset).toHaveBeenCalledTimes(1)
+    expect(f.executeIdempotent.mock.calls[0]?.[2]).not.toHaveProperty('audio_ref')
     const sends = f.remote.requests.filter(request => request.action.startsWith('send_'))
     expect(sends).toHaveLength(1)
     expect(sends[0]!.params.message).toEqual([{ type: 'record', data: { file: 'base64://' + f.bytes.toString('base64') } }])
   })
   it('retains unknown sending outcome and does not replay it with the original request ID', async () => {
     const f = await fixture(true)
-    await expect(f.send()).rejects.toMatchObject({ outcome: 'unknown' })
+    await expect(f.sendAudio()).rejects.toMatchObject({ outcome: 'unknown' })
     await vi.waitFor(() => expect(f.plugin.getStatus().state).toBe('connected'), { timeout: 5000 })
-    await expect(f.send()).rejects.toMatchObject({ outcome: 'unknown' })
+    await expect(f.sendAudio()).rejects.toMatchObject({ outcome: 'unknown' })
     expect(f.remote.requests.filter(x => x.action === 'send_private_msg')).toHaveLength(1)
   })
 })

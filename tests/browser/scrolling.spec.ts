@@ -18,8 +18,8 @@ const tabbar = (page: Page) => page.getByRole('tablist')
 function isReadOnlyPanelRequest(request: Request): boolean {
   const body = request.postDataJSON()
   if (request.url().endsWith('/api/plugins/dsh/manage')) return ['get-model-capabilities', 'get-model-information', 'read-model-information'].includes(body?.operation)
-  // Management reads also use POST; an empty media-transport query does not save settings.
-  return Boolean(request.url().endsWith('/api/plugins/qq/manage') && body?.operation === 'media-transport' && body.input && typeof body.input === 'object' && !Array.isArray(body.input) && Object.keys(body.input).length === 0)
+  // Management reads also use POST; an empty media/audio settings query does not save settings.
+  return Boolean(request.url().endsWith('/api/plugins/qq/manage') && ['media-transport', 'audio-input'].includes(body?.operation) && body.input && typeof body.input === 'object' && !Array.isArray(body.input) && Object.keys(body.input).length === 0)
 }
 const copy = {
   'zh-CN': { configuration: '连接配置', tests: '功能测试', mcp: 'MCP 能力', disable: '停用插件' },
@@ -259,7 +259,7 @@ test.describe('视口框架、独立滚动区与 QQ 固定页签', () => {
     await expect(tests).toHaveAttribute('aria-selected', 'true')
     await page.getByLabel('Test function', { exact: true }).selectOption('qq_send_private_message')
     await page.getByLabel('Recipient QQ number (required)', { exact: true }).fill('987654321')
-    await page.getByLabel('Message content (required)', { exact: true }).fill('Unsaved test draft, never submitted')
+    await page.getByLabel('Message content (optional)', { exact: true }).fill('Unsaved test draft, never submitted')
     const requestId = await page.getByLabel('Request ID (required)', { exact: true }).inputValue()
     await tests.focus()
     await page.keyboard.press('Home')
@@ -267,7 +267,7 @@ test.describe('视口框架、独立滚动区与 QQ 固定页签', () => {
     await expect(name).toHaveValue('Unsaved connection draft')
     await page.keyboard.press('End')
     await page.keyboard.press('ArrowLeft')
-    await expect(page.getByLabel('Message content (required)', { exact: true })).toHaveValue('Unsaved test draft, never submitted')
+    await expect(page.getByLabel('Message content (optional)', { exact: true })).toHaveValue('Unsaved test draft, never submitted')
     await expect(page.getByLabel('Request ID (required)', { exact: true })).toHaveValue(requestId)
     const lowerInput = page.getByLabel('Request ID (required)', { exact: true })
     await lowerInput.focus()
@@ -373,7 +373,7 @@ test.describe('视口框架、独立滚动区与 QQ 固定页签', () => {
         await expect(page.getByLabel('API base URL', { exact: true })).toBeEnabled()
         endpoint = page.getByRole('button', { name: 'Disable plugin', exact: true })
       } else if (route === 'settings/delivery') {
-        await page.getByLabel('Grouping delay', { exact: true }).fill('575')
+        await page.getByLabel('Aggregation window', { exact: true }).fill('175')
         endpoint = page.getByRole('button', { name: 'Save settings', exact: true })
       } else if (route === 'settings/queue') {
         await expect(page.getByLabel('Message storage', { exact: true })).toBeEnabled()

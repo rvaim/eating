@@ -1,6 +1,6 @@
 {
   "name": "@eating/plugin-text-to-speech",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "Eating 多协议云端语音合成插件，主人固定音色，按服务能力控制语气。",
   "files": [

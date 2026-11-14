@@ -227,7 +227,7 @@ describe(`pinned OneBot v11 ${ONEBOT_V11_REVISION}: real Host and official MCP`,
       expect(tool.annotations, row.name).toMatchObject({ readOnlyHint: row.readOnly, destructiveHint: metadata.destructive })
       expect(tool.inputSchema, row.name).toEqual(metadata.inputSchema)
       const properties = object(tool.inputSchema.properties)
-      expect(Object.keys(properties).sort(), row.name).toEqual([...row.fields, 'instance_id', 'onebot_call_mode', ...(!row.readOnly ? ['request_id'] : [])].sort())
+      expect(Object.keys(properties).sort(), row.name).toEqual([...row.fields, 'instance_id', 'onebot_call_mode', ...(!row.readOnly ? ['request_id'] : []), ...(['send_private_msg', 'send_group_msg', 'send_msg'].includes(row.action) ? ['audio_ref'] : [])].sort())
       expect(object(properties.onebot_call_mode).enum).toEqual(['sync', 'async', 'rate_limited'])
       if (!row.readOnly) {
         expect(tool.inputSchema.required, row.name).toContain('request_id')

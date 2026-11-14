@@ -1,6 +1,8 @@
 # Eating QQ 配置与功能测试
 
-当前QQ0.17.1将文字、图片与语音格式统一校验：普通文字直接填写正文；text／image／record等消息段须以真实对象或数组传入，面板选择JSON格式。消息段JSON字符串、内部媒体引用正文或CQ包装会以QQ_MESSAGE_FORMAT_INVALID／not-sent在发送前拒绝，指出错误字段与正确结构。语音须单独一条record，配文另发。此次格式拒绝不登记发送动作，修正后复用已有图片／音频与当前request_id，不重新生成；成功或unknown不得借此重发。标准外部CQ、权限及受控媒体读取维持当前OneBot契约。见[ADR-0060](../decisions/ADR-0060-QQ消息格式统一发送校验.md)和[本轮报告](../reports/2026-11-14-QQ文字图片语音格式修复部署报告.md)。
+QQ0.18.0发送已有语音：把speech_get.audio_ref原值填入发送工具顶层audio_ref，不填message或auto_escape。面板中消息内容与语音资源引用二选一；后台构造record并读取授权音频，不需拼JSON或本机路径，同号防重。TTS0.2.1对原有成功任务直接返回引用，不重新合成。见[ADR-0061](../decisions/ADR-0061-QQ语音引用直传.md)。
+
+当前QQ0.18.0将文字、图片与语音格式统一校验：普通文字直接填写正文；text／image／record等消息段须以真实对象或数组传入，面板选择JSON格式。消息段JSON字符串、内部媒体引用正文或CQ包装会以QQ_MESSAGE_FORMAT_INVALID／not-sent在发送前拒绝，指出错误字段与正确结构。语音使用audio_ref由后台构造独立record，配文另发。此次格式拒绝不登记发送动作，修正后复用已有图片／音频与当前request_id，不重新生成；成功或unknown不得借此重发。标准外部CQ、权限及受控媒体读取维持当前OneBot契约。见[ADR-0060](../decisions/ADR-0060-QQ消息格式统一发送校验.md)和[本轮报告](../reports/2026-11-14-QQ文字图片语音格式修复部署报告.md)。
 
 2026-11-10 图片大小现统一在“设置 → 图片大小”配置，默认10MiB、可配1–50MiB，多图合计2倍／最多4张。当前变更仅本地验证，未发布／部署；下方旧部署数字保留当时事实。操作见[图片大小设置](图片大小设置.md)，契约见[ADR-0052](../decisions/ADR-0052-统一可配置图片大小.md)。
 

@@ -8,7 +8,7 @@ const segmentSchemas = (oneBotMessageDefinitions.oneBotSegment as JsonObject).on
 const segmentTypes = new Set(segmentSchemas.map(schema => ((schema.properties as JsonObject).type as JsonObject).const))
 
 function invalid(field: string, reason: string): never {
-  throw new PlatformError('QQ_MESSAGE_FORMAT_INVALID', `${field}：${reason}。本次未发送，未登记发送动作。普通文字直接传正文，例如 {"message":"你好"}；消息段直接传对象或数组，不要 JSON.stringify，也不要放进 text 段。图片使用 image.data.file；语音使用单独的 record.data.file，保留工具返回的原资源引用，例如 {"message":{"type":"record","data":{"file":"speech_get 返回的原引用"}}}。内部图片／语音引用不能写进文字或 CQ 码，不要猜测本机路径。复用已有图片／语音，不重新生成；本次 not-sent 修正格式后可复用本次 request_id，已成功或 unknown 的动作不得重发。`, 400, 'not-sent')
+  throw new PlatformError('QQ_MESSAGE_FORMAT_INVALID', `${field}：${reason}。本次未发送，未登记发送动作。普通文字直接传正文，例如 {"message":"你好"}；消息段直接传对象或数组，不要 JSON.stringify，也不要放进 text 段。图片使用 image.data.file；发送已有语音请改用顶层 audio_ref，直接复制 speech_get 返回的 audio_ref，例如 {"audio_ref":"speech_get 返回的原引用"}，不要同时提供 message 或 auto_escape；后台会构造独立 record.data.file 并读取真实音频。内部图片／语音引用不能写进文字或 CQ 码，不要猜测本机路径。复用已有图片／语音，不重新生成；本次 not-sent 修正格式后可复用本次 request_id，已成功或 unknown 的动作不得重发。`, 400, 'not-sent')
 }
 
 function validAssetReference(value: string, parse: typeof parseImageAssetUri): boolean {

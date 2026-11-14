@@ -113,7 +113,7 @@ export const oneBotMessageDefinitions: JsonObject = {
 
 export const oneBotMessageSchema: JsonObject = {
   $ref: '#/$defs/oneBotMessage',
-  description: '普通文字直接传字符串，例如 {"message":"你好"}；消息段直接传对象或数组，不能 JSON.stringify，也不能把 text／image／record 等消息段 JSON 放进字符串或 text 段。图片把工具返回的原 eating-asset:// 引用放在 image.data.file；语音把 speech_get 返回的原 eating-audio:// 引用放在单独的 record.data.file，不混文字／图片，不用 CQ 码包装内部引用，不猜本机路径。错误格式在发送前以 QQ_MESSAGE_FORMAT_INVALID／not-sent 拒绝并指出字段；没有登记发送动作，修正后复用已有资源和本次 request_id，已成功或 unknown 的动作不得重发。生成成功、文字发送的 message_id 不等于图片／语音发送成功；以正确媒体调用及真实回执为准。正常聊天不发送协议 JSON 或内部工具报告；必要诊断以实际证据为准。普通字符串默认按文字发送；auto_escape=false 只解析标准外部 CQ 码，不能解析 JSON 或内部媒体引用。',
+  description: '发送已有语音请省略message，改用顶层audio_ref直接复制speech_get.audio_ref，不要JSON.stringify或构造CQ码。普通文字直接传字符串，例如 {"message":"你好"}；消息段直接传对象或数组，不能 JSON.stringify，也不能把 text／image／record 等消息段 JSON 放进字符串或 text 段。图片把工具返回的原 eating-asset:// 引用放在 image.data.file；语音优先使用顶层audio_ref；明确使用标准record段时，record.data.file保持工具返回的原引用，不混文字／图片，不用 CQ 码包装内部引用，不猜本机路径。错误格式在发送前以 QQ_MESSAGE_FORMAT_INVALID／not-sent 拒绝并指出字段；没有登记发送动作，修正后复用已有资源和本次 request_id，已成功或 unknown 的动作不得重发。生成成功、文字发送的 message_id 不等于图片／语音发送成功；以正确媒体调用及真实回执为准。正常聊天不发送协议 JSON 或内部工具报告；必要诊断以实际证据为准。普通字符串默认按文字发送；auto_escape=false 只解析标准外部 CQ 码，不能解析 JSON 或内部媒体引用。',
   examples: [
     '你好',
     [{ type: 'text', data: { text: '你好' } }],

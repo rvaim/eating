@@ -95,7 +95,7 @@ export class SpeechStore {
     if (!digest(assetId)) throw new PlatformError('SPEECH_INVALID_INPUT', '语音资源编号无效。', 400, 'not-sent')
     const job = this.value.jobs.find(job => job.status === 'succeeded' && job.assetId === assetId)
     if (!job) throw new PlatformError('SPEECH_NOT_FOUND', '语音资源不存在。', 404, 'not-sent')
-    return { item: { ...job }, sendable: { type: 'record', data: { file: 'eating-audio://text-to-speech/' + assetId } } }
+    return { item: { ...job }, audio_ref: 'eating-audio://text-to-speech/' + assetId, sendable: { type: 'record', data: { file: 'eating-audio://text-to-speech/' + assetId } } }
   }
   getAsset(assetId: string): PluginAudioAsset {
     const { item } = this.preview(assetId), path = join(this.assets, assetId)

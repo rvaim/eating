@@ -9,6 +9,7 @@ import type { EatingHost } from '../../apps/host/src/app'
 import { createInstalledHost } from '../../apps/host/src/installed-host'
 import { installPluginPackage } from '../../apps/host/src/plugin-installation'
 import { replyOneBot, startOneBotFixture } from '../fixtures/onebot'
+import { startSpeechFixture } from '../fixtures/speech-provider'
 import type { OneBotFixtureRequest } from '../fixtures/onebot'
 
 const builtDirectory = fileURLToPath(new URL('../../dist/', import.meta.url))
@@ -55,6 +56,7 @@ test.describe('完整 OneBot 工具的通用面板', () => {
       if (request.action.startsWith('set_group_') || request.action === '.handle_quick_operation') { replyOneBot(peer, request, null); return true }
     } })
     await installPluginPackage(directory, fileURLToPath(new URL('../../plugins/communication/qq/dist/', import.meta.url)))
+    await installPluginPackage(directory, fileURLToPath(new URL('../../plugins/capabilities/text-to-speech/dist/', import.meta.url)))
     host = await createInstalledHost({ dataDirectory: directory, port: 0, allowedUiOrigins: [], staticDirectory: builtDirectory })
     url = await host.listen()
   })
@@ -130,7 +132,7 @@ test.describe('完整 OneBot 工具的通用面板', () => {
     await page.getByLabel('Test function', { exact: true }).selectOption('qq_send_message')
     await page.getByLabel('Message type (optional)', { exact: true }).selectOption('group')
     await page.getByLabel('Target group number (optional)', { exact: true }).fill('123456')
-    await page.getByLabel('Message content (required)', { exact: true }).fill('[普通文本] [CQ:at,qq=987654321] {{当前时间}}')
+    await page.getByLabel('Message content (optional)', { exact: true }).fill('[普通文本] [CQ:at,qq=987654321] {{当前时间}}')
     await page.getByLabel('Send text literally (optional)', { exact: true }).selectOption('false')
     await page.getByLabel('Call mode (optional)', { exact: true }).selectOption('sync')
     await page.getByRole('checkbox', { name: englishConfirmation, exact: true }).check()
@@ -147,14 +149,14 @@ test.describe('完整 OneBot 工具的通用面板', () => {
     await page.getByRole('button', { name: 'Run test', exact: true }).click()
     await expect(page.getByText('The JSON is invalid. Check quotation marks, commas, and brackets.', { exact: true })).toBeVisible()
     expect(onebot.requests.filter(request => request.action === 'send_msg')).toHaveLength(1)
-    await page.getByLabel('Message content (required)', { exact: true }).fill('['.repeat(20000) + '0' + ']'.repeat(20000))
+    await page.getByLabel('Message content (optional)', { exact: true }).fill('['.repeat(20000) + '0' + ']'.repeat(20000))
     await expect(page.getByLabel('Test function', { exact: true })).toBeVisible()
     await page.getByRole('checkbox', { name: englishConfirmation, exact: true }).check()
     await page.getByRole('button', { name: 'Run test', exact: true }).click()
     await expect(page.getByText('Message content does not match the input rules. Check its instructions and JSON structure.', { exact: true })).toBeVisible()
     expect(onebot.requests.filter(request => request.action === 'send_msg')).toHaveLength(1)
     const array = [{ type: 'text', data: { text: '消息与 {{当前时间}} 保留原文' } }, { type: 'image', data: { file: 'https://example.test/图.png', cache: false, proxy: 0, timeout: 1.5 } }]
-    await page.getByLabel('Message content (required)', { exact: true }).fill(JSON.stringify(array))
+    await page.getByLabel('Message content (optional)', { exact: true }).fill(JSON.stringify(array))
     await expect(page.getByRole('checkbox', { name: englishConfirmation, exact: true })).not.toBeChecked()
     await page.getByRole('checkbox', { name: englishConfirmation, exact: true }).check()
     await page.getByRole('button', { name: 'Run test', exact: true }).click()
@@ -162,7 +164,7 @@ test.describe('完整 OneBot 工具的通用面板', () => {
     expect(onebot.requests.filter(request => request.action === 'send_msg')[1]?.params.message).toEqual(array)
     const single = { type: 'face', data: { id: 123 } }
     await expect(page.getByRole('button', { name: 'Run test', exact: true })).toBeDisabled()
-    await page.getByLabel('Message content (required)', { exact: true }).fill(JSON.stringify(single))
+    await page.getByLabel('Message content (optional)', { exact: true }).fill(JSON.stringify(single))
     await page.getByRole('checkbox', { name: englishConfirmation, exact: true }).check()
     await page.getByRole('button', { name: 'Run test', exact: true }).click()
     await expect.poll(() => onebot.requests.filter(request => request.action === 'send_msg').length).toBe(3)
@@ -178,15 +180,15 @@ test.describe('完整 OneBot 工具的通用面板', () => {
     const image = [{ type: 'image', data: { file: 'https://example.invalid/fixture.png' } }]
     const audioRef = 'eating-audio://text-to-speech/' + 'a'.repeat(64)
     for (const malformed of [JSON.stringify([{ type: 'text', data: { text: '普通文字' } }]), JSON.stringify({ type: 'record', data: { file: audioRef } }), '[CQ:record,file=' + audioRef + ']', JSON.stringify(image)]) {
-      await page.getByLabel('Message content (required)', { exact: true }).fill(malformed)
+      await page.getByLabel('Message content (optional)', { exact: true }).fill(malformed)
       await page.getByRole('checkbox', { name: englishConfirmation, exact: true }).check()
       await page.getByRole('button', { name: 'Run test', exact: true }).click()
-      await expect(page.getByText("Nothing was sent. Enter ordinary text directly; select JSON format for message segment objects or arrays. Do not send serialized segments or internal image/audio references as text or CQ codes. Send voice notes alone and reuse existing resources after correcting the format.", { exact: true }).first()).toBeVisible()
+      await expect(page.getByText("Nothing was sent. Enter ordinary text directly or select JSON for message segments. To send existing audio, clear message content, enter the audio reference, and leave Send text literally unset. Do not send serialized segments or internal media references as text, CQ codes, or guessed paths.", { exact: true }).first()).toBeVisible()
       expect(onebot.requests.filter(request => request.action.startsWith('send_'))).toHaveLength(0)
     }
     await page.locator('.qq-error').first().screenshot({ path: info.outputPath('message-format-error-en.png') })
     await chooseLanguage(page, 'zh-CN')
-    await expect(page.getByText('消息格式错误，未发送。文字直接填写正文；消息段请选择 JSON 格式并传入对象或数组。不要把消息段 JSON、内部图片／语音引用作为文字发送，也不要用 CQ 码包装内部引用。语音须单独发送，修正后复用已有资源。', { exact: true }).first()).toBeVisible()
+    await expect(page.getByText('消息格式错误，未发送。文字直接填写正文；消息段请选择 JSON 格式并传入对象或数组。发送已有语音请清空消息内容，填写语音资源引用，勿选“文本按原文发送”。不要把内部媒体引用或消息段 JSON 当文字发送，不用 CQ 码或猜测路径。', { exact: true }).first()).toBeVisible()
     await page.locator('.qq-error').first().screenshot({ path: info.outputPath('message-format-error-zh.png') })
     await chooseLanguage(page, 'en-US')
     await page.getByLabel('Message content format', { exact: true }).selectOption('json')
@@ -194,6 +196,51 @@ test.describe('完整 OneBot 工具的通用面板', () => {
     await page.getByRole('button', { name: 'Run test', exact: true }).click()
     await expect.poll(() => onebot.requests.filter(request => request.action === 'send_msg').length).toBe(1)
     expect(onebot.requests.filter(request => request.action === 'send_msg')[0]!.params.message).toEqual(image)
+  })
+
+  test('已有语音直接填写引用且不能混填正文，双语窄屏不触发重复合成', async ({ page }, info) => {
+    const provider = await startSpeechFixture()
+    try {
+      await configure(page)
+      const api = async (path: string, body: object) => page.evaluate(async ({ path, body }) => {
+        const boot = await (await fetch('/api/bootstrap')).json()
+        const response = await fetch('/api' + path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Eating-Csrf': boot.csrfToken }, body: JSON.stringify(body) })
+        const result = await response.json(); if (!response.ok) throw new Error(JSON.stringify(result)); return result
+      }, { path, body })
+      await api('/plugins/text-to-speech/configuration', { expectedRevision: 0, endpoint: provider.endpoint, apiKey: 'fixture-speech-key' })
+      const submitted = await api('/plugins/text-to-speech/manage', { operation: 'generate', input: { text: '已有语音回环测试', request_id: 'browser-audio-generate-001', confirmed: true } })
+      let completed = submitted
+      await expect.poll(async () => { completed = await api('/plugins/text-to-speech/manage', { operation: 'job', input: { jobId: submitted.jobId } }); return completed.status }).toBe('succeeded')
+      const asset = (await api('/plugins/text-to-speech/invoke', { name: 'speech_get', arguments: { assetId: completed.assetId }, requestId: 'browser-audio-read-001', confirmed: false })).result
+      expect(asset.audio_ref).toBe('eating-audio://text-to-speech/' + completed.assetId)
+      await chooseLanguage(page, 'en-US')
+      await page.getByLabel('Test function', { exact: true }).selectOption('qq_send_message')
+      await page.getByLabel('Target QQ number (optional)', { exact: true }).fill('987654321')
+      await page.getByLabel('Audio reference (optional)', { exact: true }).fill(asset.audio_ref)
+      await page.getByLabel('Message content (optional)', { exact: true }).fill('Do not combine this text with the audio reference')
+      await page.getByRole('checkbox', { name: englishConfirmation, exact: true }).check()
+      await page.getByRole('button', { name: 'Run test', exact: true }).click()
+      expect(onebot.requests.filter(request => request.action === 'send_msg')).toHaveLength(0)
+      await page.getByLabel('Message content (optional)', { exact: true }).fill('')
+      await page.getByRole('checkbox', { name: englishConfirmation, exact: true }).check()
+      await page.getByRole('button', { name: 'Run test', exact: true }).click()
+      await expect.poll(() => onebot.requests.filter(request => request.action === 'send_msg').length).toBe(1)
+      const wire = onebot.requests.find(request => request.action === 'send_msg')!.params
+      expect(wire).not.toHaveProperty('audio_ref')
+      const record = (wire.message as Array<{ type: string; data: { file: string } }>)[0]!
+      expect(record.type).toBe('record'); expect(record.data.file.startsWith('base64://')).toBe(true)
+      expect(Buffer.from(record.data.file.slice(9), 'base64').subarray(0, 4).toString()).toBe('RIFF')
+      await chooseLanguage(page, 'zh-CN')
+      await expect(page.getByLabel('语音资源引用（选填）', { exact: true })).toHaveValue(asset.audio_ref)
+      await page.getByLabel('语音资源引用（选填）', { exact: true }).scrollIntoViewIfNeeded()
+      await page.screenshot({ path: info.outputPath('audio-reference-desktop-zh.png') })
+      await chooseLanguage(page, 'en-US'); await page.setViewportSize({ width: 390, height: 844 })
+      await page.getByLabel('Audio reference (optional)', { exact: true }).scrollIntoViewIfNeeded()
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+      await page.screenshot({ path: info.outputPath('audio-reference-mobile-en.png') })
+      expect(provider.requests).toHaveLength(1)
+      expect(onebot.requests.filter(request => request.action === 'send_msg')).toHaveLength(1)
+    } finally { await provider.close() }
   })
 
   test('群管理使用通用确认和整数布尔表单，快捷操作JSON保持原值，普通记录最多十条', async ({ page }) => {

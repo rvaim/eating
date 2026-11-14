@@ -44,6 +44,7 @@ describe('OpenAI cloud speech plugin', () => {
     expect(response.instructions).toContain(f.input.delivery)
     expect(f.provider.sessions[0]).toMatchObject({ audio: { output: { voice: 'marin', format: { type: 'audio/pcm', rate: 24000 } } } })
     const result = await f.plugin.invoke('speech_get', { assetId: job.assetId }, 'read') as JsonObject
+    expect(result.audio_ref).toBe('eating-audio://text-to-speech/' + job.assetId)
     expect(result.sendable).toEqual({ type: 'record', data: { file: `eating-audio://text-to-speech/${job.assetId}` } })
     expect(JSON.stringify(result)).not.toContain('base64')
     const preview = await f.plugin.manage('preview', { assetId: job.assetId }) as JsonObject

@@ -56,7 +56,7 @@ describe('speech resources over actual Host and OneBot', () => {
     await expect(lease.assertActive()).rejects.toMatchObject({ code: 'ASSET_ACCESS_DENIED' })
     await api('/plugins/qq/configuration', { endpoint: onebot.endpoint, autoConnect: false }); await api('/plugins/qq/connect', {})
     const segment = { type: 'record', data: { file: `eating-audio://text-to-speech/${done.assetId}` } }
-    const input = { name: 'qq_send_private_message', requestId: 'speech-host-send-0001', confirmed: true, arguments: { user_id: '987654321', message: [segment] } }
+    const input = { name: 'qq_send_private_message', requestId: 'speech-host-send-0001', confirmed: true, arguments: { user_id: '987654321', audio_ref: segment.data.file } }
     await api('/plugins/qq/invoke', input); await api('/plugins/qq/invoke', input)
     const sent = onebot.requests.filter(x => x.action === 'send_private_msg')
     expect(sent).toHaveLength(1)
@@ -93,6 +93,7 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('speech through 
       }
       const prefix = names.find(name => name.endsWith('__speech_generate'))!.slice(0, -'speech_generate'.length)
       expect(names).toContain(sendName)
+      expect(JSON.stringify(request.tools?.find(tool => tool.function?.name === sendName))).toContain('audio_ref')
       expect(JSON.stringify(request.tools?.find(tool => tool.function?.name === sendName))).toContain('QQ_MESSAGE_FORMAT_INVALID')
       expect(system).toContain('音色由主人保存'); expect(system).toContain('delivery只描述本段临时语气')
       const sent = turns.filter(turn => turn.name === sendName)
@@ -121,10 +122,11 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('speech through 
       }
       const assetTurn = turns.find(turn => turn.name === prefix + 'speech_get')!
       const record = object(object(JSON.parse(assetTurn.text.split('\n')[0]!)).sendable)
-      const file = String(object(record.data).file)
+      const file = String(object(JSON.parse(assetTurn.text.split('\n')[0]!)).audio_ref)
+      expect(object(record.data).file).toBe(file)
       const malformed = [JSON.stringify(record), '[CQ:record,file=' + file + ']', { type: 'text', data: { text: file } }]
       if (sent.length < 5) return send(malformed[sent.length - 2]!, 'native-speech-send-001')
-      return send([record], 'native-speech-send-001')
+      return { name: sendName, arguments: { ...target, audio_ref: file, request_id: 'native-speech-send-001' } }
     }); stops.push(() => model.close())
     let dsh!: DshPlugin
     const entry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) { dsh = new DshPlugin(context, { locateSystemDsh: testSystemDsh }); return dsh } }

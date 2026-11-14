@@ -19,6 +19,16 @@ const callModeProperty: JsonObject = {
   type: 'string', enum: ['sync', 'async', 'rate_limited'], default: 'sync',
   description: 'OneBot 调用模式。异步与限速调用只表示接纳／排队，无法确认最终结果；查询通常应使用 sync。',
 }
+const audioRefProperty: JsonObject = {
+  type: 'string', pattern: '^eating-audio://[a-z][a-z0-9-]{0,63}/[a-f0-9]{64}$', maxLength: 256,
+  description: '发送已有语音时，直接复制 speech_get 返回的 audio_ref。不要提供 message、CQ码、本机路径或Base64；后台构造独立record段并授权读取音频。',
+}
+const sendContentConstraints: JsonObject = {
+  oneOf: [
+    { required: ['message'], not: { required: ['audio_ref'] } },
+    { required: ['audio_ref'], not: { anyOf: [{ required: ['message'] }, { required: ['auto_escape'] }] } },
+  ],
+}
 const autoEscapeProperty: JsonObject = {
   type: 'boolean', default: true,
   description: 'Eating 为保留既有纯文本行为默认 true；OneBot 标准默认 false。显式 false 才解析字符串中的 CQ 码，消息段对象／数组不受此参数影响。',
@@ -140,13 +150,13 @@ const quickOperationConstraints: JsonObject = {
 }
 
 export const qqTools: readonly PluginToolDefinition[] = [
-  defineTool('send_private_msg', '发送私聊消息', '向指定 QQ 号发送消息。核对收件人和内容；request_id 用于防止重复执行。',
-    { user_id: oneBotIdSchema, message: oneBotMessageSchema, auto_escape: autoEscapeProperty }, ['user_id', 'message'], { name: 'qq_send_private_message', messages: true }),
-  defineTool('send_group_msg', '发送群消息', '向指定群发送消息。核对群号和内容；request_id 用于防止重复执行。',
-    { group_id: oneBotIdSchema, message: oneBotMessageSchema, auto_escape: autoEscapeProperty }, ['group_id', 'message'], { name: 'qq_send_group_message', messages: true }),
+  defineTool('send_private_msg', '发送私聊消息', '向指定 QQ 号发送消息。发送语音直接传audio_ref，不填message；文字／其他消息用message。核对收件人和内容；request_id 用于防止重复执行。',
+    { user_id: oneBotIdSchema, message: oneBotMessageSchema, audio_ref: audioRefProperty, auto_escape: autoEscapeProperty }, ['user_id'], { name: 'qq_send_private_message', messages: true, constraints: sendContentConstraints }),
+  defineTool('send_group_msg', '发送群消息', '向指定群发送消息。发送语音直接传audio_ref，不填message；文字／其他消息用message。核对群号和内容；request_id 用于防止重复执行。',
+    { group_id: oneBotIdSchema, message: oneBotMessageSchema, audio_ref: audioRefProperty, auto_escape: autoEscapeProperty }, ['group_id'], { name: 'qq_send_group_message', messages: true, constraints: sendContentConstraints }),
   defineTool('send_msg', '发送消息', '按 message_type 发送私聊／群消息。省略类型时必须只提供一个目标；提供类型时必须包含对应目标。',
-    { message_type: { type: 'string', enum: ['private', 'group'] }, user_id: oneBotIdSchema, group_id: oneBotIdSchema, message: oneBotMessageSchema, auto_escape: autoEscapeProperty },
-    ['message'], { name: 'qq_send_message', messages: true, constraints: sendTargetConstraints }),
+    { message_type: { type: 'string', enum: ['private', 'group'] }, user_id: oneBotIdSchema, group_id: oneBotIdSchema, message: oneBotMessageSchema, audio_ref: audioRefProperty, auto_escape: autoEscapeProperty },
+    [], { name: 'qq_send_message', messages: true, constraints: { allOf: [sendTargetConstraints, sendContentConstraints] } }),
   defineTool('delete_msg', '撤回消息', '撤回指定真实消息，受当前账号与群权限限制。',
     { message_id: oneBotMessageIdSchema }, ['message_id'], { name: 'qq_delete_message', destructive: true }),
   defineTool('get_msg', '读取一条消息', '通过 OneBot 获取指定消息；可查询范围取决于协议端，结果原样返回。',
@@ -230,6 +240,8 @@ export function prepareOneBotCall(tool: PluginToolDefinition, params: JsonObject
   assertQQMessage(input.message)
   if (registered.protocolAction === '.handle_quick_operation' && input.operation && typeof input.operation === 'object' && !Array.isArray(input.operation)) assertQQMessage(input.operation.reply, 'operation.reply')
   const forwarded: JsonObject = { ...input }
+  if (typeof input.audio_ref === 'string') forwarded.message = [{ type: 'record', data: { file: input.audio_ref } }]
+  delete forwarded.audio_ref
   delete forwarded.request_id
   delete forwarded.instance_id
   delete forwarded.onebot_call_mode

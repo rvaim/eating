@@ -9,7 +9,7 @@ const text = (v: unknown, max = 256): v is string => typeof v === 'string' && v.
 const digest = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v)
 export interface LedgerReference { pluginId: string; scopeKey: string; requestId: string }
 export interface TaskActionEntry { sourceId: string; ledger: LedgerReference; receipt: AgentActionReceipt }
-export interface TaskActionRecord { harnessId: string; agentId: string; taskId: string; closed: boolean; reviewed: boolean; actions: TaskActionEntry[] }
+export interface TaskActionRecord { harnessId: string; agentId: string; taskId: string; closed: boolean; reviewed: boolean; actions: TaskActionEntry[]; retention?: { continuous: true; trimmed: boolean } }
 interface TaskActionDocument { schemaVersion: 1; tasks: TaskActionRecord[] }
 interface LedgerResult { state: string; result?: JsonValue; code?: string }
 export interface TaskActionStore {
@@ -41,9 +41,10 @@ export function validateTaskActions(value: unknown): TaskActionDocument {
     || value.tasks.length > maximumTasks || Buffer.byteLength(JSON.stringify(value)) > maximumBytes) return fail()
   const tasks = new Set<string>()
   for (const task of value.tasks) {
-    if (!isJsonObject(task) || !keys(task, ['harnessId', 'agentId', 'taskId', 'closed', 'reviewed', 'actions']) || !text(task.harnessId, 64) || !text(task.agentId, 160)
+    if (!isJsonObject(task) || !keys(task, ['harnessId', 'agentId', 'taskId', 'closed', 'reviewed', 'actions', ...(task.retention !== undefined ? ['retention'] : [])]) || !text(task.harnessId, 64) || !text(task.agentId, 160)
       || !digest(task.taskId) || typeof task.closed !== 'boolean' || typeof task.reviewed !== 'boolean' || task.reviewed && !task.closed || !Array.isArray(task.actions) || task.actions.length > maximumActions) return fail()
     const key = [task.harnessId, task.agentId, task.taskId].join(':')
+    if (task.retention !== undefined && (!isJsonObject(task.retention) || !keys(task.retention, ['continuous', 'trimmed']) || task.retention.continuous !== true || typeof task.retention.trimmed !== 'boolean')) return fail()
     if (tasks.has(key)) return fail(); tasks.add(key)
     const actions = new Set<string>()
     for (const action of task.actions) {
@@ -71,10 +72,11 @@ export class TaskActionJournal {
     this.store.setSetting(TASK_ACTIONS_KEY, JSON.stringify(next))
     this.document = next
   }
-  open(harnessId: string, agentId: string, taskId: string): void {
+  open(harnessId: string, agentId: string, taskId: string, retention?: { readonly continuous: true }): void {
     if (!text(harnessId, 64) || !text(agentId, 160) || !digest(taskId)) return fail()
     const existing = this.document.tasks.find(t => t.harnessId === harnessId && t.agentId === agentId && t.taskId === taskId)
     if (existing) {
+      if (Boolean(existing.retention) !== Boolean(retention)) fail('TASK_ACTIONS_INVALID', '任务回执保留模式不能在运行中变更。')
       if (existing.closed && existing.actions.length) fail('AGENT_TASK_ALREADY_RECORDED', '原任务已有动作记录，不能重新执行。')
       // Preparation can fail before any connection is handed to an Agent.
       // The controller owns accepted task IDs; an empty preparation has no side effect.
@@ -87,7 +89,7 @@ export class TaskActionJournal {
       if (index < 0) fail('TASK_ACTIONS_CAPACITY', '待核对任务达到容量上限，未开始新任务。')
       next.tasks.splice(index, 1)
     }
-    next.tasks.push({ harnessId, agentId, taskId, closed: false, reviewed: false, actions: [] }); this.save(next)
+    next.tasks.push({ harnessId, agentId, taskId, closed: false, reviewed: false, actions: [], ...(retention ? { retention: { continuous: true as const, trimmed: false } } : {}) }); this.save(next)
   }
   begin(harnessId: string, agentId: string, taskId: string, sourceId: string, ledger: LedgerReference, receipt: AgentActionReceipt): void {
     const next = structuredClone(this.document), task = next.tasks.find(t => t.harnessId === harnessId && t.agentId === agentId && t.taskId === taskId)
@@ -97,7 +99,11 @@ export class TaskActionJournal {
       if (previous.receipt.tool !== receipt.tool || JSON.stringify(previous.ledger) !== JSON.stringify(ledger)) fail('IDEMPOTENCY_CONFLICT', '同一请求编号已绑定其他动作。')
       return
     }
-    if (task.actions.length >= maximumActions) fail('TASK_ACTIONS_CAPACITY', '本任务动作回执达到容量上限，未执行新动作。')
+    if (task.actions.length >= maximumActions && task.retention) {
+      const index = task.actions.findIndex(action => action.receipt.outcome !== 'unknown')
+      if (index >= 0) { task.actions.splice(index, 1); task.retention.trimmed = true }
+    }
+    if (task.actions.length >= maximumActions) fail('TASK_ACTIONS_CAPACITY', '本任务待核对动作回执达到容量上限，未执行新动作。')
     task.actions.push({ sourceId, ledger: { ...ledger }, receipt: { requestId: receipt.requestId, tool: receipt.tool, outcome: 'unknown', code: 'ACTION_IN_PROGRESS' } })
     this.save(next)
   }
@@ -133,6 +139,6 @@ export class TaskActionJournal {
       action.receipt = { requestId: action.receipt.requestId, tool: action.receipt.tool, outcome: stored.state as 'succeeded' | 'failed', ...(stored.code ? { code: stored.code } : {}), ...(result !== undefined ? { result } : {}) }
     }
     if (JSON.stringify(task) !== JSON.stringify(original)) this.save({ schemaVersion: 1, tasks: this.document.tasks.map(row => row === original ? task : row) })
-    return { available: true, closed: task.closed, actions: structuredClone(task.actions.map(a => a.receipt)) }
+    return { available: true, closed: task.closed, actions: structuredClone(task.actions.map(a => a.receipt)), ...(task.retention?.trimmed ? { actionsTruncated: true } : {}) }
   }
 }

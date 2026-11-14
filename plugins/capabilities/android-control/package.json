@@ -1,0 +1,11 @@
+{
+  "name": "@eating/plugin-android-control",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "完整 ADB、交互进程与自主手机执行代理。",
+  "files": ["dist"],
+  "exports": { ".": "./dist/server.mjs" },
+  "scripts": { "build": "node ../../../scripts/build.mjs plugin plugins/capabilities/android-control" },
+  "dependencies": { "@eating/plugin-sdk": "workspace:^", "@eating/ui-sdk": "workspace:^", "@modelcontextprotocol/sdk": "1.32.2" },
+  "peerDependencies": { "lucide-react": "^1.61.0", "react": "^19.3.1" }
+}

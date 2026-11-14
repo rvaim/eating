@@ -20,7 +20,7 @@ export function withTaskReceipts(services: Omit<HarnessHostServices, 'readTaskAc
   const mcp = services.getMcpConnection, capabilities = services.getCapabilityMcpConnections
   return { ...services,
     getMcpConnection: vi.fn((pluginId, scope, policy, taskId) => { const value = mcp(pluginId, scope, policy, taskId); open(scope.agentId, taskId); return value }),
-    getCapabilityMcpConnections: vi.fn((scope, taskId) => { const value = capabilities(scope, taskId); open(scope.agentId, taskId); return value }),
+    getCapabilityMcpConnections: vi.fn((scope, taskId, retention) => { const value = capabilities(scope, taskId, retention); open(scope.agentId, taskId); return value }),
     readTaskActions: vi.fn(read),
     finishTaskActions: vi.fn((agentId, taskId) => { read(agentId, taskId); const row = records.get(agentId + ':' + taskId); if (row) row.closed = true; return read(agentId, taskId) }),
   }

@@ -16,7 +16,7 @@ function currentConfiguration(): JsonObject {
     instanceId: 'instance-a', defaultInstanceId: 'instance-a', configurationPath: '/test/accounts/instance-a/config.json', dataDirectory: '/test/accounts/instance-a', updatedAt: null,
     instances: [{ instanceId: 'instance-a', label: 'Test QQ', createdAt: '2026-10-29T00:00:00.000Z' }] }
 }
-function policyMarkup(configuration: JsonObject, agentTypes = qqAgentTypes(createDefaultAgentPolicy())) {
+function policyMarkup(configuration: JsonObject, agentTypes: AgentTypeDefinition[] = qqAgentTypes(createDefaultAgentPolicy())) {
   return renderToStaticMarkup(createElement(AgentPolicyFields, { configuration, agentTypes, tools: qqTools, enabled: true, busy: false, actionLock: { current: false }, onBusy: () => {}, onSaved: () => {}, onFeedback: () => {} }))
 }
 

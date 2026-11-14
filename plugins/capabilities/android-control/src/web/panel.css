@@ -1,0 +1,23 @@
+.android-panel { min-width: 0; padding-bottom: 24px; }
+.android-panel section + section { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--color-line); }
+.android-panel h3 { font-size: 15px; margin-bottom: 12px; }
+.android-panel p, .android-panel small { line-height: 1.65; }
+.android-description, .android-field small { color: var(--color-muted); font-size: 13px; max-width: 70ch; }
+.android-description { margin-bottom: 18px; }
+.android-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
+.android-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; font-size: 13px; }
+.android-field-wide { grid-column: 1 / -1; }
+.android-field input, .android-field select, .android-field textarea { width: 100%; box-sizing: border-box; min-height: 44px; padding: 10px 12px; font: inherit; border: 1px solid var(--color-line-input); border-radius: 5px; background: var(--color-surface); color: var(--color-ink); }
+.android-field textarea { min-height: 84px; resize: vertical; }
+.android-argv { font-family: var(--font-mono, monospace) !important; }
+.android-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 16px; margin-top: 16px; }
+.android-actions button { min-height: 44px; }
+.android-processes { padding: 0; list-style: none; margin: 12px 0; }
+.android-processes li { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 12px 0; border-bottom: 1px solid var(--color-line); }
+.android-processes code { font-size: 12px; overflow-wrap: anywhere; color: var(--color-muted); }
+.android-output { display: block; max-height: 340px; min-height: 96px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 14px; border: 1px solid var(--color-line); border-radius: 5px; background: var(--color-surface); color: var(--color-ink); font-family: var(--font-mono, monospace); font-size: 12px; line-height: 1.65; }
+.android-error { color: var(--color-danger-ink); margin: 12px 0; font-size: 13px; }
+.android-success { color: var(--color-primary); margin: 12px 0; font-size: 13px; }
+.android-screen { display: block; max-width: 100%; max-height: 600px; object-fit: contain; margin-top: 16px; border-radius: 5px; }
+.android-check { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-size: 13px; }
+@media (max-width: 650px) { .android-fields { grid-template-columns: minmax(0, 1fr); } .android-actions button { flex-grow: 1; } }

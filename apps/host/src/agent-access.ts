@@ -39,7 +39,7 @@ export function collectAgentContributions(plugins: Iterable<BackendPlugin>, enab
     for (const type of plugin.agentTypes ?? []) {
       if (!opaque(type.id, 160) || !type.id.startsWith(plugin.id + '.') || ids.has(type.id) || !opaque(type.title, 160)
         || typeof type.description !== 'string' || typeof type.defaultPrompt !== 'string' || type.defaultPrompt.length > 50000
-        || !['private', 'group'].includes(type.conversationKind) || !Array.isArray(type.availableTools) || !Array.isArray(type.defaultTools) || !Array.isArray(type.enabledTools)
+        || type.conversationKind !== null && !['private', 'group'].includes(type.conversationKind) || type.conversationKind === null && plugin.kind !== 'capability' || !Array.isArray(type.availableTools) || !Array.isArray(type.defaultTools) || !Array.isArray(type.enabledTools)
         || type.availableTools.length > 256 || type.availableTools.some(name => !plugin.tools.some(tool => tool.name === name))
         || [...type.defaultTools, ...type.enabledTools].some(name => !type.availableTools.includes(name))) throw new PlatformError('AGENT_REGISTRY_INVALID', '插件的代理类型声明无效。', 500)
       ids.add(type.id)

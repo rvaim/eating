@@ -33,7 +33,7 @@ async function configureMemory(api: Awaited<ReturnType<typeof ownerApi>>, servic
 function expectMainMemoryTools(request: JsonObject) {
   if (!Array.isArray(request.tools)) throw new Error('Expected current main tools')
   const names = request.tools.map(tool => String(object(object(tool).function).name)).sort()
-  const eating = ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_task_control']
+  const eating = ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_start_execution', 'eating_task_control']
   const memory = ['memory_search', 'memory_read', 'memory_save', 'memory_scopes'].map(name => 'mcp__plugin_openviking_memory__' + name)
   expect(names.filter(name => name.startsWith('eating_') || name.startsWith('mcp__'))).toEqual([...eating, ...memory].sort())
   expect(names.filter(name => !name.startsWith('eating_') && !name.startsWith('mcp__'))).toEqual([])

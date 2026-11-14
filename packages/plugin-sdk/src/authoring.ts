@@ -264,6 +264,9 @@ export function composeAgentPrompt(configuration: HarnessOwnerConfiguration, age
   } else {
     layer('subagent', 'subagent', null)
     layer(`agent:${agentTypeId}`, 'agent', selectedTypes[0]!.pluginId)
+    if (selectedTypes[0]!.conversationKind === null) {
+      for (const instruction of configuration.pluginInstructions ?? []) if (instruction.enabled && instruction.pluginId === selectedTypes[0]!.pluginId) layer(`plugin:${instruction.id}`, 'plugin', instruction.pluginId)
+    }
   }
   const persona = configuration.activePersona
   if (persona !== null) {

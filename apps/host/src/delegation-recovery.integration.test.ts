@@ -33,7 +33,7 @@ function batch(request: ModelFixtureRequest) {
   return { ...value, event: object(value.payload.events[0]) }
 }
 const selfId = 100000301, userId = selfId + 1
-const mainTools = ['eating_handle_conversation', 'eating_delegate_task', 'eating_list_agent_types', 'eating_activity_state', 'eating_plan_activity', 'eating_schedule_task', 'eating_cancel_scheduled_task', 'eating_list_contact_targets', 'eating_contact_target', 'eating_task_control'].sort()
+const mainTools = ['eating_handle_conversation', 'eating_delegate_task', 'eating_list_agent_types', 'eating_activity_state', 'eating_plan_activity', 'eating_schedule_task', 'eating_cancel_scheduled_task', 'eating_list_contact_targets', 'eating_contact_target', 'eating_start_execution', 'eating_task_control'].sort()
 const requestId = (id: string) => `delegation-recovery-send-${id}`
 
 /** Scripted loopback responses exercise native execution and receipts, not real LLM decision quality. */

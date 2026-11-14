@@ -3,7 +3,7 @@ import { isAbsolute } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getRuntimeAgentSource } from './runtime-agents'
 
-function fixture(unavailable = false) {
+function fixture(unavailable = false, execution = false) {
   const sessionId = randomUUID(), childId = randomUUID(), batchId = 'a'.repeat(64)
   vi.stubEnv('EATING_DSH_CONTROL_URL', 'http://127.0.0.1:1')
   vi.stubEnv('EATING_DSH_CONTROL_TOKEN', 'fixture-control')
@@ -15,25 +15,26 @@ function fixture(unavailable = false) {
     return { ...scope, contextRef, ...(unavailable && index === 100 ? { routingError } : {}) }
   })
   const bindings = conversations.map((conversation, index) => unavailable && index === 100 ? { contextRef: conversation.contextRef, routingError } : { contextRef: conversation.contextRef, agentId: index === 0 ? childId : randomUUID(), agentTypeId: 'qq.private', label: `Child ${index}` })
-  const policy = { contextRef: batchId, bindings, systemPrompt: 'OWNER', agentTypes: [{ id: 'qq.private', title: 'Private', enabled: true }] }
+  const policy = { contextRef: batchId, bindings, systemPrompt: 'OWNER', agentTypes: [{ id: execution ? 'android-control.phone' : 'qq.private', title: 'Private', enabled: true, conversationKind: execution ? null : 'private' }] }
   const payload = { eating: { batchId, digest: 'b'.repeat(64) }, context: { contextRef: batchId, ownerRevision: 1, conversations }, events: conversations.map(conversation => ({ ...conversation, source: { trust: 'external', kind: 'private' }, text: `message ${conversation.targetId}` })) }
   const expected = { batchId, ownerRevision: 1, bindings, digest: payload.eating.digest }
   const resident = new Map<string, unknown>()
   const main = { id: sessionId, session: { id: sessionId } }
   resident.set(sessionId, main)
   let pending: string | null = null
-  const configuration = { agentId: childId, agentTypeId: 'qq.private', historyScope: { ...conversations[0], messageIds: [], resourceIds: [] }, systemPrompt: 'CHILD', mode: 'reply', mcp: { url: 'http://127.0.0.1:1/mcp', headers: {} }, capabilities: [], tools: [] }
+  const configuration = { kind: execution ? 'execution' : 'conversation', label: 'Execution fixture', agentId: childId, agentTypeId: execution ? 'android-control.phone' : 'qq.private', historyScope: { ...conversations[0], messageIds: [], resourceIds: [] }, systemPrompt: 'CHILD', mode: 'reply', mcp: { url: 'http://127.0.0.1:1/mcp', headers: {} }, capabilities: [], tools: [] }
   const requests: Array<{ operation: string; body: Record<string, string> }> = []
   const fetcher = vi.fn(async (url: unknown, input?: RequestInit) => {
     const operation = String(url).split('/').at(-1)!, body = JSON.parse(String(input?.body)) as Record<string, string>
     requests.push({ operation, body })
-    if (operation === 'prepare-task') {
+    if (operation === 'prepare-task' || operation === 'prepare-execution') {
       if (pending) return new Response(JSON.stringify({ code: 'AGENT_TASK_PENDING', message: '已有子代理任务仍在执行', outcome: 'not-sent' }), { status: 409 })
       pending = body.taskId!
       return new Response(JSON.stringify(configuration))
     }
     if (operation === 'finish-task') { if (pending === body.taskId) pending = null; return new Response(JSON.stringify({ ok: true, status: body.status, actions: [] })) }
     if (operation === 'actions') return new Response(JSON.stringify({ available: true, closed: false, actions: [] }))
+    if (operation === 'retire-deliveries') return new Response(JSON.stringify({ retired: body.batchIds }))
     throw new Error(`Unexpected ${operation}`)
   })
   vi.stubGlobal('fetch', fetcher)
@@ -57,22 +58,36 @@ function fixture(unavailable = false) {
   const opaque = (value: unknown) => typeof value === 'string' && value.length > 0
   const bridgeError = (code: string) => Object.assign(new Error(code), { code })
   const dependencies = { ctx, releases: [], sessionId, nonce: 'fixture-nonce', isAbsolute, opaque, record, bridgeError, createHash, initialization: new AbortController(), disposed: false, failed: false, HEX: /^[a-f0-9]{64}$/, readJson: () => undefined, atomicJson: vi.fn(), recoveredTaskNotices: new Set(), acknowledgedBatches: new Set(), restoredDeliveries: new Map(), fail: vi.fn(), failureCode: () => 'DURABILITY_FAILED', readExpected: () => expected, readValidatedOwnerPolicy: () => policy, identifyCurrentDelivery: () => true }
-  const instantiate = new Function('dependencies', 'const {' + Object.keys(dependencies).join(',') + '} = dependencies;\n' + getRuntimeAgentSource() + '\nreturn { acceptContext, handleConversation, delegate, runDelegation, mainSystemPrompt };')
+  const instantiate = new Function('dependencies', 'const {' + Object.keys(dependencies).join(',') + '} = dependencies;\n' + getRuntimeAgentSource() + '\nreturn { acceptContext, handleConversation, delegate, runDelegation, mainSystemPrompt, startExecution, retireCompletedContexts };')
   const runtime = instantiate(dependencies) as {
     acceptContext(message: unknown, expected: unknown): void
     handleConversation(args: unknown, exec: unknown): Promise<unknown>
     delegate(args: unknown, exec: unknown): Promise<unknown>
     runDelegation(context: unknown, typeId: string, task: string, taskId: string, exec: unknown, configuration: unknown, coordination?: unknown): Promise<unknown>
     mainSystemPrompt(): string
+    startExecution(args: unknown, exec: unknown): Promise<unknown>
+    retireCompletedContexts(): Promise<void>
   }
   runtime.acceptContext({ content: [{ text: JSON.stringify(payload) }] }, expected)
   const exec = (callId: string) => ({ agent: main, signal: new AbortController().signal, callId })
   return { runtime, ctx, conversations, bindings, policy, payload, expected, requests, activation, deferred, completed, configuration, exec, childId, resident }
 }
 
-afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals() })
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.unstubAllGlobals() })
 
 describe('runtime per-conversation routing and child serialization', () => {
+  it('keeps an independent phone task alive beyond the ordinary fifteen-minute deadline', async () => {
+    const f = fixture(false, true)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    await expect(f.runtime.startExecution({ type_id: 'android-control.phone', task: 'Explore independently' }, f.exec('phone-task'))).resolves.toMatchObject({ status: 'running', childId: f.childId })
+    await vi.advanceTimersByTimeAsync(16 * 60 * 1000)
+    expect(f.activation.dispose).not.toHaveBeenCalled()
+    expect(f.requests.some(request => request.operation === 'finish-task')).toBe(false)
+    await f.runtime.retireCompletedContexts()
+    expect(f.requests).toContainEqual(expect.objectContaining({ operation: 'retire-deliveries', body: expect.objectContaining({ batchIds: ['a'.repeat(64)] }) }))
+    vi.useRealTimers(); f.deferred.resolve(f.completed)
+    await vi.waitFor(() => expect(f.requests).toContainEqual(expect.objectContaining({ operation: 'finish-task', body: expect.objectContaining({ status: 'completed' }) })))
+  })
   it('keeps all 101 conversations verified and clearly refuses the unavailable ref without starting a child', async () => {
     const f = fixture(true), unavailable = f.conversations[100]!
     expect(f.runtime.mainSystemPrompt()).toContain('必须向用户明确报告对应会话、错误 code 与 message')

@@ -26,6 +26,20 @@ function fixture() {
     restart: () => { store.close(); store = new HostStore(database); return new TaskActionJournal(store) } }
 }
 describe('durable task action receipts', () => {
+  it('lets a continuous execution record more than one hundred confirmed actions while retaining every unresolved receipt', () => {
+    const f = fixture(), id = 'b'.repeat(64)
+    f.journal.open(f.harnessId, f.agentId, id, { continuous: true })
+    for (let index = 0; index < 240; index++) {
+      const receipt: AgentActionReceipt = { requestId: 'continuous-' + index, tool: 'android_adb_exec', outcome: index === 0 ? 'unknown' : 'succeeded' }
+      f.journal.begin(f.harnessId, f.agentId, id, 'plugin.android-control', { pluginId: 'android-control', scopeKey: '', requestId: 'ledger-' + index }, receipt)
+      if (index) f.journal.finish(f.harnessId, f.agentId, id, 'plugin.android-control', receipt)
+    }
+    const state = f.journal.read(f.harnessId, f.agentId, id)
+    expect(state.actions).toHaveLength(100); expect(state.actionsTruncated).toBe(true)
+    expect(state.actions[0]).toMatchObject({ requestId: 'continuous-0', outcome: 'unknown' })
+    expect(state.actions.at(-1)).toMatchObject({ requestId: 'continuous-239', outcome: 'succeeded' })
+    expect(f.restart().read(f.harnessId, f.agentId, id)).toEqual(state)
+  })
   it('recovers the actual receipt after a crash between ledger commit and task reporting without sending again', async () => {
     const f = fixture(); let calls = 0
     f.begin()

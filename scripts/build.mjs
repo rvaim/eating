@@ -84,6 +84,7 @@ if (target === 'all') {
   await buildPlugin('plugins/capabilities/openviking-memory')
   await buildPlugin('plugins/capabilities/text-to-speech')
   await buildPlugin('plugins/capabilities/speech-to-text')
+  await buildPlugin('plugins/capabilities/android-control')
 }
 if (target === 'host' || target === 'all') await buildHost()
 if (target === 'all') {

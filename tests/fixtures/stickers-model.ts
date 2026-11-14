@@ -44,7 +44,7 @@ export function fixtureToolTurns(request: ModelFixtureRequest): FixtureToolTurn[
 }
 
 /** Only the loopback model protocol is fixed; every emitted call must traverse the real native tool executor. */
-export async function startStickersModel(choose: (request: ModelFixtureRequest) => FixtureModelAction) {
+export async function startStickersModel(choose: (request: ModelFixtureRequest) => FixtureModelAction | Promise<FixtureModelAction>, options: { allowPending?: boolean } = {}) {
   const requests: ModelFixtureRequest[] = [], decisions: ModelFixtureRequest[] = []
   const actions: FixtureModelAction[] = []
   const errors: string[] = []
@@ -61,9 +61,9 @@ export async function startStickersModel(choose: (request: ModelFixtureRequest) 
       }
       const payload = JSON.parse(Buffer.concat(chunks).toString('utf8')) as ModelFixtureRequest
       requests.push(payload)
-      const pending = payload.tools?.some(tool => tool.function?.name === 'eating_task_control') && fixturePendingTask(payload)
+      const pending = !options.allowPending && payload.tools?.some(tool => tool.function?.name === 'eating_task_control') && fixturePendingTask(payload)
       if (!pending) decisions.push(payload)
-      const action = pending ? 'Waiting for the native child task result.' : choose(payload)
+      const action = pending ? 'Waiting for the native child task result.' : await choose(payload)
       actions.push(action)
       if (typeof action !== 'string' && !payload.tools?.some(tool => tool.function?.name === action.name)) throw new Error(`Fixture attempted a tool absent from the actual request: ${action.name}`)
       const id = `stickers-fixture-${requests.length}`

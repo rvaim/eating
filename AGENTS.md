@@ -1,5 +1,7 @@
 # Eating 开发规则
 
+2026-11-15 玩手机插件：**本地验证完成，已授权commit／push及云端保留数据部署，发布进行中**。新增android-control0.1.0完整ADB、USB／网络及远程执行端、交互进程／文件／截图；android-control.phone独立自主子代理，没有娱乐时长、每日额度或强制冷却。主子实际取得可编辑说明，普通15分钟截止与100条动作视图不机械限制持续手机任务，主可继续处理消息。应用0.26.0／SDK4.15.0／DSH0.22.0，配置与既有数据保持，无新外部依赖版本。完整构建／类型、全量2077通过／11条件跳过、相关浏览器12项及离线部署32项检查通过；本机及实际安装包／远程执行端的系统DSH链路已验证，无真人试发或付费调用，真机USB／无线待验。见[ADR-0065](docs/decisions/ADR-0065-完整ADB与独立手机执行代理.md)、[操作说明](docs/operations/安卓手机插件.md)及[报告](docs/reports/2026-11-15-玩手机插件本地实现验证报告.md)。
+
 2026-11-14 跨批次图片上下文：**修复、提交／push及云端保留数据部署完成**。运行源码`c8c5628`、DSH0.21.1，委派／追加时补充同会话当前批之前仍获授权的history.events，保留图片配对，并从原生日志重建；主仍决定启动／追加／中断，历史不重放。正式原图725148字节只读成功，实际安装包与系统DSH已验证图片先发、主沉默、批次退休并重启后，文字子任务仍取得原图并实际入模。全量2059通过／11条件跳过、12项相关浏览器通过，云端518项控制层及530项专项通过／5条件跳过；353文件私有备份核对，配置／数据库／会话及4日志前缀保持。七插件connected、DSH／nativeWeb ready、异常restart0，公网原图1966×2622与双语桌面手机已核验。其余六插件封存不变，无迁移或真人试发。见[ADR-0064](docs/decisions/ADR-0064-同会话跨批次原始上下文交接.md)与[报告](docs/reports/2026-11-14-跨批次图片上下文修复部署报告.md)。
 
 2026-11-14 JPEG尾部数据误拒绝修复：**修复、提交／push及云端保留数据部署完成**。运行源码`eecbee2`、QQ0.18.1按JPEG段／扫描结构识别真实EOI，允许外层尾部数据并保原字节，截断及非法结构仍拒绝。正式原消息283131字节／1279×1706图片已成功读取、原字节一致，实际安装包与系统DSH回环确认原图入模，公网双语桌面手机实际解码通过。全量2045通过／11条件跳过、12项相关浏览器通过，云端518项控制层及507项专项通过；349文件全量私有备份核对，配置／数据库／图片音频／会话及4份原生日志前缀保持，七插件connected、DSH／nativeWeb ready、异常restart0。无新依赖、数据迁移或真人试发。见[ADR-0063](docs/decisions/ADR-0063-JPEG结构校验与尾部数据.md)与[报告](docs/reports/2026-11-14-JPEG尾部数据误拒绝修复部署报告.md)。
@@ -81,7 +83,7 @@
 
 一个仓库，独立包：`apps/host`、`apps/web`、`packages/plugin-core`、`packages/plugin-sdk`、`packages/ui-sdk`、`plugins/communication/qq`、`plugins/harness/dsh`、`plugins/capabilities/stickers`、`plugins/capabilities/image-generation`、`plugins/capabilities/openviking-memory`、`plugins/capabilities/text-to-speech`、`plugins/capabilities/speech-to-text`。
 
-当前源码应用／Host／Web0.25.0，plugin-sdk4.14.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.18.1、DSH0.21.1、表情包0.3.2、生图0.6.2、记忆0.3.4、语音合成0.2.1、语音识别speech-to-text0.1.0（本机原记忆安装0.1.1保持）；插件唯一API4。七插件独立封存，同版本产物不可改写，无新外部依赖。当前功能及实际发布状态见顶部报告。
+当前源码应用／Host／Web0.26.0，plugin-sdk4.15.0、ui-sdk4.3.0、plugin-core4.0.0，QQ0.18.1、DSH0.22.0、表情包0.3.2、生图0.6.2、记忆0.3.4、语音合成0.2.1、语音识别speech-to-text0.1.0、玩手机android-control0.1.0（本机原记忆安装0.1.1保持）；插件唯一API4。八插件独立封存，同版本产物不可改写，无新外部依赖。当前功能及实际发布状态见顶部报告。
 
 React／TypeScript／Vite／CSS／lucide-react；普通 Node>=24.9.0、pnpm11.28.5；Host 使用内置 SQLite、ws 与官方 MCP SDK。开发与构建用普通 Node，不修改 DSH 签名或借主运行时绕过原生依赖问题。Host 最终插件底座、Tauri、OS 隔离和其他平台能力仍须独立验证。
 

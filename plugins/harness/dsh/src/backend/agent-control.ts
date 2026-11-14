@@ -11,6 +11,7 @@ import type { ProactiveTarget } from '@eating/plugin-sdk'
 import { agentInstanceLabel } from './agent-label'
 import { AGENT_TASK_LIFETIME_MS, settledTaskState } from './task-lifecycle'
 import type { TaskEndState } from './task-lifecycle'
+import { ExecutionControl } from './execution-control'
 
 interface ProactiveTask { taskId: string; cycleId: string; contextRef: string; nonce: string; state: 'pending' | TaskEndState | 'reviewed' }
 interface ProactiveBinding { key: string; parentId: string; agentId: string; target: ProactiveTarget; task: ProactiveTask; taskRefs: ProactiveTask[] }
@@ -77,6 +78,7 @@ export function conversationContextRef(batchId: string, firstEvent: HarnessEvent
 
 /** Body-free trusted bindings and a runtime-only, loopback management capability. */
 export class DshAgentControl {
+  private readonly executions: ExecutionControl
   private readonly file: string
   private readonly proactiveFile: string
   private proactiveBindings: ProactiveBinding[] = []
@@ -112,6 +114,7 @@ export class DshAgentControl {
   url = ''
 
   constructor(directory: string, private readonly host: HarnessHostServices) {
+    this.executions = new ExecutionControl(directory, host)
     if (typeof host.getCapabilityMcpConnections !== 'function' || typeof host.getMcpConnection !== 'function' || typeof host.readTaskActions !== 'function' || typeof host.finishTaskActions !== 'function' || typeof host.revokeAgentAccess !== 'function' || typeof host.extendAgentScope !== 'function' || typeof host.readDeliverySettings !== 'function') fail('HARNESS_SERVICES_INVALID', 'Host 未提供当前必需的子代理权限与持久任务回执接口。')
     this.file = join(directory, 'agent-bindings.json')
     this.proactiveFile = join(directory, 'proactive-bindings.json')
@@ -251,7 +254,7 @@ export class DshAgentControl {
     activity.assertContactAvailable()
     const key = createHash('sha256').update(JSON.stringify([rootId, target.pluginId, target.instanceId, target.accountId, target.agentTypeId, target.targetId])).digest('hex')
     const owner = this.host.readOwnerConfiguration(), type = owner.agentTypes.find(type => type.id === target.agentTypeId && type.pluginId === target.pluginId && type.enabled)
-    if (!type || target.toolNames.some(name => !type.enabledTools.includes(name))) fail('AUTONOMY_TARGET_DENIED', '当前类型或工具已撤权。')
+    if (!type || type.conversationKind === null || target.toolNames.some(name => !type.enabledTools.includes(name))) fail('AUTONOMY_TARGET_DENIED', '当前类型或工具已撤权。')
     const identity = { ...target, kind: type.conversationKind }
     const related = this.proactiveBindings.filter(binding => binding.key === key)
     if (related.some(binding => binding.taskRefs.some(ref => ref.taskId === body.taskId) || binding.task.state === 'pending')) fail('PROACTIVE_TASK_UNKNOWN', '原调用已提交或已有任务运行，不重放旧任务；新的独立任务可在原任务结束后开始。')
@@ -303,7 +306,8 @@ export class DshAgentControl {
 
   list(): readonly AgentBinding[] { return this.bindings }
   setDeliveryRetirement(retire: (batchIds: readonly string[]) => void): void { this.retireDeliveries = retire }
-  hasPendingTasks(): boolean { return this.bindings.some(binding => binding.task?.state === 'pending') || this.proactiveBindings.some(binding => binding.task.state === 'pending') }
+  hasPendingTasks(): boolean { return this.executions.pending() || this.hasPendingConversationTasks() }
+  hasPendingConversationTasks(): boolean { return this.bindings.some(binding => binding.task?.state === 'pending') || this.proactiveBindings.some(binding => binding.task.state === 'pending') }
   deliveryReady(): boolean { return !this.stopping && this.deliveryState?.phase === 'idle' && Date.now() - this.deliveryState.observedAt < 3000 }
   get token(): string { return this.secret }
   private save(bindings: AgentBinding[]): void {
@@ -528,6 +532,7 @@ export class DshAgentControl {
               actions: body.taskId !== undefined ? receipts.actions as unknown as JsonValue[] : [] }
           }
           const tasks = [
+            ...this.executions.list(String(body.agentId), this.nonce, typeof body.taskId === 'string' ? body.taskId : undefined),
             ...this.bindings.filter(binding => binding.parentId === body.agentId).flatMap(binding => binding.taskRefs.map(task => snapshot(binding.scope.agentId, task))),
             ...this.proactiveBindings.filter(binding => binding.parentId === body.agentId).flatMap(binding => binding.taskRefs.map(task => snapshot(binding.agentId, task))),
           ].filter(task => body.taskId === undefined || task.taskId === body.taskId)
@@ -611,6 +616,14 @@ export class DshAgentControl {
         }
         if (request.url === '/prepare-proactive') {
           const result = await this.prepareProactive(body, controller.signal)
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result)); return
+        }
+        if (request.url === '/prepare-execution') {
+          const result = this.executions.prepare(body, this.rootId(), this.nonce)
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result)); return
+        }
+        if ((request.url === '/actions' || request.url === '/finish-task') && this.executions.owns(body)) {
+          const result = this.executions.handle(request.url.slice(1) as 'actions' | 'finish-task', body, this.nonce)
           response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(result)); return
         }
         const proactive = this.proactiveBindings.find(binding => binding.agentId === body.agentId && binding.taskRefs.some(task => task.contextRef === body.contextRef && task.taskId === body.taskId))
@@ -730,6 +743,7 @@ export class DshAgentControl {
     this.stopping = true; this.contactTurn = null; this.deliveryState = null
     if (this.recoveryTimer) clearInterval(this.recoveryTimer); this.recoveryTimer = undefined
     let persistenceError: unknown
+    try { this.executions.close() } catch (error) { persistenceError = error }
     try { this.revokeProactive() } catch (error) { persistenceError = error }
     for (const timer of this.contactTimers.values()) clearTimeout(timer)
     this.contactTimers.clear()

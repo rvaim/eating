@@ -74,7 +74,7 @@ async function imageModelFixture(splitAcrossRestart = false) {
       let call: { name: string; arguments: JsonObject } | undefined
       let text: string
       if (names.includes('eating_delegate_task')) {
-        if (batch.kind !== 'root' || names.filter(name => name?.startsWith('eating_')).join(',') !== 'eating_activity_state,eating_cancel_scheduled_task,eating_contact_target,eating_delegate_task,eating_handle_conversation,eating_list_agent_types,eating_list_contact_targets,eating_plan_activity,eating_schedule_task,eating_task_control') throw new Error('Main Agent controlled delegation tools changed')
+        if (batch.kind !== 'root' || names.filter(name => name?.startsWith('eating_')).join(',') !== 'eating_activity_state,eating_cancel_scheduled_task,eating_contact_target,eating_delegate_task,eating_handle_conversation,eating_list_agent_types,eating_list_contact_targets,eating_plan_activity,eating_schedule_task,eating_start_execution,eating_task_control') throw new Error('Main Agent controlled delegation tools changed')
         expect(names.filter(name => !name.startsWith('eating_') && !name.startsWith('mcp__'))).toEqual([])
         if (names.some(name => name.startsWith('mcp__qq__'))) throw new Error('Main Agent inherited scoped QQ communication')
         if (!roots.has(batch.contextRef)) {
@@ -226,8 +226,8 @@ async function runImageScenario(imageInput: boolean, format: 'png' | 'jpeg' = 'p
     expect(JSON.stringify(clocks)).toContain('Asia/Shanghai')
   }
   expect(settled.map(request => readModelFixtureBatch(request)?.kind)).toEqual(['root', 'child', 'child', 'root'])
-  expect(toolNames(settled[0]!).filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_task_control'])
-  expect(toolNames(settled[3]!).filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_task_control'])
+  expect(toolNames(settled[0]!).filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_start_execution', 'eating_task_control'])
+  expect(toolNames(settled[3]!).filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_start_execution', 'eating_task_control'])
   for (const request of settled.slice(1, 3)) expect(toolNames(request)).toEqual(['mcp__qq__qq_view_received_image'])
   expect(scopes).toHaveLength(1)
   expect(scopes[0]).toMatchObject({ pluginId: 'qq', agentTypeId: 'qq.private', instanceId: qq.instanceId, accountId: '123456789', targetId: '987654321',

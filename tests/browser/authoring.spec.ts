@@ -118,6 +118,10 @@ test.describe('提示词与人格的真实持久编辑', () => {
   })
 
   test('原生变量补全支持零后缀与Enter/Tab，闭合变量不重括号且撤销隔离文档', async ({ page }) => {
+    // A short fixture keeps DOM assertions about undo isolation independent of
+    // CodeMirror's virtualized rendering of the long default QQ instructions.
+    const group = host!.authoring.getSnapshot().prompts.find(doc => doc.id === 'agent:qq.group')!
+    host!.authoring.updatePrompt(group.id, '群文档自己的撤销隔离基线', group.revision)
     await page.goto(`${url}/#prompts/main`)
     const editor = bodyEditor(page)
     await expect(editor).toBeVisible()

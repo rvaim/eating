@@ -192,12 +192,12 @@ export class CapabilityAccess {
   activePermission(scope: CapabilityInvocationScope, sourceId: string, toolName: string): boolean {
     return this.allowed(scope, sourceId, toolName) && [...this.leases.values()].some(lease => !lease.abort.signal.aborted && lease.scope.agentId === scope.agentId && lease.scope.agentTypeId === scope.agentTypeId && lease.sourceId === sourceId && this.options.enabled(lease.harnessId) && this.allowed(lease.scope, sourceId, toolName))
   }
-  connections(harnessId: string, scope: CapabilityInvocationScope, baseUrl: string, taskId?: string): readonly HarnessCapabilityConnection[] {
+  connections(harnessId: string, scope: CapabilityInvocationScope, baseUrl: string, taskId?: string, retention?: { readonly continuous: true }): readonly HarnessCapabilityConnection[] {
     if (this.closed || !this.options.enabled(harnessId) || !identifier(scope.agentId) || !identifier(scope.agentTypeId)
       || scope.readOnly !== undefined && typeof scope.readOnly !== 'boolean' || scope.source?.readOnly !== undefined && typeof scope.source.readOnly !== 'boolean') return deny()
     if (scope.source && (scope.source.agentId !== scope.agentId || scope.source.agentTypeId !== scope.agentTypeId)) return deny()
     const sources = this.sources()
-    if (taskId !== undefined) this.options.taskActions.open(harnessId, scope.agentId, taskId)
+    if (taskId !== undefined) this.options.taskActions.open(harnessId, scope.agentId, taskId, retention)
     const result: HarnessCapabilityConnection[] = []
     for (const lease of this.leases.values()) if (lease.harnessId === harnessId && lease.scope.agentId === scope.agentId) this.retire(lease)
     for (const source of sources) {

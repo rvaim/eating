@@ -6,7 +6,8 @@ export interface AgentTypeDefinition {
   readonly title: string
   readonly description: string
   readonly localizedTitles?: Readonly<Record<string, string>>
-  readonly conversationKind: 'private' | 'group'
+  /** null declares a functional execution role independent of a communication conversation. */
+  readonly conversationKind: 'private' | 'group' | null
   readonly defaultPrompt: string
   readonly availableTools: readonly string[]
   readonly defaultTools: readonly string[]
@@ -67,6 +68,8 @@ export interface AgentTaskActions {
   readonly available: boolean
   readonly closed: boolean
   readonly actions: readonly AgentActionReceipt[]
+  /** Older confirmed receipts remain in the action ledger; this is a bounded recent view. */
+  readonly actionsTruncated?: boolean
 }
 
 export interface AgentMcpConnection {

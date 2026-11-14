@@ -725,7 +725,7 @@ export class EatingHost {
         return contacts.map(contact => ({ ...contact }))
       },
       hasPendingMessages: () => { this.requireHarnessAccess(id); return this.store.hasPendingHarnessMessages() },
-      getCapabilityMcpConnections: (scope: CapabilityInvocationScope, taskId?: string) => { this.requireHarnessAccess(id); if (!this.url) throw new PlatformError('HOST_NOT_LISTENING', 'Host 尚未监听。', 503); return this.capabilityAccess.connections(id, scope, this.url, taskId) },
+      getCapabilityMcpConnections: (scope: CapabilityInvocationScope, taskId?: string, retention?: { readonly continuous: true }) => { this.requireHarnessAccess(id); if (!this.url) throw new PlatformError('HOST_NOT_LISTENING', 'Host 尚未监听。', 503); return this.capabilityAccess.connections(id, scope, this.url, taskId, retention) },
       readAgentActions: (agentId: string) => { this.requireHarnessAccess(id); return [...this.agentAccess.actions(id, agentId), ...this.capabilityAccess.actions(id, agentId)] },
       // A disabled Harness can still display its own saved receipts; this grants no tool lease.
       readTaskActions: (agentId: string, taskId: string) => this.taskActions.read(id, agentId, taskId),

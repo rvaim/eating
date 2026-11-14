@@ -53,6 +53,7 @@ export function getAsyncTasksRuntimeSource(): string {
       const result = await control('actions', { agentId: task.childId, contextRef: task.contextRef, taskId: task.taskId }, AbortSignal.timeout(5000));
       if (result.available !== true || !Array.isArray(result.actions)) throw new Error('Invalid task receipts');
       task.actions = result.actions.slice(0, 100);
+      if (result.actionsTruncated) task.summary = 'actions仅为最近回执，较早已确认动作保留在原账本。\n' + task.summary;
     } catch { status = 'unknown'; task.summary = '子任务结果或动作回执未能完整核对，不要自动重发。'; task.actions = []; }
     try {
       const settled = await control('finish-task', { agentId: task.childId, contextRef: task.contextRef, taskId: task.taskId, status }, AbortSignal.timeout(5000));
@@ -96,11 +97,12 @@ export function getAsyncTasksRuntimeSource(): string {
       await registerAgentTypes();
       const configuration = preparedConfiguration || await control('prepare-task', { agentId: childId, agentTypeId: typeId, contextRef: context.contextRef, taskId, mode: coordination.mode }, startup);
       prepared = true; task.configuration = configuration;
+      task.persistent = configuration.kind === 'execution';
       if (!['reply', 'verify'].includes(configuration.mode) || configuration.mode !== coordination.mode) throw new Error('Task mode differs from the prepared scope');
       if (ctx.agents.get(childId)) await ctx.subagents.drainChildren(exec.agent, [childId]);
       taskFlights.set(childId, task); taskRecords.set(taskId, task); taskConfigurations.set(childId, configuration);
       const history = context.payload.events.length ? conversationHistory(context, configuration.historyScope) : {};
-      const prompt = [{ type: 'text', text: JSON.stringify({ eating: { protocolVersion: 1, contextRef: context.contextRef, agentTypeId: typeId }, task: taskText, context: context.payload.context, events: context.payload.events, ...history, coordination }) }];
+      const prompt = [{ type: 'text', text: JSON.stringify(task.persistent ? { eating_execution: { protocolVersion: 1, taskId, agentTypeId: typeId }, task: taskText } : { eating: { protocolVersion: 1, contextRef: context.contextRef, agentTypeId: typeId }, task: taskText, context: context.payload.context, events: context.payload.events, ...history, coordination }) }];
       const stored = await ctx.sessionPersistence.stat(childId, { signal: startup });
       let terminal;
       if (stored) {
@@ -116,7 +118,7 @@ export function getAsyncTasksRuntimeSource(): string {
       submitted = true;
       task.cancel = () => { if (task.activation) void task.activation.dispose().catch(() => {}); else { ctx.subagents.interrupt(childId, { kind: 'ancestor', agent: task.parent }); void ctx.subagents.drainChildren(task.parent, [childId]).catch(() => {}); } };
       signal.addEventListener('abort', task.cancel, { once: true });
-      task.timer = setTimeout(() => deadline.abort(), taskDeadlineMs);
+      if (!task.persistent) task.timer = setTimeout(() => deadline.abort(), taskDeadlineMs);
       const child = ctx.agents.get(childId);
       if (!child || await ctx.sessions.flush(child.session) !== true || await ctx.sessions.flush(exec.agent.session) !== true) throw new Error('Delegation durability is unavailable');
       task.done = finishAsyncTask(task, terminal).catch(error => { fail(failureCode(error, 'DURABILITY_FAILED')); return taskValue(task); });
@@ -132,7 +134,7 @@ export function getAsyncTasksRuntimeSource(): string {
     }
   }
   async function retireCompletedContexts() {
-    if (!activeContext || disposed || failed || taskFlights.size || [...taskRecords.values()].some(task => !consumedNotices.has(task.taskId))) return;
+    if (!activeContext || disposed || failed || [...taskFlights.values()].some(task => !task.persistent) || [...taskRecords.values()].some(task => !task.persistent && !consumedNotices.has(task.taskId))) return;
     const ids = [];
     for (const batchId of activeContext.batches.keys()) {
       const references = [...activeContext.contexts.values()].filter(context => context.payload.eating.batchId === batchId).map(context => context.contextRef);
@@ -172,6 +174,7 @@ export function getAsyncTasksRuntimeSource(): string {
         if (previous) { if (previous.accepted) return previous; throw new Error('This task message has an unconfirmed outcome; do not resend'); }
         if (task.controls.size >= 32) throw new Error('Task message capacity reached');
         let context;
+        if (task.persistent && args.context_ref !== undefined) throw unavailableConversation('AGENT_TASK_CONTEXT_MISMATCH', '独立执行代理追加事项使用message，不借用通讯会话授权。');
         if (args.context_ref) context = currentConversation(args.context_ref);
         task.controls.set(key, { accepted: false, outcome: 'unknown' });
         const addition = context ? await control('append-task', { agentId: sessionId, taskId: task.taskId, contextRef: context.contextRef }, exec.signal) : undefined;
@@ -196,7 +199,7 @@ export function getAsyncTasksRuntimeSource(): string {
     }));
     releases.push(ctx.on('session/event', (session, event) => {
       if (session.id !== sessionId || event.type !== 'turn/end') return;
-      if (event.data.reason?.kind === 'aborted' || event.data.reason?.kind === 'cancelled') for (const task of taskFlights.values()) task.deadline.abort();
+      if (event.data.reason?.kind === 'aborted' || event.data.reason?.kind === 'cancelled') for (const task of taskFlights.values()) if (!task.persistent) task.deadline.abort();
       void retireCompletedContexts().catch(error => fail(failureCode(error, 'BRIDGE_FILE_FAILED')));
     }));
     if (typeof native.deliveryHandler !== 'function') throw bridgeError('NATIVE_AGENT_API_UNAVAILABLE');

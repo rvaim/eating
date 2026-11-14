@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "android-control",
+  "name": "玩手机",
+  "description": "通过 USB／网络 ADB 自主使用安卓设备，支持完整命令、交互进程、文件和截图。",
+  "version": "0.1.0",
+  "kind": "capability",
+  "apiVersion": 4,
+  "assets": ["executor.mjs"],
+  "storageDirectory": "android-control",
+  "backend": "server.mjs",
+  "frontend": { "entry": "ui/index.js", "style": "ui/style.css", "order": 60, "brandColor": "#38765c", "icon": "smartphone" }
+}

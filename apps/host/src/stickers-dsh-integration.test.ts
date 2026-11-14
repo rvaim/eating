@@ -43,7 +43,7 @@ function settledDecisions(requests: ModelFixtureRequest[]): ModelFixtureRequest[
     return index === matching[0]?.i || index === matching.at(-1)?.i
   })
 }
-const rootTools = ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_task_control']
+const rootTools = ['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_start_execution', 'eating_task_control']
 const capabilityTools = ['sticker_add', 'sticker_get', 'sticker_list', 'sticker_list_tags', 'sticker_update', 'sticker_delete'].map(name => stickerPrefix + name).sort()
 const childTools = [...capabilityTools, 'mcp__qq__qq_send_private_message', 'mcp__qq__qq_view_received_image'].sort()
 function object(value: unknown): JsonObject { if (!isJsonObject(value)) throw new Error('Expected actual structured integration result'); return value }

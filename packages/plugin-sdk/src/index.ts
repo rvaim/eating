@@ -185,7 +185,7 @@ export interface HarnessHostServices {
   prepareProactiveScope?(pluginId: string, request: import('./autonomy.js').ProactiveScopeRequest): import('./agents.js').AgentInvocationScope
   readProactiveContacts?(pluginId: string, request: import('./autonomy.js').ProactiveContactChannel): Promise<readonly import('./autonomy.js').ProactiveContact[]>
   hasPendingMessages?(): boolean
-  getCapabilityMcpConnections(scope: CapabilityInvocationScope, taskId?: string): readonly HarnessCapabilityConnection[]
+  getCapabilityMcpConnections(scope: CapabilityInvocationScope, taskId?: string, retention?: { readonly continuous: true }): readonly HarnessCapabilityConnection[]
   readAgentActions(agentId: string): readonly import('./agents.js').AgentActionReceipt[]
   readTaskActions(agentId: string, taskId: string): import('./agents.js').AgentTaskActions
   finishTaskActions(agentId: string, taskId: string, reviewed?: boolean): import('./agents.js').AgentTaskActions

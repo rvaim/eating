@@ -283,8 +283,12 @@ export class DshAgentControl {
       if (turn.autonomyCycleId) this.autonomousTasks.add(task.taskId)
       const timer = setTimeout(() => {
         this.contactTimers.delete(agentId)
-        if (binding.task.state === 'pending' && this.revokeContact(binding)) {
-          try { this.saveProactive() } catch { console.error('联系任务状态保存失败，已撤销许可并停止接受新任务。') }
+        try {
+          if (binding.task.state === 'pending' && this.revokeContact(binding)) this.saveProactive()
+        } catch {
+          this.proactivePersistenceFailed = true
+          if (binding.task.state === 'pending') this.setProactiveState(binding, 'unknown')
+          console.error('联系任务回执保存失败，已撤销许可并停止接受新任务。')
         }
       }, Math.max(1, deadline - Date.now()))
       timer.unref(); this.contactTimers.set(agentId, timer)

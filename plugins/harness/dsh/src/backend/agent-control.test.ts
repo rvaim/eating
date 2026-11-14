@@ -531,6 +531,22 @@ describe('trusted native Agent control boundary', () => {
     expect(vi.mocked(f.host.getMcpConnection).mock.calls[1]![2]!.active()).toBe(true)
   })
 
+  it('fails closed without an uncaught timer error if storing interruption receipts fails', async () => {
+    const f = await ordinaryFixture()
+    f.control.setAutonomy(f.activity, () => parentId, () => true, () => ({ revision: 1 }), () => 1000)
+    expect((await f.prepare()).status).toBe(200)
+    const original = f.host.finishTaskActions
+    vi.mocked(f.host.finishTaskActions).mockImplementationOnce(() => { throw new Error('Fixture receipt storage failed') })
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await vi.waitFor(() => expect(logged).toHaveBeenCalledWith('联系任务回执保存失败，已撤销许可并停止接受新任务。'), { timeout: 2000 })
+      expect(f.host.revokeAgentAccess).toHaveBeenCalled()
+      const next = await f.begin(2)
+      const rejected = await f.prepare(next, '2'.repeat(64))
+      expect(rejected.status).toBe(409); expect(await rejected.json()).toMatchObject({ code: 'PROACTIVE_PERSISTENCE_FAILED', outcome: 'not-sent' })
+    } finally { logged.mockRestore(); f.host.finishTaskActions = original }
+  })
+
   it('settles an interrupted contact across a fresh runtime and permits a new task without restoring expired authority', async () => {
     const f = await ordinaryFixture()
     expect((await f.prepare()).status).toBe(200)

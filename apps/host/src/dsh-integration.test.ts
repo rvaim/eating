@@ -68,7 +68,7 @@ function assertDelegation(requests: readonly ModelFixtureRequest[], id: string, 
     expect(batch(request).contextRef).toBe(contextRef)
     expect(batch(request).agentTypeId).toBe(`qq.${kind}`)
     expect(messageId(request)).toBe(id)
-    expect(Object.keys(batch(request).payload).sort()).toEqual(batch(request).kind === 'root' ? ['context', 'eating', 'events'] : ['context', 'coordination', 'eating', 'events', 'task'])
+    expect(Object.keys(batch(request).payload).sort()).toEqual(batch(request).kind === 'root' ? ['context', 'eating', 'events'] : ['context', 'coordination', 'eating', 'events', ...(batch(request).payload.history ? ['history'] : []), 'task'])
   }
   expect(batch(requests[0]!).payload.eating).toMatchObject({ magic: 'eating-harness-delivery', sessionId: rootId, batchId: contextRef })
   expect(batch(requests[1]!).payload.eating).toEqual({ protocolVersion: 1, contextRef, agentTypeId: `qq.${kind}` })
@@ -173,6 +173,7 @@ describe.runIf(Boolean(systemDshBin))('真实DSH SDK → 原生主子会话 → 
     expect(status().sessionId).toBe(sessionId)
     expect(model.settledRequests, JSON.stringify({ errors: model.errors, turns: model.settledRequests.map(request => ({ kind: readModelFixtureBatch(request)?.kind, contextRef: readModelFixtureBatch(request)?.contextRef, last: request.messages?.at(-1) })) })).toHaveLength(8)
     const secondContext = assertDelegation(model.settledRequests.slice(4), '92002', 'private', sessionId, privateTools, 1002)
+    expect(batch(model.settledRequests[5]!).payload.history).toMatchObject({ events: [{ messageId: '92001' }], truncated: false })
     expect(batch(model.settledRequests[5]!).nativeParentId).toBe(sessionId)
     expect(secondContext).not.toBe(firstContext)
     expect(sends()).toHaveLength(2)

@@ -51,7 +51,7 @@ async function isolatedHome() {
 }
 
 /** One opt-in SDK run; all model requests terminate at this independent HTTP peer. */
-async function imageModelFixture() {
+async function imageModelFixture(splitAcrossRestart = false) {
   const requests: ModelFixtureRequest[] = []
   const errors: string[] = []
   const roots = new Set<string>(), children = new Set<string>()
@@ -79,12 +79,17 @@ async function imageModelFixture() {
         if (names.some(name => name.startsWith('mcp__qq__'))) throw new Error('Main Agent inherited scoped QQ communication')
         if (!roots.has(batch.contextRef)) {
           roots.add(batch.contextRef)
-          call = { name: 'eating_delegate_task', arguments: { type_id: 'qq.private', context_ref: batch.contextRef, task: '仅使用获准图片工具读取本批消息的图片，回报实际图像是否可用；不要发送QQ消息。' } }
+          if (!splitAcrossRestart || JSON.stringify(batch.payload.events).includes('SPLIT-IMAGE-FOLLOWUP')) call = { name: 'eating_handle_conversation', arguments: { context_ref: batch.contextRef, mode: 'reply' } }
         }
         text = `MAIN-IMAGE-SUMMARY:${batch.contextRef}`
       } else {
         if (batch.kind !== 'child' || names.join(',') !== 'mcp__qq__qq_view_received_image') throw new Error('Image child does not have its exact approved MCP scope')
         if (!children.has(batch.contextRef)) {
+          if (splitAcrossRestart) {
+            expect(batch.payload.events).toMatchObject([{ messageId: '99502', resourceIds: [] }])
+            expect(batch.payload.history).toMatchObject({ events: [{ messageId, resourceIds: [imageId], content: expect.arrayContaining([expect.objectContaining({ type: 'image' })]) }], truncated: false })
+            expect(JSON.stringify(payload.messages?.filter(message => message.role === 'system'))).toContain('history.events')
+          }
           children.add(batch.contextRef)
           call = { name: 'mcp__qq__qq_view_received_image', arguments: { message_id: messageId, image_id: imageId } }
         }
@@ -142,7 +147,7 @@ function imageQQEntry(image: Awaited<ReturnType<typeof startImageFixture>>, scop
   } }
 }
 
-async function runImageScenario(imageInput: boolean, format: 'png' | 'jpeg' = 'png') {
+async function runImageScenario(imageInput: boolean, format: 'png' | 'jpeg' = 'png', splitAcrossRestart = false) {
   const home = await isolatedHome()
   const systemDsh = () => testSystemDsh()
   const image = await startImageFixture(format === 'jpeg' ? { mimeType: 'image/jpeg', bytes: Buffer.concat([createJpegFixture(true), Buffer.alloc(24, 0x42)]) } : undefined)
@@ -159,7 +164,7 @@ async function runImageScenario(imageInput: boolean, format: 'png' | 'jpeg' = 'p
     return true
   } })
   cleanups.push(() => onebot.close())
-  const model = await imageModelFixture()
+  const model = await imageModelFixture(splitAcrossRestart)
   const scopes: AgentInvocationScope[] = []
   let plugin!: DshPlugin
   const dshEntry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create(context) {
@@ -190,17 +195,27 @@ async function runImageScenario(imageInput: boolean, format: 'png' | 'jpeg' = 'p
   const patch = await readFile(join(home, 'harness/dsh/bridge/runtime.patch.yaml'), 'utf8')
   expect(patch).toContain(imageInput ? '"input":["text","image"]' : '"input":["text"]')
   onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id: Number(messageId),
-    message: [{ type: 'text', data: { text: '外部收到的图片，只通过绑定子代理读取。' } }, { type: 'image', data: { file: imageId } }] })
+    message: [...(splitAcrossRestart ? [] : [{ type: 'text', data: { text: '外部收到的图片，只通过绑定子代理读取。' } }]), { type: 'image', data: { file: imageId } }] })
+  if (splitAcrossRestart) {
+    await expect.poll(() => ({ accepted: host.harness.getStatus().accepted, busy: runtime().busy, requests: model.requests.length }), { timeout: 30000 }).toEqual({ accepted: 1, busy: false, requests: 1 })
+    expect(scopes).toEqual([])
+    await expect.poll(async () => JSON.parse(await readFile(join(home, 'harness/dsh/bridge/deliveries.json'), 'utf8')).deliveries, { timeout: 5000 }).toEqual([])
+    await api('/plugins/dsh/disconnect', {})
+    await api('/plugins/dsh/connect', {})
+    onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id: 99502,
+      message: [{ type: 'text', data: { text: 'SPLIT-IMAGE-FOLLOWUP: comment on the previous picture' } }] })
+  }
   const deadline = Date.now() + 30000
-  const complete = () => host.harness.getStatus().accepted === 1 && host.store.getDeliverySettingsSnapshot().queue.queuedMessages === 0 && runtime().busy === false && model.settledRequests.length >= 4
+  const complete = () => host.harness.getStatus().accepted === (splitAcrossRestart ? 2 : 1) && host.store.getDeliverySettingsSnapshot().queue.queuedMessages === 0 && runtime().busy === false && model.settledRequests.length >= (splitAcrossRestart ? 5 : 4)
   while (!complete() && Date.now() < deadline && model.errors.length === 0) await new Promise<void>(accept => setTimeout(accept, 25))
   const diagnostics = JSON.stringify({ status: plugin.getStatus(), runtime: runtime(), delivery: host.harness.getStatus(), requests: model.settledRequests.length, fixtureErrors: model.errors })
   expect(complete(), diagnostics).toBe(true)
   expect(model.errors).toEqual([])
-  expect(model.settledRequests).toHaveLength(4)
+  expect(model.settledRequests).toHaveLength(splitAcrossRestart ? 5 : 4)
+  const settled = splitAcrossRestart ? model.settledRequests.slice(1) : model.settledRequests
   const system = (request: ModelFixtureRequest) => request.messages?.filter(message => message.role === 'system')
-  expect(system(model.settledRequests[0]!)).toEqual(system(model.settledRequests[3]!))
-  expect(system(model.settledRequests[1]!)).toEqual(system(model.settledRequests[2]!))
+  expect(system(settled[0]!)).toEqual(system(settled[3]!))
+  expect(system(settled[1]!)).toEqual(system(settled[2]!))
   const rootId = String(runtime().sessionId)
   const web = await connectNativeWeb(await plugin.manage('open-native-web', {}), rootId)
   expect(runtime().nativeWeb).toEqual({ ready: true })
@@ -210,34 +225,38 @@ async function runImageScenario(imageInput: boolean, format: 'png' | 'jpeg' = 'p
     expect(clocks).toHaveLength(1)
     expect(JSON.stringify(clocks)).toContain('Asia/Shanghai')
   }
-  expect(model.settledRequests.map(request => readModelFixtureBatch(request)?.kind)).toEqual(['root', 'child', 'child', 'root'])
-  expect(toolNames(model.settledRequests[0]!).filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_task_control'])
-  expect(toolNames(model.settledRequests[3]!).filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_task_control'])
-  for (const request of model.settledRequests.slice(1, 3)) expect(toolNames(request)).toEqual(['mcp__qq__qq_view_received_image'])
+  expect(settled.map(request => readModelFixtureBatch(request)?.kind)).toEqual(['root', 'child', 'child', 'root'])
+  expect(toolNames(settled[0]!).filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_task_control'])
+  expect(toolNames(settled[3]!).filter(name => name?.startsWith('eating_'))).toEqual(['eating_activity_state', 'eating_cancel_scheduled_task', 'eating_contact_target', 'eating_delegate_task', 'eating_handle_conversation', 'eating_list_agent_types', 'eating_list_contact_targets', 'eating_plan_activity', 'eating_schedule_task', 'eating_task_control'])
+  for (const request of settled.slice(1, 3)) expect(toolNames(request)).toEqual(['mcp__qq__qq_view_received_image'])
   expect(scopes).toHaveLength(1)
   expect(scopes[0]).toMatchObject({ pluginId: 'qq', agentTypeId: 'qq.private', instanceId: qq.instanceId, accountId: '123456789', targetId: '987654321',
-    conversationId: 'qq:123456789:private:987654321', kind: 'private', messageIds: [messageId], resourceIds: [imageId] })
+    conversationId: 'qq:123456789:private:987654321', kind: 'private', messageIds: splitAcrossRestart ? [messageId, '99502'] : [messageId], resourceIds: [imageId] })
   expect(onebot.requests.filter(request => request.action === 'get_msg')).toEqual([expect.objectContaining({ params: { message_id: Number(messageId) } })])
   expect(onebot.requests.some(request => request.action.startsWith('send_'))).toBe(false)
   expect(image.requests).toHaveLength(1)
   expect(image.requests[0]?.headers.authorization).toBeUndefined()
   expect(image.requests[0]?.headers.cookie).toBeUndefined()
-  const batch = readModelFixtureBatch(model.settledRequests[3]!)!
-  const parentTool = model.settledRequests[3]!.messages?.slice(batch.messageIndex + 1).find(message => message.role === 'tool')
-  const result = fixtureTaskResult(model.settledRequests[3]!, parentTool?.content)
+  const batch = readModelFixtureBatch(settled[3]!)!
+  const parentTool = settled[3]!.messages?.slice(batch.messageIndex + 1).find(message => message.role === 'tool')
+  const result = fixtureTaskResult(settled[3]!, parentTool?.content)
   expect(result).toMatchObject({ childId: scopes[0]!.agentId, status: 'completed', summary: expect.stringContaining('CHILD-IMAGE-SUMMARY:'), actions: [] })
   expect(JSON.stringify(model.settledRequests)).not.toContain(image.source)
-  expect(imagesIn(model.settledRequests[0]!)).toEqual([])
-  expect(imagesIn(model.settledRequests[1]!)).toEqual([])
-  expect(imagesIn(model.settledRequests[3]!)).toEqual([])
+  expect(imagesIn(settled[0]!)).toEqual([])
+  expect(imagesIn(settled[1]!)).toEqual([])
+  expect(imagesIn(settled[3]!)).toEqual([])
   expect(await plugin.manage('get-model-capabilities', {})).toMatchObject({ imageInput, revision: imageInput ? 1 : 0 })
   const bindings = object(JSON.parse(await readFile(join(home, 'harness/dsh/agent-bindings.json'), 'utf8')))
   expect(bindings).toMatchObject({ schemaVersion: 2, bindings: [expect.objectContaining({ scope: expect.objectContaining({ agentId: scopes[0]!.agentId }), taskRefs: [expect.objectContaining({ state: 'completed' })] })] })
-  return { continuation: model.settledRequests[2]!, bytes: image.bytes, model, plugin }
+  return { continuation: settled[2]!, bytes: image.bytes, model, plugin }
 }
 
 // Opt-in real native SDK/Host/DSH attachment path; all account, image and model peers are local fixtures.
 describe.runIf(Boolean(systemDshBin))('真实 Host MCP 图片 → DSH 附件 → 模型请求', () => {
+  it('retains an ignored image across batch retirement and native restart for a later text-only task', async () => {
+    const { continuation } = await runImageScenario(true, 'png', true)
+    expect(imagesIn(continuation)).toHaveLength(1)
+  }, 60000)
   it('accepts a progressive JPEG with an outer trailer and supplies actual image input to the model', async () => {
     const { continuation, bytes } = await runImageScenario(true, 'jpeg')
     const blocks = imagesIn(continuation)

@@ -309,6 +309,7 @@ describe.runIf(enabled)('isolated system DSH cross-conversation Gateway delivery
     if (action === 'message') {
       expect(current.childInputs).toHaveLength(2)
       expect(current.childInputs[1]!.events).toEqual([second])
+      expect(current.childInputs[1]!.history).toEqual({ events: [first], truncated: false })
       expect(current.extendedScopes[0]!.messageIds).toEqual([first.messageId, second.messageId])
       expect(current.extendedScopes[0]!.resourceIds).toEqual([...first.resourceIds!, ...second.resourceIds!])
       expect(current.scopes).toHaveLength(1)

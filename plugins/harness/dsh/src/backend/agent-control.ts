@@ -67,6 +67,10 @@ type ConversationIdentity = Pick<AgentInvocationScope, 'pluginId' | 'instanceId'
 function conversationIdentity(parentId: string, scope: ConversationIdentity): string {
   return JSON.stringify([parentId, scope.pluginId, scope.instanceId, scope.accountId, scope.agentTypeId, scope.kind, scope.targetId])
 }
+function historyScope(scope: AgentInvocationScope): JsonObject {
+  return { pluginId: scope.pluginId, instanceId: scope.instanceId, accountId: scope.accountId, conversationId: scope.conversationId, kind: scope.kind, targetId: scope.targetId, agentTypeId: scope.agentTypeId,
+    messageIds: scope.messageIds.slice(-256), resourceIds: scope.resourceIds.slice(-256) }
+}
 export function conversationContextRef(batchId: string, firstEvent: HarnessEvent, singleGroup: boolean): string {
   return singleGroup ? batchId : createHash('sha256').update(JSON.stringify([batchId, firstEvent.pluginId, firstEvent.instanceId, firstEvent.accountId, firstEvent.conversationId, firstEvent.source.kind, firstEvent.targetId])).digest('hex')
 }
@@ -542,7 +546,7 @@ export class DshAgentControl {
           this.host.extendAgentScope(scope)
           if (binding) this.replace({ ...binding, scope })
           this.taskScopes.set(task.taskId, scope)
-          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify({ accepted: true })); return
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify({ accepted: true, historyScope: historyScope(scope) })); return
         }
         if (request.url === '/retire-deliveries') {
           if (body.agentId !== this.rootId() || !exactRecord(body, ['agentId', 'batchIds']) || !Array.isArray(body.batchIds) || body.batchIds.length > 32 || body.batchIds.some(id => typeof id !== 'string' || !DIGEST.test(id))) fail('AGENT_SCOPE_INVALID', '批次清理请求无效。')
@@ -680,7 +684,7 @@ export class DshAgentControl {
             this.taskScopes.set(task.taskId, invocationScope)
             this.taskModes.set(task.taskId, body.mode as 'reply' | 'verify')
           } catch (error) { this.host.revokeAgentAccess(binding.scope.agentId); this.host.finishTaskActions(binding.scope.agentId, task.taskId); throw error }
-          result = { agentId: binding.scope.agentId, agentTypeId: type.id, mode: body.mode, systemPrompt: preview.systemPrompt, revision: preview.revision, mcp: { url: mcp.url, headers: { ...mcp.headers } }, tools: [...mcp.toolNames], capabilities: capabilities.map(connection => ({ ...connection, headers: { ...connection.headers }, tools: [...connection.tools] })) }
+          result = { agentId: binding.scope.agentId, agentTypeId: type.id, mode: body.mode, historyScope: historyScope(invocationScope), systemPrompt: preview.systemPrompt, revision: preview.revision, mcp: { url: mcp.url, headers: { ...mcp.headers } }, tools: [...mcp.toolNames], capabilities: capabilities.map(connection => ({ ...connection, headers: { ...connection.headers }, tools: [...connection.tools] })) }
         } else if (request.url === '/actions') {
           if (!exactRecord(body, ['agentId', 'contextRef', 'taskId']) || binding.task?.nonce !== this.nonce || binding.task.contextRef !== body.contextRef || binding.task.taskId !== body.taskId || binding.task.state !== 'pending') fail('CONTROL_REQUEST_INVALID', '当前任务回执引用无效。')
           const receipts = this.host.readTaskActions(binding.scope.agentId, String(body.taskId))

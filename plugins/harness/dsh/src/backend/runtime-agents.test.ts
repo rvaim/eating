@@ -22,7 +22,7 @@ function fixture(unavailable = false) {
   const main = { id: sessionId, session: { id: sessionId } }
   resident.set(sessionId, main)
   let pending: string | null = null
-  const configuration = { agentId: childId, agentTypeId: 'qq.private', systemPrompt: 'CHILD', mode: 'reply', mcp: { url: 'http://127.0.0.1:1/mcp', headers: {} }, capabilities: [], tools: [] }
+  const configuration = { agentId: childId, agentTypeId: 'qq.private', historyScope: { ...conversations[0], messageIds: [], resourceIds: [] }, systemPrompt: 'CHILD', mode: 'reply', mcp: { url: 'http://127.0.0.1:1/mcp', headers: {} }, capabilities: [], tools: [] }
   const requests: Array<{ operation: string; body: Record<string, string> }> = []
   const fetcher = vi.fn(async (url: unknown, input?: RequestInit) => {
     const operation = String(url).split('/').at(-1)!, body = JSON.parse(String(input?.body)) as Record<string, string>

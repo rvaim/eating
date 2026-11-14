@@ -269,6 +269,7 @@ export function apply(ctx) {
         for (const event of slice.events) {
           if (!Number.isSafeInteger(event.seq) || event.seq !== offset) throw bridgeError('SESSION_RECOVERY_FAILED');
           offset += 1;
+          restoreConversationContext(event);
           if (event.type === 'agent/inbox/spliced' && Array.isArray(event.data?.inserted)) for (const message of event.data.inserted) if (message.source?.kind === 'plugin:eating-task-result' && pendingNotices.has(message.id)) recoveredTaskNotices.add(message.id);
           for (const frame of frames) if (!recovered.has(frame.batchId)) {
             const found = matchEvent(event, frame, true);
@@ -314,6 +315,7 @@ export function apply(ctx) {
     if (disposed) return;
     initialization.abort();
     activeContext = undefined;
+    conversationContexts.clear(); conversationContextBytes = 0;
     taskConfigurations.clear();
     for (const release of releases.splice(0).reverse()) { try { release(); } catch { /* Cordis also owns these effects. */ } }
     for (const filename of ['ready.json', 'session-ready.json', 'native-web-ready.json']) { try { removeOwnState(filename); } catch { /* Do not follow a replaced directory. */ } }

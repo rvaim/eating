@@ -270,7 +270,7 @@ export function apply(ctx){
     for (const request of requests) {
       const batch = readModelFixtureBatch(request)
       if (!batch) throw new Error('Missing current native batch envelope')
-      expect(Object.keys(batch.payload).sort()).toEqual(batch.kind === 'root' ? ['context', 'eating', 'events'] : ['context', 'coordination', 'eating', 'events', 'task'])
+      expect(Object.keys(batch.payload).sort()).toEqual(batch.kind === 'root' ? ['context', 'eating', 'events'] : ['context', 'coordination', 'eating', 'events', ...(batch.payload.history ? ['history'] : []), 'task'])
       if (batch.kind === 'child') expect(batch.payload.coordination).toEqual({ mode: 'reply', context_notes: '' })
     }
     const rootRequests = requests.filter(request => request.tools?.some(tool => tool.function?.name === 'eating_delegate_task'))

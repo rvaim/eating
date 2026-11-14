@@ -36,12 +36,16 @@ describe('trusted native Agent control boundary', () => {
     const f = fixture(); await f.control.start('fixture-runtime-nonce')
     const first = f.control.bind(f.batch, parentId)
     const task = { agentId: first.scope.agentId, agentTypeId: 'qq.private', contextRef: f.batch.batchId, taskId: '1'.repeat(64), mode }
-    expect((await f.post('/prepare-task', task)).status).toBe(200)
+    const prepared = await f.post('/prepare-task', task)
+    expect(prepared.status).toBe(200)
+    expect(await prepared.json()).toMatchObject({ historyScope: { accountId: '100', targetId: '200', messageIds: ['300'], resourceIds: ['https://fixture.invalid/file'] } })
     const batch = { ...f.batch, batchId: 'b'.repeat(64), events: f.batch.events.map(event => ({ ...event, messageId: 'new-message', resourceIds: ['new-image'] })) }
     f.control.bind(batch, parentId)
     const update = { agentId: parentId, taskId: task.taskId, contextRef: batch.batchId }
     expect((await f.post('/append-task', { ...update, agentId: task.agentId })).status).toBe(409)
-    expect((await f.post('/append-task', update)).status).toBe(200)
+    const appended = await f.post('/append-task', update)
+    expect(appended.status).toBe(200)
+    expect(await appended.json()).toMatchObject({ accepted: true, historyScope: { accountId: '100', targetId: '200', messageIds: ['300', 'new-message'], resourceIds: ['https://fixture.invalid/file', 'new-image'] } })
     expect(f.host.extendAgentScope).toHaveBeenLastCalledWith(expect.objectContaining({ agentId: task.agentId, messageIds: ['300', 'new-message'], resourceIds: ['https://fixture.invalid/file', 'new-image'], ...(mode === 'verify' ? { readOnly: true } : {}) }))
     f.control.bind({ ...batch, batchId: 'c'.repeat(64), conversationId: 'other', events: batch.events.map(event => ({ ...event, targetId: '999', conversationId: 'other' })) }, parentId)
     expect((await f.post('/append-task', { ...update, contextRef: 'c'.repeat(64) })).status).toBe(409)

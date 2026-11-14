@@ -133,7 +133,7 @@ async function conversationFixture(kind: 'private' | 'group' = 'private', scopes
   const events = [
     { messageId: 'message-one', senderId: '200', senderRole: 'user', text: '你记得我喜欢的颜色吗？', resourceIds: [] },
     { messageId: 'message-two', senderId: '200', senderRole: 'user', text: '照刚才聊的画一只小猫', resourceIds: ['received-image'], content: [{ type: 'image', data: { file: 'received-image' } }], extra: { original: '原始字段保持' } },
-  ].flatMap(event => scopes.map((scope, index) => ({ ...scope, ...event, messageId: `${event.messageId}-${index}`, source: { trust: 'external', kind: scope.kind, senderRole: 'user' } })))
+  ].flatMap(event => scopes.map((scope, index) => ({ ...scope, ...event, eventId: createHash('sha256').update(`${event.messageId}-${index}`).digest('hex'), messageId: `${event.messageId}-${index}`, source: { trust: 'external', kind: scope.kind, senderRole: 'user' } })))
   const body = batchBody(conversations, events)
   const f = await fixture({ body })
   await turn()
@@ -153,7 +153,7 @@ async function conversationFixture(kind: 'private' | 'group' = 'private', scopes
     const requestBody = JSON.parse(String(input?.body)) as Json
     requests.push({ operation, body: requestBody })
     const selected = bindings.find(entry => entry.agentId === requestBody.agentId)
-    const configuration = selected && { agentId: selected.agentId, agentTypeId: selected.agentTypeId, systemPrompt: 'OWNER-CHILD-OVERRIDE\nOWNER-PERSONA', mode: 'reply', mcp: { url: 'http://127.0.0.1:1/mcp', headers: {} }, tools: [], capabilities: [] }
+    const configuration = selected && { agentId: selected.agentId, agentTypeId: selected.agentTypeId, historyScope: { ...conversations[bindings.indexOf(selected)], messageIds: body.events.map(event => event.messageId), resourceIds: ['received-image'] }, systemPrompt: 'OWNER-CHILD-OVERRIDE\nOWNER-PERSONA', mode: 'reply', mcp: { url: 'http://127.0.0.1:1/mcp', headers: {} }, tools: [], capabilities: [] }
     const value = operation === 'prepare-task' ? configuration : operation === 'actions' ? { available: true, closed: false, actions } : operation === 'finish-task' ? { ok: true, status: requestBody.status, actions } : operation === 'tasks' ? { tasks: [{ taskId: requestBody.taskId, status: 'running' }] } : operation === 'retire-deliveries' ? { retired: requestBody.batchIds } : undefined
     if (!value) throw new Error(`Unexpected fixture control operation: ${operation}`)
     return new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } })

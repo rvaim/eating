@@ -63,10 +63,10 @@
 .android-info-note > svg { flex-shrink: 0; margin-top: 2px; }
 
 .android-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; }
-.android-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; font-size: 13px; }
-.android-field > label { font-size: 13px; font-weight: 550; color: var(--color-ink-strong); }
+.android-field { display: flex; flex-direction: column; gap: 8px; min-width: 0; font-size: 13px; }
+.android-field > label { font-size: 13px; font-weight: 500; color: var(--color-ink-strong); }
 .android-field-wide { grid-column: 1 / -1; }
-.android-file-field { margin-top: 14px; }
+.android-file-field { margin-top: 16px; }
 .android-panel :where(.android-field > input:not([type="checkbox"]):not([type="file"]), .android-field > select, .android-field > textarea) {
   width: 100%;
   box-sizing: border-box;
@@ -76,7 +76,7 @@
   font: inherit;
   font-size: 13px;
   border: 1px solid var(--color-line-input);
-  border-radius: 5px;
+  border-radius: var(--radius);
   background: var(--color-surface);
   color: var(--color-ink);
 }
@@ -126,7 +126,7 @@
 .android-process-row.is-selected { border-color: var(--color-primary); background: var(--color-selected); }
 .android-process-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; }
 .android-process-head code { font-size: 12px; font-weight: 600; color: var(--color-ink); }
-.android-process-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--color-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.android-process-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--color-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .android-badge {
   display: inline-flex;
   align-items: center;
@@ -135,7 +135,7 @@
   border-radius: 999px;
   background: var(--color-chip-bg);
   color: var(--color-ink-soft);
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 .android-status-running, .android-status-queued { border-color: var(--color-line-info); background: var(--color-info-surface); color: var(--color-info-ink); }
@@ -149,7 +149,7 @@
   min-height: 40px;
   padding: 6px 10px;
   border: 1px solid var(--color-line-input);
-  border-radius: 5px;
+  border-radius: var(--radius);
   background: var(--color-surface);
   color: var(--color-ink);
   font: inherit;
@@ -165,7 +165,7 @@
   overflow-wrap: anywhere;
   padding: 14px;
   border: 1px solid var(--color-line);
-  border-radius: 5px;
+  border-radius: var(--radius);
   background: var(--color-surface-sunken);
   color: var(--color-ink);
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
@@ -209,17 +209,17 @@
 .android-file-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 .android-dropzone-icon { color: var(--color-primary); }
 .android-dropzone strong { color: var(--color-ink); font-size: 13px; overflow-wrap: anywhere; }
-.android-dropzone small { font-size: 11px; }
+.android-dropzone small { font-size: 12px; }
 .android-file-chip-row { display: flex; justify-content: flex-end; }
 .android-file-chip-row .text-button { min-height: 36px; font-size: 12px; }
 
 .android-dir-card { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--color-line); display: grid; gap: 8px; }
 .android-dir-head { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 8px 14px; }
 .android-dir-head strong { display: block; font-size: 13px; }
-.android-dir-head code { display: block; margin-top: 2px; font-size: 11px; color: var(--color-muted); overflow-wrap: anywhere; }
+.android-dir-head code { display: block; margin-top: 2px; font-size: 12px; color: var(--color-muted); overflow-wrap: anywhere; }
 .android-dir-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; font-size: 12px; color: var(--color-muted); }
 .android-dir-meta .text-button { min-height: 36px; font-size: 12px; }
-.android-dir-hint { font-size: 11px; color: var(--color-muted); }
+.android-dir-hint { font-size: 12px; color: var(--color-muted); }
 .android-dir-list { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow-y: auto; border: 1px solid var(--color-line); border-radius: var(--radius); }
 .android-dir-list li + li { border-top: 1px solid var(--color-line); }
 .android-dir-row {

@@ -15,7 +15,7 @@
 .dsh-history-counts dd { margin: 0; color: var(--color-ink); font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .dsh-history-expiry-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .dsh-history-expiry { max-width: 72ch; color: var(--color-muted); font-size: 12px; }
-.dsh-history-countdown { display: inline-flex; align-items: center; padding: 3px 9px; border: 1px solid var(--color-line-alert); border-radius: 999px; background: var(--color-warning-surface); color: var(--color-warning-ink); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.dsh-history-countdown { display: inline-flex; align-items: center; padding: 3px 10px; border: 1px solid var(--color-line-alert); border-radius: 999px; background: var(--color-warning-surface); color: var(--color-warning-ink); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .dsh-history-countdown.is-urgent { border-color: var(--color-line-invalid); background: var(--color-danger-surface); color: var(--color-danger-ink); }
 .dsh-history-confirm { margin-top: 20px; max-width: 760px; padding: 18px; border: 1.5px solid var(--color-line-invalid); border-radius: var(--radius); background: var(--color-danger-surface); }
 .dsh-history-confirm > p { max-width: 72ch; margin-top: 10px; color: var(--color-danger-ink); font-size: 13px; }

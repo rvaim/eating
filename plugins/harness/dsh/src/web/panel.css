@@ -1,7 +1,7 @@
 /* Eating settings only; the official DSH Web keeps its own UI and styles. */
 .dsh-settings-page { display: contents; }
 .dsh-settings-page > * { max-width: var(--panel-content-max); min-width: 0; }
-.dsh-tabs { margin-bottom: 24px; }
+.dsh-tabs { margin-bottom: 16px; }
 .dsh-panel > .dsh-tabs { max-width: none; }
 .dsh-panel [role="tabpanel"] :is(input, select, textarea, button, summary, [tabindex]) { scroll-margin-block-start: calc(var(--panel-tab-rail-block-size) + 20px); }
 .dsh-native-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
@@ -19,7 +19,7 @@
 .dsh-native-categories button[aria-pressed="true"] { color: var(--color-primary-hover); border-bottom-color: var(--color-primary); font-weight: 600; }
 .dsh-native-search { display: flex; align-items: center; gap: 8px; min-width: 180px; max-width: 360px; flex: 1; color: var(--color-muted); }
 .dsh-native-search-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
-.dsh-native-search input, .dsh-native-editor input, .dsh-native-editor textarea { min-width: 0; width: 100%; padding: 10px 12px; border: 1px solid var(--color-line-input); border-radius: 5px; background: var(--color-surface); color: var(--color-ink); font-size: 13px; }
+.dsh-native-search input, .dsh-native-editor input, .dsh-native-editor textarea { min-width: 0; width: 100%; padding: 10px 12px; border: 1px solid var(--color-line-input); border-radius: var(--radius); background: var(--color-surface); color: var(--color-ink); font-size: 13px; }
 .dsh-native-search input, .dsh-native-editor input { min-height: 44px; }
 .dsh-native-search input::placeholder, .dsh-native-editor input::placeholder { color: var(--color-placeholder); opacity: 1; }
 .dsh-native-search input:focus-visible, .dsh-native-editor input:focus-visible, .dsh-native-editor textarea:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
@@ -49,7 +49,7 @@
 .dsh-native-editor { display: flex; flex-direction: column; gap: 8px; margin: 14px 0 8px; color: var(--color-ink-soft); font-size: 12px; }
 .dsh-native-editor-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 .dsh-native-editor-actions { display: flex; align-items: center; gap: 8px; }
-.dsh-json-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 11px; border: 1px solid var(--color-line-soft); background: var(--color-surface-quiet); color: var(--color-muted); }
+.dsh-json-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--color-line-soft); background: var(--color-surface-quiet); color: var(--color-muted); }
 .dsh-json-badge.is-valid { border-color: var(--color-line-success); background: var(--color-success-surface); color: var(--color-success-ink); }
 .dsh-json-badge.is-invalid { border-color: var(--color-line-warm); background: var(--color-danger-surface); color: var(--color-danger-ink); }
 .dsh-native-editor textarea { width: 100%; min-height: 160px; padding: 12px; resize: vertical; font-family: var(--font-mono, monospace); font-size: 12px; line-height: 1.65; tab-size: 2; }
@@ -79,7 +79,7 @@
 .dsh-status-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px 12px; flex-shrink: 0; }
 .dsh-native-control { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 0; }
 .dsh-native-open { min-height: 38px; padding-block: 6px; }
-.dsh-native-failure { display: flex; align-items: flex-start; gap: 4px; margin: 0; color: var(--color-danger-ink); font-size: 11px; line-height: 1.6; text-align: end; overflow-wrap: anywhere; }
+.dsh-native-failure { display: flex; align-items: flex-start; gap: 4px; margin: 0; color: var(--color-danger-ink); font-size: 12px; line-height: 1.6; text-align: end; overflow-wrap: anywhere; }
 .dsh-native-failure svg { margin-top: 2px; }
 .dsh-capabilities { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--color-line); }
 .dsh-model-capabilities { margin-top: 14px; padding: 14px 16px; max-width: 670px; border: 1px solid var(--color-line); border-radius: var(--radius); background: var(--color-surface-quiet); }
@@ -89,7 +89,7 @@
 .dsh-model-facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; padding: 0; font-size: 12px; }
 .dsh-model-facts > div { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--color-line-soft); border-radius: 999px; background: var(--color-surface); min-width: 0; }
 .dsh-model-facts dt { color: var(--color-muted); }
-.dsh-model-facts dd { margin: 0; font-weight: 550; color: var(--color-ink); font-variant-numeric: tabular-nums; }
+.dsh-model-facts dd { margin: 0; font-weight: 500; color: var(--color-ink); font-variant-numeric: tabular-nums; }
 .dsh-model-supplement { margin-top: 14px; padding: 14px; border: 1px solid var(--color-line-soft); border-radius: var(--radius); background: var(--color-surface); font-size: 12px; display: grid; gap: 10px; }
 .dsh-model-supplement-title { font-size: 13px; font-weight: 600; color: var(--color-ink); }
 .dsh-model-supplement .dsh-help { margin-top: 0; }
@@ -116,19 +116,19 @@
 .dsh-panel svg { flex-shrink: 0; }
 .dsh-panel button { max-width: 100%; white-space: normal; }
 .dsh-panel button, .dsh-panel input { touch-action: manipulation; }
-.dsh-status-strip { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 17px 0 20px; }
-.dsh-status-strip > div:first-child { display: flex; flex-wrap: wrap; gap: 5px 18px; align-items: baseline; min-width: 0; }
-.dsh-status-strip strong { font-size: 14px; font-weight: 600; }
+.dsh-status-strip { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 0 12px; }
+.dsh-status-strip > div:first-child { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; min-width: 0; }
+.dsh-status-strip strong { font-size: 13px; font-weight: 600; }
 .dsh-status-strip span { color: var(--color-muted); font-size: 12px; }
-.dsh-status-strip .text-button { flex-shrink: 0; padding-top: 0; }
-.dsh-loading { padding: 15px 0 25px; color: var(--color-muted); font-size: 13px; }
-.dsh-runtime { margin-bottom: 27px; padding: 0 0 21px; border-bottom: 1px solid var(--color-line); }
+.dsh-status-strip .text-button { flex-shrink: 0; padding: 4px 0; }
+.dsh-loading { padding: 16px 0 24px; color: var(--color-muted); font-size: 13px; }
+.dsh-runtime { margin-bottom: 16px; padding: 12px 16px; border: 1px solid var(--color-line); border-radius: var(--radius); background: var(--color-surface-quiet); }
 .dsh-runtime-heading { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
-.dsh-runtime-heading p { margin-top: 4px; color: var(--color-muted); font-size: 12px; }
-.dsh-system-guide-details { margin-top: 10px; padding: 8px 12px; border: 1px solid var(--color-line); border-radius: var(--radius); background: var(--color-surface-quiet); font-size: 12px; }
-.dsh-system-guide-details summary { cursor: pointer; font-weight: 550; color: var(--color-ink-soft); }
-.dsh-help { margin-top: 11px; max-width: 72ch; color: var(--color-muted); font-size: 12px; }
-.dsh-progress { margin-top: 11px; color: var(--color-primary-hover); font-size: 12px; white-space: pre-wrap; }
+.dsh-runtime-heading p { margin-top: 2px; color: var(--color-muted); font-size: 12px; }
+.dsh-system-guide-details { margin-top: 8px; padding: 8px 12px; border: 1px solid var(--color-line); border-radius: var(--radius); background: var(--color-surface); font-size: 12px; }
+.dsh-system-guide-details summary { cursor: pointer; font-weight: 500; color: var(--color-ink-soft); }
+.dsh-help { margin-top: 6px; max-width: 72ch; color: var(--color-muted); font-size: 12px; }
+.dsh-progress { margin-top: 8px; color: var(--color-primary-hover); font-size: 12px; white-space: pre-wrap; }
 .dsh-panel .section-heading p { max-width: 72ch; }
 .dsh-fieldset { margin: 0; padding: 0; min-width: 0; border: 0; }
 .dsh-fieldset:disabled { opacity: .78; }
@@ -138,7 +138,7 @@
 .dsh-panel .form-actions .button { min-height: 42px; }
 .dsh-error { display: flex; gap: 8px; align-items: flex-start; margin: 14px 0 18px; padding: 12px 14px; border: 1px solid var(--color-line-warm); border-radius: 6px; background: var(--color-danger-surface); color: var(--color-danger-ink); font-size: 12px; }
 .dsh-error > svg { margin-top: 2px; }
-.dsh-error small { display: block; margin-top: 4px; font-size: 11px; overflow-wrap: anywhere; }
+.dsh-error small { display: block; margin-top: 4px; font-size: 12px; overflow-wrap: anywhere; }
 .dsh-error-recovery { margin-top: 5px; }
 .dsh-error-details { margin-top: 8px; }
 .dsh-error-details summary, .dsh-file-details summary { cursor: pointer; }

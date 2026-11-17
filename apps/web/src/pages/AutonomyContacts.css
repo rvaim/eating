@@ -20,8 +20,8 @@
 .autonomy-policy-object-list > label:hover { background: var(--color-hover); }
 .autonomy-policy-object-list > .is-selected { background: var(--color-selected); }
 .autonomy-policy-object-list input { flex-shrink: 0; width: 18px; height: 18px; accent-color: var(--color-primary); }
-.autonomy-policy-object-list strong { display: block; font-size: 13px; font-weight: 550; }
-.autonomy-policy-object-list small, .autonomy-policy-selected small { display: block; margin-top: 3px; color: var(--color-muted); font-size: 11px; }
+.autonomy-policy-object-list strong { display: block; font-size: 13px; font-weight: 500; }
+.autonomy-policy-object-list small, .autonomy-policy-selected small { display: block; margin-top: 4px; color: var(--color-muted); font-size: 12px; }
 .autonomy-policy-object-list span { min-width: 0; overflow-wrap: anywhere; }
 .autonomy-policy-manual { margin: 14px 0; font-size: 12px; }
 .autonomy-policy-manual summary { width: fit-content; min-height: 44px; padding: 10px 0; cursor: pointer; color: var(--color-primary); }

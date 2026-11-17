@@ -205,7 +205,7 @@ export function PluginLifecycleBar({
             ) : (
               <ActionButton
                 type="button"
-                className="button button-primary"
+                className={`button ${!enabled || state === 'unconfigured' ? 'button-secondary' : 'button-primary'}`}
                 disabled={!enabled || state === 'unconfigured' || overallBusy}
                 reasonCode={!enabled ? 'enable' : state === 'unconfigured' ? 'configure' : 'busy'}
                 onClick={() => void runConnection(true)}>

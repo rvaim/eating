@@ -11,6 +11,6 @@
 .eating-switch-btn.is-compact[aria-checked="true"] .eating-switch-thumb { transform: translateX(18px); }
 .eating-switch-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 .eating-switch-copy { display: grid; gap: 2px; min-width: 0; }
-.eating-switch-label { font-size: 13px; font-weight: 550; color: var(--color-ink); cursor: pointer; overflow-wrap: anywhere; }
+.eating-switch-label { font-size: 13px; font-weight: 500; color: var(--color-ink); cursor: pointer; overflow-wrap: anywhere; }
 .eating-switch-field.is-disabled .eating-switch-label { cursor: not-allowed; color: var(--color-disabled-ink); }
-.eating-switch-desc { font-size: 11px; color: var(--color-muted); line-height: 1.5; }
+.eating-switch-desc { font-size: 12px; color: var(--color-muted); line-height: 1.5; }

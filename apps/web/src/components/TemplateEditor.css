@@ -14,13 +14,13 @@
 }
 
 .template-editor-insert { min-height: 36px; padding: 6px 12px; }
-.template-editor-scope { min-width: 0; color: var(--color-muted); font-size: 11px; overflow-wrap: anywhere; }
+.template-editor-scope { min-width: 0; color: var(--color-muted); font-size: 12px; overflow-wrap: anywhere; }
 .template-editor-host { min-width: 0; width: 100%; }
 .template-editor .cm-editor {
   width: 100%;
   min-width: 0;
   border: 1px solid var(--color-line-input);
-  border-radius: 5px;
+  border-radius: var(--radius);
   background: var(--color-surface);
   color: var(--color-ink);
   font: inherit;
@@ -43,7 +43,7 @@
 .template-editor .cm-selectionBackground { background: var(--color-tint); }
 .template-editor .cm-editor.cm-focused .cm-selectionBackground { background: var(--color-selection); }
 .template-editor .cm-gutters { border-right: 1px solid var(--color-line); border-radius: 4px 0 0 4px; background: var(--color-surface-sunken); color: var(--color-muted); }
-.template-editor .cm-lineNumbers .cm-gutterElement { min-width: 30px; padding: 0 7px 0 6px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.template-editor .cm-lineNumbers .cm-gutterElement { min-width: 30px; padding: 0 7px 0 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
 .template-editor .template-variable { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .template-editor .template-variable-valid { color: var(--color-primary-hover); background: var(--color-highlight); }
 .template-editor .template-variable-invalid { color: var(--color-danger-ink); text-decoration: underline wavy var(--color-danger-ink); text-underline-offset: 4px; }
@@ -51,8 +51,8 @@
 .template-editor.is-disabled .cm-editor, .template-editor.is-disabled .cm-gutters { background: var(--color-surface-sunken); }
 .template-editor.is-disabled .cm-content { color: var(--color-disabled-ink); }
 .template-editor.is-disabled .cm-editor:hover { border-color: var(--color-line-input); }
-.template-editor-hint { margin-top: 8px; color: var(--color-muted); font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
-.template-editor-diagnostics { margin-top: 6px; font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
+.template-editor-hint { margin-top: 8px; color: var(--color-muted); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.template-editor-diagnostics { margin-top: 6px; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
 .template-editor-diagnostic-count { color: var(--color-muted); }
 .template-editor.has-errors .template-editor-diagnostic-count { color: var(--color-danger-ink); }
 .template-editor-error-list { display: grid; gap: 2px; margin: 4px 0 0; padding: 0; list-style: none; }
@@ -73,7 +73,7 @@
 .template-editor-popups .cm-tooltip {
   max-width: calc(100vw - 24px);
   border: 1px solid var(--color-line-strong);
-  border-radius: 5px;
+  border-radius: var(--radius);
   background: var(--color-surface);
   color: var(--color-ink);
   box-shadow: 0 7px 24px var(--color-shadow);
@@ -105,12 +105,12 @@
 .template-editor-popups .template-editor-completion > ul > li.template-editor-completion-option:hover .cm-completionDetail,
 .template-editor-popups .template-editor-completion > ul > li.template-editor-completion-option[aria-selected="true"] .cm-completionDetail { color: var(--color-primary-hover); }
 .template-editor-popups .cm-completionLabel { min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
-.template-editor-popups .cm-completionDetail { min-width: 0; margin: 0; padding: 0; color: var(--color-muted); font-size: 11px; font-style: normal; line-height: 1.6; overflow-wrap: anywhere; }
+.template-editor-popups .cm-completionDetail { min-width: 0; margin: 0; padding: 0; color: var(--color-muted); font-size: 12px; font-style: normal; line-height: 1.6; overflow-wrap: anywhere; }
 .template-editor-popups .cm-completionMatchedText { font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
 .template-editor-popups .cm-tooltip-lint { max-width: min(360px, calc(100vw - 24px)); margin: 0; padding: 7px 10px; list-style: none; font-size: 12px; overflow-wrap: anywhere; }
 .template-editor-popups .cm-diagnostic { margin: 0; padding: 3px 0; border: 0; white-space: pre-wrap; }
 .template-editor-popups .cm-diagnostic-error { color: var(--color-danger-ink); }
-.template-editor-popups .cm-diagnosticSource { display: block; color: var(--color-muted); font-size: 11px; }
+.template-editor-popups .cm-diagnosticSource { display: block; color: var(--color-muted); font-size: 12px; }
 
 @media (max-width: 600px) {
   .template-editor-insert { min-height: 40px; }

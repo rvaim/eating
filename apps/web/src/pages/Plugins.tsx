@@ -260,7 +260,7 @@ function PluginRow({ plugin, catalog, busy, confirming, onToggle, onUninstall, o
         label={t(toggling ? (plugin.enabled ? 'plugins.disabling' : 'plugins.enabling') : (plugin.enabled ? 'plugins.enabled' : 'plugins.disabled'))}
         onChange={() => onToggle()}
       />
-      {panelHref && <a className="button button-primary" href={panelHref}>{t('plugins.openSettings')}</a>}
+      {panelHref && <a className="button button-secondary" href={panelHref}>{t('plugins.openSettings')}</a>}
       <ActionButton reason={t('ui.reason.busy')} type="button" className="text-button" disabled={busy !== null} onClick={onUpdate}>{t('plugins.update')}</ActionButton>
       <ActionButton reason={t('ui.reason.busy')} type="button" className="text-button plugins-uninstall-trigger" disabled={busy !== null} onClick={onConfirm}><Trash2 size={14} aria-hidden="true" />{t('plugins.uninstall')}</ActionButton>
     </div>

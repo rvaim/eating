@@ -18,8 +18,8 @@
 .stickers-disabled-banner strong { display: block; color: var(--color-ink); font-size: 13px; font-weight: 600; }
 .stickers-disabled-banner p { margin-top: 3px; font-size: 12px; line-height: 1.6; }
 
-.stickers-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
-.stickers-toolbar h3 { font-size: 17px; font-weight: 650; }
+.stickers-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 20px; }
+.stickers-toolbar h3 { font-size: 17px; font-weight: 600; }
 .stickers-toolbar h3 span { margin-left: 10px; color: var(--color-muted); font-size: 12px; font-weight: 400; }
 .stickers-toolbar p { margin-top: 7px; color: var(--color-muted); font-size: 13px; line-height: 1.65; }
 .stickers-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
@@ -82,7 +82,7 @@
   font-weight: 600;
 }
 .stickers-filter-help { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--color-muted); }
-.stickers-filter-help small { font-size: 11px; }
+.stickers-filter-help small { font-size: 12px; }
 
 .stickers-list { border-top: 1px solid var(--color-line); }
 .stickers-row {
@@ -108,7 +108,7 @@
   display: grid;
   place-items: center;
   border: 1px solid var(--color-line);
-  border-radius: 5px;
+  border-radius: var(--radius);
   background: var(--color-surface-sunken);
   color: var(--color-icon-soft);
   overflow: hidden;
@@ -117,10 +117,10 @@
 .stickers-row-image { color: var(--color-icon-soft); }
 .stickers-row > svg:last-child { color: var(--color-muted); flex: 0 0 auto; }
 .stickers-row-body { min-width: 0; flex: 1; display: grid; gap: 6px; }
-.stickers-row-body strong { font-size: 13px; font-weight: 550; line-height: 1.55; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; -webkit-line-clamp: 2; }
-.stickers-row-body small { font-size: 11px; color: var(--color-muted); }
-.stickers-tags { display: flex; flex-wrap: wrap; gap: 5px; }
-.stickers-tags > span { max-width: 100%; padding: 2px 7px; border-radius: 4px; font-size: 11px; line-height: 1.5; color: var(--color-ink-notice); background: var(--color-surface-sunken); overflow-wrap: anywhere; }
+.stickers-row-body strong { font-size: 13px; font-weight: 500; line-height: 1.55; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; -webkit-line-clamp: 2; }
+.stickers-row-body small { font-size: 12px; color: var(--color-muted); }
+.stickers-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.stickers-tags > span { max-width: 100%; padding: 2px 8px; border-radius: 4px; font-size: 12px; line-height: 1.5; color: var(--color-ink-notice); background: var(--color-surface-sunken); overflow-wrap: anywhere; }
 
 .stickers-pagination { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 18px; color: var(--color-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .stickers-pagination > div { display: flex; gap: 8px; }
@@ -137,7 +137,7 @@
 .stickers-preview img { display: block; max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; }
 .stickers-preview p { color: var(--color-muted); font-size: 12px; text-align: center; padding: 16px; }
 .stickers-preview-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 8px; }
-.stickers-preview-actions small { flex-basis: 100%; font-size: 11px; color: var(--color-muted); line-height: 1.65; }
+.stickers-preview-actions small { flex-basis: 100%; font-size: 12px; color: var(--color-muted); line-height: 1.65; }
 
 .stickers-dropzone {
   position: relative;
@@ -159,12 +159,12 @@
 .stickers-file-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 .stickers-dropzone-icon { color: var(--color-primary); }
 .stickers-dropzone strong { color: var(--color-ink); font-size: 13px; overflow-wrap: anywhere; }
-.stickers-dropzone small { font-size: 11px; color: var(--color-muted); }
+.stickers-dropzone small { font-size: 12px; color: var(--color-muted); }
 
 .stickers-edit-form { margin-top: 20px; }
 .stickers-field { display: grid; gap: 7px; margin-bottom: 18px; min-width: 0; }
-.stickers-field small { font-size: 11px; color: var(--color-muted); line-height: 1.65; overflow-wrap: anywhere; }
-.stickers-metadata { color: var(--color-muted); font-size: 11px; margin-bottom: 16px; font-variant-numeric: tabular-nums; }
+.stickers-field small { font-size: 12px; color: var(--color-muted); line-height: 1.65; overflow-wrap: anywhere; }
+.stickers-metadata { color: var(--color-muted); font-size: 12px; margin-bottom: 16px; font-variant-numeric: tabular-nums; }
 .stickers-dirty { color: var(--color-warning-ink); font-size: 12px; font-weight: 500; }
 .stickers-delete { border-top: 1px solid var(--color-line); padding-top: 14px; margin-top: 20px; }
 .stickers-delete > button { color: var(--color-danger-ink); }

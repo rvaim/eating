@@ -23,9 +23,9 @@
   width: auto;
   min-width: 0;
   min-height: 34px;
-  padding: 4px 10px;
+  padding: 4px 12px;
   border: 1px solid var(--color-nav-border);
-  border-radius: var(--radius);
+  border-radius: 999px;
   background: var(--color-nav-pill);
   color: var(--color-nav-ink);
   font-size: 12px;
@@ -39,8 +39,8 @@
   color: var(--color-nav-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-  padding: 4px 8px;
-  border-radius: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
   background: var(--color-nav-pill);
   border: 1px solid var(--color-nav-border);
 }

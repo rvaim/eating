@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { ButtonHTMLAttributes, Ref } from 'react'
 import { useI18n } from './i18n.js'
 import './action-button.css'
@@ -11,14 +11,18 @@ export interface ActionButtonProps extends ButtonHTMLAttributes<HTMLButtonElemen
   readonly ref?: Ref<HTMLButtonElement>
 }
 
-/** Keeps native disabled behavior while making its explanation pointer and keyboard accessible. */
+/** Keeps native disabled behavior while making its explanation pointer, touch and keyboard accessible. */
 export function ActionButton({ reason: suppliedReason, reasonCode, disabled = false, ref, ...props }: ActionButtonProps) {
   const { t } = useI18n('common')
   const reason = suppliedReason || (reasonCode ? t(`actionReason.${reasonCode}`) : undefined)
   const generatedId = useId(), buttonId = props.id ?? `eating-action-${generatedId}`, hintId = `${buttonId}-reason`
   const trigger = useRef<HTMLSpanElement | null>(null), tooltip = useRef<HTMLSpanElement | null>(null)
-  const [hovered, setHovered] = useState(false), [focused, setFocused] = useState(false), [dismissed, setDismissed] = useState(false)
-  const explained = disabled && Boolean(reason), open = explained && (hovered || focused) && !dismissed
+  const lastPointer = useRef<string>('')
+  const [hovered, setHovered] = useState(false), [focused, setFocused] = useState(false), [pinned, setPinned] = useState(false), [dismissed, setDismissed] = useState(false)
+  const explained = disabled && Boolean(reason), open = explained && (hovered || focused || pinned) && !dismissed
+  useEffect(() => {
+    if (!explained) { setHovered(false); setFocused(false); setPinned(false); setDismissed(false) }
+  }, [explained])
   useLayoutEffect(() => {
     const target = trigger.current, bubble = tooltip.current
     if (!open || !target || !bubble) return
@@ -29,20 +33,42 @@ export function ActionButton({ reason: suppliedReason, reasonCode, disabled = fa
       bubble.style.top = `${box.bottom + gap + hint.height <= innerHeight - gap ? box.bottom + gap : Math.max(gap, box.top - hint.height - gap)}px`
     }
     position()
-    const dismiss = (event: KeyboardEvent) => { if (event.key === 'Escape') setDismissed(true) }
+    const dismissKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { setDismissed(true); setPinned(false) } }
+    const dismissOutside = (event: PointerEvent) => {
+      const node = event.target as Node | null
+      if (node && (target.contains(node) || bubble.contains(node))) return
+      setPinned(false); setHovered(false); setFocused(false)
+    }
     window.addEventListener('resize', position)
     window.addEventListener('scroll', position, true)
-    window.addEventListener('keydown', dismiss)
-    return () => { window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); window.removeEventListener('keydown', dismiss); if (bubble.matches(':popover-open')) bubble.hidePopover() }
+    window.addEventListener('keydown', dismissKey)
+    window.addEventListener('pointerdown', dismissOutside, true)
+    return () => {
+      window.removeEventListener('resize', position)
+      window.removeEventListener('scroll', position, true)
+      window.removeEventListener('keydown', dismissKey)
+      window.removeEventListener('pointerdown', dismissOutside, true)
+      if (bubble.matches(':popover-open')) bubble.hidePopover()
+    }
   }, [open, reason])
   const button = <button {...props} ref={ref} id={buttonId} disabled={disabled} aria-describedby={[props['aria-describedby'], explained ? hintId : null].filter(Boolean).join(' ') || undefined} />
   if (!explained) return button
-  return <span ref={trigger} className={explained ? 'eating-action-hint' : 'eating-action'} role={explained ? 'group' : undefined} tabIndex={explained ? 0 : undefined} aria-labelledby={explained ? buttonId : undefined} aria-describedby={explained ? hintId : undefined}
-    onMouseEnter={() => { if (explained) { setHovered(true); setDismissed(false) } }} onMouseLeave={() => setHovered(false)}
-    onFocus={() => { if (explained) { setFocused(true); setDismissed(false) } }} onBlur={() => setFocused(false)}
-    onKeyDown={event => { if (explained && event.key === 'Escape') { event.preventDefault(); setDismissed(true) }; if (explained && (event.key === 'Enter' || event.key === ' ')) event.preventDefault() }}
-    onClick={event => { if (explained) { event.preventDefault(); trigger.current?.focus(); setDismissed(false) } }}>
+  return <span ref={trigger} className="eating-action-hint" role="group" tabIndex={0} aria-labelledby={buttonId} aria-describedby={hintId}
+    onPointerDown={event => { lastPointer.current = event.pointerType; if (event.pointerType === 'touch') setHovered(false) }}
+    onMouseEnter={() => { if (lastPointer.current !== 'touch') { setHovered(true); setDismissed(false) } }}
+    onMouseLeave={() => { if (lastPointer.current !== 'touch') setHovered(false) }}
+    onFocus={() => { if (lastPointer.current !== 'touch') { setFocused(true); setDismissed(false) } }}
+    onBlur={() => { setFocused(false); setPinned(false) }}
+    onKeyDown={event => {
+      if (event.key === 'Escape') { event.preventDefault(); setDismissed(true); setPinned(false) }
+      if (event.key === 'Enter' || event.key === ' ') event.preventDefault()
+    }}
+    onClick={event => {
+      event.preventDefault()
+      if (lastPointer.current === 'touch') { setPinned(current => !current); setDismissed(false) }
+      else { trigger.current?.focus(); setPinned(true); setDismissed(false) }
+    }}>
     {button}
-    {explained && <span ref={tooltip} id={hintId} className="eating-action-tooltip" role="tooltip" popover="manual">{reason}</span>}
+    <span ref={tooltip} id={hintId} className="eating-action-tooltip" role="tooltip" popover="manual">{reason}</span>
   </span>
 }

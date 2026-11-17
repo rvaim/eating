@@ -1,14 +1,14 @@
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { BackendPlugin, BackendPluginEntry, CapabilityInvocationScope, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { args, hash, SpeechConfig, text } from './backend/config'
-import { synthesize } from './backend/provider'
+import { synthesize, testSpeechConnection } from './backend/provider'
 import { SpeechStore } from './backend/store'
 import { speechTools } from './backend/tools'
 import type { SpeechJob } from './types'
 
 const asJson = (value: unknown) => value as JsonObject
 export class SpeechPlugin implements BackendPlugin {
-  readonly id = 'text-to-speech'; readonly kind = 'capability' as const; readonly name = '语音合成'; readonly version = '0.2.1'
+  readonly id = 'text-to-speech'; readonly kind = 'capability' as const; readonly name = '语音合成'; readonly version = '0.3.0'
   readonly configurationChangesTools = true
   get tools() { return speechTools(this.configuration.snapshot().provider.protocol === 'openai-realtime') }
   get capabilities() { return this.tools.map(tool => ({ id: tool.name, name: tool.title, description: tool.description, support: 'supported' as const, toolName: tool.name })) }
@@ -19,6 +19,7 @@ export class SpeechPlugin implements BackendPlugin {
   private closed = false
   private lastError: string | null = null
   private active: { id: string; abort: AbortController; done: Promise<void>; finish: () => void } | null = null
+  private readonly probes = new Set<AbortController>()
   readonly audio = { readTool: 'speech_get', getAsset: async (assetId: string) => { this.assertReady(); return this.store.getAsset(assetId) } }
   constructor(private readonly context: HostPluginContext) { this.configuration = new SpeechConfig(context.dataDirectory); this.store = new SpeechStore(context.dataDirectory) }
   private assertReady(): void { if (this.closed || !this.configuration.public(this.connected).ready) throw new PlatformError('SPEECH_NOT_READY', '请先保存语音服务配置并连接插件。', 409, 'not-sent') }
@@ -29,7 +30,7 @@ export class SpeechPlugin implements BackendPlugin {
     this.configuration.update(input); return this.getPublicConfiguration()
   }
   async connect(): Promise<void> { if (this.closed) throw new PlatformError('SPEECH_NOT_READY', '插件已停用。', 409, 'not-sent'); this.connected = true; this.assertReady() }
-  async disconnect(): Promise<void> { this.connected = false; if (this.active) { this.active.abort.abort(); await this.active.done } }
+  async disconnect(): Promise<void> { this.connected = false; for (const p of this.probes) p.abort(); this.probes.clear(); if (this.active) { this.active.abort.abort(); await this.active.done } }
   async dispose(): Promise<void> { this.closed = true; await this.disconnect() }
   invoke(name: string, input: unknown, requestId: string): Promise<JsonValue> { return this.execute(name, input, requestId) }
   invokeCapability(name: string, input: unknown, requestId: string, scope: CapabilityInvocationScope): Promise<JsonValue> { return this.execute(name, input, requestId, scope) }
@@ -95,6 +96,12 @@ export class SpeechPlugin implements BackendPlugin {
   }
   async manage(operation: string, input: unknown): Promise<JsonValue> {
     if (this.closed) this.assertReady()
+    if (operation === 'test-connection') {
+      args(input, [])
+      const controller = new AbortController(); this.probes.add(controller)
+      try { return await testSpeechConnection(this.configuration.snapshot(), controller.signal) }
+      finally { this.probes.delete(controller) }
+    }
     if (operation === 'jobs') return asJson(this.store.page(input))
     if (operation === 'job') return asJson(await this.job(input))
     if (operation === 'generate') {

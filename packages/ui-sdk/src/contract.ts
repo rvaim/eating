@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react'
 import type { LucideIcon } from 'lucide-react'
-import type { PluginKind } from '@eating/plugin-sdk'
+import type { ConnectionStatus, PluginKind } from '@eating/plugin-sdk'
 import type { PluginConfiguration, PluginManifest, SavedConfiguration } from '@eating/plugin-core'
 
 export interface ConfigurationValidation {
@@ -19,6 +19,12 @@ export interface PluginPanelProps {
   readonly onSave: (values: PluginConfiguration) => WorkspaceActionResult | Promise<WorkspaceActionResult>
   readonly onFeedback: (message: string) => void
   readonly onRefresh?: () => Promise<void>
+  readonly status?: ConnectionStatus
+  readonly connectionBusy?: boolean
+  readonly onToggleEnabled?: (next: boolean) => Promise<WorkspaceActionResult>
+  readonly onConnect?: () => Promise<WorkspaceActionResult>
+  readonly onDisconnect?: () => Promise<WorkspaceActionResult>
+  readonly onDirtyChange?: (dirty: boolean) => void
 }
 
 /** Shared frontend contribution for independently managed plugin kinds. */

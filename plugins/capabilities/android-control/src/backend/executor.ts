@@ -26,7 +26,7 @@ export async function startAndroidExecutor(configFile: string) {
       const chunks: Buffer[] = []; let bytes = 0
       for await (const chunk of request) { bytes += chunk.length; if (bytes > 1024 * 1024) throw failure('ANDROID_ARGUMENTS_INVALID'); chunks.push(Buffer.from(chunk)) }
       const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-      const mcp = new Server({ name: 'eating-android-executor', version: '0.1.0' }, { capabilities: { tools: {} } })
+      const mcp = new Server({ name: 'eating-android-executor', version: '0.2.0' }, { capabilities: { tools: {} } })
       mcp.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [...androidTools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })), ...internal.map(name => ({ name, inputSchema: { type: 'object', properties: {}, additionalProperties: false } }))] }))
       mcp.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
         try {
@@ -54,7 +54,7 @@ export async function startAndroidExecutor(configFile: string) {
 }
 
 export class RemoteExecutor {
-  private readonly client = new Client({ name: 'eating-android-control', version: '0.1.0' }, { capabilities: {} })
+  private readonly client = new Client({ name: 'eating-android-control', version: '0.2.0' }, { capabilities: {} })
   private readonly transport: StreamableHTTPClientTransport
   constructor(endpoint: string, token: string) { this.transport = new StreamableHTTPClientTransport(new URL(endpoint), { requestInit: { headers: { Authorization: 'Bearer ' + token } } }) }
   async connect(): Promise<void> {

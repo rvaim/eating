@@ -45,7 +45,14 @@ test.describe('用户文案与宿主/独立插件的共享语言', () => {
 
   test('主界面与迟加载QQ插件共享语言，切换保留未保存配置且不发起写操作', async ({ page }) => {
     const mutations: string[] = []
-    page.on('request', request => { if (request.method() === 'POST' && request.url().startsWith(url + '/api/')) mutations.push(request.url()) })
+    page.on('request', request => {
+      if (request.method() !== 'POST' || !request.url().startsWith(url + '/api/')) return
+      if (request.url() === `${url}/api/plugins/qq/manage`) {
+        const body = request.postDataJSON() as { operation?: string; input?: Record<string, unknown> }
+        if ((body.operation === 'media-transport' || body.operation === 'audio-input') && body.input && Object.keys(body.input).length === 0) return
+      }
+      mutations.push(request.url())
+    })
     await page.goto(`${url}/#overview`)
     await expect(page.getByRole('heading', { name: '概览', exact: true })).toBeVisible()
     await chooseLanguage(page, 'en-US')
@@ -117,19 +124,19 @@ test.describe('用户文案与宿主/独立插件的共享语言', () => {
 
   test('英语设置保留数值草稿，冲突提示不显示后台内部文案', async ({ page }) => {
     await page.goto(`${url}/#settings/delivery`)
-    const delay = page.getByLabel('合并等待时间', { exact: true })
+    const delay = page.getByLabel('聚合窗口', { exact: true })
     await expect(delay).toBeVisible()
-    await delay.fill('321')
+    await delay.fill('123')
     await chooseLanguage(page, 'en-US')
-    await expect(page.getByLabel('Grouping delay', { exact: true })).toHaveValue('321')
+    await expect(page.getByLabel('Aggregation window', { exact: true })).toHaveValue('123')
     await page.route('**/api/settings', route => route.request().method() === 'POST'
       ? route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { code: 'DELIVERY_SETTINGS_CONFLICT', message: '后台开发说明不应成为用户主文案', outcome: 'failed' } }) }) : route.continue())
     await page.getByRole('button', { name: 'Save settings', exact: true }).click()
     await expect(page.locator('.settings-notice-error')).toContainText(/changed elsewhere/i)
     await expect(page.getByText('后台开发说明不应成为用户主文案', { exact: false })).toHaveCount(0)
-    await expect(page.getByLabel('Grouping delay', { exact: true })).toHaveValue('321')
+    await expect(page.getByLabel('Aggregation window', { exact: true })).toHaveValue('123')
     await chooseLanguage(page, 'zh-CN')
-    await expect(page.getByLabel('合并等待时间', { exact: true })).toHaveValue('321')
+    await expect(page.getByLabel('聚合窗口', { exact: true })).toHaveValue('123')
     await expect(page.locator('.settings-notice-error')).toContainText('其他位置')
   })
 

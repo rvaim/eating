@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
-import { MessageCircle } from 'lucide-react'
-import type { CommunicationPlugin } from '@eating/ui-sdk'
-import type { hostRequest } from '@eating/ui-sdk'
+import { MessageCircle, Volume2 } from 'lucide-react'
+import type { CapabilityPlugin, CommunicationPlugin, hostRequest } from '@eating/ui-sdk'
 import { PlatformWorkspace } from './workspace'
 
 const plugin: CommunicationPlugin = { id: 'qq', name: 'QQ', description: '平台', version: '0.2.0', apiVersion: 4,
   kind: 'communication', order: 1, icon: MessageCircle, brandColor: '#3876b6', defaultRegistered: true,
   initialValues: {}, validate: () => ({ valid: true, errors: {} }), summary: () => 'QQ', Panel: () => null }
+const speechPlugin: CapabilityPlugin = { id: 'text-to-speech', name: '语音合成', description: '能力', version: '0.3.0', apiVersion: 4,
+  kind: 'capability', order: 2, icon: Volume2, brandColor: '#4e7c6a', defaultRegistered: true,
+  initialValues: {}, validate: () => ({ valid: true, errors: {} }), summary: () => 'TTS', Panel: () => null }
 const disconnected = { state: 'disconnected', accountId: null, accountName: null, lastError: null, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 }
 
 function serverState(ids = ['qq']) {
@@ -31,6 +33,22 @@ describe('正式 Host 工作区', () => {
     expect(workspace.getSnapshot().configurations.qq?.values.endpoint).toBe('ws://127.0.0.1:3001')
   })
 
+  it('准确识别无 endpoint 字段的能力插件已配置状态，不误把未配置默认值认作就绪', async () => {
+    const { request } = requester({
+      protocolVersion: 1,
+      registeredIds: ['qq', 'text-to-speech'],
+      plugins: [
+        { id: 'qq', configuration: { displayName: '', endpoint: '' }, status: { ...disconnected, state: 'unconfigured' } },
+        { id: 'text-to-speech', configuration: { revision: 1, apiKeyConfigured: true, ready: false }, status: disconnected },
+      ],
+      harness: { state: 'not-attached', pending: 0 },
+    })
+    const workspace = new PlatformWorkspace([plugin, speechPlugin], request)
+    await workspace.refresh()
+    expect(workspace.getSnapshot().configurations.qq).toBeUndefined()
+    expect(workspace.getSnapshot().configurations['text-to-speech']?.values.apiKeyConfigured).toBe(true)
+  })
+
   it('Host 故障显示错误并保留最近一次真实快照，不伪造新状态', async () => {
     const { request, mock } = requester(serverState())
     const workspace = new PlatformWorkspace([plugin], request)
@@ -53,14 +71,19 @@ describe('正式 Host 工作区', () => {
     expect(workspace.getSnapshot().plugins).toHaveLength(1)
   })
 
-  it('真实停用成功后按 Host 目录撤销面板，而非先乐观清空', async () => {
+  it('真实停用与连接切换成功后按 Host 目录更新，而非先乐观清空', async () => {
     const { request, mock } = requester(serverState())
     const workspace = new PlatformWorkspace([plugin], request)
     await workspace.refresh()
+    mock.mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce(serverState(['qq']))
+    expect((await workspace.connect('qq')).ok).toBe(true)
+    expect(mock).toHaveBeenCalledWith('/plugins/qq/connect', { method: 'POST', body: {} })
+
     mock.mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce(serverState([]))
-    expect((await workspace.remove('qq')).ok).toBe(true)
+    expect((await workspace.disable('qq')).ok).toBe(true)
     expect(mock).toHaveBeenCalledWith('/plugins/qq/disable', { method: 'POST', body: {} })
     expect(workspace.getSnapshot().plugins).toHaveLength(0)
+    expect(workspace.getSnapshot().busyPluginId).toBeNull()
   })
 
   it('保存失败不制造成功记录，不修改已加载的配置', async () => {

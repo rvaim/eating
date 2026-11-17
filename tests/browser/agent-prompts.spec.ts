@@ -13,6 +13,12 @@ import { installPluginPackage, uninstallPluginPackage } from '../../apps/host/sr
 const builtDirectory = fileURLToPath(new URL('../../dist/', import.meta.url))
 const pluginDirectory = fileURLToPath(new URL('../../plugins/communication/qq/dist/', import.meta.url))
 const editor = (page: Page) => page.locator('.template-editor [role="textbox"]')
+const fillEditor = async (page: Page, text: string) => {
+  await editor(page).click()
+  await editor(page).press('ControlOrMeta+a')
+  await editor(page).press('Backspace')
+  if (text) await editor(page).fill(text)
+}
 const navigation = (page: Page) => page.locator('.authoring-sidebar nav')
 const chooseLanguage = async (page: Page, locale: 'zh-CN' | 'en-US') => {
   await page.getByRole('combobox', { name: /^(界面语言|Display language)$/ }).selectOption(locale)
@@ -110,14 +116,14 @@ test.describe('动态代理提示词与已保存组合', () => {
     const selected = agents[0]!
     await choose(page, selected)
     const body = 'Owner overlay kept across plugin removal {{主人}}'
-    await editor(page).fill(body)
+    await fillEditor(page, body)
     await save(page)
     await post(page, `/plugins/${selected.pluginId}/disable`, {})
     await page.reload()
     await expect(editor(page)).toHaveAttribute('aria-readonly', 'false')
     await expect(page.locator('#main-content')).toContainText('可以编辑提示词')
     await expect(page.getByRole('button', { name: '查看已保存的组合', exact: true })).toBeDisabled()
-    await editor(page).fill(body + ' disabled edit')
+    await fillEditor(page, body + ' disabled edit')
     await save(page)
     await host!.close()
     host = undefined
@@ -143,7 +149,7 @@ test.describe('动态代理提示词与已保存组合', () => {
       if (request.method() !== 'POST') return
       if (request.url() === `${url}/api/plugins/qq/manage`) {
         const body = request.postDataJSON() as { operation?: string; input?: Record<string, unknown> }
-        if (body.operation === 'media-transport' && body.input && Object.keys(body.input).length === 0) return
+        if ((body.operation === 'media-transport' || body.operation === 'audio-input') && body.input && Object.keys(body.input).length === 0) return
       }
       mutations.push(request.url())
     })
@@ -188,7 +194,7 @@ test.describe('动态代理提示词与已保存组合', () => {
     current = await snapshot(page)
     const main = current.prompts.find(doc => doc.id === 'main')!
     const draft = 'UNSAVED_MAIN_DRAFT {{主人}}'
-    await editor(page).fill(draft)
+    await fillEditor(page, draft)
     await post(page, '/prompts/main', { expectedRevision: main.revision, body: 'OTHER_SAVED_MAIN' })
     const conflicting = page.waitForResponse(response => response.request().method() === 'POST' && response.url() === `${url}/api/prompts/main`)
     await page.getByRole('button', { name: '保存提示词', exact: true }).click()
@@ -208,7 +214,7 @@ test.describe('动态代理提示词与已保存组合', () => {
     await page.getByRole('button', { name: '重新读取提示词', exact: true }).click()
     await page.getByRole('button', { name: '放弃修改并重新读取', exact: true }).click()
     await expect(editor(page)).toHaveText('OTHER_SAVED_MAIN')
-    await editor(page).fill('OWNER_SAVED_MAIN')
+    await fillEditor(page, 'OWNER_SAVED_MAIN')
     await save(page)
     expect((await savedPreview(page)).systemPrompt).toContain('OWNER_SAVED_MAIN')
     const role = (await snapshot(page)).prompts.find(doc => getPromptTemplateScope(doc.id) === 'agent')!
@@ -237,7 +243,7 @@ test.describe('动态代理提示词与已保存组合', () => {
       else await choose(page, document)
       await expect(page).toHaveURL(`${url}/#prompts/${encodeURIComponent(document.id)}`)
       await expectDocument(page, document)
-      await editor(page).fill('')
+      await fillEditor(page, '')
       await expect(editor(page)).toHaveText('')
       await editor(page).pressSequentially('{{')
       const list = page.getByRole('listbox', { name: '可用变量', exact: true })
@@ -260,7 +266,7 @@ test.describe('动态代理提示词与已保存组合', () => {
     await page.goto(`${url}/#prompts/common`)
     await expect(editor(page)).toBeVisible()
     await expandPlatform(page, 'qq')
-    await editor(page).fill('Language draft {{主人}} {{管理员}}')
+    await fillEditor(page, 'Language draft {{主人}} {{管理员}}')
     const mutations: string[] = []
     page.on('request', request => { if (request.method() === 'POST') mutations.push(request.url()) })
     const sidebar = page.locator('.authoring-sidebar')
@@ -282,7 +288,7 @@ test.describe('动态代理提示词与已保存组合', () => {
       await expect(navigation(page).getByRole('button', { name: document.localizedTitles!['en-US'], exact: true })).toHaveCount(1)
     }
     await page.setViewportSize({ width: 390, height: 844 })
-    await editor(page).fill('Long mobile author content '.repeat(250) + '{{主人}}')
+    await fillEditor(page, 'Long mobile author content '.repeat(250) + '{{主人}}')
     await editor(page).press('ControlOrMeta+End')
     await page.getByRole('button', { name: 'Insert variable', exact: true }).click()
     const list = page.getByRole('listbox', { name: 'Available variables', exact: true })

@@ -20,12 +20,22 @@ export interface WorkspaceSnapshot {
   readonly statuses: Readonly<Record<string, ConnectionStatus>>
   readonly harness: JsonObject
   readonly ready: boolean
+  readonly busyPluginId?: string | null
 }
 
-type WorkspaceOperation = 'enable' | 'disable' | 'configuration'
+type WorkspaceOperation = 'enable' | 'disable' | 'connect' | 'disconnect' | 'configuration'
 
 function actionFailure(key: string, error?: unknown): WorkspaceActionResult {
   return { ok: false, get error() { return getErrorMessage(error, translate('app', key)) } }
+}
+
+function hasConfiguration(plugin: HostWorkspaceResponse['plugins'][number]): boolean {
+  const cfg = plugin.configuration
+  if (cfg.ready === true || cfg.apiKeyConfigured === true || cfg.tokenConfigured === true) return true
+  if (typeof cfg.revision === 'number' && cfg.revision > 0) return true
+  if (typeof cfg.endpoint === 'string' && cfg.endpoint && plugin.kind !== 'capability') return true
+  if (typeof cfg.baseUrl === 'string' && cfg.baseUrl && cfg.apiKeyConfigured !== false) return true
+  return plugin.status.state === 'connected'
 }
 
 export class PlatformWorkspace {
@@ -35,7 +45,7 @@ export class PlatformWorkspace {
   private mutation = false
   private storageFailure: { readonly error: unknown } | null = null
   private snapshot: WorkspaceSnapshot = Object.freeze({ plugins: [], configurations: {}, activity: [], storageError: null,
-    unavailableIds: [], statuses: {}, harness: { state: 'not-attached', pending: 0 }, ready: false })
+    unavailableIds: [], statuses: {}, harness: { state: 'not-attached', pending: 0 }, ready: false, busyPluginId: null })
 
   constructor(catalog: readonly ManagedPlugin[], private readonly request: typeof hostRequest = hostRequest,
     private readonly loadCatalog?: (entries: readonly InstalledFrontendContribution[]) => Promise<readonly ManagedPlugin[]>) {
@@ -58,7 +68,7 @@ export class PlatformWorkspace {
       const statuses: Record<string, ConnectionStatus> = {}
       for (const plugin of response.plugins) {
         statuses[plugin.id] = plugin.status
-        if (typeof plugin.configuration.endpoint === 'string' && plugin.configuration.endpoint) {
+        if (hasConfiguration(plugin)) {
           const values: Record<string, string | boolean> = {}
           for (const [key, value] of Object.entries(plugin.configuration)) {
             if (typeof value === 'string' || typeof value === 'boolean') values[key] = value
@@ -78,8 +88,11 @@ export class PlatformWorkspace {
     }
   }
 
-  register(id: string): Promise<WorkspaceActionResult> { return this.change(id, 'enable') }
-  remove(id: string): Promise<WorkspaceActionResult> { return this.change(id, 'disable') }
+  enable(id: string): Promise<WorkspaceActionResult> { return this.change(id, 'enable') }
+  disable(id: string): Promise<WorkspaceActionResult> { return this.change(id, 'disable') }
+  toggleEnabled(id: string, next: boolean): Promise<WorkspaceActionResult> { return this.change(id, next ? 'enable' : 'disable') }
+  connect(id: string): Promise<WorkspaceActionResult> { return this.change(id, 'connect') }
+  disconnect(id: string): Promise<WorkspaceActionResult> { return this.change(id, 'disconnect') }
 
   async save(id: string, values: PluginConfiguration): Promise<WorkspaceActionResult> {
     return this.change(id, 'configuration', values)
@@ -89,16 +102,21 @@ export class PlatformWorkspace {
     if (this.mutation) return actionFailure('workspace.busyError')
     if (!this.catalog.some(plugin => plugin.id === id)) return actionFailure('workspace.missingError')
     this.mutation = true
+    this.publish({ ...this.snapshot, busyPluginId: id })
     try {
       await this.request(`/plugins/${encodeURIComponent(id)}/${operation}`, { method: 'POST', body })
       const plugin = this.catalog.find(entry => entry.id === id)!
       const entry: ActivityEntry = { id: createRequestId(), pluginId: id,
         get label() { return translate('app', `workspace.activity.${operation}`, { name: plugin.name }) }, at: new Date().toISOString() }
-      this.publish({ ...this.snapshot, activity: [entry, ...this.snapshot.activity].slice(0, 20) })
+      this.publish({ ...this.snapshot, activity: [entry, ...this.snapshot.activity].slice(0, 20), busyPluginId: null })
       await this.refresh()
       return { ok: true }
-    } catch (error) { return actionFailure(operation === 'configuration' ? 'workspace.saveError' : 'workspace.actionError', error) }
-    finally { this.mutation = false }
+    } catch (error) {
+      return actionFailure(operation === 'configuration' ? 'workspace.saveError' : 'workspace.actionError', error)
+    } finally {
+      this.mutation = false
+      if (this.snapshot.busyPluginId !== null) this.publish({ ...this.snapshot, busyPluginId: null })
+    }
   }
 
   private publish(snapshot: WorkspaceSnapshot): void {

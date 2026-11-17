@@ -2,6 +2,13 @@ export * from './api.js'
 export * from './request-id.js'
 export * from './i18n.js'
 export * from './action-button.js'
+export * from './switch.js'
+export * from './password-input.js'
+export * from './duration-input.js'
+export * from './structured-inputs.js'
+export * from './segmented-tabs.js'
+export * from './confirm-inline.js'
+export * from './lifecycle-bar.js'
 export type { ManagedPlugin, CommunicationPlugin, HarnessPlugin, CapabilityPlugin, ConfigurationValidation, PluginPanelProps, WorkspaceActionResult } from './contract.js'
 
 /** One shared React instance for independently built frontend contributions. */

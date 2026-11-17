@@ -21,6 +21,13 @@ type Operation = 'scan' | 'clear'
 interface Failure { readonly key: SessionHistoryTranslationKey; readonly code: string }
 interface Request { readonly controller: AbortController; readonly operation: Operation }
 
+function formatCountdown(remainingMs: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
 function describe(error: unknown, operation: Operation): Failure {
   const code = error instanceof HostApiError ? error.code : 'SESSION_HISTORY_REQUEST_FAILED'
   if ((operation === 'clear' && (!(error instanceof HostApiError) || error.outcome === 'unknown')) || ['SESSION_HISTORY_UNKNOWN', 'SESSION_HISTORY_REQUEST_UNKNOWN', 'SESSION_HISTORY_CLEAR_UNKNOWN'].includes(code)) return { key: 'error.unknown', code }
@@ -44,6 +51,7 @@ export function SessionHistorySettings({ active, enabled, runtimeActive, busy, a
   const [pending, setPending] = useState<Operation | null>(null)
   const [failure, setFailure] = useState<Failure | null>(null)
   const [deletedCount, setDeletedCount] = useState<number | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const alive = useRef(false)
   const generation = useRef(0)
   const request = useRef<Request | null>(null)
@@ -72,11 +80,13 @@ export function SessionHistorySettings({ active, enabled, runtimeActive, busy, a
   useEffect(() => { if (!active || !enabled || runtimeActive) cancel() }, [active, enabled, runtimeActive, cancel])
   useEffect(() => {
     if (!preview) return
-    const timer = window.setTimeout(() => {
+    setNowMs(Date.now())
+    const expiryTimer = window.setTimeout(() => {
       setPreview(null); setConfirming(false); setAcknowledged(false)
       setFailure({ key: 'error.stale', code: 'SESSION_HISTORY_PREVIEW_STALE' })
     }, Math.max(0, Date.parse(preview.expiresAt) - Date.now()))
-    return () => window.clearTimeout(timer)
+    const tick = window.setInterval(() => setNowMs(Date.now()), 1000)
+    return () => { window.clearTimeout(expiryTimer); window.clearInterval(tick) }
   }, [preview])
   useEffect(() => {
     if (confirming) cancelButton.current?.focus()
@@ -122,6 +132,7 @@ export function SessionHistorySettings({ active, enabled, runtimeActive, busy, a
   function cancelConfirmation() { setConfirming(false); setAcknowledged(false) }
   const disabled = !active || !enabled || runtimeActive || busy || pending !== null
   const disabledReason = !enabled ? t('reason.disabled') : !active ? t('reason.hidden') : runtimeActive ? t('reason.running') : t('reason.busy')
+  const remainingMs = preview ? Math.max(0, Date.parse(preview.expiresAt) - nowMs) : 0
 
   return <section className="dsh-history-settings" aria-labelledby={`${prefix}-title`} aria-busy={pending !== null} onKeyDown={event => { if (event.key === 'Escape' && confirming) { event.preventDefault(); cancelConfirmation() } }}>
     <div className="dsh-history-heading"><h3 id={`${prefix}-title`}>{t('title')}</h3><p className="dsh-history-description">{t('description')}</p></div>
@@ -136,7 +147,10 @@ export function SessionHistorySettings({ active, enabled, runtimeActive, busy, a
       <h4 id={`${prefix}-preview-title`}>{t('previewTitle')}</h4>
       <dl className="dsh-history-counts">{(['rootCount', 'childCount', 'sessionCount'] as const).map(key => <div key={key}><dt>{t(key)}</dt><dd>{formatNumber(preview[key])}</dd></div>)}</dl>
       {preview.sessionCount === 0 ? <p className="dsh-result" role="status"><Check size={15} aria-hidden="true" />{t('empty')}</p> : <>
-        <p className="dsh-history-expiry">{t('expires', { time: formatDateTime(preview.expiresAt, { hour: '2-digit', minute: '2-digit', second: '2-digit' }) })}</p>
+        <div className="dsh-history-expiry-row">
+          <p className="dsh-history-expiry">{t('expires', { time: formatDateTime(preview.expiresAt, { hour: '2-digit', minute: '2-digit', second: '2-digit' }) })}</p>
+          <span className={`dsh-history-countdown${remainingMs <= 30_000 ? ' is-urgent' : ''}`} role="timer">{t('countdown', { remaining: formatCountdown(remainingMs) })}</span>
+        </div>
         {!confirming && <div className="dsh-history-actions"><ActionButton ref={clearButton} type="button" className="button button-secondary dsh-history-clear" disabled={disabled} reason={disabledReason} onClick={() => { if (disabled || actionLock.current) return; setConfirming(true); setAcknowledged(false) }}><Trash2 size={15} aria-hidden="true" />{t('clear')}</ActionButton></div>}
         {confirming && <section className="dsh-history-confirm" aria-labelledby={`${prefix}-confirm-title`} aria-describedby={`${prefix}-warning`}>
           <h4 id={`${prefix}-confirm-title`}>{t('confirmTitle')}</h4><p id={`${prefix}-warning`}>{t('warning', { value: formatNumber(preview.sessionCount) })}</p>

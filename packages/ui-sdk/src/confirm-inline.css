@@ -1,0 +1,43 @@
+.eating-confirm { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px 16px; margin-top: 12px; padding: 14px 16px; border: 1px solid var(--color-line-strong); border-radius: 6px; background: var(--color-surface-quiet); }
+.eating-confirm.is-danger { border-color: var(--color-line-warm); background: var(--color-danger-surface); }
+.eating-confirm.is-warning { border-color: var(--color-line-alert); background: var(--color-warning-surface); }
+.eating-confirm.is-info { border-color: var(--color-line-info); background: var(--color-info-surface); }
+.eating-confirm-head { display: flex; align-items: flex-start; gap: 10px; flex: 1 1 260px; min-width: 0; }
+.eating-confirm-head > svg { margin-top: 2px; flex-shrink: 0; color: var(--color-ink-strong); }
+.eating-confirm.is-danger .eating-confirm-head > svg { color: var(--color-danger-ink); }
+.eating-confirm.is-warning .eating-confirm-head > svg { color: var(--color-warning-ink); }
+.eating-confirm.is-info .eating-confirm-head > svg { color: var(--color-info-ink); }
+.eating-confirm-copy { min-width: 0; }
+.eating-confirm-copy strong { display: block; font-size: 13px; font-weight: 600; color: var(--color-ink); }
+.eating-confirm-copy p { margin: 4px 0 0; font-size: 12px; color: var(--color-ink-soft); line-height: 1.55; overflow-wrap: anywhere; }
+.eating-confirm.is-danger .eating-confirm-copy p { color: var(--color-warm-ink); }
+.eating-confirm.is-warning .eating-confirm-copy p { color: var(--color-warning-ink); }
+.eating-confirm-details { margin: 6px 0 0; padding-left: 16px; font-size: 12px; color: var(--color-ink-soft); }
+.eating-confirm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.eating-confirm-actions .button { min-height: 36px; padding-block: 6px; }
+.eating-confirm-error { flex-basis: 100%; margin: 2px 0 0; font-size: 12px; color: var(--color-danger-ink); }
+
+.eating-save-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px; margin-top: 18px; padding: 12px 16px; border: 1px solid var(--color-line); border-radius: 6px; background: var(--color-surface); }
+.eating-save-bar.is-sticky { position: sticky; bottom: 0; z-index: 5; border-color: var(--color-line-alert); background: var(--color-surface-raised); box-shadow: 0 -4px 16px var(--color-shadow); }
+.eating-save-bar.is-conflict { border-color: var(--color-line-warm); background: var(--color-danger-surface); }
+.eating-save-bar-status { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--color-ink-soft); }
+.eating-save-bar.is-sticky .eating-save-bar-status { color: var(--color-warning-ink); font-weight: 550; }
+.eating-save-bar.is-conflict .eating-save-bar-status { color: var(--color-danger-ink); }
+.eating-save-bar-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-warning-ink); flex-shrink: 0; }
+.eating-save-bar-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+.eating-save-bar-feedback { flex-basis: 100%; margin: 0; font-size: 12px; color: var(--color-toast-ink); }
+.eating-save-bar-feedback.is-error { color: var(--color-danger-ink); }
+
+.eating-unknown-card { display: grid; gap: 10px; margin: 14px 0; padding: 14px 16px; border: 1px solid var(--color-line-alert); border-radius: 6px; background: var(--color-warning-surface); color: var(--color-warning-ink); }
+.eating-unknown-head { display: flex; align-items: flex-start; gap: 9px; }
+.eating-unknown-head > svg { margin-top: 2px; flex-shrink: 0; }
+.eating-unknown-head h4, .eating-unknown-head strong { margin: 0; font-size: 13px; font-weight: 600; color: var(--color-ink); }
+.eating-unknown-head p { margin: 4px 0 0; font-size: 12px; color: var(--color-warning-ink); line-height: 1.55; }
+.eating-unknown-id-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--color-ink-soft); }
+.eating-unknown-id-row code { padding: 2px 7px; border: 1px solid var(--color-line); border-radius: 4px; background: var(--color-surface); color: var(--color-ink); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; }
+.eating-unknown-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.eating-unknown-actions .button { min-height: 36px; padding-block: 6px; }
+@media (max-width: 600px) {
+  .eating-confirm-actions, .eating-save-bar-actions { width: 100%; justify-content: flex-end; }
+  .eating-confirm-actions .button, .eating-save-bar-actions .button, .eating-unknown-actions .button { min-height: 44px; }
+}

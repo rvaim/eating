@@ -8,7 +8,8 @@ import type { HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sd
 import { startSpeechFixture } from '../../../../../tests/fixtures/speech-provider'
 import type { SpeechFixtureMode } from '../../../../../tests/fixtures/speech-provider'
 import { SpeechPlugin } from '../server'
-import { hash, SpeechConfig } from './config'
+import { speechProbeUrl, testSpeechConnection } from './provider'
+import { SpeechConfig, hash } from './config'
 import { normalizeSpeechText, wav } from './audio'
 
 const cleanups: Array<() => unknown | Promise<unknown>> = []
@@ -107,5 +108,21 @@ describe('OpenAI cloud speech plugin', () => {
     writeFileSync(path, 'fixture'); truncateSync(path, 128 * 1024 * 1024)
     await expect(f.submit()).rejects.toMatchObject({ code: 'SPEECH_CAPACITY', outcome: 'not-sent' })
     expect(f.provider.connections()).toBe(0)
+  })
+  it('probes connectivity via non-billing /v1/models check and honors auth failures and aborts', async () => {
+    expect(speechProbeUrl('wss://api.openai.com/v1/realtime').href).toBe('https://api.openai.com/v1/models')
+    expect(speechProbeUrl('wss://api.deepseek.com/v1/tools/tts').href).toBe('https://api.deepseek.com/v1/models')
+    expect(speechProbeUrl('wss://proxy.example.com/custom/v1/realtime').href).toBe('https://proxy.example.com/custom/v1/models')
+    const f = await fixture()
+    const probed = await f.plugin.manage('test-connection', {}) as JsonObject
+    expect(probed).toMatchObject({ ok: true })
+    expect(typeof probed.latencyMs).toBe('number')
+    expect(f.provider.connections()).toBe(0)
+    expect(f.provider.requests).toHaveLength(0)
+    await expect(f.plugin.manage('test-connection', { extra: true })).rejects.toMatchObject({ code: 'SPEECH_INVALID_INPUT', outcome: 'not-sent' })
+    const abort = new AbortController(); abort.abort()
+    await expect(testSpeechConnection(new SpeechConfig(f.directory).snapshot(), abort.signal)).rejects.toMatchObject({ code: 'SPEECH_CANCELLED', outcome: 'not-sent' })
+    const authFail = await fixture('auth')
+    await expect(authFail.plugin.manage('test-connection', {})).rejects.toMatchObject({ code: 'SPEECH_AUTH_FAILED', outcome: 'not-sent' })
   })
 })

@@ -83,4 +83,50 @@ test.describe('面板页签与 DSH 原生能力布局', () => {
     await page.screenshot({ path: info.outputPath('dsh-settings-tabs-mobile.png') })
     await noOverflow(page)
   })
+
+  test('移动端触摸禁用 ActionButton 弹出提示不溢出且支持二次点击/点外/Escape 关闭', async ({ browser }) => {
+    const context = await browser.newContext({ hasTouch: true, viewport: { width: 390, height: 844 } })
+    const touchPage = await context.newPage()
+    const touchErrors: string[] = []
+    touchPage.on('pageerror', error => touchErrors.push(error.message))
+    try {
+      await touchPage.goto(url + '/#harness/dsh')
+      const openWebButton = touchPage.getByRole('button', { name: '打开 DSH Web', exact: true })
+      await expect(openWebButton).toBeDisabled()
+      const hint = touchPage.locator('.eating-action-hint').filter({ has: openWebButton })
+      await expect(hint).toBeVisible()
+      const tooltip = hint.locator('[role="tooltip"]')
+
+      // First tap opens tooltip popover inside viewport with zero overflow
+      await hint.tap()
+      await expect(tooltip).toBeVisible()
+      const tipBox = await box(tooltip)
+      expect(tipBox.x).toBeGreaterThanOrEqual(0)
+      expect(tipBox.y).toBeGreaterThanOrEqual(0)
+      expect(tipBox.x + tipBox.width).toBeLessThanOrEqual(390)
+      expect(tipBox.y + tipBox.height).toBeLessThanOrEqual(844)
+      await noOverflow(touchPage)
+
+      // Second tap toggles tooltip off
+      await hint.tap()
+      await expect(tooltip).toBeHidden()
+
+      // Tap to reopen, then tap outside tooltip & trigger to dismiss
+      await hint.tap()
+      await expect(tooltip).toBeVisible()
+      const outsideY = Math.min(820, Math.round(tipBox.y + tipBox.height + 24))
+      await touchPage.touchscreen.tap(24, outsideY)
+      await expect(tooltip).toBeHidden()
+
+      // Tap to reopen, then dismiss with Escape
+      await hint.tap()
+      await expect(tooltip).toBeVisible()
+      await touchPage.keyboard.press('Escape')
+      await expect(tooltip).toBeHidden()
+      expect(touchErrors).toEqual([])
+    } finally {
+      await context.close()
+    }
+  })
 })
+

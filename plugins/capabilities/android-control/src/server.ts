@@ -15,7 +15,7 @@ export { startAndroidExecutor } from './backend/executor'
 export class AndroidPlugin implements BackendPlugin {
   readonly id = 'android-control'
   readonly name = '玩手机'
-  readonly version = '0.1.0'
+  readonly version = '0.2.0'
   readonly kind = 'capability' as const
   readonly tools = androidTools
   readonly capabilities = this.tools.map(t => ({ id: t.name, name: t.title, description: t.description, support: 'supported' as const, toolName: t.name }))

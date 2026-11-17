@@ -10,13 +10,15 @@ function messageCount(snapshot: WorkspaceSnapshot, key: string): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
-export function Overview({ snapshot, onRobots, onRegister }: {
+export function Overview({ snapshot, onRobots, onRegister, onPlugin }: {
   readonly snapshot: WorkspaceSnapshot
   readonly onRobots: (id?: string) => void
   readonly onRegister: () => void
+  readonly onPlugin?: (id: string) => void
 }) {
   const { t, formatNumber } = useI18n('app')
   const communication = snapshot.plugins.filter(plugin => plugin.kind === 'communication')
+  const capabilities = snapshot.plugins.filter(plugin => plugin.kind === 'capability')
   const configured = communication.filter(plugin => Boolean(snapshot.configurations[plugin.id]))
   const connected = communication.filter(plugin => snapshot.statuses[plugin.id]?.state === 'connected')
   const harnessAttached = snapshot.harness.state === 'attached'
@@ -49,6 +51,38 @@ export function Overview({ snapshot, onRobots, onRegister }: {
           </button>
         })}
       </div>}
+    </section>
+    <section className="overview-capabilities" aria-labelledby="overview-capabilities-title">
+      <div className="section-title-row">
+        <div><h2 id="overview-capabilities-title">{t('overview.capabilitiesTitle')}</h2></div>
+        <a className="text-button" href="#plugins">{t('overview.managePlugins')}<ArrowRight size={14} /></a>
+      </div>
+      {snapshot.ready && capabilities.length === 0 ? <p className="subtle">{t('overview.capabilitiesEmpty')}</p> : (
+        <div className="platform-list">
+          {capabilities.map(plugin => {
+            const Icon = plugin.icon
+            const saved = snapshot.configurations[plugin.id]
+            const state = snapshot.statuses[plugin.id]?.state ?? 'unconfigured'
+            const statusText = snapshot.storageError ? t('status.stale') : t(`status.capability.${state}`)
+            return (
+              <button
+                key={plugin.id}
+                className="platform-list-row"
+                aria-label={t('overview.openPanel', { name: plugin.name })}
+                onClick={() => {
+                  if (onPlugin) onPlugin(plugin.id)
+                  else window.location.hash = `plugins/${encodeURIComponent(plugin.id)}`
+                }}>
+                <span className="platform-symbol" style={{ color: plugin.brandColor }}><Icon size={23} /></span>
+                <span className="platform-row-copy"><strong>{plugin.name}</strong><small>{saved ? plugin.summary(saved.values) : plugin.description}</small></span>
+                <span className="row-configuration">{saved ? <><Check size={14} />{t('overview.configurationSaved')}</> : t('overview.configurationNeeded')}</span>
+                <span className={`status-badge status-${snapshot.storageError ? 'warning' : state}`}>{statusText}</span>
+                <ArrowRight className="row-arrow" size={17} />
+              </button>
+            )
+          })}
+        </div>
+      )}
     </section>
     <div className="overview-bottom">
       <section className="activity-section" aria-labelledby="activity-title"><div className="section-title-row"><h2 id="activity-title">{t('overview.messagesTitle')}</h2><a className="text-button" href="#harness">{t('overview.manageAI')}<ArrowRight size={14} /></a></div>

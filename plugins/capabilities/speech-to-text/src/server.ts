@@ -3,12 +3,12 @@ import type { BackendPlugin, BackendPluginEntry, CapabilityInvocationScope, Host
 import { args, hash, RecognitionConfig } from './backend/config'
 import { RecognitionStore } from './backend/store'
 import { recognitionTools } from './backend/tools'
-import { transcribe } from './backend/provider'
+import { testRecognitionConnection, transcribe } from './backend/provider'
 import type { RecognitionJob, RecognitionSource } from './types'
 const asJson = (v: unknown) => v as JsonObject
 const failure = (code: string, outcome: 'not-sent' | 'unknown' = 'not-sent') => new PlatformError(code, ({ ASR_NOT_FOUND: '识别任务不存在。', ASR_REQUEST_CONFLICT: '相同请求标识不能用于不同音频、来源或配置。', ASR_CAPACITY: '识别任务已满，请由主人删除旧任务。', ASR_BUSY: '已有运行中的识别任务，请先查询。', ASR_ACCESS_DENIED: '当前会话没有此语音识别结果的访问权限。' } as Record<string, string>)[code] ?? '语音识别操作未完成，请核对配置与原任务。', code === 'ASR_NOT_FOUND' ? 404 : code === 'ASR_ACCESS_DENIED' ? 403 : 409, outcome)
 export class RecognitionPlugin implements BackendPlugin {
-  readonly id = 'speech-to-text'; readonly kind = 'capability' as const; readonly name = '语音识别'; readonly version = '0.1.0'
+  readonly id = 'speech-to-text'; readonly kind = 'capability' as const; readonly name = '语音识别'; readonly version = '0.2.0'
   readonly configurationChangesTools = true
   readonly managementInputMaxBytes = Math.ceil(MAX_INPUT_AUDIO_BYTES / 3) * 4 + 4096
   readonly tools = recognitionTools
@@ -17,13 +17,14 @@ export class RecognitionPlugin implements BackendPlugin {
   private readonly configuration: RecognitionConfig; private readonly store: RecognitionStore
   private connected = true; private closed = false; private lastError: string | null = null
   private active: { id: string; abort: AbortController; done: Promise<void>; finish: () => void } | null = null
+  private readonly probes = new Set<AbortController>()
   constructor(private readonly context: HostPluginContext) { this.configuration = new RecognitionConfig(context.dataDirectory); this.store = new RecognitionStore(context.dataDirectory) }
   private assertReady() { if (this.closed || !this.configuration.public(this.connected).ready) throw failure('ASR_NOT_READY') }
   getPublicConfiguration(): JsonObject { return asJson(this.configuration.public(this.connected && !this.closed)) }
   getStatus() { return { state: this.closed || !this.connected ? 'disconnected' as const : this.configuration.snapshot().apiKey ? 'connected' as const : 'unconfigured' as const, accountId: null, accountName: null, lastError: this.lastError, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 } }
   async updateConfiguration(input: unknown): Promise<JsonObject> { if (this.closed || this.active) throw failure('ASR_BUSY'); this.configuration.update(input); return this.getPublicConfiguration() }
   async connect() { if (this.closed) throw failure('ASR_NOT_READY'); this.connected = true; this.assertReady() }
-  async disconnect() { this.connected = false; if (this.active) { this.active.abort.abort(); await this.active.done } }
+  async disconnect() { this.connected = false; for (const p of this.probes) p.abort(); this.probes.clear(); if (this.active) { this.active.abort.abort(); await this.active.done } }
   async dispose() { this.closed = true; await this.disconnect() }
   private owner(scope?: CapabilityInvocationScope): string | null {
     const s = scope?.source
@@ -88,6 +89,12 @@ export class RecognitionPlugin implements BackendPlugin {
   async manage(operation: string, input: unknown): Promise<JsonValue> {
     try {
       if (this.closed) throw failure('ASR_NOT_READY')
+      if (operation === 'test-connection') {
+        args(input, [])
+        const controller = new AbortController(); this.probes.add(controller)
+        try { return await testRecognitionConnection(this.configuration.snapshot(), controller.signal) }
+        finally { this.probes.delete(controller) }
+      }
       if (operation === 'jobs') return asJson(this.store.page(input))
       if (operation === 'job') return asJson(await this.job(input))
       if (operation === 'delete') { const v = args(input, ['jobId', 'confirmed'], ['jobId', 'confirmed']); if (v.confirmed !== true) throw failure('ASR_CONFIRMATION_REQUIRED'); this.store.remove(v.jobId); return { deleted: true } }

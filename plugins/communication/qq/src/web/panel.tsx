@@ -1,11 +1,25 @@
 import type { OneBotConfig } from '../config'
 import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
-import type { FormEvent, KeyboardEvent, MutableRefObject, ReactNode } from 'react'
-import { AlertCircle, Check, Copy, RefreshCw } from 'lucide-react'
-import { ActionButton, createRequestId, formatNumber, getErrorMessage, HostApiError, hostRequest, translate, useI18n } from '@eating/ui-sdk'
+import type { FormEvent, MutableRefObject, ReactNode } from 'react'
+import { AlertCircle, ArrowDown, ArrowUp, Check, Copy, RefreshCw, Trash2, X } from 'lucide-react'
+import {
+  ActionButton,
+  createRequestId,
+  DurationInput,
+  formatNumber,
+  FormSaveBar,
+  getErrorMessage,
+  HostApiError,
+  hostRequest,
+  PasswordInput,
+  SegmentedTabs,
+  Switch,
+  translate,
+  useI18n,
+} from '@eating/ui-sdk'
 import type { PluginPanelProps } from '@eating/ui-sdk'
 import { enumValue, parseToolArguments, schemaFields } from './tool-fields'
-import type { FieldFormat } from './tool-fields'
+import type { FieldFormat, SchemaField } from './tool-fields'
 import type { AgentTypeDefinition, ConnectionStatus, JsonObject, JsonValue, PluginCapability, PluginToolDefinition } from '@eating/plugin-sdk'
 import './panel.css'
 import { capabilityDescription, capabilityTitle, parameterDescription, parameterLabel, parameterOptionLabel, toolDescription, toolSchemaHelp, toolTitle } from './i18n'
@@ -20,7 +34,15 @@ import { isJsonObject } from '@eating/plugin-sdk'
 
 type Tab = 'configuration' | 'agent-policy' | 'tests' | 'mcp' | 'live-logs'
 type ConnectionConfiguration = Pick<OneBotConfig, 'displayName' | 'endpoint' | 'accessToken' | 'autoConnect' | 'forwardToHarness' | 'receiveGroups' | 'timeoutMs'>
-type PublicConfiguration = Omit<ConnectionConfiguration, 'accessToken'> & { tokenConfigured: boolean; instanceId: string; defaultInstanceId: string; configurationPath: string; dataDirectory: string; updatedAt: string | null; instances: { instanceId: string; label: string; createdAt: string }[] }
+type PublicConfiguration = Omit<ConnectionConfiguration, 'accessToken'> & {
+  tokenConfigured: boolean
+  instanceId: string
+  defaultInstanceId: string
+  configurationPath: string
+  dataDirectory: string
+  updatedAt: string | null
+  instances: { instanceId: string; label: string; createdAt: string }[]
+}
 type Draft = Omit<ConnectionConfiguration, 'timeoutMs'> & { timeoutMs: string; clearAccessToken: boolean }
 type FieldErrors = Record<string, QQMessage | undefined>
 interface QQWorkspacePlugin {
@@ -51,12 +73,19 @@ interface Execution {
   pending: boolean
 }
 interface McpRegistration { transport: 'streamable-http'; url: string; headers: { Authorization: string }; note: string }
-type QQPanelProps = PluginPanelProps & { onRefresh?: () => Promise<void> }
+interface ToolPrefill {
+  serial: number
+  toolName: string
+  values: Record<string, string>
+  formats?: Record<string, FieldFormat>
+}
+type MessageInputMode = 'text' | 'visual' | 'json'
+type VisualSegment =
+  | { type: 'text'; data: { text: string } }
+  | { type: 'image'; data: { file: string } }
+  | { type: 'at'; data: { qq: string } }
 
-const tabs: { id: Tab; title: QQTranslationKey }[] = [
-  { id: 'configuration', title: 'tabs.configuration' }, { id: 'agent-policy', title: 'tabs.agentPolicy' }, { id: 'live-logs', title: 'tabs.logs' }, { id: 'tests', title: 'tabs.tests' },
-  { id: 'mcp', title: 'tabs.mcp' },
-]
+type QQPanelProps = PluginPanelProps
 
 function failureFrom(error: unknown, fallbackKey: QQTranslationKey = 'error.operationFailed'): Failure {
   if (error instanceof HostApiError) return { message: error.message, code: error.code, outcome: error.outcome, fallbackKey }
@@ -92,15 +121,52 @@ export function publicConfiguration(value: unknown): PublicConfiguration {
     return { instanceId: entry.instanceId, label: entry.label, createdAt: entry.createdAt }
   })
   if (new Set(instances.map(instance => instance.instanceId)).size !== instances.length || !instances.some(instance => instance.instanceId === value.instanceId) || !instances.some(instance => instance.instanceId === value.defaultInstanceId)) return invalid()
-  return { displayName: value.displayName, endpoint: value.endpoint, autoConnect: value.autoConnect, forwardToHarness: value.forwardToHarness, receiveGroups: value.receiveGroups, timeoutMs: value.timeoutMs, tokenConfigured: value.tokenConfigured,
-    instanceId: value.instanceId, defaultInstanceId: value.defaultInstanceId, configurationPath: value.configurationPath, dataDirectory: value.dataDirectory, updatedAt: value.updatedAt, instances }
+  return {
+    displayName: value.displayName, endpoint: value.endpoint, autoConnect: value.autoConnect, forwardToHarness: value.forwardToHarness, receiveGroups: value.receiveGroups, timeoutMs: value.timeoutMs, tokenConfigured: value.tokenConfigured,
+    instanceId: value.instanceId, defaultInstanceId: value.defaultInstanceId, configurationPath: value.configurationPath, dataDirectory: value.dataDirectory, updatedAt: value.updatedAt, instances,
+  }
 }
 function makeDraft(value: PublicConfiguration): Draft {
-  return { displayName: value.displayName, endpoint: value.endpoint, accessToken: '', clearAccessToken: false,
-    autoConnect: value.autoConnect, forwardToHarness: value.forwardToHarness, receiveGroups: value.receiveGroups, timeoutMs: String(value.timeoutMs) }
+  return {
+    displayName: value.displayName, endpoint: value.endpoint, accessToken: '', clearAccessToken: false,
+    autoConnect: value.autoConnect, forwardToHarness: value.forwardToHarness, receiveGroups: value.receiveGroups, timeoutMs: String(value.timeoutMs),
+  }
+}
+function isConnectionDraftDirty(draft: Draft, saved: PublicConfiguration): boolean {
+  return draft.displayName !== saved.displayName
+    || draft.endpoint !== saved.endpoint
+    || draft.accessToken !== ''
+    || draft.clearAccessToken !== false
+    || draft.autoConnect !== saved.autoConnect
+    || draft.forwardToHarness !== saved.forwardToHarness
+    || draft.receiveGroups !== saved.receiveGroups
+    || draft.timeoutMs !== String(saved.timeoutMs)
 }
 function disconnectedStatus(): ConnectionStatus {
   return { state: 'disconnected', accountId: null, accountName: null, lastError: null, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 }
+}
+
+function parseVisualSegments(raw: string): VisualSegment[] | null {
+  const trimmed = raw.trim()
+  if (!trimmed) return []
+  let parsed: unknown
+  try { parsed = JSON.parse(trimmed) }
+  catch { return null }
+  if (!Array.isArray(parsed)) return null
+  const result: VisualSegment[] = []
+  for (const item of parsed) {
+    if (!isJsonObject(item) || typeof item.type !== 'string' || !isJsonObject(item.data)) return null
+    if (item.type === 'text' && Object.keys(item.data).every(k => k === 'text') && typeof item.data.text === 'string') {
+      result.push({ type: 'text', data: { text: item.data.text } })
+    } else if (item.type === 'image' && Object.keys(item.data).every(k => k === 'file') && typeof item.data.file === 'string') {
+      result.push({ type: 'image', data: { file: item.data.file } })
+    } else if (item.type === 'at' && Object.keys(item.data).every(k => k === 'qq') && typeof item.data.qq === 'string') {
+      result.push({ type: 'at', data: { qq: item.data.qq } })
+    } else {
+      return null
+    }
+  }
+  return result
 }
 
 function ErrorNotice({ failure }: { failure: Failure | null }) {
@@ -128,17 +194,24 @@ function FormField({ id, label, hint, error, children }: { id: string; label: st
   </div>
 }
 
-export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
+export function QQPanel({ onFeedback, onRefresh, onDirtyChange }: QQPanelProps) {
   const { t, formatNumber, formatDateTime } = useI18n('qq')
+  const { t: commonT } = useI18n('common')
   const prefix = useId()
   const [tab, setTab] = useState<Tab>('configuration')
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [plugin, setPlugin] = useState<QQWorkspacePlugin | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [saved, setSaved] = useState<PublicConfiguration | null>(null)
+  const draftRef = useRef<Draft | null>(null)
+  const savedRef = useRef<PublicConfiguration | null>(null)
   const [configurationReadFailure, setConfigurationReadFailure] = useState<Failure | null>(null)
   const [dirty, setDirty] = useState(false)
   const dirtyRef = useRef(false)
+  const [policyDirty, setPolicyDirty] = useState(false)
+  const [mediaTransportDirty, setMediaTransportDirty] = useState(false)
+  const [audioInputDirty, setAudioInputDirty] = useState(false)
+  const [tokenHiddenCleared, setTokenHiddenCleared] = useState(false)
   const [loading, setLoading] = useState(true)
   const [refreshFailure, setRefreshFailure] = useState<Failure | null>(null)
   const [configurationFailure, setConfigurationFailure] = useState<Failure | null>(null)
@@ -147,15 +220,22 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
   const [mutation, setMutation] = useState<'save' | 'connect' | 'disconnect' | null>(null)
   const [testing, setTesting] = useState(false)
   const [policySaving, setPolicySaving] = useState(false)
+  const [mediaSaving, setMediaSaving] = useState(false)
+  const [audioSaving, setAudioSaving] = useState(false)
+  const [toolPrefill, setToolPrefill] = useState<ToolPrefill | null>(null)
   const actionLock = useRef(false)
   const mounted = useRef(false)
   const workspaceGeneration = useRef(0)
   const workspaceController = useRef<AbortController | null>(null)
   const mutationController = useRef<AbortController | null>(null)
-  const feedbackRef = useRef(onFeedback)
-  const refreshRef = useRef(onRefresh)
-  feedbackRef.current = onFeedback
-  refreshRef.current = onRefresh
+  const callbacks = useRef({ onFeedback, onRefresh, onDirtyChange })
+  callbacks.current = { onFeedback, onRefresh, onDirtyChange }
+
+  const anyDirty = dirty || policyDirty || mediaTransportDirty || audioInputDirty
+  useEffect(() => {
+    callbacks.current.onDirtyChange?.(anyDirty)
+  }, [anyDirty])
+  useEffect(() => () => { callbacks.current.onDirtyChange?.(false) }, [])
 
   const refreshWorkspace = useCallback(async () => {
     if (actionLock.current) return
@@ -174,15 +254,24 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
       try {
         const configuration = publicConfiguration(qq.configuration)
         agentPolicyDraft(qq.configuration, qq.agentTypes)
+        savedRef.current = configuration
         setSaved(configuration); setConfigurationReadFailure(null)
-        if (!dirtyRef.current) setDraft(makeDraft(configuration))
+        if (!dirtyRef.current) {
+          const fresh = makeDraft(configuration)
+          draftRef.current = fresh
+          setDraft(fresh)
+        }
       } catch (error) {
+        savedRef.current = null
         setSaved(null); setConfigurationReadFailure(failureFrom(error))
       }
     } catch (error) {
       if (mounted.current && !controller.signal.aborted && generation === workspaceGeneration.current) {
         setRefreshFailure(failureFrom(error, 'error.refreshFailed'))
-        if (error instanceof HostApiError && error.code === 'INVALID_HOST_RESPONSE') { setSaved(null); setConfigurationReadFailure(failureFrom(error)) }
+        if (error instanceof HostApiError && error.code === 'INVALID_HOST_RESPONSE') {
+          savedRef.current = null
+          setSaved(null); setConfigurationReadFailure(failureFrom(error))
+        }
       }
     } finally {
       if (mounted.current && generation === workspaceGeneration.current) setLoading(false)
@@ -194,19 +283,57 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
     mounted.current = true
     void refreshWorkspace()
     const interval = window.setInterval(() => { if (!document.hidden && !workspaceController.current) void refreshWorkspace() }, 2000)
+    // Strategy 2a: wipe unsaved typed accessToken on document.hidden while preserving all non-secret drafts
+    function onVisibilityChange() {
+      if (!document.hidden) return
+      const current = draftRef.current
+      if (!current || !current.accessToken) return
+      const next: Draft = { ...current, accessToken: '' }
+      draftRef.current = next
+      setDraft(next)
+      setTokenHiddenCleared(true)
+      const stillDirty = savedRef.current ? isConnectionDraftDirty(next, savedRef.current) : false
+      dirtyRef.current = stillDirty
+      setDirty(stillDirty)
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
       mounted.current = false
       ++workspaceGeneration.current
       window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       workspaceController.current?.abort()
       mutationController.current?.abort()
     }
   }, [refreshWorkspace])
 
   function updateDraft<K extends keyof Draft>(key: K, value: Draft[K]) {
-    setDraft(current => current ? { ...current, [key]: value } : current)
-    dirtyRef.current = true; setDirty(true)
-    setFieldErrors(current => ({ ...current, [key]: undefined }))
+    if (key === 'accessToken' && typeof value === 'string' && value.length > 0) setTokenHiddenCleared(false)
+    const current = draftRef.current
+    if (!current) return
+    const next: Draft = {
+      ...current,
+      [key]: value,
+      ...(key === 'clearAccessToken' && value === true ? { accessToken: '' } : {}),
+    }
+    draftRef.current = next
+    setDraft(next)
+    const isDirty = savedRef.current ? isConnectionDraftDirty(next, savedRef.current) : true
+    dirtyRef.current = isDirty
+    setDirty(isDirty)
+    setFieldErrors(prev => ({ ...prev, [key]: undefined }))
+  }
+  function discardConnectionDraft() {
+    if (!savedRef.current) return
+    const fresh = makeDraft(savedRef.current)
+    draftRef.current = fresh
+    dirtyRef.current = false
+    setDraft(fresh)
+    setDirty(false)
+    setFieldErrors({})
+    setConfigurationFailure(null)
+    setConfigurationResult(null)
+    setTokenHiddenCleared(false)
   }
   function validateDraft(value: Draft): FieldErrors {
     const errors: FieldErrors = {}
@@ -237,34 +364,43 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
     mutationController.current = controller
     try {
       if (operation === 'save') {
-        const response = await hostRequest<JsonObject>('/plugins/qq/configuration', { method: 'POST', signal: controller.signal, body: {
-          displayName: draft.displayName.trim(), endpoint: draft.endpoint.trim(),
-          ...(draft.accessToken && !draft.clearAccessToken ? { accessToken: draft.accessToken } : {}),
-          ...(draft.clearAccessToken ? { clearAccessToken: true } : {}),
-          autoConnect: draft.autoConnect, forwardToHarness: draft.forwardToHarness, receiveGroups: draft.receiveGroups, timeoutMs: Number(draft.timeoutMs),
-        } })
+        const response = await hostRequest<JsonObject>('/plugins/qq/configuration', {
+          method: 'POST', signal: controller.signal, body: {
+            displayName: draft.displayName.trim(), endpoint: draft.endpoint.trim(),
+            ...(draft.accessToken && !draft.clearAccessToken ? { accessToken: draft.accessToken } : {}),
+            ...(draft.clearAccessToken ? { clearAccessToken: true } : {}),
+            autoConnect: draft.autoConnect, forwardToHarness: draft.forwardToHarness, receiveGroups: draft.receiveGroups, timeoutMs: Number(draft.timeoutMs),
+          },
+        })
         if (!mounted.current || controller.signal.aborted) return
         const configuration = publicConfiguration(response)
         agentPolicyDraft(response, plugin.agentTypes)
+        savedRef.current = configuration
+        const fresh = makeDraft(configuration)
+        draftRef.current = fresh
+        dirtyRef.current = false
         setSaved(configuration); setConfigurationReadFailure(null)
-        setDraft(makeDraft(configuration)); dirtyRef.current = false; setDirty(false)
+        setDraft(fresh); setDirty(false); setTokenHiddenCleared(false)
         setPlugin(current => current ? { ...current, configuration: response, status: disconnectedStatus() } : current)
         setConfigurationResult({ key: 'config.saved' })
-        feedbackRef.current(t('config.savedFeedback'))
+        callbacks.current.onFeedback(t('config.savedFeedback'))
       } else {
         const status = await hostRequest<ConnectionStatus>(`/plugins/qq/${operation}`, { method: 'POST', body: {}, signal: controller.signal })
         if (!mounted.current || controller.signal.aborted) return
         setPlugin(current => current ? { ...current, status } : current)
         const result = operation === 'connect' ? { key: 'config.connectedResult' as const, state: status.state } : { key: 'config.disconnectedResult' as const }
-        setConfigurationResult(result); feedbackRef.current(t(result.key, { state: t(`connection.${status.state}`) }))
+        setConfigurationResult(result); callbacks.current.onFeedback(t(result.key, { state: t(`connection.${status.state}`) }))
       }
       setConfigurationFailure(null)
-      try { await refreshRef.current?.() }
+      try { await callbacks.current.onRefresh?.() }
       catch (error) { if (mounted.current) setConfigurationFailure({ ...failureFrom(error), messageKey: 'error.refreshAfterAction' }) }
     } catch (error) {
       if (mounted.current && !controller.signal.aborted) {
         setConfigurationFailure(failureFrom(error))
-        if (error instanceof HostApiError && ['INVALID_HOST_RESPONSE', 'CONFIGURATION_CORRUPTED'].includes(error.code)) { setSaved(null); setConfigurationReadFailure(failureFrom(error)) }
+        if (error instanceof HostApiError && ['INVALID_HOST_RESPONSE', 'CONFIGURATION_CORRUPTED'].includes(error.code)) {
+          savedRef.current = null
+          setSaved(null); setConfigurationReadFailure(failureFrom(error))
+        }
       }
     } finally {
       if (mutationController.current === controller) mutationController.current = null
@@ -272,20 +408,11 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
       if (mounted.current) { setMutation(null); void refreshWorkspace() }
     }
   }
-  function switchTab(event: KeyboardEvent<HTMLButtonElement>, index: number) {
-    let next: number | undefined
-    if (event.key === 'ArrowRight') next = (index + 1) % tabs.length
-    if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length
-    if (event.key === 'Home') next = 0
-    if (event.key === 'End') next = tabs.length - 1
-    const selected = next === undefined ? undefined : tabs[next]
-    if (!selected) return
-    event.preventDefault(); setTab(selected.id)
-    document.getElementById(`${prefix}-tab-${selected.id}`)?.focus()
-  }
-  const busy = mutation !== null || testing || policySaving
+
+  const busy = mutation !== null || testing || policySaving || mediaSaving || audioSaving
   const id = (name: string) => `${prefix}-${name}`
   const describedBy = (name: string) => `${id(name)}-hint${fieldErrors[name] ? ` ${id(name)}-error` : ''}`
+  const connectionTabDirty = dirty || mediaTransportDirty || audioInputDirty
 
   return <div className="qq-panel">
     <div className="qq-connection-strip"><div><strong>{plugin ? t(`connection.${plugin.status.state}`) : t('connection.loading')}</strong>
@@ -295,7 +422,21 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
     {plugin?.status.lastError && <ErrorNotice failure={{ message: plugin.status.lastError, code: 'ONEBOT_CONNECTION_ERROR', outcome: 'failed', messageKey: 'error.connection' }} />}
     <ErrorNotice failure={refreshFailure} />
     {refreshFailure && !plugin && <ActionButton reasonCode="busy" className="button button-secondary" type="button" onClick={() => void refreshWorkspace()}>{t('action.reload')}</ActionButton>}
-    <div className="qq-tabs workspace-rail" role="tablist" aria-label={t('tabs.label')}>{tabs.map((item, index) => <ActionButton reasonCode="busy" key={item.id} type="button" role="tab" id={`${prefix}-tab-${item.id}`} aria-selected={tab === item.id} aria-controls={`${prefix}-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1} onClick={() => setTab(item.id)} onKeyDown={event => switchTab(event, index)}>{t(item.title)}</ActionButton>)}</div>
+    <SegmentedTabs
+      idPrefix={prefix}
+      className="qq-tabs"
+      sticky
+      ariaLabel={t('tabs.label')}
+      activeTab={tab}
+      onSelect={setTab}
+      tabs={[
+        { id: 'configuration', label: t('tabs.configuration'), dirty: connectionTabDirty },
+        { id: 'agent-policy', label: t('tabs.agentPolicy'), dirty: policyDirty },
+        { id: 'live-logs', label: t('tabs.logs') },
+        { id: 'tests', label: t('tabs.tests') },
+        { id: 'mcp', label: t('tabs.mcp') },
+      ]}
+    />
     {loading && <p className="qq-loading" role="status">{t('loading.configuration')}</p>}
     {plugin?.status.state === 'unconfigured' && !configurationReadFailure && <p className="qq-help" role="status">{t('config.prerequisite')}</p>}
     <section hidden={tab !== 'configuration'} role="tabpanel" id={`${prefix}-panel-configuration`} aria-labelledby={`${prefix}-tab-configuration`}>
@@ -308,38 +449,103 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
           <FormField id={id('endpoint')} label={t('config.endpoint.label')} hint={t('config.endpoint.help')} error={messageLabel(fieldErrors.endpoint)}>
             <input id={id('endpoint')} type="url" aria-describedby={describedBy('endpoint')} aria-invalid={Boolean(fieldErrors.endpoint)} value={draft.endpoint} placeholder={t('config.endpoint.placeholder')} autoComplete="off" spellCheck={false} onChange={event => updateDraft('endpoint', event.target.value)} />
           </FormField>
-          <FormField id={id('accessToken')} label={t('config.token.label')} hint={t(saved?.tokenConfigured ? 'config.token.configuredHelp' : 'config.token.emptyHelp')} error={messageLabel(fieldErrors.accessToken)}>
-            <input id={id('accessToken')} type="password" aria-describedby={describedBy('accessToken')} aria-invalid={Boolean(fieldErrors.accessToken)} value={draft.accessToken} disabled={draft.clearAccessToken} maxLength={4096} autoComplete="new-password" spellCheck={false} onChange={event => updateDraft('accessToken', event.target.value)} />
+          <FormField id={id('accessToken')} label={t('config.token.label')} hint={t(saved.tokenConfigured ? 'config.token.configuredHelp' : 'config.token.emptyHelp')} error={messageLabel(fieldErrors.accessToken)}>
+            <PasswordInput
+              id={id('accessToken')}
+              value={draft.accessToken}
+              saved={saved.tokenConfigured}
+              clear={draft.clearAccessToken}
+              hiddenClearedNotice={tokenHiddenCleared}
+              maxLength={4096}
+              clearLabel={t('config.token.clear')}
+              aria-describedby={describedBy('accessToken')}
+              aria-invalid={Boolean(fieldErrors.accessToken)}
+              onChange={next => updateDraft('accessToken', next)}
+              onClearChange={nextClear => updateDraft('clearAccessToken', nextClear)}
+            />
           </FormField>
-          <label className="check-field qq-compact-check"><input type="checkbox" checked={draft.clearAccessToken} onChange={event => updateDraft('clearAccessToken', event.target.checked)} /><span><strong>{t('config.token.clear')}</strong><small>{t('config.token.clearHelp')}</small></span></label>
           <FormField id={id('timeoutMs')} label={t('config.timeout.label')} hint={t('config.timeout.help', { min: formatNumber(1000), max: formatNumber(60000) })} error={messageLabel(fieldErrors.timeoutMs)}>
-            <input id={id('timeoutMs')} type="number" min={1000} max={60000} step={1} inputMode="numeric" aria-describedby={describedBy('timeoutMs')} aria-invalid={Boolean(fieldErrors.timeoutMs)} value={draft.timeoutMs} onChange={event => updateDraft('timeoutMs', event.target.value)} />
+            <DurationInput
+              id={id('timeoutMs')}
+              valueMs={draft.timeoutMs}
+              presetsSeconds={[3, 10, 30, 60]}
+              aria-describedby={describedBy('timeoutMs')}
+              aria-invalid={Boolean(fieldErrors.timeoutMs)}
+              onChangeMs={next => updateDraft('timeoutMs', next)}
+            />
           </FormField>
-          <label className="check-field"><input type="checkbox" checked={draft.autoConnect} onChange={event => updateDraft('autoConnect', event.target.checked)} /><span><strong>{t('config.autoConnect.label')}</strong><small>{t('config.autoConnect.help')}</small></span></label>
-          <label className="check-field"><input type="checkbox" checked={draft.forwardToHarness} onChange={event => updateDraft('forwardToHarness', event.target.checked)} /><span><strong>{t('config.forward.label')}</strong><small>{t('config.forward.help')}</small></span></label>
-          <label className="check-field"><input type="checkbox" checked={draft.receiveGroups} onChange={event => updateDraft('receiveGroups', event.target.checked)} /><span><strong>{t('config.groups.label')}</strong><small>{t('config.groups.help')}</small></span></label>
+          <div className="qq-switch-row">
+            <Switch
+              id={id('autoConnect')}
+              checked={draft.autoConnect}
+              label={t('config.autoConnect.label')}
+              description={t('config.autoConnect.help')}
+              onChange={next => updateDraft('autoConnect', next)}
+            />
+          </div>
+          <div className="qq-switch-row">
+            <Switch
+              id={id('forwardToHarness')}
+              checked={draft.forwardToHarness}
+              label={t('config.forward.label')}
+              description={t('config.forward.help')}
+              onChange={next => updateDraft('forwardToHarness', next)}
+            />
+          </div>
+          <div className="qq-switch-row">
+            <Switch
+              id={id('receiveGroups')}
+              checked={draft.receiveGroups}
+              label={t('config.groups.label')}
+              description={t('config.groups.help')}
+              onChange={next => updateDraft('receiveGroups', next)}
+            />
+          </div>
         </fieldset>
-        <div className="form-actions"><ActionButton reasonCode="busy" type="submit" className="button button-primary" disabled={busy}>{t(mutation === 'save' ? 'action.saving' : 'action.save')}</ActionButton>
-          <ActionButton reasonCode={busy ? 'busy' : dirty ? 'draft' : plugin?.enabled !== true ? 'enable' : !saved?.endpoint ? 'configure' : 'running'} type="button" className="button button-secondary" disabled={busy || dirty || !saved?.endpoint || plugin?.enabled !== true || ['connected', 'connecting', 'reconnecting'].includes(plugin.status.state)} onClick={() => void mutate('connect')}>{t(mutation === 'connect' ? 'action.connecting' : 'action.connect')}</ActionButton>
-          <ActionButton reasonCode={busy ? 'busy' : 'stopped'} type="button" className="button button-secondary" disabled={busy || !plugin || !['connected', 'connecting', 'reconnecting', 'error'].includes(plugin.status.state)} onClick={() => void mutate('disconnect')}>{t(mutation === 'disconnect' ? 'action.disconnecting' : 'action.disconnect')}</ActionButton>
-          <span className="save-indicator">{t(dirty ? 'config.dirty' : saved?.endpoint ? 'config.savedDraft' : 'config.needsEndpoint')}</span>
-        </div>
+        <FormSaveBar
+          alwaysVisible
+          dirty={dirty}
+          saving={mutation === 'save'}
+          disabled={busy}
+          disabledReason={commonT('actionReason.busy')}
+          saveLabel={t('action.save')}
+          savingLabel={t('action.saving')}
+          discardLabel={commonT('saveBar.discard')}
+          notice={t(dirty ? 'config.dirty' : saved.endpoint ? 'config.savedDraft' : 'config.needsEndpoint')}
+          onSave={() => void mutate('save')}
+          onDiscard={discardConnectionDraft}
+          extraActions={<>
+            <ActionButton reasonCode={busy ? 'busy' : dirty ? 'draft' : plugin?.enabled !== true ? 'enable' : !saved.endpoint ? 'configure' : 'running'} type="button" className="button button-secondary" disabled={busy || dirty || !saved.endpoint || plugin?.enabled !== true || ['connected', 'connecting', 'reconnecting'].includes(plugin.status.state)} onClick={() => void mutate('connect')}>{t(mutation === 'connect' ? 'action.connecting' : 'action.connect')}</ActionButton>
+            <ActionButton reasonCode={busy ? 'busy' : 'stopped'} type="button" className="button button-secondary" disabled={busy || !plugin || !['connected', 'connecting', 'reconnecting', 'error'].includes(plugin.status.state)} onClick={() => void mutate('disconnect')}>{t(mutation === 'disconnect' ? 'action.disconnecting' : 'action.disconnect')}</ActionButton>
+          </>}
+        />
       </form>}
       {configurationResult && <p className="qq-operation-result" role="status"><Check size={15} aria-hidden="true" />{t(configurationResult.key, { state: configurationResult.state ? t(`connection.${configurationResult.state}`) : undefined })}</p>}
       <ErrorNotice failure={configurationReadFailure} />
       <ErrorNotice failure={configurationFailure} />
-      {plugin && <MediaTransportFields active={tab === 'configuration'} enabled={plugin.enabled} busy={busy} connectionKey={`${saved?.endpoint ?? ''}:${plugin.status.accountId ?? ''}`} actionLock={actionLock} onBusy={setPolicySaving} onFeedback={onFeedback} />}
-      {plugin && <AudioInputFields active={tab === 'configuration'} enabled={plugin.enabled} busy={busy} connectionKey={`${saved?.endpoint ?? ''}:${plugin.status.accountId ?? ''}`} actionLock={actionLock} onBusy={setPolicySaving} onFeedback={onFeedback} />}
+      {plugin && <MediaTransportFields active={tab === 'configuration'} enabled={plugin.enabled} busy={mutation !== null || testing || policySaving || audioSaving} connectionKey={`${saved?.endpoint ?? ''}:${plugin.status.accountId ?? ''}`} actionLock={actionLock} onBusy={setMediaSaving} onDirtyChange={setMediaTransportDirty} onFeedback={onFeedback} />}
+      {plugin && <AudioInputFields active={tab === 'configuration'} enabled={plugin.enabled} busy={mutation !== null || testing || policySaving || mediaSaving} connectionKey={`${saved?.endpoint ?? ''}:${plugin.status.accountId ?? ''}`} actionLock={actionLock} onBusy={setAudioSaving} onDirtyChange={setAudioInputDirty} onFeedback={onFeedback} />}
       {saved && (saved.instanceId || saved.configurationPath || saved.dataDirectory) && <details className="qq-location-details"><summary>{t('config.locations')}</summary><dl className="qq-paths">{saved.instanceId && <div><dt>{t('config.instance')}</dt><dd>{saved.instanceId}</dd></div>}{saved.configurationPath && <div><dt>{t('config.configurationPath')}</dt><dd>{saved.configurationPath}</dd></div>}{saved.dataDirectory && <div><dt>{t('config.dataDirectory')}</dt><dd>{saved.dataDirectory}</dd></div>}</dl></details>}
     </section>
     <section hidden={tab !== 'agent-policy'} role="tabpanel" id={`${prefix}-panel-agent-policy`} aria-labelledby={`${prefix}-tab-agent-policy`}>
-      {plugin && <AgentPolicyFields configuration={plugin.configuration} agentTypes={plugin.agentTypes} tools={plugin.tools} enabled={plugin.enabled} configurationFailure={configurationReadFailure} busy={busy} actionLock={actionLock} onBusy={value => { if (!mounted.current) return; setPolicySaving(value); if (value) { ++workspaceGeneration.current; workspaceController.current?.abort() } else { void refreshWorkspace(); void refreshRef.current?.().catch(error => setRefreshFailure(failureFrom(error, 'error.refreshAfterAction'))) } }} onSaved={configuration => { try { const current = publicConfiguration(configuration); setSaved(current); setConfigurationReadFailure(null); setPlugin(previous => previous ? { ...previous, configuration } : previous) } catch (error) { setSaved(null); setConfigurationReadFailure(failureFrom(error)) } }} onFeedback={onFeedback} />}
+      {plugin && <AgentPolicyFields configuration={plugin.configuration} agentTypes={plugin.agentTypes} tools={plugin.tools} enabled={plugin.enabled} configurationFailure={configurationReadFailure} busy={busy} actionLock={actionLock} onDirtyChange={setPolicyDirty} onBusy={value => { if (!mounted.current) return; setPolicySaving(value); if (value) { ++workspaceGeneration.current; workspaceController.current?.abort() } else { void refreshWorkspace(); void callbacks.current.onRefresh?.().catch(error => setRefreshFailure(failureFrom(error, 'error.refreshAfterAction'))) } }} onSaved={configuration => { try { const current = publicConfiguration(configuration); savedRef.current = current; setSaved(current); setConfigurationReadFailure(null); setPlugin(previous => previous ? { ...previous, configuration } : previous) } catch (error) { savedRef.current = null; setSaved(null); setConfigurationReadFailure(failureFrom(error)) } }} onFeedback={onFeedback} />}
     </section>
     <section hidden={tab !== 'live-logs'} role="tabpanel" id={`${prefix}-panel-live-logs`} aria-labelledby={`${prefix}-tab-live-logs`}>
-      <LiveLogs active={tab === 'live-logs'} enabled={plugin?.enabled === true} available={plugin?.logsSupported === true} />
+      <LiveLogs
+        active={tab === 'live-logs'}
+        enabled={plugin?.enabled === true}
+        available={plugin?.logsSupported === true}
+        tools={plugin?.tools ?? []}
+        actionLock={actionLock}
+        onFeedback={onFeedback}
+        onOpenFullTests={prefill => {
+          setToolPrefill(current => ({ serial: (current?.serial ?? 0) + 1, toolName: prefill.toolName, values: prefill.values }))
+          setTab('tests')
+        }}
+      />
     </section>
     <section hidden={tab !== 'tests'} role="tabpanel" id={`${prefix}-panel-tests`} aria-labelledby={`${prefix}-tab-tests`}>
-      <ToolTester active={tab === 'tests'} tools={plugin?.tools ?? []} enabled={plugin?.enabled === true} mutationBusy={mutation !== null || policySaving} actionLock={actionLock} onBusy={setTesting} onFeedback={onFeedback} />
+      <ToolTester active={tab === 'tests'} tools={plugin?.tools ?? []} enabled={plugin?.enabled === true} mutationBusy={mutation !== null || policySaving || mediaSaving || audioSaving} actionLock={actionLock} prefill={toolPrefill} onBusy={setTesting} onFeedback={onFeedback} />
     </section>
     <section hidden={tab !== 'mcp'} role="tabpanel" id={`${prefix}-panel-mcp`} aria-labelledby={`${prefix}-tab-mcp`}>
       <McpCapabilities active={tab === 'mcp'} enabled={plugin?.enabled === true} capabilities={plugin?.capabilities ?? []} harness={workspace?.harness} onFeedback={onFeedback} />
@@ -349,8 +555,126 @@ export function QQPanel({ onFeedback, onRefresh }: QQPanelProps) {
 
 const historyLimit = 10
 
-function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, onFeedback }: {
-  active: boolean; tools: PluginToolDefinition[]; enabled: boolean; mutationBusy: boolean; actionLock: MutableRefObject<boolean>; onBusy: (value: boolean) => void; onFeedback: (message: string) => void
+function VisualSegmentEditor({
+  rawValue,
+  disabled,
+  onChangeRaw,
+  onSwitchToRaw,
+}: {
+  rawValue: string
+  disabled: boolean
+  onChangeRaw: (nextRaw: string) => void
+  onSwitchToRaw: () => void
+}) {
+  const { t } = useI18n('qq')
+  const segments = parseVisualSegments(rawValue)
+  if (!segments) {
+    return (
+      <div className="qq-segment-unsupported" role="note">
+        <p>{t('tests.segmentBuilder.unsupportedJson')}</p>
+        <button type="button" className="button button-secondary" disabled={disabled} onClick={onSwitchToRaw}>
+          {t('tests.segmentBuilder.switchToRaw')}
+        </button>
+      </div>
+    )
+  }
+
+  function updateSegments(next: VisualSegment[]) {
+    onChangeRaw(JSON.stringify(next, null, 2))
+  }
+  function moveSegment(index: number, delta: -1 | 1) {
+    const target = index + delta
+    if (target < 0 || target >= segments!.length) return
+    const next = [...segments!]
+    const [removed] = next.splice(index, 1)
+    if (removed) next.splice(target, 0, removed)
+    updateSegments(next)
+  }
+
+  return (
+    <div className="qq-segment-builder">
+      <div className="qq-segment-toolbar">
+        <button type="button" className="button button-secondary" disabled={disabled} onClick={() => updateSegments([...segments, { type: 'text', data: { text: '' } }])}>
+          {t('tests.segmentBuilder.addText')}
+        </button>
+        <button type="button" className="button button-secondary" disabled={disabled} onClick={() => updateSegments([...segments, { type: 'image', data: { file: '' } }])}>
+          {t('tests.segmentBuilder.addImage')}
+        </button>
+        <button type="button" className="button button-secondary" disabled={disabled} onClick={() => updateSegments([...segments, { type: 'at', data: { qq: '' } }])}>
+          {t('tests.segmentBuilder.addAt')}
+        </button>
+      </div>
+      {segments.length === 0 ? (
+        <p className="qq-help">{t('tests.segmentBuilder.empty')}</p>
+      ) : (
+        <ol className="qq-segment-list">
+          {segments.map((segment, index) => (
+            <li key={index} className="qq-segment-row">
+              <div className="qq-segment-row-head">
+                <span className="qq-segment-badge">#{index + 1} · {segment.type}</span>
+                <div className="qq-segment-row-controls">
+                  <button type="button" className="icon-button" disabled={disabled || index === 0} aria-label={t('tests.segmentBuilder.moveUp')} title={t('tests.segmentBuilder.moveUp')} onClick={() => moveSegment(index, -1)}>
+                    <ArrowUp size={14} aria-hidden="true" />
+                  </button>
+                  <button type="button" className="icon-button" disabled={disabled || index === segments.length - 1} aria-label={t('tests.segmentBuilder.moveDown')} title={t('tests.segmentBuilder.moveDown')} onClick={() => moveSegment(index, 1)}>
+                    <ArrowDown size={14} aria-hidden="true" />
+                  </button>
+                  <button type="button" className="icon-button" disabled={disabled} aria-label={t('tests.segmentBuilder.remove')} title={t('tests.segmentBuilder.remove')} onClick={() => updateSegments(segments.filter((_, i) => i !== index))}>
+                    <Trash2 size={14} aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+              {segment.type === 'text' && (
+                <textarea
+                  rows={2}
+                  aria-label={t('tests.segmentBuilder.textLabel')}
+                  placeholder={t('tests.segmentBuilder.textPlaceholder')}
+                  value={segment.data.text}
+                  disabled={disabled}
+                  onChange={e => updateSegments(segments.map((s, i) => i === index ? { type: 'text', data: { text: e.target.value } } : s))}
+                />
+              )}
+              {segment.type === 'image' && (
+                <input
+                  type="text"
+                  aria-label={t('tests.segmentBuilder.imageLabel')}
+                  placeholder={t('tests.segmentBuilder.imagePlaceholder')}
+                  value={segment.data.file}
+                  disabled={disabled}
+                  spellCheck={false}
+                  autoComplete="off"
+                  onChange={e => updateSegments(segments.map((s, i) => i === index ? { type: 'image', data: { file: e.target.value } } : s))}
+                />
+              )}
+              {segment.type === 'at' && (
+                <input
+                  type="text"
+                  aria-label={t('tests.segmentBuilder.atLabel')}
+                  placeholder={t('tests.segmentBuilder.atPlaceholder')}
+                  value={segment.data.qq}
+                  disabled={disabled}
+                  spellCheck={false}
+                  autoComplete="off"
+                  onChange={e => updateSegments(segments.map((s, i) => i === index ? { type: 'at', data: { qq: e.target.value } } : s))}
+                />
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  )
+}
+
+function ToolTester({ active, tools, enabled, mutationBusy, actionLock, prefill, onBusy, onFeedback }: {
+  active: boolean
+  tools: PluginToolDefinition[]
+  enabled: boolean
+  mutationBusy: boolean
+  actionLock: MutableRefObject<boolean>
+  prefill: ToolPrefill | null
+  onBusy: (value: boolean) => void
+  onFeedback: (message: string) => void
 }) {
   const { t, formatNumber } = useI18n('qq')
   const prefix = useId()
@@ -359,6 +683,7 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
   const fields = useMemo(() => schemaFields(tool), [tool])
   const [values, setValues] = useState<Record<string, string>>({})
   const [formats, setFormats] = useState<Record<string, FieldFormat>>({})
+  const [inputModes, setInputModes] = useState<Record<string, MessageInputMode>>({})
   const [requestId, setRequestId] = useState(() => createRequestId())
   const [confirmed, setConfirmed] = useState(false)
   const [unknownReviewed, setUnknownReviewed] = useState(false)
@@ -375,8 +700,14 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
   const controllerRef = useRef<AbortController | null>(null)
   const pendingSensitive = useRef(false)
   const generation = useRef(0)
+  const appliedPrefillSerial = useRef(0)
   const onBusyRef = useRef(onBusy)
+  const onFeedbackRef = useRef(onFeedback)
   onBusyRef.current = onBusy
+  onFeedbackRef.current = onFeedback
+
+  const unknown = execution?.failure?.outcome === 'unknown'
+  const blocked = pending || mutationBusy || Boolean(unknown)
 
   const clearSensitive = useCallback(() => {
     if (pendingSensitive.current) {
@@ -404,8 +735,25 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
   }, [clearSensitive])
   useEffect(() => { if (!active || !enabled) clearSensitive() }, [active, enabled, clearSensitive])
 
-  const unknown = execution?.failure?.outcome === 'unknown'
-  const blocked = pending || mutationBusy || Boolean(unknown)
+  useEffect(() => {
+    if (!prefill || prefill.serial <= appliedPrefillSerial.current) return
+    appliedPrefillSerial.current = prefill.serial
+    if (unknown || pending) {
+      onFeedbackRef.current(translate('qq', 'tests.segmentBuilder.prefillBlockedUnknown'))
+      return
+    }
+    clearSensitive()
+    setToolName(prefill.toolName)
+    setValues(prefill.values)
+    setFormats(prefill.formats ?? {})
+    setInputModes({})
+    setRequestId(createRequestId())
+    setConfirmed(false)
+    setSchemaError(undefined)
+    setValidationFailure(null)
+    setErrors({})
+  }, [prefill, unknown, pending, clearSensitive])
+
   const parsed = parseToolArguments(tool, fields, values, formats, requestId, false)
   const hasSideEffect = tool ? !tool.readOnly || tool.destructive : false
   function defaultValueLabel(key: string, schema: JsonObject): string {
@@ -427,13 +775,63 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
     setValues(current => ({ ...current, [key]: value })); invalidateConfirmation()
     setErrors(current => ({ ...current, [key]: undefined }))
   }
-  function updateFormat(key: string, format: FieldFormat) {
+  function updateMessageMode(key: string, mode: MessageInputMode) {
     if (blocked) return
-    setFormats(current => ({ ...current, [key]: format })); invalidateConfirmation()
+    setInputModes(current => ({ ...current, [key]: mode }))
+    if (mode === 'text') {
+      setFormats(current => ({ ...current, [key]: 'text' }))
+    } else if (mode === 'json') {
+      setFormats(current => ({ ...current, [key]: 'json' }))
+    } else {
+      // Visual segments mode stores JSON array while keeping existing text wrapped cleanly if coming from plain text
+      setFormats(current => ({ ...current, [key]: 'json' }))
+      const currentRaw = values[key] ?? ''
+      const currentFormat = formats[key] ?? 'text'
+      if (currentFormat === 'text') {
+        const seeded: VisualSegment[] = currentRaw.trim() ? [{ type: 'text', data: { text: currentRaw } }] : []
+        setValues(current => ({ ...current, [key]: JSON.stringify(seeded, null, 2) }))
+      } else if (!currentRaw.trim()) {
+        setValues(current => ({ ...current, [key]: '[]' }))
+      }
+    }
+    invalidateConfirmation()
     setErrors(current => ({ ...current, [key]: undefined }))
   }
   function remember(run: Execution) {
     if (!run.tool.sensitiveResult && run.tool.resultFormat === 'json') setHistory(current => [...current, run].slice(-historyLimit))
+  }
+  function loadHistoryEntry(entry: Execution) {
+    if (blocked || entry.tool.sensitiveResult || entry.tool.resultFormat !== 'json') return
+    clearSensitive()
+    const targetTool = tools.find(item => item.name === entry.tool.name) ?? entry.tool
+    const targetFields: SchemaField[] = schemaFields(targetTool)
+    const nextValues: Record<string, string> = {}
+    const nextFormats: Record<string, FieldFormat> = {}
+    const nextModes: Record<string, MessageInputMode> = {}
+    for (const [k, val] of Object.entries(entry.arguments)) {
+      if (k === 'request_id' || val === undefined) continue
+      const fieldMeta = targetFields.find(item => item.key === k)
+      if (typeof val === 'string') {
+        nextValues[k] = val
+        if (fieldMeta?.kind === 'text-or-json') { nextFormats[k] = 'text'; nextModes[k] = 'text' }
+      } else if (typeof val === 'number' || typeof val === 'boolean') {
+        nextValues[k] = String(val)
+      } else {
+        const serialized = JSON.stringify(val, null, 2)
+        nextValues[k] = serialized
+        if (fieldMeta?.kind === 'text-or-json') {
+          nextFormats[k] = 'json'
+          nextModes[k] = parseVisualSegments(serialized) ? 'visual' : 'json'
+        }
+      }
+    }
+    setToolName(targetTool.name)
+    setValues(nextValues)
+    setFormats(nextFormats)
+    setInputModes(nextModes)
+    setErrors({})
+    invalidateConfirmation()
+    onFeedback(t('tests.segmentBuilder.loadedFeedback'))
   }
   async function execute(retry?: Execution) {
     const selected = retry?.tool ?? tool
@@ -455,10 +853,12 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
     if (execution && !retry) remember(execution)
     setExecution(run)
     try {
-      const response = await hostRequest<InvokeResult>('/plugins/qq/invoke', { method: 'POST', signal: controller.signal, body: {
-        name: selected.name, arguments: run.arguments, requestId: run.requestId,
-        ...(!selected.readOnly || selected.destructive ? { confirmed: true } : {}),
-      } })
+      const response = await hostRequest<InvokeResult>('/plugins/qq/invoke', {
+        method: 'POST', signal: controller.signal, body: {
+          name: selected.name, arguments: run.arguments, requestId: run.requestId,
+          ...(!selected.readOnly || selected.destructive ? { confirmed: true } : {}),
+        },
+      })
       if (!alive.current || currentGeneration !== generation.current || controller.signal.aborted || selected.resultFormat === 'content' && (!availability.current || document.hidden)) return
       if (!isJsonObject(response) || response.ok !== true || response.requestId !== run.requestId || !Object.hasOwn(response, 'result')) throw new HostApiError('INVALID_HOST_RESPONSE', '', 'failed')
       if (selected.resultFormat === 'content') {
@@ -492,7 +892,7 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
       <fieldset className="qq-fieldset" disabled={blocked || !enabled}>
         <FormField id={`${prefix}-tool`} label={t('tests.tool.label')} hint={t('tests.tool.help')}>
           <select id={`${prefix}-tool`} aria-describedby={`${prefix}-tool-hint`} value={tool?.name ?? ''} onChange={event => {
-            clearSensitive(); setToolName(event.target.value); setValues({}); setFormats({}); invalidateConfirmation(); setErrors({})
+            clearSensitive(); setToolName(event.target.value); setValues({}); setFormats({}); setInputModes({}); invalidateConfirmation(); setErrors({})
           }}>{tools.map(item => <option key={item.name} value={item.name} title={item.protocolAction}>{t(!item.readOnly || item.destructive ? 'tests.tool.action' : 'tests.tool.readOnly', { title: toolTitle(item) })}</option>)}</select>
         </FormField>
         {tool && <><p className="qq-tool-description">{toolDescription(tool)}</p><details className="qq-tool-help"><summary>{t('tests.parameterHelp')}</summary><p>{toolSchemaHelp(tool)}</p>{tool.protocolAction && <p>{t('tests.protocolAction', { action: tool.protocolAction })}</p>}</details></>}
@@ -502,18 +902,35 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
           const fieldId = `${prefix}-arg-${key}`
           const fieldLabel = parameterLabel(tool, key, schema)
           const label = t(required ? 'tests.field.required' : 'tests.field.optional', { label: fieldLabel })
+          const mode: MessageInputMode = kind === 'text-or-json' ? (inputModes[key] ?? (formats[key] === 'json' ? 'json' : 'text')) : 'text'
           const json = kind === 'json' || kind === 'text-or-json' && formats[key] === 'json'
           const defaultLabel = schema.default === undefined ? undefined : defaultValueLabel(key, schema)
           const hint = [parameterDescription(tool, key, schema), json ? t('tests.json.help') : '', defaultLabel === undefined ? '' : t('tests.defaultHelp', { value: defaultLabel })].filter(Boolean).join(' ')
           const attributes = { id: fieldId, 'aria-describedby': `${fieldId}-hint${errors[key] ? ` ${fieldId}-error` : ''}`, 'aria-invalid': Boolean(errors[key]) }
           return <Fragment key={key}>
             {kind === 'text-or-json' && <FormField id={`${fieldId}-format`} label={t('tests.format.label', { label: fieldLabel })} hint={t('tests.format.help')}>
-              <select id={`${fieldId}-format`} value={formats[key] ?? 'text'} aria-describedby={`${fieldId}-format-hint`} onChange={event => updateFormat(key, event.target.value as FieldFormat)}><option value="text">{t('tests.format.text')}</option><option value="json">{t('tests.format.json')}</option></select>
+              <select
+                id={`${fieldId}-format`}
+                value={mode}
+                aria-describedby={`${fieldId}-format-hint`}
+                onChange={event => updateMessageMode(key, event.target.value as MessageInputMode)}>
+                <option value="text">{t('tests.segmentBuilder.modeText')}</option>
+                <option value="visual">{t('tests.segmentBuilder.modeVisual')}</option>
+                <option value="json">{t('tests.segmentBuilder.modeJson')}</option>
+              </select>
             </FormField>}
             <FormField id={fieldId} label={label} hint={hint} error={messageLabel(errors[key], fieldLabel)}>
               {key === 'request_id' ? <input {...attributes} value={requestId} readOnly className="input-readonly" />
                 : kind === 'boolean' ? <select {...attributes} value={values[key] ?? ''} onChange={event => updateField(key, event.target.value)}><option value="">{t(required ? 'tests.option.choose' : defaultLabel === undefined ? 'tests.option.unspecified' : 'tests.option.default', { value: defaultLabel })}</option><option value="true">{t('tests.option.true')}</option><option value="false">{t('tests.option.false')}</option></select>
                 : kind === 'enum' ? <select {...attributes} value={values[key] ?? ''} onChange={event => updateField(key, event.target.value)}><option value="">{t(required ? 'tests.option.choose' : defaultLabel === undefined ? 'tests.option.unspecified' : 'tests.option.default', { value: defaultLabel })}</option>{options.map(option => <option key={enumValue(option)} value={enumValue(option)}>{parameterOptionLabel(tool, key, enumValue(option))}</option>)}</select>
+                : kind === 'text-or-json' && mode === 'visual' ? (
+                  <VisualSegmentEditor
+                    rawValue={values[key] ?? ''}
+                    disabled={blocked || !enabled}
+                    onChangeRaw={nextRaw => updateField(key, nextRaw)}
+                    onSwitchToRaw={() => updateMessageMode(key, 'json')}
+                  />
+                )
                 : json || kind === 'text-or-json' ? <textarea {...attributes} className={json ? 'qq-json-input' : undefined} value={values[key] ?? ''} rows={5} maxLength={!json && typeof schema.maxLength === 'number' ? schema.maxLength : undefined} spellCheck={false} onChange={event => updateField(key, event.target.value)} />
                 : <input {...attributes} type={kind === 'integer' || kind === 'number' ? 'number' : 'text'} inputMode={kind === 'integer' ? 'numeric' : kind === 'number' ? 'decimal' : undefined} min={typeof schema.minimum === 'number' ? schema.minimum : undefined} max={typeof schema.maximum === 'number' ? schema.maximum : undefined} step={kind === 'integer' ? 1 : kind === 'number' ? 'any' : undefined} maxLength={typeof schema.maxLength === 'number' ? schema.maxLength : undefined} value={values[key] ?? ''} autoComplete="off" spellCheck={false} onChange={event => updateField(key, event.target.value)} />}
             </FormField>
@@ -539,12 +956,26 @@ function ToolTester({ active, tools, enabled, mutationBusy, actionLock, onBusy, 
     {execution && <ExecutionResult execution={execution} onFeedback={onFeedback} />}
     {imagePreview && active && enabled && !document.hidden && <ImageResult result={imagePreview} onClear={clearSensitive} />}
     <p className="qq-help">{t('tests.historyHelp', { limit: formatNumber(historyLimit) })}</p>
-    {history.length > 0 && <details className="qq-history"><summary>{t('tests.history', { count: history.length, value: formatNumber(history.length) })}</summary>{[...history].reverse().map((item, index) => <ExecutionResult key={`${item.requestId}-${item.startedAt}-${index}`} execution={item} onFeedback={onFeedback} />)}</details>}
+    {history.length > 0 && <details className="qq-history"><summary>{t('tests.history', { count: history.length, value: formatNumber(history.length) })}</summary>{[...history].reverse().map((item, index) => <ExecutionResult key={`${item.requestId}-${item.startedAt}-${index}`} execution={item} onFeedback={onFeedback} onLoadHistory={loadHistoryEntry} loadDisabled={blocked || !enabled} />)}</details>}
   </>
 }
-function ExecutionResult({ execution, onFeedback }: { execution: Execution; onFeedback: (message: string) => void }) {
+function ExecutionResult({ execution, onFeedback, onLoadHistory, loadDisabled = false }: {
+  execution: Execution
+  onFeedback: (message: string) => void
+  onLoadHistory?: (entry: Execution) => void
+  loadDisabled?: boolean
+}) {
   const { t, formatDateTime } = useI18n('qq')
-  return <div className="qq-execution"><div className="qq-execution-heading"><strong>{toolTitle(execution.tool)}</strong><span>{t(execution.pending ? 'execution.pending' : execution.failure ? execution.failure.outcome === 'unknown' ? 'execution.unknown' : 'execution.failed' : 'execution.complete')}</span></div>
+  return <div className="qq-execution"><div className="qq-execution-heading"><strong>{toolTitle(execution.tool)}</strong>
+    <div className="qq-execution-meta">
+      <span>{t(execution.pending ? 'execution.pending' : execution.failure ? execution.failure.outcome === 'unknown' ? 'execution.unknown' : 'execution.failed' : 'execution.complete')}</span>
+      {onLoadHistory && !execution.tool.sensitiveResult && execution.tool.resultFormat === 'json' && (
+        <ActionButton reasonCode="unknown" type="button" className="text-button" disabled={loadDisabled} onClick={() => onLoadHistory(execution)}>
+          {t('tests.segmentBuilder.loadHistory')}
+        </ActionButton>
+      )}
+    </div>
+  </div>
     {execution.tool.sensitiveResult && <p className="qq-sensitive" role="note">{t('tests.sensitiveResult')}</p>}
     <p className="qq-help">{t('execution.started', { time: formatDateTime(execution.startedAt), id: execution.requestId })}</p><ErrorNotice failure={execution.failure ?? null} />
     {execution.tool.resultFormat === 'content' ? <p className="qq-help">{t('image.safeResult')}</p> : <JsonPreview label={t('execution.json')} value={{ name: execution.tool.name, requestId: execution.requestId, arguments: execution.arguments, startedAt: execution.startedAt,
@@ -554,24 +985,62 @@ function ExecutionResult({ execution, onFeedback }: { execution: Execution; onFe
 
 function McpCapabilities({ active, enabled, capabilities, harness, onFeedback }: { active: boolean; enabled: boolean; capabilities: PluginCapability[]; harness?: Workspace['harness']; onFeedback: (message: string) => void }) {
   const { t, formatNumber } = useI18n('qq')
+  const modalTitleId = useId()
   const [registration, setRegistration] = useState<McpRegistration | null>(null)
   const [pending, setPending] = useState(false)
   const [failure, setFailure] = useState<Failure | null>(null)
+  const [copyFailure, setCopyFailure] = useState<Failure | null>(null)
   const alive = useRef(false)
   const controllerRef = useRef<AbortController | null>(null)
   const generation = useRef(0)
-  useEffect(() => { alive.current = true; return () => { alive.current = false; ++generation.current; controllerRef.current?.abort() } }, [])
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const closeRef = useRef<HTMLButtonElement | null>(null)
+
+  const hideRegistration = useCallback((restoreFocus = false) => {
+    ++generation.current
+    controllerRef.current?.abort(); controllerRef.current = null
+    setRegistration(null); setPending(false); setCopyFailure(null)
+    if (restoreFocus) window.requestAnimationFrame(() => triggerRef.current?.focus())
+  }, [])
+
   useEffect(() => {
-    if (!active || !enabled) { ++generation.current; controllerRef.current?.abort(); controllerRef.current = null; setRegistration(null); setPending(false) }
-  }, [active, enabled])
+    alive.current = true
+    function onVisibility() { if (document.hidden) hideRegistration(false) }
+    function onPageHide() { hideRegistration(false) }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pagehide', onPageHide)
+    return () => {
+      alive.current = false
+      ++generation.current
+      controllerRef.current?.abort()
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pagehide', onPageHide)
+    }
+  }, [hideRegistration])
+  useEffect(() => {
+    if (!active || !enabled) hideRegistration(false)
+  }, [active, enabled, hideRegistration])
+  useEffect(() => {
+    if (!registration) return
+    closeRef.current?.focus()
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        hideRegistration(true)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [registration, hideRegistration])
+
   async function revealRegistration() {
-    if (controllerRef.current || !enabled) return
+    if (controllerRef.current || !enabled || document.hidden) return
     const controller = new AbortController(); controllerRef.current = controller
     const currentGeneration = ++generation.current
     setPending(true)
     try {
       const response = await hostRequest<McpRegistration>('/plugins/qq/mcp-registration', { method: 'POST', body: {}, signal: controller.signal })
-      if (alive.current && !controller.signal.aborted && generation.current === currentGeneration) { setRegistration(response); setFailure(null) }
+      if (alive.current && !controller.signal.aborted && generation.current === currentGeneration && !document.hidden) { setRegistration(response); setFailure(null); setCopyFailure(null) }
     } catch (error) {
       if (alive.current && !controller.signal.aborted && generation.current === currentGeneration) setFailure(failureFrom(error))
     } finally {
@@ -579,12 +1048,68 @@ function McpCapabilities({ active, enabled, capabilities, harness, onFeedback }:
       if (alive.current && generation.current === currentGeneration) setPending(false)
     }
   }
+  async function copyValue(label: string, text: string) {
+    try { await navigator.clipboard.writeText(text); setCopyFailure(null); onFeedback(t('copy.done', { label })) }
+    catch { setCopyFailure(localFailure('CLIPBOARD_UNAVAILABLE', 'error.copy')) }
+  }
+
   return <>
     <div className="section-heading"><h3>{t('tabs.mcp')}</h3><p>{t('mcp.description')}</p></div>
     <div className="qq-harness-status"><strong>{t(harness?.state === 'attached' ? 'mcp.harnessAttached' : 'mcp.harnessDetached')}</strong><p>{harness ? t('mcp.delivery', { pending: formatNumber(harness.pending), accepted: formatNumber(harness.accepted), uncertain: formatNumber(harness.uncertain) }) : t('mcp.deliveryLoading')}</p></div>
-    <div className="qq-mcp-access"><p>{t('mcp.credentialsHelp')}</p><div className="qq-actions"><ActionButton reasonCode={pending ? 'busy' : 'enable'} className="button button-secondary" type="button" disabled={pending || !enabled} onClick={() => void revealRegistration()}>{t(pending ? 'action.revealingMcp' : 'action.revealMcp')}</ActionButton>{registration && <ActionButton reasonCode="busy" type="button" className="text-button" onClick={() => { ++generation.current; controllerRef.current?.abort(); controllerRef.current = null; setRegistration(null); setPending(false) }}>{t('action.hideMcp')}</ActionButton>}</div><ErrorNotice failure={failure} />
-      {registration && <><p className="qq-help">{t('mcp.hideHelp')}</p><JsonPreview label={t('mcp.configuration')} value={registration} onFeedback={onFeedback} /></>}
-    </div>
+    <div className="qq-mcp-access"><p>{t('mcp.credentialsHelp')}</p><div className="qq-actions"><ActionButton ref={triggerRef} reasonCode={pending ? 'busy' : 'enable'} className="button button-secondary" type="button" disabled={pending || !enabled} onClick={() => void revealRegistration()}>{t(pending ? 'action.revealingMcp' : 'action.revealMcp')}</ActionButton>{registration && <ActionButton reasonCode="busy" type="button" className="text-button" onClick={() => hideRegistration(false)}>{t('action.hideMcp')}</ActionButton>}</div><ErrorNotice failure={failure} /></div>
+    {registration && active && enabled && (
+      <div className="qq-mcp-modal-backdrop" onClick={event => { if (event.target === event.currentTarget) hideRegistration(true) }}>
+        <div className="qq-mcp-modal" role="dialog" aria-modal="true" aria-labelledby={modalTitleId}>
+          <div className="qq-mcp-modal-header">
+            <div>
+              <h4 id={modalTitleId}>{t('mcp.modalTitle')}</h4>
+              <p>{t('mcp.hideHelp')}</p>
+            </div>
+            <button ref={closeRef} type="button" className="icon-button" aria-label={t('mcp.modalClose')} onClick={() => hideRegistration(true)}>
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+          <dl className="qq-mcp-modal-details">
+            <div>
+              <dt>{t('mcp.transportLabel')}</dt>
+              <dd><code>{registration.transport}</code></dd>
+            </div>
+            <div>
+              <dt>{t('mcp.urlLabel')}</dt>
+              <dd>
+                <code>{registration.url}</code>
+                <button type="button" className="button button-secondary" onClick={() => void copyValue(t('mcp.urlLabel'), registration.url)}>
+                  <Copy size={13} aria-hidden="true" />{t('mcp.copyUrl')}
+                </button>
+              </dd>
+            </div>
+            <div>
+              <dt>{t('mcp.authLabel')}</dt>
+              <dd>
+                <code>{registration.headers.Authorization}</code>
+                <button type="button" className="button button-secondary" onClick={() => void copyValue(t('mcp.authLabel'), registration.headers.Authorization)}>
+                  <Copy size={13} aria-hidden="true" />{t('mcp.copyAuth')}
+                </button>
+              </dd>
+            </div>
+            {registration.note && (
+              <div>
+                <dt>{t('mcp.noteLabel')}</dt>
+                <dd><span>{registration.note}</span></dd>
+              </div>
+            )}
+          </dl>
+          <pre tabIndex={0} aria-label={t('mcp.configuration')}>{pretty(registration)}</pre>
+          <ErrorNotice failure={copyFailure} />
+          <div className="qq-mcp-modal-footer">
+            <button type="button" className="button button-secondary" onClick={() => hideRegistration(true)}>{t('mcp.modalClose')}</button>
+            <button type="button" className="button button-primary" onClick={() => void copyValue(t('mcp.configuration'), pretty(registration))}>
+              <Copy size={14} aria-hidden="true" />{t('mcp.copyJson')}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
     <div className="qq-capability-heading"><h3>{t('capabilities.title')}</h3><p>{t('capabilities.help')}</p></div>
     {!capabilities.length ? <p className="qq-empty">{t('capabilities.empty')}</p> : <ul className="qq-capability-list">{capabilities.map(capability => <li key={capability.id}><div><strong>{capabilityTitle(capability)}</strong><span className="status-badge">{t(`capabilities.${capability.support}`)}</span></div><p>{capabilityDescription(capability)}</p>{capability.toolName && <code>{capability.toolName}</code>}</li>)}</ul>}
   </>

@@ -133,7 +133,7 @@ test.describe('Harness 模型连接（本地夹具）', () => {
     modelStatus = 404
     await page.getByRole('button', { name: '获取模型列表', exact: true }).click()
     await expect(page.getByText(/MODEL_LIST_UNSUPPORTED/)).toBeVisible()
-    await expect(page.getByLabel('从模型列表选择', { exact: true })).toHaveCount(0)
+    await expect(page.getByLabel('从模型列表选择', { exact: true })).toBeDisabled()
     await expect(page.getByLabel('模型名称', { exact: true })).toBeEnabled()
     await page.screenshot({ path: testInfo.outputPath('models-error-zh-desktop.png') })
     await page.getByLabel('模型名称', { exact: true }).fill('manually-kept')
@@ -153,7 +153,7 @@ test.describe('Harness 模型连接（本地夹具）', () => {
     await expect(page.getByRole('button', { name: '保存配置', exact: true })).toBeDisabled()
     await hide(page)
     held.resolve(); await show(page)
-    await expect(page.getByLabel('从模型列表选择', { exact: true })).toHaveCount(0)
+    await expect(page.getByLabel('从模型列表选择', { exact: true })).toBeDisabled()
     await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('manually-kept')
   })
 })

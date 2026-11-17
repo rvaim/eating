@@ -1,0 +1,11 @@
+.eating-tabs { display: flex; align-items: center; gap: 4px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; padding-block: var(--panel-tab-padding-block, 8px); margin-bottom: 20px; border-bottom: 1px solid var(--color-line); background: var(--color-surface); }
+.eating-tabs.workspace-rail { position: sticky; top: calc(-1 * var(--content-inset-block-start, 31px)); z-index: 6; }
+.eating-tabs::-webkit-scrollbar { display: none; }
+.eating-tab { position: relative; display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0; min-height: 44px; padding: 8px 15px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--color-muted); font-size: 13px; font-weight: 550; white-space: nowrap; cursor: pointer; }
+.eating-tab:hover { color: var(--color-ink); background: var(--color-hover); }
+.eating-tab.is-selected { color: var(--color-primary-hover); border-color: var(--color-line); background: var(--color-surface-raised); box-shadow: 0 1px 3px var(--color-shadow); }
+.eating-tab:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
+.eating-tab-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; padding: 1px 6px; border-radius: 999px; background: var(--color-surface-sunken); color: var(--color-ink-soft); font-size: 11px; font-variant-numeric: tabular-nums; }
+.eating-tab.is-selected .eating-tab-badge { background: var(--color-tint); color: var(--color-primary-strong); }
+.eating-tab-dirty { width: 7px; height: 7px; border-radius: 50%; background: var(--color-warning-ink); flex-shrink: 0; }
+.eating-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

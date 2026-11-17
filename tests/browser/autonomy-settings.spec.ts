@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import type { Page } from '@playwright/test'
-import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -150,7 +150,7 @@ test.describe('自主运行设置与信息', () => {
     expect(JSON.parse(await readFile(policyFile(), 'utf8')).entries).toHaveLength(2)
     await page.getByRole('radio', { name: '白名单模式', exact: true }).check(); await expect(contactList(page).getByRole('checkbox', { name: /夹具测试群/ })).toBeChecked()
   })
-  test('搜索和切分类保留选择，手动号码校验明确，语言和390px保持同一草稿', async ({ page }) => {
+  test('搜索和切分类保留选择，手动号码校验明确，语言和390px保持同一草稿', async ({ page }, info) => {
     await contacts(page); await contactList(page).getByRole('checkbox', { name: /夹具联系人/ }).check()
     await page.getByRole('searchbox', { name: '搜索名称或号码', exact: true }).fill('no-match'); await expect(page.getByText('没有匹配的对象。', { exact: true })).toBeVisible()
     await page.getByRole('searchbox', { name: '搜索名称或号码', exact: true }).fill(''); await expect(contactList(page).getByRole('checkbox', { name: /夹具联系人/ })).toBeChecked()
@@ -158,7 +158,7 @@ test.describe('自主运行设置与信息', () => {
     await expect(page.getByRole('alert')).toHaveText('请输入有效数字号码。')
     await page.getByLabel('界面语言', { exact: true }).selectOption('en-US'); await expect(page.getByRole('radio', { name: 'Allow list', exact: true })).toBeChecked(); await expect(page.getByRole('alert')).toHaveText('Enter valid numeric IDs.')
     await page.setViewportSize({ width: 390, height: 844 }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-    await mkdir(join(root, '.impeccable/review/management-ui'), { recursive: true }); await page.screenshot({ path: join(root, '.impeccable/review/management-ui/unified-policy-fixture-mobile.png') })
+    await page.screenshot({ path: info.outputPath('unified-policy-fixture-mobile.png') })
     await expect(readFile(policyFile())).rejects.toMatchObject({ code: 'ENOENT' })
   })
   test('策略冲突保留名单，必须核对新模式后明确继续，保存仍暂停', async ({ page }) => {

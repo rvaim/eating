@@ -7,6 +7,12 @@ export async function startDeepSeekSpeechFixture(mode: DeepSeekSpeechMode = 'suc
   const pending: Array<() => void> = [], sockets = new Set<WebSocket>()
   const server = createServer(async (request, response) => {
     try {
+      if (request.url === '/v1/models' && request.method === 'GET') {
+        if (request.headers.authorization !== 'Bearer fixture-deepseek-key') { response.writeHead(401).end(); return }
+        if (mode === 'reject') { response.writeHead(502).end(); return }
+        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ object: 'list', data: [{ id: 'deepseek-chat' }] }))
+        return
+      }
       if (request.url !== '/v1/tools/asr' || request.method !== 'POST') { response.writeHead(404).end(); return }
       if (request.headers.authorization !== 'Bearer fixture-deepseek-key') { response.writeHead(401).end(); return }
       const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk))

@@ -1,0 +1,16 @@
+.eating-switch-field { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+.eating-switch-field.is-compact { gap: 8px; }
+.eating-switch-btn { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; min-width: 44px; min-height: 44px; padding: 0; border: 0; border-radius: 999px; background: transparent; cursor: pointer; touch-action: manipulation; }
+.eating-switch-btn:disabled { cursor: not-allowed; opacity: .55; }
+.eating-switch-track { position: relative; display: inline-flex; align-items: center; width: 40px; height: 22px; border: 1px solid var(--color-line-strong); border-radius: 999px; background: var(--color-switch-track); transition: background-color 140ms ease, border-color 140ms ease; }
+.eating-switch-btn.is-compact .eating-switch-track { width: 36px; height: 20px; }
+.eating-switch-btn[aria-checked="true"] .eating-switch-track { border-color: var(--color-switch-active); background: var(--color-switch-active); }
+.eating-switch-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--color-switch-thumb); box-shadow: 0 1px 3px var(--color-shadow); transform: translateX(2px); transition: transform 140ms ease; }
+.eating-switch-btn.is-compact .eating-switch-thumb { width: 14px; height: 14px; }
+.eating-switch-btn[aria-checked="true"] .eating-switch-thumb { transform: translateX(20px); }
+.eating-switch-btn.is-compact[aria-checked="true"] .eating-switch-thumb { transform: translateX(18px); }
+.eating-switch-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.eating-switch-copy { display: grid; gap: 2px; min-width: 0; }
+.eating-switch-label { font-size: 13px; font-weight: 550; color: var(--color-ink); cursor: pointer; overflow-wrap: anywhere; }
+.eating-switch-field.is-disabled .eating-switch-label { cursor: not-allowed; color: var(--color-disabled-ink); }
+.eating-switch-desc { font-size: 11px; color: var(--color-muted); line-height: 1.5; }

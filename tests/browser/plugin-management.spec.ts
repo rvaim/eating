@@ -82,7 +82,6 @@ test.describe('插件管理页', () => {
     await rm(target, { recursive: true }); expect(errors).toEqual([])
   })
 
-  const row = (page: Page, name: string) => page.locator('.plugins-row').filter({ hasText: name })
   async function goto(page: Page) {
     await page.goto(url + '/#plugins')
     await expect(page.getByRole('heading', { name: '插件', level: 1 })).toBeVisible()
@@ -91,7 +90,7 @@ test.describe('插件管理页', () => {
   test('宽屏插件行与操作共用内容边界，打开面板后返回始终在顶部右侧', async ({ page }, info) => {
     await page.setViewportSize({ width: 2560, height: 1100 }); await goto(page)
     const item = row(page, 'DeepSeek Harness'); expect((await item.boundingBox())!.width).toBeLessThanOrEqual(1200)
-    await item.getByRole('link', { name: '打开面板', exact: true }).click()
+    await item.getByRole('link', { name: '打开设置', exact: true }).click()
     const back = page.locator('.page-header').getByRole('link', { name: '返回插件列表', exact: true })
     await expect(back).toBeVisible()
     await page.locator('.robot-content').evaluate(element => { element.scrollTop = element.scrollHeight })
@@ -102,7 +101,7 @@ test.describe('插件管理页', () => {
     expect(installCalls + uninstallCalls + disableCalls + enableCalls).toBe(0)
   })
 
-  test('统一列出三类插件，可筛选并跳转业务配置与独立面板', async ({ page }, info) => {
+  test('统一列出三类插件，可筛选并跳转设置面板，支持搜索与状态过滤', async ({ page }, info) => {
     await goto(page)
     await expect(row(page, 'QQ')).toContainText('通讯插件')
     await expect(row(page, 'DeepSeek Harness')).toContainText('Harness')
@@ -112,9 +111,16 @@ test.describe('插件管理页', () => {
     await page.getByRole('button', { name: '能力', exact: true }).click()
     await expect(row(page, '能力样例')).toBeVisible(); await expect(row(page, 'QQ')).toHaveCount(0)
     await page.getByRole('button', { name: '全部', exact: true }).click()
-    expect(await row(page, 'QQ').getByRole('link', { name: '打开面板', exact: true }).getAttribute('href')).toBe('#plugins/qq')
-    expect(await row(page, 'QQ').getByRole('link', { name: '业务配置', exact: true }).getAttribute('href')).toBe('#robots/qq')
-    expect(await row(page, 'DeepSeek Harness').getByRole('link', { name: '业务配置', exact: true }).getAttribute('href')).toBe('#harness/dsh')
+    await page.getByLabel('搜索插件', { exact: true }).fill('dsh')
+    await expect(row(page, 'DeepSeek Harness')).toBeVisible(); await expect(row(page, 'QQ')).toHaveCount(0)
+    await page.getByLabel('搜索插件', { exact: true }).fill('no-such-plugin')
+    await expect(page.getByText('没有找到插件', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '清除筛选条件', exact: true }).click()
+    await page.getByLabel('按运行状态筛选', { exact: true }).selectOption('connected')
+    await expect(row(page, 'QQ')).toBeVisible(); await expect(row(page, '能力样例')).toHaveCount(0)
+    await page.getByLabel('按运行状态筛选', { exact: true }).selectOption('all')
+    expect(await row(page, 'QQ').getByRole('link', { name: '打开设置', exact: true }).getAttribute('href')).toBe('#plugins/qq')
+    expect(await row(page, 'DeepSeek Harness').getByRole('link', { name: '打开设置', exact: true }).getAttribute('href')).toBe('#plugins/dsh')
     await page.screenshot({ path: info.outputPath('plugins-desktop.png'), fullPage: true })
     await page.emulateMedia({ colorScheme: 'dark' }); await page.waitForTimeout(300)
     await page.screenshot({ path: info.outputPath('plugins-desktop-dark.png'), fullPage: true })
@@ -122,7 +128,7 @@ test.describe('插件管理页', () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await page.screenshot({ path: info.outputPath('plugins-390.png'), fullPage: true })
     await page.setViewportSize({ width: 1440, height: 1000 })
-    await row(page, 'QQ').getByRole('link', { name: '打开面板', exact: true }).click()
+    await row(page, 'QQ').getByRole('link', { name: '打开设置', exact: true }).click()
     await expect(page.getByLabel('OneBot 地址', { exact: true })).toBeVisible()
     expect(new URL(page.url()).hash).toBe('#plugins/qq')
     await expect(page.getByRole('link', { name: '返回插件列表', exact: true })).toBeVisible()
@@ -130,13 +136,15 @@ test.describe('插件管理页', () => {
 
   test('启用停用与卸载确认保数据', async ({ page }, info) => {
     await goto(page)
-    await row(page, 'QQ').getByRole('button', { name: '停用', exact: true }).click()
+    await row(page, 'QQ').getByRole('switch', { name: '停用 QQ', exact: true }).click()
     await expect.poll(() => disableCalls).toBe(1)
     await expect(row(page, 'QQ')).toContainText('已停用')
-    await row(page, 'QQ').getByRole('button', { name: '启用', exact: true }).click()
+    await expect(row(page, 'QQ').getByRole('switch', { name: '启用 QQ', exact: true })).not.toBeChecked()
+    await row(page, 'QQ').getByRole('switch', { name: '启用 QQ', exact: true }).click()
     await expect.poll(() => enableCalls).toBe(1)
+    await expect(row(page, 'QQ').getByRole('switch', { name: '停用 QQ', exact: true })).toBeChecked()
     await row(page, '能力样例').getByRole('button', { name: '卸载', exact: true }).click()
-    await expect(page.getByText('确定卸载“能力样例”？', { exact: true })).toBeVisible()
+    await expect(page.getByRole('alertdialog', { name: '确定卸载“能力样例”？', exact: true })).toBeVisible()
     await page.getByRole('button', { name: '确认卸载', exact: true }).click()
     await expect.poll(() => uninstallCalls).toBe(1)
     expect(uninstalls[0]).toEqual({ id: 'cap-fixture', confirmed: true })
@@ -211,7 +219,7 @@ test.describe('插件真实安装与表情库（临时 Host，无路由桩）', 
     await expect(row(page, '表情包')).toBeVisible()
   }
   async function openStickers(page: Page) {
-    await row(page, '表情包').getByRole('link', { name: '打开面板', exact: true }).click()
+    await row(page, '表情包').getByRole('link', { name: '打开设置', exact: true }).click()
     await expect(page.getByRole('heading', { name: /表情库/ })).toBeVisible()
   }
   test('预览安装真实插件，上传/分页/筛选/编辑，卸载重装保留表情库', async ({ page }, info) => {
@@ -220,7 +228,9 @@ test.describe('插件真实安装与表情库（临时 Host，无路由桩）', 
     await page.getByRole('button', { name: '添加表情', exact: true }).click()
     await page.getByLabel('本地图片', { exact: true }).setInputFiles({ name: 'local.png', mimeType: 'image/png', buffer: fixturePng(99) })
     await page.getByLabel('描述', { exact: true }).fill('本地上传的 PNG')
-    await page.getByLabel('标签', { exact: true }).fill('本地\n上传')
+    await page.getByLabel('标签', { exact: true }).fill('本地,上传')
+    await expect(page.locator('.eating-chip').filter({ hasText: '本地' })).toBeVisible()
+    await expect(page.locator('.eating-chip').filter({ hasText: '上传' })).toBeVisible()
     await page.getByRole('button', { name: '添加到表情库', exact: true }).click()
     await expect(page.getByRole('button', { name: /本地上传的 PNG/ })).toBeVisible()
     const csrf = await bootstrap(page)
@@ -232,8 +242,7 @@ test.describe('插件真实安装与表情库（临时 Host，无路由桩）', 
     await page.waitForFunction(() => document.querySelectorAll('.stickers-row').length === 20)
     await page.getByRole('button', { name: '下一页', exact: true }).click()
     await page.waitForFunction(() => document.querySelectorAll('.stickers-row').length === 4)
-    await page.getByLabel('按标签筛选', { exact: true }).selectOption(['greeting'])
-    await page.getByRole('button', { name: '筛选', exact: true }).click()
+    await page.getByRole('group', { name: '按标签筛选', exact: true }).getByRole('button', { name: 'greeting（11）', exact: true }).click()
     await page.waitForFunction(() => document.querySelectorAll('.stickers-row').length === 11)
     await page.getByRole('button', { name: /Fixture 01/ }).click()
     await expect(page.getByRole('img', { name: '所选表情图片' })).toBeVisible()

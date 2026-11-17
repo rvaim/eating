@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Check, Plus, Puzzle, X } from 'lucide-react'
+import { ArrowRight, Check, Plus, Puzzle, X } from 'lucide-react'
 import { ActionButton, useI18n } from '@eating/ui-sdk'
 import type { ManagedPlugin } from '@eating/ui-sdk'
 import '../i18n/app'
@@ -19,7 +19,10 @@ export function PluginCatalog({ workspace, snapshot, onClose, onRegistered, onFe
   const lock = useRef(false)
   return <section className="plugin-catalog" aria-labelledby="plugin-catalog-title">
     <div className="catalog-heading"><div><h2 id="plugin-catalog-title">{t('catalog.title')}</h2><p>{t('catalog.description')}</p></div><ActionButton reasonCode="busy" className="icon-button" aria-label={t('catalog.close')} onClick={onClose}><X size={19} /></ActionButton></div>
-    <p className="catalog-note"><Puzzle size={16} />{t('catalog.note')}</p>
+    <div className="catalog-note">
+      <span className="catalog-note-copy"><Puzzle size={16} aria-hidden="true" />{t('catalog.note')}</span>
+      <a className="text-button" href="#plugins" onClick={onClose}>{t('catalog.openCenter')}<ArrowRight size={14} aria-hidden="true" /></a>
+    </div>
     <div className="catalog-list">{workspace.catalog.map(plugin => {
       const registered = snapshot.plugins.some(current => current.id === plugin.id)
       const Icon = plugin.icon
@@ -30,7 +33,7 @@ export function PluginCatalog({ workspace, snapshot, onClose, onRegistered, onFe
           if (lock.current) return
           lock.current = true; setRegistering(plugin.id)
           try {
-            const result = await workspace.register(plugin.id)
+            const result = await workspace.enable(plugin.id)
             if (result.ok) onRegistered(plugin)
             else onFeedback(result.error)
           } finally { lock.current = false; setRegistering(null) }

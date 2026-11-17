@@ -72,9 +72,24 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await expect(page.getByRole('button', { name: '启动 Harness', exact: true })).toBeDisabled()
     await page.getByLabel('API 基础地址', { exact: true }).fill('https://api.example.test/v1')
     await page.getByLabel('模型名称', { exact: true }).fill('fixture-model')
+    await page.getByRole('button', { name: '30s', exact: true }).click()
+    await expect(page.getByLabel('请求超时（秒）', { exact: true })).toHaveValue('30')
+    await expect(page.getByText('等效 30,000 ms', { exact: true })).toBeVisible()
+    await expect(page.locator('.dsh-tabs [role="tab"]', { hasText: '连接配置' }).locator('.eating-tab-dirty')).toBeVisible()
+    const revealButton = page.getByRole('button', { name: '显示已输入内容', exact: true })
+    await expect(revealButton).toBeDisabled()
     await page.getByLabel('API Key', { exact: true }).fill('ui-fixture-key')
+    await expect(revealButton).toBeEnabled()
+    await expect(revealButton).toHaveAttribute('aria-pressed', 'false')
+    await revealButton.click()
+    await expect(page.getByLabel('API Key', { exact: true })).toHaveAttribute('type', 'text')
+    const hideButton = page.getByRole('button', { name: '隐藏已输入内容', exact: true })
+    await expect(hideButton).toHaveAttribute('aria-pressed', 'true')
+    await hideButton.click()
+    await expect(page.getByLabel('API Key', { exact: true })).toHaveAttribute('type', 'password')
     await save(page)
     await expect(page.getByLabel('API Key', { exact: true })).toHaveValue('')
+    await expect(page.getByText('已保存密钥（不回显）', { exact: true })).toBeVisible()
     const workspace = await (await page.request.get(`${url}/api/workspace`)).json() as { plugins: { id: string; configuration: JsonObject }[] }
     const config = workspace.plugins.find(plugin => plugin.id === 'dsh')!.configuration
     expect(config.apiKeyConfigured).toBe(true)
@@ -87,14 +102,20 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await save(page)
     expect((await disk()).configuration.apiKey).toBe('ui-fixture-key')
     await page.setViewportSize({ width: 390, height: 844 })
-    await page.getByRole('checkbox', { name: '清除已保存的 API Key', exact: false }).check()
+    await page.getByRole('button', { name: '清除已保存的 API Key', exact: true }).click()
+    await expect(page.getByText('保存后将清除已保存密钥', { exact: true })).toBeVisible()
+    const undoClear = page.getByRole('button', { name: '取消清除 API Key', exact: true })
+    await expect(undoClear).toHaveAttribute('aria-pressed', 'true')
+    await undoClear.click()
+    await expect(page.getByRole('button', { name: '清除已保存的 API Key', exact: true })).toHaveAttribute('aria-pressed', 'false')
+    await page.getByRole('button', { name: '清除已保存的 API Key', exact: true }).click()
     await save(page)
     expect((await disk()).configuration.apiKey).toBe('')
     await page.setViewportSize({ width: 1440, height: 1000 })
     await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }))
     await page.screenshot({ path: testInfo.outputPath('harness-desktop.png'), fullPage: true })
-    await page.getByRole('button', { name: '添加插件', exact: true }).click()
-    const catalog = page.getByRole('region', { name: '已安装插件', exact: true })
+    await page.getByRole('button', { name: '快速启用', exact: true }).click()
+    const catalog = page.getByRole('region', { name: '快速启用已安装插件', exact: true })
     await expect(catalog.getByRole('heading', { name: 'QQ', exact: false })).toBeVisible()
     await expect(catalog.getByRole('heading', { name: 'DeepSeek Harness', exact: false })).toBeVisible()
     await expect(catalog.getByText('通讯插件', { exact: true })).toBeVisible()
@@ -115,6 +136,7 @@ test.describe('Harness 独立面板与泛型目录', () => {
     const dsh = initial.plugins.find(plugin => plugin.id === 'dsh')!
     const configuration: JsonObject = { ...dsh.configuration, endpoint: 'https://api.example.test/v1', model: 'fixture-model' }
     const runtime = configuration.runtimeStatus as JsonObject
+    runtime.system = { found: true, path: '/fixture/bin/dsh', version: '0.23.0', source: 'path' }
     runtime.ready = false; runtime.busy = false; runtime.sessionId = null; runtime.nativeWeb = { ready: false }
     const status = { ...dsh.status, state: 'disconnected' }
     let connectCount = 0
@@ -193,6 +215,9 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await page.getByRole('button', { name: '保存配置', exact: true }).click()
     await expect.poll(() => saving).toBe(true)
     await page.getByRole('link', { name: '提示词管理', exact: true }).click()
+    const dirtyDialog = page.getByRole('alertdialog')
+    await expect(dirtyDialog).toContainText('当前页面有未保存的更改')
+    await dirtyDialog.getByRole('button', { name: '放弃并离开', exact: true }).click()
     await expect(page.getByRole('textbox', { name: '提示词内容', exact: true })).toBeVisible()
     saved.release()
     await expect(page.getByRole('heading', { name: '通用前置提示词', exact: true })).toBeVisible()

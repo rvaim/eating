@@ -31,18 +31,22 @@ export function Field({ prefix, name, label, hint, issue, children }: {
     </div>
   </div>
 }
+export function fieldDescribedBy(prefix: string, name: string, hint?: string, issue?: FieldIssue): string | undefined {
+  const id = fieldId(prefix, name)
+  return [hint ? `${id}-hint` : '', issue ? `${id}-error` : ''].filter(Boolean).join(' ') || undefined
+}
 export function TextField({ prefix, name, label, hint, issue, value, onChange, onBlur, type = 'text', multiline = false, disabled = false, maxLength, inputMode }: {
   prefix: string; name: string; label: string; hint?: string; issue?: FieldIssue; value: string; onChange: (value: string) => void
   onBlur?: () => void; type?: 'text' | 'password' | 'url' | 'number' | 'search'; multiline?: boolean; disabled?: boolean; maxLength?: number
   inputMode?: 'text' | 'decimal' | 'numeric' | 'url'
 }) {
   const id = fieldId(prefix, name)
-  const describedBy = [hint ? `${id}-hint` : '', issue ? `${id}-error` : ''].filter(Boolean).join(' ') || undefined
+  const describedBy = fieldDescribedBy(prefix, name, hint, issue)
   const props = { id, name, value, disabled, maxLength, 'aria-invalid': issue ? true as const : undefined, 'aria-describedby': describedBy,
     onChange: (event: { target: { value: string } }) => onChange(event.target.value),
     onBlur: (event: { relatedTarget: EventTarget | null }) => {
       // Submission validates the whole draft. Deferring this blur keeps its pointer target in place until click.
-      if (event.relatedTarget instanceof Element && event.relatedTarget.closest('.ov-save-rail')) return
+      if (event.relatedTarget instanceof Element && event.relatedTarget.closest('.ov-save-rail, .eating-save-bar')) return
       onBlur?.()
     } }
   return <Field prefix={prefix} name={name} label={label} hint={hint} issue={issue}>

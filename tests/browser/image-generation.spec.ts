@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
+import { createHash } from 'node:crypto'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -48,7 +49,16 @@ test.describe('生图插件真实临时 Host', () => {
 
   async function open(page: Page) {
     await page.goto(url + '/#plugins/image-generation')
-    await expect(page.getByLabel('Base URL', { exact: true })).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByRole('tab', { name: '创作与图库', exact: true })).toBeVisible({ timeout: 20_000 })
+    await expect(page.locator('.image-block-heading .status-badge').first()).toBeVisible({ timeout: 20_000 })
+  }
+  async function openConfigTab(page: Page) {
+    await page.getByRole('tab', { name: '接口与参数配置', exact: true }).click()
+    await expect(page.getByLabel('Base URL', { exact: true })).toBeVisible()
+  }
+  async function openStudioTab(page: Page) {
+    await page.getByRole('tab', { name: '创作与图库', exact: true }).click()
+    await expect(page.getByLabel('提示词', { exact: true })).toBeVisible()
   }
   async function seedHistory(page: Page, count: number) {
     await host.close()
@@ -65,30 +75,37 @@ test.describe('生图插件真实临时 Host', () => {
 
   test('请求参数默认low，保存只更新本地，文生图及编辑实际使用已保存参数', async ({ page }, info) => {
     await open(page)
-    const editor = page.getByLabel('请求参数（JSON）', { exact: true })
+    await openConfigTab(page)
+    const editor = page.getByRole('textbox', { name: '请求参数（JSON）', exact: true })
     await expect(editor).toHaveValue(/"moderation": "low"/)
     await page.getByLabel('Base URL', { exact: true }).fill(provider.baseUrl)
     await page.getByLabel('API Key', { exact: true }).fill(provider.apiKey)
     await page.getByLabel('模型', { exact: true }).fill('gpt-image-fixture')
     await page.getByRole('button', { name: '保存配置', exact: true }).click()
-    await page.getByLabel('提示词', { exact: true }).fill('请求参数生成测试')
     await editor.fill('{"moderation":"auto","background":"transparent","output_compression":0}')
+    await openStudioTab(page)
+    await page.getByLabel('提示词', { exact: true }).fill('请求参数生成测试')
     await expect(page.getByRole('button', { name: '生成图片', exact: true })).toBeDisabled()
+    await expect(page.getByRole('button', { name: '查看未保存配置', exact: true })).toBeVisible()
+    await openConfigTab(page)
     await page.getByRole('button', { name: '保存请求参数', exact: true }).click()
     await expect(page.getByText('请求参数已保存，仅后续新任务使用；没有发送生成请求。', { exact: true })).toBeVisible()
     expect(provider.requests).toHaveLength(0)
     await page.locator('.image-parameters').screenshot({ path: info.outputPath('image-request-parameters-desktop.png') })
+    await openStudioTab(page)
     await page.getByRole('button', { name: '生成图片', exact: true }).click()
     await page.getByRole('button', { name: '确认提交', exact: true }).click()
     await expect(page.locator('.image-job').filter({ hasText: '请求参数生成测试' }).getByText('已完成', { exact: true })).toBeVisible({ timeout: 20000 })
     expect(provider.requests).toHaveLength(1)
     expect(provider.requests[0]!.body).toMatchObject({ moderation: 'auto', background: 'transparent', output_compression: 0, n: 1 })
+    await openConfigTab(page)
     await page.getByRole('button', { name: '恢复 low 默认值', exact: true }).click()
     await expect(editor).toHaveValue(/"moderation": "low"/)
     await page.locator('#display-language').selectOption('en-US')
-    await expect(page.getByLabel('Request parameters (JSON)', { exact: true })).toHaveValue(/"moderation": "low"/)
+    await expect(page.getByRole('textbox', { name: 'Request parameters (JSON)', exact: true })).toHaveValue(/"moderation": "low"/)
     await page.locator('#display-language').selectOption('zh-CN')
     await page.getByRole('button', { name: '保存请求参数', exact: true }).click()
+    await openStudioTab(page)
     await page.getByLabel('参考图（可选）', { exact: true }).setInputFiles({ name: 'source.png', mimeType: 'image/png', buffer: provider.image })
     await page.getByLabel('提示词', { exact: true }).fill('请求参数编辑测试')
     await page.getByRole('button', { name: '编辑图片', exact: true }).click()
@@ -97,6 +114,8 @@ test.describe('生图插件真实临时 Host', () => {
     expect(provider.edits).toHaveLength(1)
     expect(provider.edits[0]!.fields.moderation).toBe('low')
     await page.reload()
+    await expect(page.getByRole('tab', { name: '接口与参数配置', exact: true })).toBeVisible()
+    await openConfigTab(page)
     await expect(editor).toHaveValue(/"moderation": "low"/)
     await page.setViewportSize({ width: 390, height: 844 }); await page.emulateMedia({ colorScheme: 'dark' })
     await page.locator('.image-parameters').scrollIntoViewIfNeeded()
@@ -106,7 +125,8 @@ test.describe('生图插件真实临时 Host', () => {
 
   test('请求参数错误与CAS冲突保留草稿，显式放弃重读后才能继续', async ({ page }) => {
     await open(page)
-    const editor = page.getByLabel('请求参数（JSON）', { exact: true })
+    await openConfigTab(page)
+    const editor = page.getByRole('textbox', { name: '请求参数（JSON）', exact: true })
     await expect(editor).toHaveValue(/low/)
     await editor.fill('{"n":2}')
     await page.getByRole('button', { name: '保存请求参数', exact: true }).click()
@@ -232,11 +252,13 @@ test.describe('生图插件真实临时 Host', () => {
 
   test('英文错误态按后端 code 映射固定文案，不显示原始中文', async ({ page }) => {
     await open(page)
+    await openConfigTab(page)
     await page.getByLabel('Base URL', { exact: true }).fill(provider.baseUrl)
     await page.getByLabel('API Key', { exact: true }).fill('wrong-fixture-key')
     await page.getByLabel('模型', { exact: true }).fill('gpt-image-fixture')
     await page.getByRole('button', { name: '保存配置', exact: true }).click()
     await expect(page.getByText('配置已保存。保存只更新本地配置。', { exact: true }).first()).toBeVisible()
+    await openStudioTab(page)
     await page.getByLabel('提示词', { exact: true }).fill('English error fixture')
     await page.getByRole('button', { name: '生成图片', exact: true }).click()
     await page.getByRole('button', { name: '确认提交', exact: true }).click()
@@ -248,13 +270,16 @@ test.describe('生图插件真实临时 Host', () => {
 
   test('参考图上传后走 /images/edits，任务标记编辑来源并保留图片预览', async ({ page }, info) => {
     await open(page)
+    await openConfigTab(page)
     await page.getByLabel('Base URL', { exact: true }).fill(provider.baseUrl)
     await page.getByLabel('API Key', { exact: true }).fill(provider.apiKey)
     await page.getByLabel('模型', { exact: true }).fill('gpt-image-fixture')
     await page.getByRole('button', { name: '保存配置', exact: true }).click()
     await expect(page.getByText('配置已保存。保存只更新本地配置。', { exact: true }).first()).toBeVisible()
+    await openStudioTab(page)
     await page.getByLabel('参考图（可选）', { exact: true }).setInputFiles({ name: 'source.png', mimeType: 'image/png', buffer: provider.image })
     await expect(page.locator('.image-source-preview img')).toBeVisible()
+    await expect(page.locator('.image-source-preview').getByText('本地上传', { exact: true })).toBeVisible()
     await page.locator('.image-source-preview').scrollIntoViewIfNeeded()
     await page.screenshot({ path: info.outputPath('image-generation-edit-source.png') })
     const prompt = '把这张图改成蓝色'
@@ -274,6 +299,7 @@ test.describe('生图插件真实临时 Host', () => {
 
   test('配置 CAS 冲突不静默推进版本，必须放弃草稿后重读', async ({ page }) => {
     await open(page)
+    await openConfigTab(page)
     await page.getByLabel('Base URL', { exact: true }).fill(provider.baseUrl)
     await page.getByLabel('API Key', { exact: true }).fill(provider.apiKey)
     await page.getByLabel('模型', { exact: true }).fill('conflict-model')
@@ -293,13 +319,17 @@ test.describe('生图插件真实临时 Host', () => {
 
   test('未配置 Key 时停用再启用不报错', async ({ page }) => {
     await open(page)
-    const footer = page.locator('.plugins-panel-footer')
-    await footer.getByRole('button', { name: '停用', exact: true }).click()
-    await expect(footer.getByRole('button', { name: '启用', exact: true })).toBeVisible()
-    await footer.getByRole('button', { name: '启用', exact: true }).click()
+    const lifecycle = page.locator('.eating-lifecycle')
+    await lifecycle.getByRole('switch', { name: '停用插件', exact: true }).click()
+    const confirm = lifecycle.getByRole('alertdialog')
+    await confirm.getByRole('button', { name: '确认停用', exact: true }).click()
+    await expect(lifecycle.getByRole('switch', { name: '启用插件', exact: true })).toBeVisible()
+    await lifecycle.getByRole('switch', { name: '启用插件', exact: true }).click()
+    await expect(lifecycle.getByRole('switch', { name: '停用插件', exact: true })).toBeVisible()
+    await openConfigTab(page)
     await expect(page.getByLabel('Base URL', { exact: true })).toBeVisible()
     await expect(page.locator('.image-notice[role="alert"]')).toHaveCount(0)
-    await expect(page.getByText('生图尚未就绪：请填写并保存图片模型名称。', { exact: true }).first()).toBeVisible()
+    await expect(page.locator('.image-tab-panel:not([hidden])').getByText('生图尚未就绪：请填写并保存图片模型名称。', { exact: true })).toBeVisible()
   })
 
   test('无配置禁生成，保存 key/model 后确认计费生成，预览/刷新/语言/隐藏/重启状态正确', async ({ page }, info) => {
@@ -307,12 +337,14 @@ test.describe('生图插件真实临时 Host', () => {
     await expect(page.getByRole('button', { name: '生成图片', exact: true })).toBeDisabled()
     expect(provider.requests).toHaveLength(0)
 
+    await openConfigTab(page)
     await page.getByLabel('Base URL', { exact: true }).fill(provider.baseUrl)
     await page.getByLabel('API Key', { exact: true }).fill(provider.apiKey)
     await page.getByLabel('模型', { exact: true }).fill('gpt-image-fixture')
     await page.getByRole('button', { name: '保存配置', exact: true }).click()
     await expect(page.getByText('配置已保存。保存只更新本地配置。', { exact: true }).first()).toBeVisible()
-    await expect(page.locator('.plugins-panel-head').getByText('已就绪', { exact: true })).toBeVisible()
+    await expect(page.locator('.eating-lifecycle').getByText('已就绪', { exact: true })).toBeVisible()
+    await expect(page.locator('.image-block-heading').getByText('本地就绪', { exact: true })).toBeVisible()
     expect(provider.requests).toHaveLength(0)
     const saved = await page.request.get(url + '/api/plugins/image-generation/configuration')
     expect(saved.status()).toBe(200)
@@ -322,6 +354,7 @@ test.describe('生图插件真实临时 Host', () => {
     expect(configuration.model).toBe('gpt-image-fixture')
     expect(configuration.ready).toBe(true)
 
+    await openStudioTab(page)
     const prompt = '一只在晨光里伸懒腰的橘猫，柔和的水彩风格'
     await page.getByLabel('提示词', { exact: true }).fill(prompt)
     await page.locator('#display-language').selectOption('en-US')
@@ -367,13 +400,17 @@ test.describe('生图插件真实临时 Host', () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0)
 
     await page.setViewportSize({ width: 1440, height: 1000 })
+    await openConfigTab(page)
     await page.getByLabel('API Key', { exact: true }).fill('unsaved-private-key')
+    await openStudioTab(page)
     await page.locator('.image-asset-row').first().click()
     await expect(preview).toBeVisible()
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')) })
-    await expect(page.getByLabel('API Key', { exact: true })).toHaveValue('')
     await expect(preview).not.toBeVisible()
     await expect(page.locator('.image-preview img')).toHaveCount(0)
+    await openConfigTab(page)
+    await expect(page.getByLabel('API Key', { exact: true })).toHaveValue('')
+    await expect(page.getByText('为防泄露，切离或隐藏页面后未保存的密钥输入已自动清空。', { exact: true })).toBeVisible()
     expect(provider.requests).toHaveLength(1)
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')) })
 
@@ -382,15 +419,95 @@ test.describe('生图插件真实临时 Host', () => {
     url = await host.listen()
     await page.setViewportSize({ width: 1440, height: 1000 })
     await page.goto(url + '/#plugins/image-generation')
-    await expect(page.getByLabel('模型', { exact: true })).toHaveValue('gpt-image-fixture')
     await expect(page.locator('.image-job').filter({ hasText: prompt }).getByText('已完成', { exact: true })).toBeVisible({ timeout: 20_000 })
+    await openConfigTab(page)
+    await expect(page.getByLabel('模型', { exact: true })).toHaveValue('gpt-image-fixture')
     expect(provider.requests).toHaveLength(1)
   })
 
-  test('长图片列表在当前位置预览，明暗窄屏、取消读取、失败及关闭均保持可操作', async ({ page }, info) => {
+  test('历史图片支持列表与预览弹窗直接编辑复用，隐藏页清图库引用并保留上传与提示词草稿', async ({ page }) => {
+    await seedHistory(page, 2)
+    const generatePayloads: unknown[] = []
+    await page.route('**/api/plugins/image-generation/manage', async route => {
+      const body = route.request().postDataJSON() as { operation?: string; input?: unknown }
+      if (body.operation === 'generate') generatePayloads.push(body.input)
+      await route.continue()
+    })
+    await open(page)
+    await openConfigTab(page)
+    await page.getByLabel('Base URL', { exact: true }).fill(provider.baseUrl)
+    await page.getByLabel('API Key', { exact: true }).fill(provider.apiKey)
+    await page.getByLabel('模型', { exact: true }).fill('gpt-image-fixture')
+    await page.getByRole('button', { name: '保存配置', exact: true }).click()
+    await expect(page.getByText('配置已保存。保存只更新本地配置。', { exact: true }).first()).toBeVisible()
+
+    await openStudioTab(page)
+    const rows = page.locator('.image-assets > li')
+    await expect(rows).toHaveCount(2)
+    await expect(page.locator('.image-asset-thumb')).toHaveCount(2)
+
+    // 1. Reuse from asset row button
+    await rows.first().getByRole('button', { name: '基于此图编辑', exact: true }).click()
+    await expect(page.locator('.image-source-preview')).toBeVisible()
+    await expect(page.locator('.image-source-preview').getByText('来自图库', { exact: true })).toBeVisible()
+    await expect(page.locator('.image-source-preview').getByText(/source\.kind = asset/)).toBeVisible()
+    await expect(page.getByLabel('提示词', { exact: true })).toBeFocused()
+
+    // 2. Reuse from preview modal header action
+    await page.getByRole('button', { name: '移除参考图', exact: true }).click()
+    await expect(page.locator('.image-source-preview')).toHaveCount(0)
+    await page.locator('.image-asset-row').nth(1).click()
+    const preview = page.getByRole('dialog', { name: '图片预览', exact: true })
+    await expect(preview.locator('img')).toBeVisible()
+    await preview.getByRole('button', { name: '基于此图继续编辑', exact: true }).click()
+    await expect(preview).not.toBeVisible()
+    await expect(page.locator('.image-source-preview').getByText('来自图库', { exact: true })).toBeVisible()
+    await expect(page.getByLabel('提示词', { exact: true })).toBeFocused()
+
+    // 3. Strategy 2a on document.hidden: clears asset reference & apiKey, preserves prompt draft
+    const draftPrompt = '保留的非机密提示词草稿'
+    await page.getByLabel('提示词', { exact: true }).fill(draftPrompt)
+    await openConfigTab(page)
+    await page.getByLabel('API Key', { exact: true }).fill('unsaved-secret-during-hide')
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')) })
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')) })
+    await expect(page.getByLabel('API Key', { exact: true })).toHaveValue('')
+    await expect(page.getByText('为防泄露，切离或隐藏页面后未保存的密钥输入已自动清空。', { exact: true })).toBeVisible()
+    await openStudioTab(page)
+    await expect(page.getByLabel('提示词', { exact: true })).toHaveValue(draftPrompt)
+    await expect(page.locator('.image-source-preview')).toHaveCount(0)
+
+    // 4. Submit asset edit via source.kind = 'asset'
+    await rows.first().getByRole('button', { name: '基于此图编辑', exact: true }).click()
+    await page.getByLabel('提示词', { exact: true }).fill('基于图库复用编辑生成')
+    await page.getByRole('button', { name: '编辑图片', exact: true }).click()
+    await page.getByRole('button', { name: '确认提交', exact: true }).click()
+    const job = page.locator('.image-job').filter({ hasText: '基于图库复用编辑生成' })
+    await expect(job.getByText('已完成', { exact: true })).toBeVisible({ timeout: 20_000 })
+    await expect(job.getByText('编辑自生成图片', { exact: true })).toBeVisible()
+    expect(generatePayloads).toHaveLength(1)
+    expect((generatePayloads[0] as { source?: { kind?: string; assetId?: string } }).source).toEqual({
+      kind: 'asset',
+      assetId: createHash('sha256').update(createImageFixturePng([20, 165, 94, 255])).digest('hex'),
+    })
+    expect(provider.edits).toHaveLength(1)
+
+    // 5. Strategy 2a upload source persists on document.hidden and clears on pagehide
+    await page.getByLabel('参考图（可选）', { exact: true }).setInputFiles({ name: 'upload.png', mimeType: 'image/png', buffer: provider.image })
+    await expect(page.locator('.image-source-preview').getByText('本地上传', { exact: true })).toBeVisible()
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')) })
+    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')) })
+    await expect(page.locator('.image-source-preview').getByText('本地上传', { exact: true })).toBeVisible()
+    await page.evaluate(() => window.dispatchEvent(new Event('pagehide')))
+    await expect(page.locator('.image-source-preview')).toHaveCount(0)
+  })
+
+  test('长图片列表在当前位置预览并受限并发加载缩略图，明暗窄屏、取消读取、失败及关闭均保持可操作', async ({ page }, info) => {
     const items = Array.from({ length: 20 }, (_, index) => ({ assetId: String(index + 1).padStart(64, '0'), mimeType: 'image/png', bytes: provider.image.length,
       prompt: `预览示例 ${index + 1}：晨光中的绿色花园`, model: 'fixture-images-model', createdAt: '2026-11-13T08:00:00.000Z' }))
     let previewRequests = 0
+    let inFlightGets = 0
+    let maxInFlightGets = 0
     let fail = false
     let release: (() => void) | undefined
     let gate: Promise<void> | undefined
@@ -401,15 +518,25 @@ test.describe('生图插件真实临时 Host', () => {
       }
       if (body.operation !== 'get') { await route.continue(); return }
       previewRequests++
+      inFlightGets++
+      maxInFlightGets = Math.max(maxInFlightGets, inFlightGets)
       const item = items.find(item => item.assetId === body.input.assetId)!
       const failure = fail
-      await gate
-      await route.fulfill(failure ? { status: 404, json: { error: { code: 'IMAGE_GENERATION_NOT_FOUND' } } } : { json: { item,
-        image: { mimeType: 'image/png', data: provider.image.toString('base64') }, sendable: { type: 'image', data: { file: `eating-asset://image-generation/${item.assetId}` } } } }).catch(() => {})
+      try {
+        await gate
+        await route.fulfill(failure ? { status: 404, json: { error: { code: 'IMAGE_GENERATION_NOT_FOUND' } } } : { json: { item,
+          image: { mimeType: 'image/png', data: provider.image.toString('base64') }, sendable: { type: 'image', data: { file: `eating-asset://image-generation/${item.assetId}` } } } }).catch(() => {})
+      } finally {
+        inFlightGets--
+      }
     })
     await open(page)
     await expect(page.locator('.image-asset-row')).toHaveCount(20)
-    expect(previewRequests).toBe(0)
+    await expect(page.locator('.image-asset-thumb')).toHaveCount(20)
+    expect(previewRequests).toBe(20)
+    expect(inFlightGets).toBe(0)
+    expect(maxInFlightGets).toBeGreaterThanOrEqual(1)
+    expect(maxInFlightGets).toBeLessThanOrEqual(3)
     const preview = page.getByRole('dialog', { name: '图片预览', exact: true })
     for (const [width, height, theme] of [[1440, 1000, 'light'], [1440, 1000, 'dark'], [390, 844, 'light'], [390, 844, 'dark']] as const) {
       await page.setViewportSize({ width, height }); await page.emulateMedia({ colorScheme: theme })
@@ -422,7 +549,7 @@ test.describe('生图插件真实临时 Host', () => {
       await expect(preview.locator('img')).toBeInViewport({ ratio: 1 })
       expect(await page.locator('#main-content').evaluate(element => element.scrollTop)).toBe(position)
       await expect(preview.getByRole('button', { name: '关闭预览', exact: true })).toBeFocused()
-      await page.getByLabel('Base URL', { exact: true }).evaluate(element => element.focus())
+      await page.getByLabel('提示词', { exact: true }).evaluate(element => element.focus())
       await expect(preview.getByRole('button', { name: '关闭预览', exact: true })).toBeFocused()
       if (width === 1440 && theme === 'light') {
         await preview.getByRole('button', { name: '下一张', exact: true }).click()

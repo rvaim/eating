@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { MutableRefObject } from 'react'
 import { AlertCircle, Check, RefreshCw } from 'lucide-react'
-import { ActionButton, HostApiError, hostRequest, useI18n } from '@eating/ui-sdk'
+import { ActionButton, HostApiError, Switch, hostRequest, useI18n } from '@eating/ui-sdk'
 import { readModelCapabilities, readModelInformation } from './panel-data'
 import type { ModelCapabilities, ModelInformationSnapshot, ModelOption } from './panel-data'
 import type { DshTranslationKey } from './i18n'
@@ -19,7 +19,6 @@ export function ModelCapabilitiesSettings({ active, enabled, runtimeActive, busy
   const [information, setInformation] = useState<ModelInformationSnapshot | null>(null)
   const [informationLoading, setInformationLoading] = useState(false)
   const [informationFailed, setInformationFailed] = useState(false)
-  const [supplementOpen, setSupplementOpen] = useState(false)
   const dirty = useRef(false)
   const [pending, setPending] = useState<'read' | 'save' | null>(null)
   const [failure, setFailure] = useState<DshTranslationKey | null>(null)
@@ -82,7 +81,7 @@ export function ModelCapabilitiesSettings({ active, enabled, runtimeActive, busy
   useEffect(() => {
     if (savedRoute.current !== routeKey) {
       savedRoute.current = routeKey; cancel(); attempted.current = false; dirty.current = false
-      setSnapshot(null); setDraft(null); setSupplementOpen(false); setNeedsRead(false); setExhausted(false); setSaved(false); setFailure(null)
+      setSnapshot(null); setDraft(null); setNeedsRead(false); setExhausted(false); setSaved(false); setFailure(null)
     }
     if (active && enabled && !attempted.current) void read()
   }, [active, enabled, routeKey, read, cancel])
@@ -96,7 +95,7 @@ export function ModelCapabilitiesSettings({ active, enabled, runtimeActive, busy
   const capabilities = identityMatches ? models !== null ? listSelection?.capabilities ?? null : sameModel && information?.model === savedModel ? information.capabilities : null : null
   const imageReported = capabilities?.imageInput ?? null
   const effectiveImageInput = imageReported ?? snapshot?.imageInput ?? false
-  const canSupplement = configured && sameModel && imageReported === null && (!informationLoading || information !== null || informationFailed || supplementOpen)
+  const canSupplement = configured && sameModel && imageReported === null && (!informationLoading || information !== null || informationFailed)
   async function save() {
     if (!snapshot || draft === null || draft === snapshot.imageInput || !canSupplement || !active || !enabled || document.hidden || request.current || runtimeActive || busy || actionLock.current || needsRead || exhausted) return
     const controller = new AbortController(), ticket = ++generation.current
@@ -122,10 +121,28 @@ export function ModelCapabilitiesSettings({ active, enabled, runtimeActive, busy
     <p className="dsh-model-help">{t(!identityMatches || !sameModel ? 'modelInfo.saveFirst' : informationLoading && !capabilities ? 'modelInfo.loading' : capabilities ? 'modelInfo.reported' : informationFailed ? 'modelInfo.failed' : 'modelInfo.unknown')}</p>
     <dl className="dsh-model-facts"><div><dt>{t('modelInfo.image')}</dt><dd>{bool(capabilities?.imageInput)}</dd></div><div><dt>{t('modelInfo.tools')}</dt><dd>{bool(capabilities?.toolCalling)}</dd></div><div><dt>{t('modelInfo.reasoning')}</dt><dd>{bool(capabilities?.reasoning)}</dd></div><div><dt>{t('modelInfo.context')}</dt><dd>{capabilities?.contextWindow ? t('modelInfo.tokens', { value: formatNumber(capabilities.contextWindow) }) : t('modelInfo.unspecified')}</dd></div><div><dt>{t('modelInfo.output')}</dt><dd>{capabilities?.maxOutputTokens ? t('modelInfo.tokens', { value: formatNumber(capabilities.maxOutputTokens) }) : t('modelInfo.unspecified')}</dd></div></dl>
     {sameModel && snapshot && <p className="dsh-model-help">{t(pendingApply ? 'modelInfo.restart' : imageReported !== null ? 'modelInfo.automatic' : 'modelInfo.manualCurrent', { input: t(effectiveImageInput ? 'modelInfo.textImage' : 'modelInfo.text') })}</p>}
-    {canSupplement && <details className="dsh-model-supplement" open={supplementOpen} onToggle={event => setSupplementOpen(event.currentTarget.open)}><summary>{t('modelInfo.supplement')}</summary><p className="dsh-help">{t('capabilities.description')}</p>
-      {snapshot && draft !== null ? <label className="check-field"><input type="checkbox" checked={draft} disabled={pending !== null || !enabled} aria-describedby={`${prefix}-help`} onChange={event => { dirty.current = true; setDraft(event.target.checked); setSaved(false) }} /><span><strong>{t('capabilities.imageInput')}</strong><small id={`${prefix}-help`}>{t('capabilities.declaration')}</small></span></label> : <p className="dsh-help" role="status">{t(pending === 'read' ? 'capabilities.loading' : 'capabilities.unread')}</p>}
-      <p className="dsh-help">{t('capabilities.stopFirst')}</p><div className="dsh-capability-actions"><ActionButton reasonCode="busy" type="button" className="button button-secondary" disabled={pending !== null || informationLoading || !enabled || !active} onClick={() => void read()}>{t(pending === 'read' ? 'capabilities.reading' : 'capabilities.reread')}</ActionButton><ActionButton reasonCode={!enabled ? 'enable' : runtimeActive ? 'stop' : needsRead || exhausted || !snapshot ? 'read' : pending !== null || informationLoading || busy ? 'busy' : 'unchanged'} type="button" className="button button-primary" disabled={!snapshot || draft === null || draft === snapshot.imageInput || pending !== null || informationLoading || !enabled || !active || runtimeActive || busy || needsRead || exhausted} onClick={() => void save()}>{t(pending === 'save' ? 'capabilities.saving' : 'capabilities.save')}</ActionButton></div>
-    </details>}
+    {canSupplement && <div className="dsh-model-supplement">
+      <strong className="dsh-model-supplement-title">{t('modelInfo.supplement')}</strong>
+      <p className="dsh-help">{t('capabilities.description')}</p>
+      {snapshot && draft !== null ? (
+        <Switch
+          id={`${prefix}-image-input`}
+          checked={draft}
+          disabled={pending !== null || !enabled}
+          reasonCode={!enabled ? 'enable' : 'busy'}
+          label={t('capabilities.imageInput')}
+          description={t('capabilities.declaration')}
+          onChange={next => { dirty.current = true; setDraft(next); setSaved(false) }}
+        />
+      ) : (
+        <p className="dsh-help" role="status">{t(pending === 'read' ? 'capabilities.loading' : 'capabilities.unread')}</p>
+      )}
+      <p className="dsh-help">{t('capabilities.stopFirst')}</p>
+      <div className="dsh-capability-actions">
+        <ActionButton reasonCode="busy" type="button" className="button button-secondary" disabled={pending !== null || informationLoading || !enabled || !active} onClick={() => void read()}>{t(pending === 'read' ? 'capabilities.reading' : 'capabilities.reread')}</ActionButton>
+        <ActionButton reasonCode={!enabled ? 'enable' : runtimeActive ? 'stop' : needsRead || exhausted || !snapshot ? 'read' : pending !== null || informationLoading || busy ? 'busy' : 'unchanged'} type="button" className="button button-primary" disabled={!snapshot || draft === null || draft === snapshot.imageInput || pending !== null || informationLoading || !enabled || !active || runtimeActive || busy || needsRead || exhausted} onClick={() => void save()}>{t(pending === 'save' ? 'capabilities.saving' : 'capabilities.save')}</ActionButton>
+      </div>
+    </div>}
     {failure && <div className="dsh-error" role="alert"><AlertCircle size={16} aria-hidden="true" /><p>{t(failure)}</p></div>}
     {saved && <p className="dsh-result" role="status"><Check size={15} aria-hidden="true" />{t('capabilities.saved')}</p>}
   </section>

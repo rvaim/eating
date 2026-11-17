@@ -27,8 +27,25 @@ export function makeDraft(value: MemoryConfiguration): ConfigurationDraft {
   return { endpoint: value.endpoint, account: value.account, user: value.user, apiKey: '', clearApiKey: false,
     autoConnect: value.autoConnect, timeoutMs: String(value.timeoutMs), settings }
 }
+export function isConnectionDirty(draft: ConfigurationDraft | null, config: MemoryConfiguration | null): boolean {
+  if (!draft || !config) return false
+  const baseline = makeDraft(config)
+  return (
+    draft.endpoint !== baseline.endpoint ||
+    draft.account !== baseline.account ||
+    draft.user !== baseline.user ||
+    draft.apiKey !== baseline.apiKey ||
+    draft.clearApiKey !== baseline.clearApiKey ||
+    draft.autoConnect !== baseline.autoConnect ||
+    draft.timeoutMs !== baseline.timeoutMs
+  )
+}
+export function isRangesDirty(draft: ConfigurationDraft | null, config: MemoryConfiguration | null): boolean {
+  if (!draft || !config) return false
+  return JSON.stringify(draft.settings) !== JSON.stringify(makeDraft(config).settings)
+}
 export function isDirty(draft: ConfigurationDraft | null, config: MemoryConfiguration | null): boolean {
-  return Boolean(draft && config && JSON.stringify(draft) !== JSON.stringify(makeDraft(config)))
+  return isConnectionDirty(draft, config) || isRangesDirty(draft, config)
 }
 export function validEndpoint(value: string): boolean {
   try { const url = new URL(value); return value.length <= 2048 && ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash && !/[?#]/.test(value) }

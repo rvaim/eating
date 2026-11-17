@@ -22,7 +22,7 @@
 .autonomy-settings input[aria-invalid="true"], .autonomy-settings select[aria-invalid="true"] { border-color: var(--color-line-invalid); }
 .autonomy-settings input[type="checkbox"] { flex-shrink: 0; width: 17px; height: 17px; margin: 3px 0 0; accent-color: var(--color-primary); }
 .autonomy-tabs { position: sticky; top: calc(-1 * var(--content-inset-block-start)); z-index: 3; display: flex; align-items: stretch; gap: 24px; margin: 20px calc(-1 * var(--content-inset-inline-end)) 0 calc(-1 * var(--content-inset-inline-start)); padding: var(--panel-tab-padding-block) var(--content-inset-inline-end) 0 var(--content-inset-inline-start); border-bottom: 1px solid var(--color-line); background: var(--color-surface); }
-.autonomy-tabs button { display: inline-flex; align-items: center; gap: 7px; padding: 9px 0 13px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--color-ink-soft); font: inherit; font-size: 13px; white-space: nowrap; }
+.autonomy-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-width: 44px; padding: 9px 6px 13px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--color-ink-soft); font: inherit; font-size: 13px; white-space: nowrap; }
 .autonomy-tabs button:hover { color: var(--color-primary-hover); }
 .autonomy-tabs button[aria-selected="true"] { color: var(--color-primary-hover); border-bottom-color: var(--color-primary); font-weight: 600; }
 .autonomy-tab-count { padding: 1px 6px; border-radius: 4px; background: var(--color-surface-sunken); color: var(--color-muted); font-size: 11px; font-variant-numeric: tabular-nums; }

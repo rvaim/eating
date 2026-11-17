@@ -49,4 +49,13 @@ describe('DeepSeek TTS protocol adapter', () => {
     const path = join(f.root, 'config.json'), bytes = '{"schemaVersion":1}'
     writeFileSync(path, bytes); expect(() => new SpeechConfig(f.root)).toThrow(); expect(readFileSync(path, 'utf8')).toBe(bytes)
   })
+  it('verifies DeepSeek credentials via non-billing test-connection without synthesis charges', async () => {
+    const f = await fixture()
+    const probed = await f.plugin.manage('test-connection', {}) as JsonObject
+    expect(probed).toMatchObject({ ok: true })
+    expect(typeof probed.latencyMs).toBe('number')
+    expect(f.provider.synthesis).toHaveLength(0)
+    await f.plugin.updateConfiguration({ expectedRevision: 1, clearApiKey: true })
+    await expect(f.plugin.manage('test-connection', {})).rejects.toMatchObject({ code: 'SPEECH_NOT_READY', outcome: 'not-sent' })
+  })
 })

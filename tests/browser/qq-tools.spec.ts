@@ -71,7 +71,7 @@ test.describe('完整 OneBot 工具的通用面板', () => {
     expect(pageErrors).toEqual([])
   })
 
-  async function configure(page: Page, timeout = 1000) {
+  async function configure(page: Page, timeout = 1) {
     await page.goto(`${url}/#robots/qq`)
     await page.getByLabel('显示名称', { exact: true }).fill('用户配置名称 {{原文}}')
     await page.getByLabel('OneBot 地址', { exact: true }).fill(onebot.endpoint)
@@ -292,7 +292,7 @@ test.describe('完整 OneBot 工具的通用面板', () => {
   })
 
   test('凭据仅主动显示，隐藏离开停用均清除，已取消的迟到结果不能恢复或进入记录', async ({ page }) => {
-    await configure(page, 5000)
+    await configure(page, 5)
     await page.getByLabel('测试功能', { exact: true }).selectOption('qq_get_credentials')
     expect(onebot.requests.filter(request => request.action === 'get_credentials')).toHaveLength(0)
     const aborted: string[] = []
@@ -334,7 +334,7 @@ test.describe('完整 OneBot 工具的通用面板', () => {
     await page.getByLabel('测试功能', { exact: true }).selectOption('qq_get_credentials')
     await page.getByRole('button', { name: '执行测试', exact: true }).click()
     await expect(page.locator('.qq-execution').first()).toContainText(credentialValue)
-    await page.getByRole('button', { name: '停用插件', exact: true }).click()
+    await page.getByRole('switch', { name: '停用插件', exact: true }).click()
     await page.getByRole('button', { name: '确认停用', exact: true }).click()
     await expect(page.locator('.qq-panel')).toHaveCount(0)
     await page.getByRole('button', { name: '添加连接', exact: true }).click()
@@ -383,5 +383,109 @@ test.describe('完整 OneBot 工具的通用面板', () => {
     expect(onebot.requests.filter(request => request.action === 'set_group_whole_ban_rate_limited')).toHaveLength(1)
     expect(onebot.requests.find(request => request.action === 'set_group_whole_ban_rate_limited')?.params).toEqual({ group_id: 123456, enable: false })
     await expect(page.getByRole('tabpanel', { name: '功能测试', exact: true }).locator(':scope > .qq-execution')).not.toContainText('执行完成')
+  })
+
+  test('可视化消息段编辑器支持增删排序与历史记录回填重新调试', async ({ page }) => {
+    await configure(page)
+    await page.getByLabel('测试功能', { exact: true }).selectOption('qq_send_message')
+    await page.getByLabel('消息类型（选填）', { exact: true }).selectOption('group')
+    await page.getByLabel('目标群号（选填）', { exact: true }).fill('123456')
+    await page.getByLabel('消息内容格式', { exact: true }).selectOption('visual')
+    await expect(page.getByText('暂无消息段，点击上方按钮添加文本、图片或 @ 提及段。', { exact: true })).toBeVisible()
+
+    await page.getByRole('button', { name: '+ @提及段', exact: true }).click()
+    await page.getByLabel('@目标 QQ 号（或 all 全体成员）', { exact: true }).fill('987654321')
+    await page.getByRole('button', { name: '+ 文本段', exact: true }).click()
+    await page.getByLabel('文本段内容', { exact: true }).fill('第二条文字')
+    await page.getByRole('button', { name: '+ 图片段', exact: true }).click()
+    await page.getByLabel('图片来源（eating-asset:// 或 URL）', { exact: true }).fill('https://example.test/extra.png')
+    await page.getByRole('button', { name: '移除消息段', exact: true }).nth(2).click()
+    await expect(page.locator('.qq-segment-row')).toHaveCount(2)
+    await page.getByRole('button', { name: '上移消息段', exact: true }).nth(1).click()
+
+    await page.getByRole('checkbox', { name: genericConfirmation, exact: true }).check()
+    await page.getByRole('button', { name: '执行测试', exact: true }).click()
+    await expect.poll(() => onebot.requests.filter(request => request.action === 'send_msg').length).toBe(1)
+    expect(onebot.requests.find(request => request.action === 'send_msg')?.params).toEqual({
+      auto_escape: true,
+      message_type: 'group',
+      group_id: 123456,
+      message: [
+        { type: 'text', data: { text: '第二条文字' } },
+        { type: 'at', data: { qq: '987654321' } },
+      ],
+    })
+
+    await page.getByLabel('测试功能', { exact: true }).selectOption('qq_get_login_info')
+    await page.getByRole('button', { name: '执行测试', exact: true }).click()
+    await expect(page.getByRole('tabpanel', { name: '功能测试', exact: true }).locator(':scope > .qq-execution').getByLabel('请求与结果 JSON', { exact: true })).toContainText('本地协议测试账号')
+    await page.locator('.qq-history summary').click()
+    await page.locator('.qq-history').getByRole('button', { name: '载入此参数重新调试', exact: true }).click()
+    await expect(page.getByLabel('测试功能', { exact: true })).toHaveValue('qq_send_message')
+    await expect(page.getByLabel('消息内容格式', { exact: true })).toHaveValue('visual')
+    await expect(page.getByLabel('文本段内容', { exact: true })).toHaveValue('第二条文字')
+    await expect(page.getByLabel('@目标 QQ 号（或 all 全体成员）', { exact: true })).toHaveValue('987654321')
+    await expect(page.getByRole('checkbox', { name: genericConfirmation, exact: true })).not.toBeChecked()
+  })
+
+  test('MCP 手动配置弹窗按 Escape 关闭后恢复触发按钮焦点', async ({ page }) => {
+    await configure(page)
+    await page.getByRole('tab', { name: 'MCP 能力', exact: true }).click()
+    const revealButton = page.getByRole('button', { name: '查看 MCP 配置', exact: true })
+    await revealButton.click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByRole('heading', { name: '手动 MCP 连接凭据', exact: true })).toBeVisible()
+    await expect(dialog.locator('.qq-mcp-modal-header button[aria-label="关闭弹窗"]')).toBeFocused()
+    await expect(dialog.getByRole('button', { name: '复制地址', exact: true })).toBeVisible()
+    await expect(dialog.getByRole('button', { name: '复制请求头', exact: true })).toBeVisible()
+    await expect(dialog.getByRole('button', { name: '复制完整配置 JSON', exact: true })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(revealButton).toBeFocused()
+  })
+
+  test('实时日志支持搜索过滤、暂停跟随、跳至最新、展开详情与快捷测试抽屉互通', async ({ page }) => {
+    await configure(page)
+    await page.getByRole('tab', { name: '实时日志', exact: true }).click()
+    await expect(page.locator('.qq-live-logs strong[data-state="connected"]')).toHaveText('实时接收中')
+
+    onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id: 81001, message: '日志私聊关键词 alpha' })
+    onebot.emitEvent({ post_type: 'message', message_type: 'group', self_id: 123456789, group_id: 778899, user_id: 111222, message_id: 81002, message: '日志群聊关键词 beta' })
+    await expect(page.locator('.qq-live-logs-count')).toHaveText('当前 2 / 100 条')
+
+    await page.getByRole('searchbox', { name: '搜索日志', exact: true }).fill('778899')
+    await expect(page.locator('.qq-live-logs-count')).toHaveText('当前 1 / 100 条')
+    await page.getByRole('searchbox', { name: '搜索日志', exact: true }).fill('')
+    await expect(page.locator('.qq-live-logs-count')).toHaveText('当前 2 / 100 条')
+
+    await page.getByLabel('来源', { exact: true }).selectOption('private')
+    await expect(page.locator('.qq-live-log-row')).toHaveCount(1)
+    await page.getByLabel('来源', { exact: true }).selectOption('all')
+    await expect(page.locator('.qq-live-log-row')).toHaveCount(2)
+
+    await page.getByRole('button', { name: '暂停跟随', exact: true }).click()
+    await expect(page.getByRole('button', { name: '恢复跟随', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id: 81003, message: '日志暂停新增 gamma' })
+    await expect(page.getByText('已暂停滚动跟随（新增 1 条日志）', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '跳至最新', exact: true }).click()
+    await expect(page.locator('.qq-live-logs-paused-banner')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '暂停跟随', exact: true })).toHaveAttribute('aria-pressed', 'false')
+
+    await page.locator('.qq-live-log-expand-btn').first().click()
+    await expect(page.locator('.qq-live-log-identifiers').first()).toBeVisible()
+
+    await page.locator('.qq-live-log-row').filter({ hasText: '987654321' }).first().getByRole('button', { name: '填入测试目标', exact: true }).click()
+    const drawer = page.getByRole('region', { name: '页内快捷测试抽屉', exact: true })
+    await expect(drawer).toBeVisible()
+    await expect(drawer.getByLabel('目标类型', { exact: true })).toHaveValue('private')
+    await expect(drawer.getByLabel('目标 QQ 号 / 群号', { exact: true })).toHaveValue('987654321')
+    await drawer.getByRole('button', { name: '获取登录账号', exact: true }).click()
+    await expect(drawer.getByRole('status')).toContainText('123456789')
+
+    await drawer.getByRole('button', { name: '转到完整功能测试', exact: true }).click()
+    await expect(page.getByRole('tab', { name: '功能测试', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByLabel('测试功能', { exact: true })).toHaveValue('qq_send_message')
+    await expect(page.getByLabel('目标 QQ 号（选填）', { exact: true })).toHaveValue('987654321')
   })
 })

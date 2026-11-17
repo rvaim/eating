@@ -3,7 +3,7 @@
   "id": "speech-to-text",
   "name": "语音识别",
   "description": "将获准会话语音或主人上传的音频转写为文字。",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "kind": "capability",
   "apiVersion": 4,
   "assets": [],

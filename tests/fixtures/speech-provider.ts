@@ -3,10 +3,18 @@ import { WebSocketServer } from 'ws'
 import type WebSocket from 'ws'
 export type SpeechFixtureMode = 'success' | 'mismatch' | 'close' | 'hold' | 'oversize' | 'auth' | 'bad-voice'
 export async function startSpeechFixture(mode: SpeechFixtureMode = 'success') {
-  const server = createServer(), wss = new WebSocketServer({ noServer: true })
   const sessions: Record<string, unknown>[] = [], requests: Record<string, unknown>[] = [], pending: Array<() => void> = []
   const sockets = new Set<WebSocket>()
   let connections = 0, active = 0
+  const server = createServer((request, response) => {
+    if (request.method === 'GET' && request.url === '/v1/models') {
+      if (mode === 'auth') { response.writeHead(401).end(); return }
+      if (request.headers.authorization !== 'Bearer fixture-speech-key') { response.writeHead(403).end(); return }
+      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ object: 'list', data: [{ id: 'gpt-realtime-2.1-mini' }] }))
+      return
+    }
+    response.writeHead(404).end()
+  }), wss = new WebSocketServer({ noServer: true })
   server.on('upgrade', (request, socket, head) => {
     connections++
     if (mode === 'auth') { socket.end('HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n'); return }

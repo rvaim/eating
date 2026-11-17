@@ -6,6 +6,7 @@ import { DEFAULT_IMAGE_LIMITS, PlatformError } from '@eating/plugin-sdk'
 import type { CapabilityInvocationScope, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { RecognitionPlugin } from '../server'
 import { hash } from './config'
+import { recognitionProbeUrl, testRecognitionConnection } from './provider'
 import { inputWav } from '../../../../../tests/fixtures/input-audio'
 import { startDeepSeekSpeechFixture } from '../../../../../tests/fixtures/deepseek-speech'
 import type { DeepSeekSpeechMode } from '../../../../../tests/fixtures/deepseek-speech'
@@ -59,6 +60,22 @@ describe('DeepSeek speech recognition', () => {
   it('bounds list previews while retaining the complete transcript for explicit reads', async () => {
     const f = await fixture('long'), job = await f.done((await f.submit()).jobId), list = await f.plugin.manage('jobs', {}) as { items: Array<{ textPreview: string; textTruncated: boolean; text?: string }> }
     expect(job.text).toHaveLength(32000); expect(list.items[0]).toMatchObject({ textPreview: '长'.repeat(160), textTruncated: true }); expect(list.items[0]).not.toHaveProperty('text')
+  })
+  it('verifies DeepSeek ASR connectivity via non-billing /v1/models check without uploads', async () => {
+    expect(recognitionProbeUrl('https://api.deepseek.com/v1/tools/asr').href).toBe('https://api.deepseek.com/v1/models')
+    expect(recognitionProbeUrl('https://proxy.example.com/prefix/v1/tools/asr').href).toBe('https://proxy.example.com/prefix/v1/models')
+    const f = await fixture()
+    const probed = await f.plugin.manage('test-connection', {}) as JsonObject
+    expect(probed).toMatchObject({ ok: true })
+    expect(typeof probed.latencyMs).toBe('number')
+    expect(f.provider.recognition).toHaveLength(0)
+    await expect(f.plugin.manage('test-connection', { extra: true })).rejects.toMatchObject({ code: 'ASR_INVALID_INPUT', outcome: 'not-sent' })
+    const abort = new AbortController(); abort.abort()
+    await expect(testRecognitionConnection({ schemaVersion: 1, revision: 1, endpoint: f.provider.asrEndpoint, provider: { protocol: 'deepseek-asr' }, timeoutMs: 30000, apiKey: 'fixture-deepseek-key' }, abort.signal)).rejects.toMatchObject({ code: 'ASR_CANCELLED', outcome: 'not-sent' })
+    await f.plugin.updateConfiguration({ expectedRevision: 1, apiKey: 'wrong-key' })
+    await expect(f.plugin.manage('test-connection', {})).rejects.toMatchObject({ code: 'ASR_AUTH_FAILED', outcome: 'not-sent' })
+    const bad = await fixture('reject')
+    await expect(bad.plugin.manage('test-connection', {})).rejects.toMatchObject({ code: 'ASR_CONNECTION_FAILED', outcome: 'not-sent' })
   })
 
 })

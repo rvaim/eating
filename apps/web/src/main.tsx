@@ -8,8 +8,10 @@ import { App } from './App'
 import { PanelBoundary } from './components/PanelBoundary'
 import { loadPluginCatalog } from './plugins/catalog'
 import { PlatformWorkspace } from './state/workspace'
+import { initTheme } from './state/theme'
 import './styles.css'
 
+initTheme()
 registerUiRuntime(React, JsxRuntime)
 const workspace = new PlatformWorkspace([], undefined, loadPluginCatalog)
 const root = document.getElementById('root')

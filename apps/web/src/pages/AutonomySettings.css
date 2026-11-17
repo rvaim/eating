@@ -21,12 +21,12 @@
 .autonomy-settings input::placeholder { color: var(--color-placeholder); }
 .autonomy-settings input[aria-invalid="true"], .autonomy-settings select[aria-invalid="true"] { border-color: var(--color-line-invalid); }
 .autonomy-settings input[type="checkbox"] { flex-shrink: 0; width: 17px; height: 17px; margin: 3px 0 0; accent-color: var(--color-primary); }
-.autonomy-tabs { position: sticky; top: calc(-1 * var(--content-inset-block-start)); z-index: 3; display: flex; align-items: center; gap: 4px; margin: 16px calc(-1 * var(--content-inset-inline-end)) 0 calc(-1 * var(--content-inset-inline-start)); padding: var(--panel-tab-padding-block) var(--content-inset-inline-end) var(--panel-tab-padding-block) var(--content-inset-inline-start); border-bottom: 1px solid var(--color-line); background: var(--color-surface); }
+.autonomy-tabs { position: sticky; top: calc(-1 * var(--content-inset-block-start)); z-index: 3; display: flex; align-items: center; gap: 4px; margin: 16px calc(-1 * var(--content-inset-inline-end)) 0 calc(-1 * var(--content-inset-inline-start)); padding: var(--panel-tab-padding-block) var(--content-inset-inline-end) var(--panel-tab-padding-block) var(--content-inset-inline-start); border-bottom: 1px solid var(--color-line); background: var(--color-canvas); }
 .autonomy-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-width: 44px; min-height: 44px; padding: 8px 16px; border: 1px solid transparent; border-radius: var(--radius); background: transparent; color: var(--color-muted); font: inherit; font-size: 13px; font-weight: 500; white-space: nowrap; }
 .autonomy-tabs button:hover { color: var(--color-ink); background: var(--color-hover); }
-.autonomy-tabs button[aria-selected="true"] { color: var(--color-primary-hover); border-color: var(--color-line); background: var(--color-surface-raised); font-weight: 600; }
+.autonomy-tabs button[aria-selected="true"] { color: var(--color-primary-hover); border-color: var(--color-line-strong); background: var(--color-surface); font-weight: 600; box-shadow: var(--shadow-card); }
 .autonomy-tab-count { padding: 2px 6px; border-radius: 4px; background: var(--color-surface-sunken); color: var(--color-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.autonomy-status-banner { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px 24px; padding: 20px 0; border-bottom: 1px solid var(--color-line); margin-bottom: 24px; }
+.autonomy-status-banner { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px 24px; padding: 20px 24px; border: 1px solid var(--color-line); border-radius: var(--radius-card); background: var(--color-surface); box-shadow: var(--shadow-card); margin: 16px 0 20px; }
 .autonomy-status-copy { flex: 1; min-width: 220px; }
 .autonomy-status-copy h3 { font-size: 18px; letter-spacing: 0; }
 .autonomy-status-copy p { max-width: 65ch; margin-top: 6px; color: var(--color-muted); font-size: 13px; line-height: 1.65; }
@@ -51,6 +51,7 @@
 .autonomy-error-summary a { text-decoration: underline; text-underline-offset: 3px; color: var(--color-danger-ink); }
 .autonomy-success { display: flex; align-items: flex-start; gap: 8px; padding: 12px 0; margin-bottom: 16px; color: var(--color-primary-hover); font-size: 13px; line-height: 1.6; }
 .autonomy-success svg { flex-shrink: 0; margin-top: 2px; }
+.autonomy-settings [role="tabpanel"]:not([hidden]) { padding: 24px; border: 1px solid var(--color-line); border-radius: var(--radius-card); background: var(--color-surface); box-shadow: var(--shadow-card); }
 .autonomy-arrangement { padding: 0 0 24px; }
 .autonomy-arrangement > div { display: flex; align-items: center; gap: 8px; color: var(--color-muted); }
 .autonomy-arrangement h3 { font-size: 13px; font-weight: 500; }
@@ -166,6 +167,8 @@
 @keyframes autonomy-spin { to { transform: rotate(360deg); } }
 @media (max-width: 850px) { .autonomy-field { grid-template-columns: minmax(0, 1fr) 150px; gap: 16px; } .autonomy-save { --autonomy-save-inset: 36px; } .autonomy-contact-fields { grid-template-columns: 1fr; } .autonomy-tool-choices { grid-template-columns: 1fr; } }
 @media (max-width: 600px) {
+  .autonomy-settings [role="tabpanel"]:not([hidden]) { padding: 16px; }
+  .autonomy-status-banner { padding: 16px; }
   .autonomy-settings { --autonomy-save-inset: 32px; }
   .autonomy-heading { align-items: flex-start; gap: 12px; }
   .autonomy-heading h2 { font-size: 22px; }

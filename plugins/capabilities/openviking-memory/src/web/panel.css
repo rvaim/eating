@@ -5,12 +5,12 @@
 .ov-panel :is(input, select, textarea, button, summary, a, [tabindex]) { scroll-margin-block: 92px calc(var(--ov-save-rail-height, 0px) + 18px); }
 .ov-panel :is(button, input, select, textarea, summary, a, [tabindex]):focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
 
-.ov-master-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 16px; margin-bottom: 12px; padding: 12px 16px; border: 1px solid var(--color-line); border-radius: var(--radius); background: var(--color-surface-quiet); }
+.ov-master-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 16px; margin-bottom: 12px; padding: 14px 20px; border: 1px solid var(--color-line); border-radius: var(--radius-card, 12px); background: var(--color-surface); box-shadow: var(--shadow-card, none); }
 .ov-master-banner.is-off { border-color: var(--color-line-alert); background: var(--color-warning-surface); }
 .ov-master-pending { padding: 3px 10px; border-radius: 999px; background: var(--color-highlight); color: var(--color-warning-ink); font-size: 12px; font-weight: 500; }
 
 .ov-tabs { margin-bottom: 0; }
-.ov-tab-panel { min-width: 0; padding-block: 24px 28px; }
+.ov-tab-panel { min-width: 0; margin-top: 16px; padding: 24px; border: 1px solid var(--color-line); border-radius: var(--radius-card, 12px); background: var(--color-surface); box-shadow: var(--shadow-card, none); }
 .ov-section { margin-top: 28px; padding-top: 24px; border-top: 1px solid var(--color-line); }
 .ov-subsection { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--color-line); }
 .ov-subsection > h4 { margin: 0 0 16px; font-size: 14px; font-weight: 600; color: var(--color-ink-strong); }
@@ -141,7 +141,7 @@
 .ov-validation .text-button { text-align: left; color: var(--color-danger-ink); padding-block: 8px; }
 
 .ov-save-rail { margin-top: 20px; }
-.ov-save-rail.is-sticky { position: sticky; bottom: calc(-1 * var(--content-inset-block-end, 31px)); z-index: 4; padding-bottom: 6px; background: var(--color-surface); }
+.ov-save-rail.is-sticky { position: sticky; bottom: calc(-1 * var(--content-inset-block-end, 31px)); z-index: 4; padding-bottom: 6px; background: var(--color-canvas, var(--color-surface)); }
 .ov-save-focus { outline: none; }
 .ov-save-rail .eating-save-bar { position: static; margin-top: 0; }
 
@@ -163,7 +163,7 @@
 }
 @media (max-width: 600px) {
   .ov-panel { margin-top: 8px; }
-  .ov-tab-panel { padding-block: 18px 22px; }
+  .ov-tab-panel { padding: 16px; }
   .ov-section { margin-top: 22px; padding-top: 18px; }
   .ov-panel :where(input:not([type="checkbox"]), select, textarea) { font-size: 16px; }
   .ov-rule-tools > .ov-actions, .ov-search { width: 100%; max-width: none; }

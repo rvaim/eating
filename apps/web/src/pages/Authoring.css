@@ -1,4 +1,5 @@
 .authoring-workspace, .authoring-content, .authoring-form { min-width: 0; }
+.authoring-form { padding: 24px; border: 1px solid var(--color-line); border-radius: var(--radius-card); background: var(--color-surface); box-shadow: var(--shadow-card); }
 .authoring-content { padding-right: 36px; overflow-anchor: none; }
 .authoring-content > * { max-width: var(--panel-content-max); }
 .authoring-title-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 16px 20px; }
@@ -11,7 +12,7 @@
 .authoring-persona-item .authoring-draft-mark { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--color-muted); }
 .authoring-new-button { margin-top: 8px; border-top-color: var(--color-line); color: var(--color-primary); }
 .authoring-active-badge { color: var(--color-primary-hover); }
-.authoring-runtime-note { display: flex; align-items: flex-start; gap: 8px; margin: 20px 0 24px; padding: 12px 0; border-top: 1px solid var(--color-line); border-bottom: 1px solid var(--color-line); color: var(--color-muted); font-size: 12px; }
+.authoring-runtime-note { display: flex; align-items: flex-start; gap: 8px; margin: 16px 0 20px; padding: 12px 16px; border: 1px solid var(--color-line); border-radius: var(--radius); background: var(--color-surface); color: var(--color-muted); font-size: 12px; }
 .authoring-runtime-note p { max-width: 70ch; overflow-wrap: anywhere; }
 .authoring-runtime-note svg { margin-top: 2px; color: var(--color-primary); }
 .authoring-notice { margin-bottom: 20px; font-size: 13px; overflow-wrap: anywhere; }
@@ -69,7 +70,7 @@
 .authoring-source-label { order: 1; flex-basis: 100%; padding-inline-start: 26px; color: var(--color-muted); font-size: 12px; font-weight: 400; white-space: normal; }
 .authoring-prompt-item .authoring-draft-mark, .authoring-platform-toggle .authoring-draft-mark { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--color-muted); }
 .authoring-source-detail { margin: -12px 0 20px; color: var(--color-muted); font-size: 12px; overflow-wrap: anywhere; }
-.authoring-preview { min-width: 0; margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--color-line); }
+.authoring-preview { min-width: 0; margin-top: 24px; padding: 24px; border: 1px solid var(--color-line); border-radius: var(--radius-card); background: var(--color-surface); box-shadow: var(--shadow-card); }
 .authoring-preview-heading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px 16px; }
 .authoring-preview-revision { margin-top: 20px; color: var(--color-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .authoring-preview-result { min-width: 0; }
@@ -99,6 +100,7 @@
   .authoring-persona-item { gap: 7px; }
 }
 @media (max-width: 600px) {
+  .authoring-form, .authoring-preview { padding: 16px; }
   .authoring-content { padding-right: 20px; }
   .authoring-title-row { gap: 14px; }
   .authoring-read-button { min-height: 40px; }

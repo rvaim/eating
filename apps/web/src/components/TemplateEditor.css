@@ -45,7 +45,7 @@
 .template-editor .cm-gutters { border-right: 1px solid var(--color-line); border-radius: 4px 0 0 4px; background: var(--color-surface-sunken); color: var(--color-muted); }
 .template-editor .cm-lineNumbers .cm-gutterElement { min-width: 30px; padding: 0 7px 0 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
 .template-editor .template-variable { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.template-editor .template-variable-valid { color: var(--color-primary-hover); background: var(--color-highlight); }
+.template-editor .template-variable-valid { color: var(--color-success-ink); background: var(--color-success-surface); }
 .template-editor .template-variable-invalid { color: var(--color-danger-ink); text-decoration: underline wavy var(--color-danger-ink); text-underline-offset: 4px; }
 .template-editor .cm-lintRange-error { background-image: none; text-decoration: underline wavy var(--color-danger-ink); text-underline-offset: 4px; }
 .template-editor.is-disabled .cm-editor, .template-editor.is-disabled .cm-gutters { background: var(--color-surface-sunken); }

@@ -110,7 +110,7 @@ export function App({ workspace }: { readonly workspace: PlatformWorkspace }) {
       if (main) { main.tabIndex = -1; main.focus() }
     }}>{t('app.skipContent')}</a>
     <aside className="global-sidebar" aria-label={t('app.globalNavigation')}>
-      <a className="brand" href="#overview" aria-label={t('app.brandOverview')} onClick={event => guardAnchor('overview', route.page === 'overview', event)}><Sprout size={22} strokeWidth={1.75} /><span>Eating</span></a>
+      <a className="brand" href="#overview" aria-label={t('app.brandOverview')} onClick={event => guardAnchor('overview', route.page === 'overview', event)}><span className="brand-mark" aria-hidden="true"><Sprout size={16} strokeWidth={2} /></span><span className="brand-name">Eating</span></a>
       <nav>
         {navigation.map(({ page, href, Icon }) => <a key={page} className={`global-nav-item ${route.page === page ? 'is-selected' : ''}`} href={href} aria-current={route.page === page ? 'page' : undefined} onClick={event => guardAnchor(href.slice(1), route.page === page && !route.pluginId, event)}><Icon size={18} strokeWidth={1.65} /><span>{t(`nav.${page}`)}</span></a>)}
       </nav>

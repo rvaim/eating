@@ -584,7 +584,7 @@ export class EatingHost {
         if (!match) throw new PlatformError('NOT_FOUND', '接口不存在。', 404)
         const id = match[1]!
         const operation = match[2]!
-        const plugin = this.requirePlugin(id, !['enable', 'disable', 'configuration'].includes(operation))
+        const plugin = this.requirePlugin(id, !['enable', 'disable', 'configuration', 'manage'].includes(operation))
         if (request.method === 'GET' && operation === 'configuration') { json(response, 200, plugin.getPublicConfiguration()); return }
         if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '此接口需使用 POST。', 405)
         if (plugin.kind === 'harness' && (operation === 'disconnect' || operation === 'disable')) {
@@ -596,6 +596,12 @@ export class EatingHost {
         }
         if (this.packageMutation && !(plugin.kind === 'harness' && (operation === 'disconnect' || operation === 'disable'))) throw new PlatformError('PLUGIN_BUSY', '插件安装或卸载正在执行，请稍后重试。', 409, 'not-sent')
         const body = await readJson(request, operation === 'invoke' ? 1024 * 1024 : operation === 'manage' ? plugin.managementInputMaxBytes ?? this.imageLimits.snapshot().uploadBytes : undefined)
+        if (operation === 'manage') {
+          if (!plugin.manage) throw new PlatformError('PLUGIN_MANAGEMENT_UNSUPPORTED', '此插件未提供管理操作。', 404)
+          if (!isJsonObject(body) || typeof body.operation !== 'string' || !body.operation.trim()) throw new PlatformError('INVALID_INPUT', '请提供有效的插件管理操作。')
+          const setupOperations = (plugin as BackendPlugin & { configurationManageOperations?: readonly string[] }).configurationManageOperations
+          if (!this.enabled.has(id) && !setupOperations?.includes(body.operation)) throw new PlatformError('PLUGIN_DISABLED', '平台插件已停用。', 409, 'not-sent')
+        }
         if (plugin.kind === 'capability' && (['connect', 'disconnect', 'enable', 'disable'].includes(operation) || operation === 'configuration' && plugin.configurationChangesTools === true && this.enabled.has(id))) {
           this.capabilityAccess.revokeSource('plugin.' + id)
           const { value, ...report } = await this.changeCapabilityTopology(() => this.mutatePlugin(id, operation, async () => {
@@ -628,11 +634,7 @@ export class EatingHost {
           else if (operation === 'disconnect') { this.revokeHarnessSinks(id); await plugin.disconnect(); json(response, 200, plugin.getStatus()) }
           else if (operation === 'enable') { await this.setEnabled(id, true); json(response, 200, { ok: true }) }
           else if (operation === 'disable') { await this.setEnabled(id, false); json(response, 200, { ok: true }) }
-          else if (operation === 'manage') {
-            if (!plugin.manage) throw new PlatformError('PLUGIN_MANAGEMENT_UNSUPPORTED', '此插件未提供管理操作。', 404)
-            if (!isJsonObject(body) || typeof body.operation !== 'string' || !body.operation.trim()) throw new PlatformError('INVALID_INPUT', '请提供有效的插件管理操作。')
-            json(response, 200, await plugin.manage(body.operation, body.input))
-          }
+          else if (operation === 'manage') json(response, 200, await plugin.manage!((body as JsonObject).operation as string, (body as JsonObject).input))
         })
         return
       }

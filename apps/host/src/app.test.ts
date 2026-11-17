@@ -898,4 +898,70 @@ describe('real Eating Host → QQ OneBot → SQLite → authenticated MCP', () =
     expect(attempt.status).toBe(500)
     expect(attempt.body).toMatchObject({ error: { code: 'CONFIGURATION_CORRUPTED' } })
   })
+
+  it('permits declared setup manage operations when disabled while still blocking runtime manage and normal disabled plugins', async () => {
+    const setupManage = vi.fn(async (op: string) => ({ ok: true, op }))
+    const plainManage = vi.fn(async () => ({ ok: true }))
+    const setupEntry: BackendPluginEntry = {
+      id: 'android-setup-probe',
+      kind: 'capability',
+      storageDirectory: 'android-setup-probe',
+      create: () => ({
+        id: 'android-setup-probe',
+        kind: 'capability',
+        name: 'Android Setup Probe',
+        version: '1.0.0',
+        tools: [],
+        capabilities: [],
+        configurationManageOperations: ['detect-adb'],
+        getStatus: () => ({ state: 'unconfigured', accountId: null, accountName: null, connectedAt: null, lastEventAt: null, lastError: null, reconnectAttempt: 0 }),
+        getPublicConfiguration: () => ({}),
+        updateConfiguration: async () => ({}),
+        connect: async () => {},
+        disconnect: async () => {},
+        manage: setupManage,
+        invoke: async () => null,
+        dispose: async () => {},
+      } as unknown as import('@eating/plugin-sdk').BackendPlugin),
+    }
+    const plainEntry: BackendPluginEntry = {
+      id: 'plain-probe',
+      kind: 'capability',
+      storageDirectory: 'plain-probe',
+      create: () => ({
+        id: 'plain-probe',
+        kind: 'capability',
+        name: 'Plain Probe',
+        version: '1.0.0',
+        tools: [],
+        capabilities: [],
+        getStatus: () => ({ state: 'disconnected', accountId: null, accountName: null, connectedAt: null, lastEventAt: null, lastError: null, reconnectAttempt: 0 }),
+        getPublicConfiguration: () => ({}),
+        updateConfiguration: async () => ({}),
+        connect: async () => {},
+        disconnect: async () => {},
+        manage: plainManage,
+        invoke: async () => null,
+        dispose: async () => {},
+      }),
+    }
+
+    const context = await createHost('', [setupEntry, plainEntry])
+    await context.api('/api/plugins/android-setup-probe/disable', { method: 'POST', body: {} })
+    await context.api('/api/plugins/plain-probe/disable', { method: 'POST', body: {} })
+
+    const allowed = await context.api('/api/plugins/android-setup-probe/manage', { method: 'POST', body: { operation: 'detect-adb', input: {} } })
+    expect(allowed.status).toBe(200)
+    expect(allowed.body).toEqual({ ok: true, op: 'detect-adb' })
+    expect(setupManage).toHaveBeenCalledTimes(1)
+
+    const blockedRuntime = await context.api('/api/plugins/android-setup-probe/manage', { method: 'POST', body: { operation: 'takeover', input: {} } })
+    expect(blockedRuntime.status).toBe(409)
+    expect(blockedRuntime.body).toMatchObject({ error: { code: 'PLUGIN_DISABLED' } })
+
+    const blockedPlain = await context.api('/api/plugins/plain-probe/manage', { method: 'POST', body: { operation: 'detect-adb', input: {} } })
+    expect(blockedPlain.status).toBe(409)
+    expect(blockedPlain.body).toMatchObject({ error: { code: 'PLUGIN_DISABLED' } })
+    expect(plainManage).not.toHaveBeenCalled()
+  })
 })

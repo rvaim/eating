@@ -1,8 +1,8 @@
 {
   "name": "@eating/plugin-android-control",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "完整 ADB、交互进程与自主手机执行代理。",
+  "description": "由插件管理本机 ADB 与 USB／网络设备，提供完整命令、交互进程与自主手机执行代理。",
   "files": ["dist"],
   "exports": { ".": "./dist/server.mjs" },
   "scripts": { "build": "node ../../../scripts/build.mjs plugin plugins/capabilities/android-control" },

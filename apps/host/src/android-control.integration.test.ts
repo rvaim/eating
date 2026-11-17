@@ -12,7 +12,6 @@ import { EatingHost } from './app'
 import { createInstalledHost } from './installed-host'
 import { installPluginPackage } from './plugin-installation'
 import { writeAdbFixture } from '../../../tests/fixtures/adb'
-import { startPackagedAndroidExecutor } from '../../../tests/fixtures/android-executor'
 import { startOneBotFixture } from '../../../tests/fixtures/onebot'
 import { startStickersModel, fixtureText } from '../../../tests/fixtures/stickers-model'
 import type { FixtureModelAction } from '../../../tests/fixtures/stickers-model'
@@ -23,14 +22,12 @@ const stops: Array<() => unknown | Promise<unknown>> = []
 afterEach(async () => { for (const stop of stops.splice(0).reverse()) await stop(); vi.unstubAllEnvs() })
 function object(v: unknown): JsonObject { if (!isJsonObject(v)) throw Error('Invalid actual integration value'); return v }
 describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('完整ADB与独立原生手机子代理', () => {
-  it.each(['source-local', 'installed-local', 'installed-remote'])('passes actual image input, handles main input while the child is busy and resumes the same role (%s)', async variant => {
-    const installed = variant !== 'source-local'
+  it.each(['source-usb', 'installed-network'])('passes actual image input, handles main input while the child is busy and resumes the same role (%s)', async variant => {
+    const installed = variant === 'installed-network'
     const system = testSystemDsh(); vi.stubEnv('EATING_DSH_BIN', system.bin)
     const parent = await realpath(tmpdir()), directory = await realpath(await mkdtemp(join(parent, 'eating-android-native-')))
     stops.push(async () => { if (await realpath(directory) !== directory || dirname(directory) !== parent || !basename(directory).startsWith('eating-android-native-')) throw Error('Unsafe integration cleanup'); await rm(directory, { recursive: true }) })
     const adb = await writeAdbFixture(directory), onebot = await startOneBotFixture(); stops.push(() => onebot.close())
-    const remote = variant === 'installed-remote' ? await startPackagedAndroidExecutor(directory, adb) : null
-    if (remote) stops.push(() => remote.close())
     let release!: () => void, imageReceived = false, mainHandled = false, completed = 0
     const gate = new Promise<void>(resolve => { release = resolve }); stops.push(() => release())
     const handled = new Set<string>(), marker = 'EDITABLE-ANDROID-INSTRUCTIONS'
@@ -74,7 +71,9 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('完整ADB与独
     host.store.updateDeliverySettings({ ...host.store.getDeliverySettings(), aggregationWindowMs: 0 }, host.store.getDeliverySettingsSnapshot().revision)
     const url = await host.listen(), response = await fetch(url + '/api/bootstrap'), boot = object(await response.json()), cookie = response.headers.get('set-cookie')!.split(';')[0]!
     const api = async (path: string, body: object) => { const response = await fetch(url + '/api' + path, { method: 'POST', headers: { Cookie: cookie, 'X-Eating-Csrf': String(boot.csrfToken), 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const value = object(await response.json()); expect(response.ok, JSON.stringify(value)).toBe(true); return value }
-    await api('/plugins/android-control/configuration', { expectedRevision: 0, mode: remote ? 'remote' : 'local', adbPath: remote ? '' : adb, workspace: '', endpoint: remote?.endpoint ?? '', token: remote?.token ?? '' }); await api('/plugins/android-control/connect', {})
+    await api('/plugins/android-control/configuration', { expectedRevision: 0, connectionMode: installed ? 'network' : 'usb', networkAddress: installed ? '192.168.1.50:5555' : '', defaultDevice: '', adbPath: adb, workspace: '' })
+    if (installed) await api('/plugins/android-control/manage', { operation: 'connect-device', input: { address: '192.168.1.50:5555' } })
+    await api('/plugins/android-control/connect', {})
     const prompt = host.authoring.getSnapshot().prompts.find(p => p.id === 'plugin:android-control.instructions')!
     host.authoring.updatePrompt(prompt.id, marker + '\n' + prompt.body, prompt.revision)
     await api('/plugins/qq/configuration', { endpoint: onebot.endpoint, forwardToHarness: true, receiveGroups: true, autoConnect: false }); await api('/plugins/qq/connect', {})

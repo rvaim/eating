@@ -5,6 +5,7 @@ import { PlatformError, isJsonObject } from '@eating/plugin-sdk'
 import type { JsonObject } from '@eating/plugin-sdk'
 
 export function failure(code: string, message = '安卓执行请求未完成，请核对设备或执行端状态。', outcome: 'not-sent' | 'failed' | 'unknown' = 'not-sent', status = 400): PlatformError { return new PlatformError(code, message, status, outcome) }
+export function rejectError(code: string, message: string, status = 400): PlatformError { return new PlatformError(code, message, status, 'not-sent') }
 export function object(value: unknown, keys: readonly string[], required: readonly string[] = []): JsonObject {
   if (!isJsonObject(value) || Object.keys(value).some(key => !keys.includes(key)) || required.some(key => !Object.hasOwn(value, key))) throw failure('ANDROID_ARGUMENTS_INVALID', '请提供当前接口要求的参数。')
   return value
@@ -15,6 +16,12 @@ export function integer(value: unknown, fallback: number, min: number, max: numb
   return value
 }
 export function text(value: unknown, maximum = 4096): value is string { return typeof value === 'string' && value.length <= maximum && !value.includes('\0') }
+export function stringField(value: unknown, code: string, message: string, maximum = 4096, allowEmpty = true): string {
+  if (!text(value, maximum)) throw rejectError(code, message, 400)
+  const trimmed = value.trim()
+  if (!trimmed && !allowEmpty) throw rejectError(code, message, 400)
+  return trimmed
+}
 export function readDocument(file: string, maximum = 2 * 1024 * 1024): JsonObject | null {
   if (!existsSync(file)) return null
   try { if (lstatSync(file).isSymbolicLink() || !statSync(file).isFile() || statSync(file).size > maximum) throw Error('invalid'); const value: unknown = JSON.parse(readFileSync(file, 'utf8')); if (!isJsonObject(value)) throw Error('invalid'); return value }

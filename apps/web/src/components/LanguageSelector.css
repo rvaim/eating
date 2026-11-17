@@ -1,44 +1,68 @@
 .global-sidebar-footer.language-selector {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-  align-items: start;
-}
-.language-selector-label {
   display: flex;
   align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  color: var(--color-muted);
+  gap: 8px;
+  min-width: 0;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.language-selector-label {
+  display: inline-flex;
+  align-items: center;
+  color: var(--color-nav-muted);
+}
+.language-selector-label span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .language-selector select {
-  width: 100%;
+  width: auto;
   min-width: 0;
-  min-height: 38px;
-  padding: 6px 8px;
-  border: 1px solid var(--color-line);
+  min-height: 34px;
+  padding: 4px 10px;
+  border: 1px solid var(--color-nav-border);
   border-radius: var(--radius);
-  background: var(--color-surface);
-  color: var(--color-ink);
-  font-size: 13px;
+  background: var(--color-nav-pill);
+  color: var(--color-nav-ink);
+  font-size: 12px;
+  font-weight: 500;
 }
-.language-selector select:hover { border-color: var(--color-primary); }
+.language-selector select:hover { border-color: var(--color-primary-bright); }
 .language-selector option { color: var(--color-ink); background: var(--color-surface); }
-.language-selector-version { font-size: 12px; color: var(--color-muted); font-variant-numeric: tabular-nums; }
-@media (max-width: 850px) {
+.language-selector-version {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--color-nav-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--color-nav-pill);
+  border: 1px solid var(--color-nav-border);
+}
+@media (max-width: 1220px) {
+  .language-selector-version { display: none; }
+}
+@media (max-width: 920px) {
   .global-sidebar-footer.language-selector {
     position: relative;
     display: block;
-    width: 44px;
-    padding-top: 18px;
+    width: 40px;
+    margin-left: 0;
+    margin-top: auto;
+    padding-top: 14px;
   }
   .language-selector-label {
     position: absolute;
-    inset: 18px 0 auto;
-    height: 44px;
+    inset: 14px 0 auto;
+    height: 40px;
     justify-content: center;
     pointer-events: none;
-    color: var(--color-primary);
+    color: var(--color-nav-ink);
   }
   .language-selector-label span, .language-selector-version {
     position: absolute;
@@ -49,11 +73,12 @@
     white-space: nowrap;
   }
   .language-selector select {
-    width: 44px;
-    height: 44px;
+    width: 40px;
+    height: 40px;
     padding: 0;
     appearance: none;
     color: transparent;
     font-size: 16px;
+    background: var(--color-nav-pill);
   }
 }

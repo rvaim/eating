@@ -3,7 +3,7 @@
 .plugins-sidebar nav { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 @media (max-width: 600px) { .plugins-sidebar nav { overflow-y: hidden; } }
 .plugins-page > :not(.workspace-rail) { max-width: var(--panel-content-max); }
-.plugins-page .plugins-toolbar { position: sticky; top: calc(-1 * var(--content-inset-block-start)); z-index: 5; padding-block: 12px; margin-bottom: 8px; }
+.plugins-page .plugins-toolbar { position: sticky; top: calc(-1 * var(--content-inset-block-start)); z-index: 5; padding-block: 12px; margin-bottom: 8px; background: var(--color-canvas); }
 .plugins-filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; flex: 1 1 320px; min-width: 0; }
 .plugins-search-wrap { position: relative; display: inline-flex; align-items: center; flex: 1 1 200px; max-width: 300px; min-width: 0; }
 .plugins-search-wrap svg { position: absolute; left: 12px; color: var(--color-muted); pointer-events: none; }
@@ -25,10 +25,10 @@
 .plugins-alert p { margin: 0; }
 .plugins-loading { display: flex; align-items: center; gap: 8px; padding: 24px 0; color: var(--color-muted); font-size: 13px; }
 .plugins-empty { border-bottom: 1px solid var(--color-line); }
-.plugins-list { display: grid; gap: 12px; margin-top: 16px; }
-.plugins-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px 20px; padding: 18px 20px; border: 1px solid var(--color-line); border-radius: var(--radius-card); background: var(--color-surface); box-shadow: var(--shadow-card); }
-.plugins-row:hover { border-color: var(--color-line-strong); }
-.plugins-row-main { display: flex; align-items: center; gap: 16px; min-width: 0; }
+.plugins-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 16px; margin-top: 20px; }
+.plugins-row { display: flex; flex-direction: column; justify-content: space-between; align-items: stretch; gap: 16px; padding: 20px; border: 1px solid var(--color-line); border-radius: var(--radius-card); background: var(--color-surface); box-shadow: var(--shadow-card); min-width: 0; }
+.plugins-row:hover { border-color: var(--color-primary-bright); }
+.plugins-row-main { display: flex; align-items: flex-start; gap: 14px; min-width: 0; }
 .plugins-symbol { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; flex-shrink: 0; border: 1px solid var(--color-line); border-radius: var(--radius); background: var(--color-surface-quiet); }
 .plugins-copy { flex: 1; min-width: 0; }
 .plugins-copy h2 { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
@@ -40,7 +40,7 @@
 .plugins-status-connecting, .plugins-status-reconnecting { color: var(--color-warning-ink); border-color: var(--color-line-alert); background: var(--color-warning-surface); }
 .plugins-status-error { color: var(--color-danger-ink); border-color: var(--color-line-warm); background: var(--color-danger-surface); }
 .plugins-status-disconnected, .plugins-status-unconfigured { color: var(--color-muted); }
-.plugins-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px 12px; }
+.plugins-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px 10px; margin-top: auto; padding-top: 14px; border-top: 1px solid var(--color-line-soft); }
 .plugins-actions .button { min-height: 36px; padding-block: 6px; font-size: 12px; }
 .plugins-actions .text-button { font-size: 12px; padding: 6px 0; }
 .plugins-uninstall-trigger { color: var(--color-trigger-ink); }
@@ -77,10 +77,10 @@
 .plugins-preview .plugins-inline-actions { margin-top: 16px; }
 .plugins-panel-page { display: block; }
 @media (max-width: 900px) {
-  .plugins-row { grid-template-columns: minmax(0, 1fr); }
   .plugins-actions { justify-content: flex-start; }
 }
 @media (max-width: 600px) {
+  .plugins-list { grid-template-columns: 1fr; }
   .plugins-toolbar { align-items: flex-start; }
   .plugins-filter-row, .plugins-search-wrap, .plugins-status-select { width: 100%; max-width: none; }
   .plugins-toolbar-actions { width: 100%; }

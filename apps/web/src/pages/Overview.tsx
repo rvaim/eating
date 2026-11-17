@@ -30,102 +30,104 @@ export function Overview({ snapshot, onRobots, onRegister, onPlugin }: {
   const acceptedCount = messageCount(snapshot, 'accepted')
   const uncertainCount = messageCount(snapshot, 'uncertain')
   return <main id="main-content" className="overview-content">
-    <section className="welcome-section">
-      <div className="welcome-copy">
-        <span className="welcome-eyebrow"><span className={`live-dot ${connected.length > 0 && harnessAttached ? 'is-live' : ''}`} aria-hidden="true" />Eating {applicationVersion}</span>
-        <h2>{t('overview.connectionsTitle')}</h2>
-        <p>{connectionDescription}</p>
-        <div className="welcome-actions">
-          <button className="button button-primary" onClick={() => onRobots()}>{t('overview.manageConnections')}<ArrowRight size={16} /></button>
-          <a className="button button-hero-ghost" href="#harness">{t('overview.manageAI')}</a>
-        </div>
-      </div>
-      <div className="hero-topology" aria-hidden="true">
-        <div className="topology-node">
-          <span className={`live-dot ${connected.length > 0 ? 'is-live' : ''}`} />
-          <div>
-            <span>{t('overview.communicationPlugins')}</span>
-            <strong>{formatNumber(connected.length)} / {formatNumber(communication.length)}</strong>
+    <div className="overview-top-grid">
+      <section className="welcome-section">
+        <div className="welcome-copy">
+          <span className="welcome-eyebrow"><span className={`live-dot ${connected.length > 0 && harnessAttached ? 'is-live' : ''}`} aria-hidden="true" />Eating {applicationVersion}</span>
+          <h2>{t('overview.connectionsTitle')}</h2>
+          <p>{connectionDescription}</p>
+          <div className="welcome-actions">
+            <button className="button button-primary" onClick={() => onRobots()}>{t('overview.manageConnections')}<ArrowRight size={16} /></button>
+            <a className="button button-hero-ghost" href="#harness">{t('overview.manageAI')}</a>
           </div>
         </div>
-        <div className="topology-link" />
-        <div className="topology-node">
-          <span className={`live-dot ${harnessAttached ? 'is-live' : ''}`} />
-          <div>
-            <span>{t('overview.accepted')}</span>
-            <strong>{formatNumber(acceptedCount)}</strong>
+        <div className="hero-topology" aria-hidden="true">
+          <div className="topology-node">
+            <span className={`live-dot ${connected.length > 0 ? 'is-live' : ''}`} />
+            <div>
+              <span>{t('overview.communicationPlugins')}</span>
+              <strong>{formatNumber(connected.length)} / {formatNumber(communication.length)}</strong>
+            </div>
+          </div>
+          <div className="topology-node">
+            <span className={`live-dot ${harnessAttached ? 'is-live' : ''}`} />
+            <div>
+              <span>{t('overview.accepted')}</span>
+              <strong>{formatNumber(acceptedCount)}</strong>
+            </div>
+          </div>
+          <div className="topology-node">
+            <span className={`live-dot ${pendingCount > 0 ? 'is-busy' : ''}`} />
+            <div>
+              <span>{t('overview.pending')}</span>
+              <strong>{formatNumber(pendingCount)}</strong>
+            </div>
           </div>
         </div>
-        <div className="topology-link" />
-        <div className="topology-node">
-          <span className={`live-dot ${pendingCount > 0 ? 'is-busy' : ''}`} />
-          <div>
-            <span>{t('overview.pending')}</span>
-            <strong>{formatNumber(pendingCount)}</strong>
-          </div>
-        </div>
-      </div>
-    </section>
-    <section className="workspace-facts" aria-label={t('overview.summaryLabel')}>
-      <div className="fact-card"><span>{t('overview.communicationPlugins')}</span><strong>{countLabel('count.enabled', communication.length)}</strong></div>
-      <div className="fact-card"><span>{t('overview.accountSettings')}</span><strong>{countLabel('count.configured', configured.length)}</strong></div>
-      <div className="fact-card"><span>{t('overview.connectionsTitle')}</span><strong>{snapshot.storageError ? t('status.stale') : countLabel('count.connected', connected.length)}</strong></div>
-      <div className="fact-card"><span>{t('overview.aiStatus')}</span><strong className="fact-muted">{harnessLabel}</strong></div>
-    </section>
-    <section className="overview-platforms" aria-labelledby="overview-platforms-title">
-      <div className="section-title-row"><div><h2 id="overview-platforms-title">{t('overview.accountsTitle')}</h2></div><button className="text-button" onClick={onRegister}><Plus size={16} />{t('overview.addConnection')}</button></div>
-      {!snapshot.ready ? <p className="loading-line" role="status">{t('overview.loading')}</p> : communication.length === 0 ? <div className="empty-state overview-card"><Plug size={28} /><h3>{t('overview.noConnections')}</h3><p>{t('overview.emptyDescription')}</p><button className="button button-secondary" onClick={onRegister}>{t('overview.addConnection')}</button></div> : <div className="platform-list overview-card">
-        {communication.map(plugin => {
-          const Icon = plugin.icon
-          const saved = snapshot.configurations[plugin.id]
-          return <button className="platform-list-row" key={plugin.id} onClick={() => onRobots(plugin.id)} aria-label={t('overview.openConfiguration', { name: plugin.name })}>
-            <span className="platform-symbol" style={{ color: plugin.brandColor }}><Icon size={22} /></span>
-            <span className="platform-row-copy"><strong>{plugin.name}</strong><small>{saved ? plugin.summary(saved.values) : plugin.description}</small></span>
-            <span className="row-configuration">{saved ? <><Check size={14} />{t('overview.configurationSaved')}</> : t('overview.configurationNeeded')}</span>
-            <PlatformStatus status={snapshot.statuses[plugin.id]} stale={Boolean(snapshot.storageError)} /><ArrowRight className="row-arrow" size={16} />
-          </button>
-        })}
-      </div>}
-    </section>
-    <section className="overview-capabilities" aria-labelledby="overview-capabilities-title">
-      <div className="section-title-row">
-        <div><h2 id="overview-capabilities-title">{t('overview.capabilitiesTitle')}</h2></div>
-        <a className="text-button" href="#plugins">{t('overview.managePlugins')}<ArrowRight size={14} /></a>
-      </div>
-      {snapshot.ready && capabilities.length === 0 ? <p className="subtle">{t('overview.capabilitiesEmpty')}</p> : (
-        <div className="capability-grid">
-          {capabilities.map(plugin => {
+      </section>
+      <section className="workspace-facts" aria-label={t('overview.summaryLabel')}>
+        <div className="fact-card"><span>{t('overview.communicationPlugins')}</span><strong>{countLabel('count.enabled', communication.length)}</strong></div>
+        <div className="fact-card"><span>{t('overview.accountSettings')}</span><strong>{countLabel('count.configured', configured.length)}</strong></div>
+        <div className="fact-card"><span>{t('overview.connectionsTitle')}</span><strong>{snapshot.storageError ? t('status.stale') : countLabel('count.connected', connected.length)}</strong></div>
+        <div className="fact-card"><span>{t('overview.aiStatus')}</span><strong className={harnessAttached ? 'fact-live' : 'fact-muted'}>{harnessLabel}</strong></div>
+      </section>
+    </div>
+    <div className="overview-mid-grid">
+      <section className="overview-platforms" aria-labelledby="overview-platforms-title">
+        <div className="section-title-row"><div><h2 id="overview-platforms-title">{t('overview.accountsTitle')}</h2></div><button className="text-button" onClick={onRegister}><Plus size={16} />{t('overview.addConnection')}</button></div>
+        {!snapshot.ready ? <p className="loading-line" role="status">{t('overview.loading')}</p> : communication.length === 0 ? <div className="empty-state overview-card"><Plug size={28} /><h3>{t('overview.noConnections')}</h3><p>{t('overview.emptyDescription')}</p><button className="button button-secondary" onClick={onRegister}>{t('overview.addConnection')}</button></div> : <div className="platform-list overview-card">
+          {communication.map(plugin => {
             const Icon = plugin.icon
             const saved = snapshot.configurations[plugin.id]
-            const state = snapshot.statuses[plugin.id]?.state ?? 'unconfigured'
-            const statusText = snapshot.storageError ? t('status.stale') : t(`status.capability.${state}`)
-            return (
-              <button
-                key={plugin.id}
-                className="capability-card"
-                aria-label={t('overview.openPanel', { name: plugin.name })}
-                onClick={() => {
-                  if (onPlugin) onPlugin(plugin.id)
-                  else window.location.hash = `plugins/${encodeURIComponent(plugin.id)}`
-                }}>
-                <div className="capability-card-top">
-                  <span className="platform-symbol" style={{ color: plugin.brandColor }}><Icon size={22} /></span>
-                  <span className={`status-badge status-${snapshot.storageError ? 'warning' : state}`}>{statusText}</span>
-                </div>
-                <div className="capability-card-body">
-                  <strong>{plugin.name}</strong>
-                  <small>{saved ? plugin.summary(saved.values) : plugin.description}</small>
-                </div>
-                <div className="capability-card-foot">
-                  <span className="row-configuration">{saved ? <><Check size={14} />{t('overview.configurationSaved')}</> : t('overview.configurationNeeded')}</span>
-                  <ArrowRight className="row-arrow" size={16} />
-                </div>
-              </button>
-            )
+            return <button className="platform-list-row" key={plugin.id} onClick={() => onRobots(plugin.id)} aria-label={t('overview.openConfiguration', { name: plugin.name })}>
+              <span className="platform-symbol" style={{ color: plugin.brandColor }}><Icon size={22} /></span>
+              <span className="platform-row-copy"><strong>{plugin.name}</strong><small>{saved ? plugin.summary(saved.values) : plugin.description}</small></span>
+              <span className="row-configuration">{saved ? <><Check size={14} />{t('overview.configurationSaved')}</> : t('overview.configurationNeeded')}</span>
+              <PlatformStatus status={snapshot.statuses[plugin.id]} stale={Boolean(snapshot.storageError)} /><ArrowRight className="row-arrow" size={16} />
+            </button>
           })}
+        </div>}
+      </section>
+      <section className="overview-capabilities" aria-labelledby="overview-capabilities-title">
+        <div className="section-title-row">
+          <div><h2 id="overview-capabilities-title">{t('overview.capabilitiesTitle')}</h2></div>
+          <a className="text-button" href="#plugins">{t('overview.managePlugins')}<ArrowRight size={14} /></a>
         </div>
-      )}
-    </section>
+        {snapshot.ready && capabilities.length === 0 ? <p className="subtle">{t('overview.capabilitiesEmpty')}</p> : (
+          <div className="capability-grid">
+            {capabilities.map(plugin => {
+              const Icon = plugin.icon
+              const saved = snapshot.configurations[plugin.id]
+              const state = snapshot.statuses[plugin.id]?.state ?? 'unconfigured'
+              const statusText = snapshot.storageError ? t('status.stale') : t(`status.capability.${state}`)
+              return (
+                <button
+                  key={plugin.id}
+                  className="capability-card"
+                  aria-label={t('overview.openPanel', { name: plugin.name })}
+                  onClick={() => {
+                    if (onPlugin) onPlugin(plugin.id)
+                    else window.location.hash = `plugins/${encodeURIComponent(plugin.id)}`
+                  }}>
+                  <div className="capability-card-top">
+                    <span className="platform-symbol" style={{ color: plugin.brandColor }}><Icon size={22} /></span>
+                    <span className={`status-badge status-${snapshot.storageError ? 'warning' : state}`}>{statusText}</span>
+                  </div>
+                  <div className="capability-card-body">
+                    <strong>{plugin.name}</strong>
+                    <small>{saved ? plugin.summary(saved.values) : plugin.description}</small>
+                  </div>
+                  <div className="capability-card-foot">
+                    <span className="row-configuration">{saved ? <><Check size={14} />{t('overview.configurationSaved')}</> : t('overview.configurationNeeded')}</span>
+                    <ArrowRight className="row-arrow" size={16} />
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </section>
+    </div>
     <div className="overview-bottom">
       <section className="activity-section overview-card" aria-labelledby="activity-title"><div className="section-title-row"><h2 id="activity-title">{t('overview.messagesTitle')}</h2><a className="text-button" href="#harness">{t('overview.manageAI')}<ArrowRight size={14} /></a></div>
         <p className="subtle">{!snapshot.ready ? t('overview.loadingDelivery') : snapshot.storageError ? t('overview.staleDelivery') : t(harnessAttached ? 'overview.aiReadyDescription' : 'overview.aiNeededDescription')}</p>

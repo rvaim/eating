@@ -3,7 +3,8 @@ import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { JsonObject } from '@eating/plugin-sdk'
+import type { HostPluginContext, JsonObject } from '@eating/plugin-sdk'
+import { AndroidPlugin } from '../server'
 import { AndroidEngine } from './engine'
 import { AndroidConfig, validateNetworkAddress } from './config'
 import { adbFixturePng, createAdbFixture } from '../../../../../tests/fixtures/adb'
@@ -246,5 +247,65 @@ describe('完整 ADB 执行核心与严格 v2 配置', () => {
     })).toThrow()
     expect(existsSync(join(dir, 'config.json'))).toBe(true)
     expect(next.revision).toBe(rebuilt.revision + 1)
+  })
+
+  it('auto-releases idle write control, allows non-destructive release/takeover, and reactivates reused agentIds on fresh leases', async () => {
+    const f = await fixture()
+
+    // Completed android_adb_exec must not leave this.controller permanently locked to a1
+    const first = structured(await f.engine.invoke('android_adb_exec', { args: ['echo-target'], request_id: 'req-seq-a1' }, 'a1', 'req-seq-a1'))
+    expect(first.status).toBe('exited')
+    const second = structured(await f.engine.invoke('android_adb_exec', { args: ['echo-target'], request_id: 'req-seq-b1' }, 'b1', 'req-seq-b1'))
+    expect(second.status).toBe('exited')
+    expect(structured(await f.engine.invoke('android_executor_control', { op: 'state' }, 'b1', 'req-state-1')).controlled).toBe(false)
+
+    // Holding a running process occupies control; release clears lock without banning a1
+    const held = structured(await f.engine.invoke('android_adb_exec', { args: ['hold'], wait_ms: 50, request_id: 'req-hold-rel' }, 'a1', 'req-hold-rel'))
+    expect(held.status).toBe('running')
+    await expect(f.engine.invoke('android_adb_exec', { args: ['version'], request_id: 'req-busy-1' }, 'b1', 'req-busy-1')).rejects.toMatchObject({ code: 'ANDROID_EXECUTOR_BUSY' })
+    await f.engine.invoke('android_executor_control', { op: 'release', request_id: 'req-rel-a1' }, 'a1', 'req-rel-a1')
+    const afterRelease = structured(await f.engine.invoke('android_adb_exec', { args: ['version'], request_id: 'req-after-rel-b1' }, 'b1', 'req-after-rel-b1'))
+    expect(afterRelease.status).toBe('exited')
+    // a1 is NOT blocked after voluntarily calling release
+    const a1Again = structured(await f.engine.invoke('android_adb_exec', { args: ['version'], request_id: 'req-after-rel-a1' }, 'a1', 'req-after-rel-a1'))
+    expect(a1Again.status).toBe('exited')
+
+    // Takeover by another valid actor stops held process without banning displaced occupant
+    const bHold = structured(await f.engine.invoke('android_adb_exec', { args: ['hold'], wait_ms: 50, request_id: 'req-hold-b1' }, 'b1', 'req-hold-b1'))
+    expect(bHold.status).toBe('running')
+    await f.engine.invoke('android_executor_control', { op: 'takeover', request_id: 'req-take-a1' }, 'a1', 'req-take-a1')
+    const bAfterTakeover = structured(await f.engine.invoke('android_adb_exec', { args: ['version'], request_id: 'req-b-after-take' }, 'b1', 'req-b-after-take'))
+    expect(bAfterTakeover.status).toBe('exited')
+
+    // Direct revoke without a fresh lease signal keeps caller blocked even for takeover
+    await f.engine.revoke('c1')
+    await expect(f.engine.invoke('android_executor_control', { op: 'takeover', request_id: 'req-take-c1' }, 'c1', 'req-take-c1')).rejects.toMatchObject({ code: 'ANDROID_ACCESS_REVOKED' })
+
+    // Server invokeCapability: aborted lease kills job and blocks old lease, while fresh lease on same agentId succeeds
+    const pluginData = join(f.directory, 'plugin-state')
+    const plugin = new AndroidPlugin({ dataDirectory: pluginData } as HostPluginContext)
+    stops.push(() => plugin.dispose())
+    await plugin.updateConfiguration({
+      expectedRevision: 0,
+      connectionMode: 'usb',
+      networkAddress: '',
+      defaultDevice: '',
+      adbPath: f.adb,
+      workspace: join(f.directory, 'plugin-work'),
+    })
+    await plugin.connect()
+
+    const reusedActor = 'reused-phone-agent-id'
+    const lease1 = new AbortController()
+    const hold1 = structured(await plugin.invokeCapability('android_adb_exec', { args: ['hold'], wait_ms: 50, request_id: 'req-lease1-hold' }, 'req-lease1-hold', { agentId: reusedActor, agentTypeId: 'android-control.phone', signal: lease1.signal }) as JsonObject)
+    expect(hold1.status).toBe('running')
+    lease1.abort()
+    await expect(plugin.invokeCapability('android_adb_exec', { args: ['version'], request_id: 'req-lease1-stale' }, 'req-lease1-stale', { agentId: reusedActor, agentTypeId: 'android-control.phone', signal: lease1.signal })).rejects.toMatchObject({ code: 'ANDROID_ACCESS_REVOKED' })
+
+    const lease2 = new AbortController()
+    const exec2 = structured(await plugin.invokeCapability('android_adb_exec', { args: ['version'], request_id: 'req-lease2-ok' }, 'req-lease2-ok', { agentId: reusedActor, agentTypeId: 'android-control.phone', signal: lease2.signal }) as JsonObject)
+    expect(exec2.status).toBe('exited')
+    const shot2 = await plugin.invokeCapability('android_screenshot', { wait_ms: 5000 }, 'req-lease2-shot', { agentId: reusedActor, agentTypeId: 'android-control.phone', signal: lease2.signal }) as JsonObject
+    expect((shot2.content as Array<{ type: string }>).some(part => part.type === 'image')).toBe(true)
   })
 })

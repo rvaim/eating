@@ -1,6 +1,6 @@
 {
   "name": "@eating/plugin-android-control",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "由插件管理本机 ADB 与 USB／网络设备，提供完整命令、交互进程与自主手机执行代理。",
   "files": ["dist"],

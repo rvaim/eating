@@ -120,13 +120,27 @@ test.describe('DSH 原生 Web 入口与独立能力', () => {
     await expect(page.getByText(/浏览器未能打开新标签页/)).toBeVisible(); expect(opens).toBe(before)
   })
 
-  test('切离时取消待打开页面，迟到入口不恢复且不泄露到反馈', async ({ page }) => {
+  test('聚焦新标签导致原标签隐藏时仍完成打开，切离面板则取消待打开页面且不泄露', async ({ page }) => {
     ready(true); let release!: () => void; nativeGate = new Promise<void>(done => { release = done })
     await open(page)
-    await page.getByRole('button', { name: '打开 DSH Web', exact: true }).click(); await expect.poll(() => opens).toBe(1)
+    const created = page.waitForEvent('popup')
+    await page.getByRole('button', { name: '打开 DSH Web', exact: true }).click()
+    const popup = await created
+    await expect.poll(() => opens).toBe(1)
     await hide(page)
-    release(); await expect.poll(() => page.context().pages().length).toBe(1)
+    release()
+    await popup.waitForURL('**/native-ui-fixture/session?*')
+    expect(await popup.evaluate(() => window.opener === null)).toBe(true)
+    expect(await popup.evaluate(() => document.referrer)).toBe('')
+    await popup.close()
     await show(page)
+
+    let releaseLeave!: () => void; nativeGate = new Promise<void>(done => { releaseLeave = done })
+    await page.getByRole('button', { name: '打开 DSH Web', exact: true }).click()
+    await expect.poll(() => opens).toBe(2)
+    await page.evaluate(() => { location.hash = '#overview' })
+    releaseLeave(); await expect.poll(() => page.context().pages().length).toBe(1)
+    await open(page)
     await expect(page.locator('body')).not.toContainText('fixture-only-private-entry')
   })
 

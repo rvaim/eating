@@ -17,7 +17,7 @@ export class AndroidPlugin implements BackendPlugin {
   readonly id = 'android-control'
   readonly kind = 'capability' as const
   readonly name = '玩手机'
-  readonly version = '0.3.0'
+  readonly version = '0.3.1'
   readonly configurationManageOperations = [
     'configuration',
     'rebuild-configuration',
@@ -56,6 +56,7 @@ export class AndroidPlugin implements BackendPlugin {
   private lastDetection: AdbDetectionSnapshot | null = null
   private lastDevices: AndroidDevicesSnapshot | null = null
   private warmup: Promise<void> | null = null
+  private readonly registeredSignals = new WeakSet<AbortSignal>()
 
   constructor(private readonly context: HostPluginContext, options: AndroidPluginOptions = {}) {
     this.config = new AndroidConfig(context.dataDirectory)
@@ -371,9 +372,15 @@ export class AndroidPlugin implements BackendPlugin {
     this.lastEventAt = new Date().toISOString()
     const engine = this.requireEngine()
     const actor = scope.agentId
-    const stop = () => { void engine.revoke(actor) }
-    scope.signal?.addEventListener('abort', stop, { once: true })
-    return engine.invoke(name, input, actor, requestId)
+    if (scope.signal?.aborted) {
+      throw failure('ANDROID_ACCESS_REVOKED', '该执行授权已结束，请由当前任务重新取得连接。', 'not-sent', 403)
+    }
+    if (scope.signal && !this.registeredSignals.has(scope.signal)) {
+      this.registeredSignals.add(scope.signal)
+      const signal = scope.signal
+      signal.addEventListener('abort', () => { void engine.revoke(actor, signal) }, { once: true })
+    }
+    return engine.invoke(name, input, actor, requestId, scope.signal)
   }
 }
 

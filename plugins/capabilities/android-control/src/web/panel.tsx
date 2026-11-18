@@ -168,12 +168,17 @@ export function AndroidPanel({ enabled, saved, connectionBusy, onRefresh, onFeed
 
   useEffect(() => {
     mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      abortRef.current?.abort()
+    }
+  }, [])
+
+  useEffect(() => {
     const controller = new AbortController()
     void loadConfigurationSnapshot(controller.signal).catch(() => {})
     return () => {
-      mountedRef.current = false
       controller.abort()
-      abortRef.current?.abort()
     }
   }, [loadConfigurationSnapshot, enabled, saved])
 

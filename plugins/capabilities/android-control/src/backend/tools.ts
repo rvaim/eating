@@ -107,8 +107,8 @@ export const androidTools: readonly PluginToolDefinition[] = [
   tool(
     'android_screenshot',
     '查看手机屏幕',
-    '通过本机 ADB 快捷截取安卓屏幕（screencap -p），返回实际 MCP 图片给模型。可传 serial 显式指定目标设备，省略时使用当前确认的默认设备（多设备未选默认时需明确指定）。',
-    { serial: string },
+    '通过本机 ADB 快捷截取安卓屏幕（screencap -p），返回实际 MCP 图片给模型。默认最多等待 30 秒完成传输（高速连接会立即返回，不会空等）；若网络较慢返回 status=running 与 ANDROID_IMAGE_PENDING，可用 android_process_read(process_id, output="image") 继续等待并获取图片。可传 serial 显式指定目标设备，省略时使用当前确认的默认设备（多设备未选默认时需明确指定）。',
+    { serial: string, wait_ms: { ...number, maximum: 30000 } },
     [],
     true,
   ),

@@ -20,7 +20,7 @@ const OUTPUT_BYTES = 16 * 1024 * 1024
 const BLOCK_BYTES = 65536
 const TEXT_BYTES = 16384
 type OutputMode = 'text' | 'binary' | 'image'
-type Live = { child: ChildProcessWithoutNullStreams; done: Promise<void> }
+type Live = { child: ChildProcessWithoutNullStreams; done: Promise<void>; actorId: string; controlled: boolean; signal?: AbortSignal }
 export function resultContent(value: JsonObject, bytes?: Buffer, output: OutputMode = 'text'): JsonObject {
   const content: JsonValue[] = [{ type: 'text', text: JSON.stringify(value) }]
   if (bytes !== undefined && output === 'image') {
@@ -52,6 +52,8 @@ export class AndroidEngine {
   private readonly receipts: DatabaseSync
   private storageClosed = false
   private readonly blocked = new Set<string>()
+  private readonly leaseSignals = new Map<string, AbortSignal>()
+  private readonly revokedSignals = new WeakSet<AbortSignal>()
   private readonly key: Buffer
   private controller: string | null = null
   private closed = false
@@ -98,12 +100,25 @@ export class AndroidEngine {
     if (!this.storageClosed) this.receipts.prepare('INSERT INTO receipts(id,intent,result) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET result=excluded.result WHERE receipts.intent=excluded.intent').run(id, intent, JSON.stringify(result))
   }
   digest(value: unknown): string { return createHmac('sha256', this.key).update(JSON.stringify(value)).digest('hex') }
-  private active(actor: string, acquire = false): void {
-    if (this.closed || this.blocked.has(actor)) throw failure('ANDROID_ACCESS_REVOKED', '该执行授权已结束，请由当前任务重新取得连接。', 'not-sent', 403)
+  private activateLease(actor: string, signal?: AbortSignal): void {
+    if (this.closed) throw failure('ANDROID_ACCESS_REVOKED', '该执行授权已结束，请由当前任务重新取得连接。', 'not-sent', 403)
+    if (!signal) return
+    if (signal.aborted || this.revokedSignals.has(signal)) throw failure('ANDROID_ACCESS_REVOKED', '该执行授权已结束，请由当前任务重新取得连接。', 'not-sent', 403)
+    if (this.leaseSignals.get(actor) !== signal) {
+      this.leaseSignals.set(actor, signal)
+      this.blocked.delete(actor)
+    }
+  }
+  private active(actor: string, acquire = false, signal?: AbortSignal): void {
+    if (this.closed || signal?.aborted || (signal && this.revokedSignals.has(signal)) || this.blocked.has(actor)) throw failure('ANDROID_ACCESS_REVOKED', '该执行授权已结束，请由当前任务重新取得连接。', 'not-sent', 403)
     if (acquire) { if (this.controller !== null && this.controller !== actor) throw failure('ANDROID_EXECUTOR_BUSY', '执行端由另一个代理控制，请由主Agent协调或主人接管。', 'not-sent', 409); this.controller = actor }
   }
-  private record(id: unknown, actor: string): ProcessRecord {
-    this.active(actor)
+  private releaseControllerIfIdle(actor: string): void {
+    if (this.controller !== actor) return
+    if (![...this.live.values()].some(job => job.controlled && job.actorId === actor)) this.controller = null
+  }
+  private record(id: unknown, actor: string, signal?: AbortSignal): ProcessRecord {
+    this.active(actor, false, signal)
     const record = typeof id === 'string' ? this.records.get(id) : undefined
     if (!record || record.actorId !== actor && actor !== 'owner') throw failure('ANDROID_PROCESS_UNAVAILABLE', '进程不属于当前调用者或已不在执行端。', 'not-sent', 404)
     return record
@@ -200,7 +215,7 @@ export class AndroidEngine {
     }
     return { finalArgs: [...rawArgs], targetKey: 'device:unspecified' }
   }
-  async execute(input: unknown, actor: string, requestId: string, acquire = true): Promise<JsonObject> {
+  async execute(input: unknown, actor: string, requestId: string, acquire = true, signal?: AbortSignal): Promise<JsonObject> {
     const args = object(input, ['args', 'serial', 'stdin', 'terminal', 'wait_ms', 'output', 'request_id'], ['args'])
     if (!Array.isArray(args.args) || args.args.length > 1024 || !args.args.every(arg => text(arg, 65536)) || Buffer.byteLength(JSON.stringify(args.args)) > 512 * 1024 || args.stdin !== undefined && !text(args.stdin, 262144) || args.terminal !== undefined && typeof args.terminal !== 'boolean') throw failure('ANDROID_ARGUMENTS_INVALID')
     const explicitSerial = args.serial !== undefined ? validateDeviceSerial(args.serial, false) : undefined
@@ -209,10 +224,13 @@ export class AndroidEngine {
     const intent = this.digest([actor, resolvedTarget.targetKey, resolvedTarget.finalArgs, args.args, args.stdin ?? null, terminal, this.adbPath, this.workspace])
     let row = [...this.records.values()].find(item => item.requestId === requestId)
     const previous = this.previous(requestId, intent)
-    if (previous && !row) return resultContent({ ...previous, status: previous.status === 'running' || previous.status === 'queued' ? 'unknown' : previous.status!, pid: null, outputUnavailable: true })
+    if (previous && !row) {
+      this.active(actor, false, signal)
+      return resultContent({ ...previous, status: previous.status === 'running' || previous.status === 'queued' ? 'unknown' : previous.status!, pid: null, outputUnavailable: true })
+    }
     if (row && (row.intent !== intent || row.actorId !== actor)) throw failure('ANDROID_REQUEST_CONFLICT', '同一 request_id 不能用于不同命令、目标设备或参数。', 'not-sent', 409)
     if (!row) {
-      this.active(actor, acquire)
+      this.active(actor, acquire, signal)
       if (this.records.size >= 512) this.prune()
       if (this.records.size >= 512) throw failure('ANDROID_PROCESS_CAPACITY', '执行端活跃／待核对进程达到容量，请先核对现有进程。', 'not-sent', 409)
       const command = [this.adbPath, ...resolvedTarget.finalArgs]
@@ -230,18 +248,27 @@ export class AndroidEngine {
         }
         child.stdout.on('data', (chunk: Buffer) => collect('stdout', chunk)); child.stderr.on('data', (chunk: Buffer) => collect('stderr', chunk))
         child.once('error', () => { current.status = 'failed'; current.pid = null; this.save(); this.remember(requestId, intent, this.summary(current)) })
-        child.once('close', (code, signal) => { current.status = current.status === 'failed' ? 'failed' : 'exited'; current.exitCode = code; current.signal = signal; current.pid = null; this.live.delete(current.processId); this.save(); this.remember(requestId, intent, this.summary(current)); resolveDone() })
+        child.once('close', (code, exitSignal) => {
+          current.status = current.status === 'failed' ? 'failed' : 'exited'; current.exitCode = code; current.signal = exitSignal; current.pid = null
+          this.live.delete(current.processId)
+          if (acquire) this.releaseControllerIfIdle(current.actorId)
+          this.save(); this.remember(requestId, intent, this.summary(current)); resolveDone()
+        })
       })
-      row.pid = child.pid ?? null; if (child.pid) row.status = 'running'; this.live.set(row.processId, { child, done }); this.save()
+      row.pid = child.pid ?? null; if (child.pid) row.status = 'running'
+      this.live.set(row.processId, { child, done, actorId: actor, controlled: acquire, ...(signal ? { signal } : {}) })
+      this.save()
       child.stdin.on('error', () => { /* The process status/exit remains the authoritative result. */ })
       if (typeof args.stdin === 'string') child.stdin.write(args.stdin)
+    } else {
+      this.active(actor, false, signal)
     }
     const live = this.live.get(row.processId)
     if (live && wait) { const timeout = new AbortController(); await Promise.race([live.done, delay(wait, undefined, { signal: timeout.signal }).catch(() => {})]); timeout.abort() }
-    return this.read({ process_id: row.processId, output: mode }, actor)
+    return this.read({ process_id: row.processId, output: mode }, actor, signal)
   }
-  read(input: unknown, actor: string): JsonObject {
-    const args = object(input, ['process_id', 'offset', 'limit', 'stream', 'output'], ['process_id']), row = this.record(args.process_id, actor)
+  read(input: unknown, actor: string, signal?: AbortSignal): JsonObject {
+    const args = object(input, ['process_id', 'offset', 'limit', 'stream', 'output'], ['process_id']), row = this.record(args.process_id, actor, signal)
     const stream = args.stream ?? 'stdout'; if (stream !== 'stdout' && stream !== 'stderr') throw failure('ANDROID_ARGUMENTS_INVALID')
     const offset = integer(args.offset, 0, 0, Number.MAX_SAFE_INTEGER), mode = outputMode(args.output), requested = integer(args.limit, mode === 'image' ? OUTPUT_BYTES : mode === 'text' ? TEXT_BYTES : BLOCK_BYTES, 1, mode === 'image' ? OUTPUT_BYTES : BLOCK_BYTES), limit = mode === 'text' ? Math.min(requested, TEXT_BYTES) : requested
     const file = join(this.directory, row.processId + '.' + stream), retained = existsSync(file) ? statSync(file).size : 0
@@ -266,9 +293,9 @@ export class AndroidEngine {
     try { const result = await action(); this.remember(requestId, intent, result); return result }
     catch (error) { if (error instanceof Error && 'outcome' in error && error.outcome === 'not-sent') this.receipts.prepare('DELETE FROM receipts WHERE id=?').run(requestId); throw error }
   }
-  write(input: unknown, actor: string, requestId: string): JsonObject {
-    const args = object(input, ['process_id', 'data', 'encoding', 'eof', 'request_id'], ['process_id']), row = this.record(args.process_id, actor)
-    this.active(actor, true)
+  write(input: unknown, actor: string, requestId: string, signal?: AbortSignal): JsonObject {
+    const args = object(input, ['process_id', 'data', 'encoding', 'eof', 'request_id'], ['process_id']), row = this.record(args.process_id, actor, signal)
+    this.active(actor, true, signal)
     if (args.data !== undefined && !text(args.data, 350000) || args.encoding !== undefined && args.encoding !== 'utf8' && args.encoding !== 'base64' || args.eof !== undefined && typeof args.eof !== 'boolean') throw failure('ANDROID_ARGUMENTS_INVALID')
     return resultContent(this.once(requestId, { actor, args }, () => {
       const live = this.live.get(row.processId); if (!live || !live.child.stdin.writable) throw failure('ANDROID_PROCESS_NOT_RUNNING', '该进程已结束，未再次写入。', 'not-sent', 409)
@@ -277,8 +304,8 @@ export class AndroidEngine {
       return { accepted: true, processId: row.processId, outcome: 'succeeded' }
     }))
   }
-  stop(input: unknown, actor: string, requestId: string): JsonObject {
-    const args = object(input, ['process_id', 'signal', 'request_id'], ['process_id']), row = this.record(args.process_id, actor)
+  stop(input: unknown, actor: string, requestId: string, signal?: AbortSignal): JsonObject {
+    const args = object(input, ['process_id', 'signal', 'request_id'], ['process_id']), row = this.record(args.process_id, actor, signal)
     if (args.signal !== undefined && args.signal !== 'interrupt' && args.signal !== 'terminate') throw failure('ANDROID_ARGUMENTS_INVALID')
     return resultContent(this.once(requestId, { actor, args }, () => { const live = this.live.get(row.processId); if (live) this.kill(live.child, args.signal === 'interrupt' ? 'SIGINT' : 'SIGTERM'); return { processId: row.processId, stopRequested: Boolean(live), status: row.status } }))
   }
@@ -286,15 +313,36 @@ export class AndroidEngine {
     if (child.exitCode !== null || child.signalCode !== null || !child.pid) return
     try { if (process.platform === 'win32') child.kill(signal); else process.kill(-child.pid, signal) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
   }
-  async revoke(actor: string): Promise<void> {
-    this.blocked.add(actor)
-    const jobs = [...this.records.values()].filter(row => row.actorId === actor).flatMap(row => { const live = this.live.get(row.processId); return live ? [live] : [] })
+  private async stopActorJobs(actor: string, signal?: AbortSignal): Promise<void> {
+    const jobs = [...this.records.values()]
+      .filter(row => row.actorId === actor)
+      .flatMap(row => {
+        const live = this.live.get(row.processId)
+        if (!live) return []
+        if (signal && live.signal && live.signal !== signal) return []
+        return [live]
+      })
     for (const live of jobs) this.kill(live.child, 'SIGTERM')
     await Promise.race([Promise.all(jobs.map(job => job.done)), delay(500)])
     for (const live of jobs) this.kill(live.child, 'SIGKILL')
-    if (this.controller === actor) this.controller = null
   }
-  async takeover(): Promise<void> { if (this.controller) await this.revoke(this.controller); this.controller = null; this.blocked.delete('owner') }
+  async revoke(actor: string, signal?: AbortSignal): Promise<void> {
+    if (signal) this.revokedSignals.add(signal)
+    const currentLease = this.leaseSignals.get(actor)
+    const matchesCurrent = !signal || currentLease === undefined || currentLease === signal
+    if (matchesCurrent) {
+      this.blocked.add(actor)
+      if (signal && currentLease === signal) this.leaseSignals.delete(actor)
+      if (this.controller === actor) this.controller = null
+    }
+    await this.stopActorJobs(actor, signal)
+  }
+  async takeover(): Promise<void> {
+    const holder = this.controller
+    this.controller = null
+    this.blocked.delete('owner')
+    if (holder) await this.stopActorJobs(holder)
+  }
   prune(): JsonObject {
     let removed = 0
     for (const [id, row] of this.records) if (row.status === 'exited' || row.status === 'failed') {
@@ -302,8 +350,8 @@ export class AndroidEngine {
     }
     this.save(); return { removed }
   }
-  files(input: unknown, actor: string, requestId: string): JsonObject {
-    this.active(actor)
+  files(input: unknown, actor: string, requestId: string, signal?: AbortSignal): JsonObject {
+    this.active(actor, false, signal)
     const args = object(input, ['op', 'path', 'offset', 'limit', 'data', 'overwrite', 'output', 'request_id'], ['op', 'path'])
     if (!text(args.path) || !args.path) throw failure('ANDROID_ARGUMENTS_INVALID')
     const file = isAbsolute(args.path) ? args.path : resolve(this.workspace, args.path), offset = integer(args.offset, 0, 0, Number.MAX_SAFE_INTEGER), limit = integer(args.limit, BLOCK_BYTES, 1, BLOCK_BYTES)
@@ -318,34 +366,46 @@ export class AndroidEngine {
       return resultContent({ path: file, location: 'eating-host', offset, nextOffset: offset + decoded.length, bytes: statSync(file).size, ...(mode === 'binary' ? { data: bytes.toString('base64'), encoding: 'base64' } : mode === 'text' ? { text: decoded.toString('utf8') } : {}) }, mode === 'image' ? bytes : undefined, mode)
     }
     if (args.op !== 'put' || args.overwrite !== undefined && typeof args.overwrite !== 'boolean') throw failure('ANDROID_ARGUMENTS_INVALID')
-    this.active(actor, true); const bytes = decoded(args.data)
-    return resultContent(this.once(requestId, { actor, args }, () => {
-      if (!(offset === 0 && args.overwrite === true) && (existsSync(file) ? statSync(file).size : 0) !== offset) throw failure('ANDROID_FILE_CONFLICT', '文件长度已变化，未重复追加。', 'not-sent', 409)
-      if (offset === 0 && args.overwrite === true) writeFileSync(file, bytes, { mode: 0o600 }); else appendFileSync(file, bytes, { mode: 0o600 })
-      return { path: file, location: 'eating-host', bytes: statSync(file).size, written: bytes.length, nextOffset: offset + bytes.length }
-    }))
+    const hadControl = this.controller === actor
+    this.active(actor, true, signal)
+    try {
+      const bytes = decoded(args.data)
+      return resultContent(this.once(requestId, { actor, args }, () => {
+        if (!(offset === 0 && args.overwrite === true) && (existsSync(file) ? statSync(file).size : 0) !== offset) throw failure('ANDROID_FILE_CONFLICT', '文件长度已变化，未重复追加。', 'not-sent', 409)
+        if (offset === 0 && args.overwrite === true) writeFileSync(file, bytes, { mode: 0o600 }); else appendFileSync(file, bytes, { mode: 0o600 })
+        return { path: file, location: 'eating-host', bytes: statSync(file).size, written: bytes.length, nextOffset: offset + bytes.length }
+      }))
+    } finally {
+      if (!hadControl) this.releaseControllerIfIdle(actor)
+    }
   }
-  async invoke(name: string, args: unknown, actor: string, requestId: string): Promise<JsonObject> {
+  async invoke(name: string, args: unknown, actor: string, requestId: string, signal?: AbortSignal): Promise<JsonObject> {
+    this.activateLease(actor, signal)
     if (name === 'android_executor_control') {
       const value = object(args, ['op', 'request_id'], ['op'])
-      if (value.op === 'state') { this.active(actor); return resultContent(this.list()) }
+      if (value.op === 'state') { this.active(actor, false, signal); return resultContent(this.list()) }
       if (value.op !== 'release' && value.op !== 'takeover') throw failure('ANDROID_ARGUMENTS_INVALID')
       return resultContent(await this.onceAsync(requestId, { actor, args: value }, async () => {
-        this.active(actor)
-        if (value.op === 'release') await this.revoke(actor)
-        else { await this.takeover(); this.blocked.delete(actor) }
+        this.active(actor, false, signal)
+        if (value.op === 'release') {
+          for (const job of this.live.values()) if (job.actorId === actor) job.controlled = false
+          if (this.controller === actor) this.controller = null
+        } else {
+          await this.takeover()
+        }
         return { released: true }
       }))
     }
-    if (name === 'android_adb_exec') return this.execute(args, actor, requestId)
-    if (name === 'android_process_read') return this.read(args, actor)
-    if (name === 'android_process_write') return this.write(args, actor, requestId)
-    if (name === 'android_process_stop') return this.stop(args, actor, requestId)
-    if (name === 'android_files') return this.files(args, actor, requestId)
+    if (name === 'android_adb_exec') return this.execute(args, actor, requestId, true, signal)
+    if (name === 'android_process_read') return this.read(args, actor, signal)
+    if (name === 'android_process_write') return this.write(args, actor, requestId, signal)
+    if (name === 'android_process_stop') return this.stop(args, actor, requestId, signal)
+    if (name === 'android_files') return this.files(args, actor, requestId, signal)
     if (name === 'android_screenshot') {
-      const value = object(args, ['serial'])
+      const value = object(args, ['serial', 'wait_ms'])
       if (value.serial !== undefined) validateDeviceSerial(value.serial, false)
-      return this.execute({ args: ['exec-out', 'screencap', '-p'], ...(value.serial ? { serial: String(value.serial) } : {}), output: 'image', wait_ms: 10000 }, actor, requestId, false)
+      const waitMs = integer(value.wait_ms, 30000, 0, 30000)
+      return this.execute({ args: ['exec-out', 'screencap', '-p'], ...(value.serial ? { serial: String(value.serial) } : {}), output: 'image', wait_ms: waitMs }, actor, requestId, false, signal)
     }
     throw failure('TOOL_NOT_FOUND', '未提供此安卓工具。', 'not-sent', 404)
   }

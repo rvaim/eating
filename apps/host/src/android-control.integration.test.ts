@@ -57,7 +57,11 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('完整ADB与独
       if (!results.length) return { name: 'mcp__plugin_android_control__android_adb_exec', arguments: { args: ['unlisted-adb-command', 'literal 参数'], wait_ms: 5000, request_id: 'android-native-command-' + String(object(task.eating_execution).taskId).slice(0, 16) } }
       if (results.length === 1) {
         const value = object(JSON.parse(fixtureText(results[0]!.content)))
-        expect(JSON.parse(String(value.text))).toEqual(['unlisted-adb-command', 'literal 参数'])
+        const expectedSerial = installed ? '192.168.1.50:5555' : 'emulator-5554'
+        expect(JSON.parse(String(value.text))).toEqual({
+          serial: expectedSerial,
+          argv: ['-s', expectedSerial, 'unlisted-adb-command', 'literal 参数'],
+        })
         return { name: 'mcp__plugin_android_control__android_screenshot', arguments: {} }
       }
       const images = request.messages!.flatMap(message => Array.isArray(message.content) ? message.content.filter(isJsonObject).filter(block => block.type === 'image_url') : [])
@@ -79,9 +83,13 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('完整ADB与独
     await api('/plugins/qq/configuration', { endpoint: onebot.endpoint, forwardToHarness: true, receiveGroups: true, autoConnect: false }); await api('/plugins/qq/connect', {})
     await api('/plugins/dsh/configuration', { endpoint: model.endpoint, model: 'isolated-phone-model', apiKey: model.apiKey, timeoutMs: 30000, autoConnect: false }); await api('/plugins/dsh/manage', { operation: 'save-model-capabilities', input: { expectedRevision: 0, imageInput: true } }); await api('/plugins/dsh/connect', {})
     const emit = (id: number, text: string) => onebot.emitEvent({ post_type: 'message', message_type: 'private', self_id: 123456789, user_id: 987654321, message_id: id, message: text })
-    const diagnostics = () => JSON.stringify({ errors: model.errors, requests: model.requests.length, completed, imageReceived })
+    const diagnostics = () => JSON.stringify({ errors: model.errors, requests: model.requests.length, completed, imageReceived, harness: host.harness.getStatus() })
     emit(98001, 'START-PHONE')
-    await expect.poll(() => imageReceived, { timeout: 30000, message: diagnostics() }).toBe(true)
+    try {
+      await expect.poll(() => imageReceived, { timeout: 30000 }).toBe(true)
+    } catch (error) {
+      throw new Error(`${diagnostics()} :: ${error instanceof Error ? error.message : String(error)}`)
+    }
     await expect.poll(async () => JSON.parse(await readFile(join(directory, 'harness/dsh/bridge/deliveries.json'), 'utf8')).deliveries, { timeout: 5000 }).toEqual([])
     emit(98002, 'MAIN-SECOND-MESSAGE')
     await expect.poll(() => mainHandled, { timeout: 15000, message: diagnostics() }).toBe(true)
@@ -93,7 +101,11 @@ describe.runIf(Boolean(process.env.EATING_DSH_TEST_SYSTEM_BIN))('完整ADB与独
     const before = JSON.parse(await readFile(stateFile, 'utf8'))
     await api('/plugins/dsh/disconnect', {}); await api('/plugins/dsh/connect', {})
     emit(98003, 'START-PHONE-AGAIN')
-    await expect.poll(() => completed, { timeout: 30000, message: diagnostics() }).toBe(2)
+    try {
+      await expect.poll(() => completed, { timeout: 30000 }).toBe(2)
+    } catch (error) {
+      throw new Error(`${diagnostics()} :: ${error instanceof Error ? error.message : String(error)}`)
+    }
     await expect.poll(async () => JSON.parse(await readFile(stateFile, 'utf8')).bindings[0]?.tasks.at(-1)?.state, { timeout: 15000 }).toBe('completed')
     const after = JSON.parse(await readFile(stateFile, 'utf8')); expect(after.bindings[0].agentId).toBe(before.bindings[0].agentId); expect(after.bindings[0].tasks).toHaveLength(2)
     expect(model.errors).toEqual([]); expect(onebot.requests.some(r => r.action.startsWith('send_'))).toBe(false)

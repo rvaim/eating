@@ -51,7 +51,7 @@ export function NativeWebButton({ enabled, ready, blocked, visible }: {
     try {
       const result = readNativeWebLaunch(await hostRequest<unknown>('/plugins/dsh/manage', {
         method: 'POST', body: { operation: 'open-native-web', input: {} }, signal: request.signal,
-      }))
+      }), window.location.origin)
       if (request.signal.aborted || ticket !== generation.current || !availability.current) return
       if (target.closed) { setFailure('blocked'); return }
       const policy = target.document.createElement('meta')

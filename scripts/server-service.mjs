@@ -25,8 +25,9 @@ try {
   if (!configPath || !isAbsolute(configPath) || !outside(resolve(configPath)) || !outside(realpathSync(configPath)) || lstatSync(configPath).isSymbolicLink()) fail('Use an external private service configuration')
   const privateConfigPath = realpathSync(configPath)
   const config = JSON.parse(readFileSync(privateConfigPath, 'utf8'))
-  const keys = ['dataDirectory', 'runtimeNode', 'runtimeDsh', 'toolingBin', 'listenHost', 'publicOrigin', 'ownerToken', 'port']
-  if (!config || typeof config !== 'object' || Array.isArray(config) || Object.keys(config).length !== keys.length || keys.some(key => !Object.hasOwn(config, key))) fail('Invalid service configuration')
+  const requiredKeys = ['dataDirectory', 'runtimeNode', 'runtimeDsh', 'toolingBin', 'listenHost', 'publicOrigin', 'ownerToken', 'port']
+  const allowedKeys = new Set([...requiredKeys, 'extraOrigins'])
+  if (!config || typeof config !== 'object' || Array.isArray(config) || Object.keys(config).some(key => !allowedKeys.has(key)) || requiredKeys.some(key => !Object.hasOwn(config, key))) fail('Invalid service configuration')
   for (const key of ['dataDirectory', 'runtimeNode', 'runtimeDsh', 'toolingBin']) {
     if (typeof config[key] !== 'string' || !isAbsolute(config[key]) || /[\r\n\0]/.test(config[key])) fail('Service paths must be private absolute values')
     const resolved = existsSync(config[key]) ? realpathSync(config[key]) : resolve(realpathSync(dirname(config[key])), config[key].slice(dirname(config[key]).length + 1))
@@ -35,6 +36,22 @@ try {
   if (config.listenHost !== '0.0.0.0' || !Number.isSafeInteger(config.port) || config.port < 1024 || config.port > 65535 || typeof config.ownerToken !== 'string' || !/^[A-Za-z0-9_-]{32,256}$/.test(config.ownerToken)) fail('Explicit listener, port and high-entropy entry token are required')
   const origin = new URL(config.publicOrigin)
   if (origin.origin !== config.publicOrigin || !['http:', 'https:'].includes(origin.protocol) || Number(origin.port || (origin.protocol === 'http:' ? 80 : 443)) !== config.port) fail('Public origin must match the configured service port')
+  const schemesByHost = new Map([[origin.host, origin.protocol]])
+  const extraOrigins = []
+  if (Object.hasOwn(config, 'extraOrigins')) {
+    if (!Array.isArray(config.extraOrigins)) fail('Invalid extraOrigins service configuration')
+    const seen = new Set()
+    for (const candidate of config.extraOrigins) {
+      if (typeof candidate !== 'string' || candidate.length > 2048) fail('Invalid extraOrigins service configuration')
+      let parsed
+      try { parsed = new URL(candidate) } catch { fail('Invalid extraOrigins service configuration') }
+      if (parsed.origin !== candidate || !['http:', 'https:'].includes(parsed.protocol)) fail('Invalid extraOrigins service configuration')
+      const previous = schemesByHost.get(parsed.host)
+      if (previous && previous !== parsed.protocol) fail('Public origin and extraOrigins cannot mix HTTP and HTTPS for the same host')
+      schemesByHost.set(parsed.host, parsed.protocol)
+      if (!seen.has(parsed.origin)) { seen.add(parsed.origin); extraOrigins.push(parsed.origin) }
+    }
+  }
   mkdirSync(config.dataDirectory, { recursive: true, mode: 0o700 })
   chmodSync(config.dataDirectory, 0o700)
   const unitDirectory = resolve(homedir(), '.config/systemd/user')
@@ -53,7 +70,7 @@ try {
     else if (!['inactive', 'failed'].includes(active)) fail('Managed Eating service state is not recognized')
   }
   for (const plugin of ['communication/qq', 'harness/dsh', 'capabilities/stickers', 'capabilities/image-generation', 'capabilities/openviking-memory', 'capabilities/text-to-speech', 'capabilities/speech-to-text', 'capabilities/android-control']) command(config.runtimeNode, [resolve(repository, 'apps/host/dist/plugin-cli.mjs'), 'install', resolve(repository, 'plugins', plugin, 'dist')], environment)
-  const variables = { EATING_HOME: config.dataDirectory, EATING_HOST_PORT: String(config.port), EATING_LISTEN_HOST: config.listenHost, EATING_PUBLIC_ORIGIN: config.publicOrigin, EATING_OWNER_TOKEN: config.ownerToken, EATING_DSH_BIN: config.runtimeDsh, EATING_AUTO_CONNECT: 'true', PATH: environment.PATH }
+  const variables = { EATING_HOME: config.dataDirectory, EATING_HOST_PORT: String(config.port), EATING_LISTEN_HOST: config.listenHost, EATING_PUBLIC_ORIGIN: config.publicOrigin, ...(extraOrigins.length ? { EATING_EXTRA_ORIGINS: extraOrigins.join(',') } : {}), EATING_OWNER_TOKEN: config.ownerToken, EATING_DSH_BIN: config.runtimeDsh, EATING_AUTO_CONNECT: 'true', PATH: environment.PATH }
   const unit = [marker, '[Unit]', 'Description=Eating managed application', 'After=network.target', '', '[Service]', 'Type=simple', 'WorkingDirectory=' + repository.replaceAll('%', '%%'), 'ExecStart=' + quoted(config.runtimeNode) + ' ' + quoted(resolve(repository, 'apps/host/dist/main.mjs')), ...Object.entries(variables).map(([name, value]) => 'Environment=' + quoted(name + '=' + value)), 'UMask=0077', 'Restart=on-failure', 'RestartSec=5', 'TimeoutStopSec=60', 'KillMode=control-group', 'MemoryMax=1536M', 'CPUQuota=100%', 'Nice=10', '', '[Install]', 'WantedBy=default.target', ''].join('\n')
   writeFileSync(unitPath, unit, { mode: 0o600 })
   chmodSync(unitPath, 0o600)

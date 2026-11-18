@@ -38,17 +38,26 @@ export function readNativeWebStatus(value: unknown): NativeWebStatus {
   return { ready: value.ready }
 }
 
-/** The authenticated URL is accepted only for the loopback official Web, strictly on demand. */
-export function readNativeWebLaunch(value: unknown): NativeWebLaunch {
+/** Accepts only the loopback official Web or the current host's same-origin `/dsh-web/` proxy. */
+export function readNativeWebLaunch(value: unknown, currentOrigin?: string): NativeWebLaunch {
   if (!object(value) || !onlyKeys(value, ['url', 'rootSessionId'])
     || !text(value.rootSessionId, 160) || !value.rootSessionId || !text(value.url, 16_384) || /[\s\\]/u.test(value.url)) return invalid()
-  const match = /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})\//u.exec(value.url)
-  if (!match || Number(match[1]) > 65_535) return invalid()
   try {
     const url = new URL(value.url)
-    if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.username || url.password) return invalid()
-  } catch { return invalid() }
-  return { url: value.url, rootSessionId: value.rootSessionId }
+    if (url.username || url.password) return invalid()
+    const match = /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})\//u.exec(value.url)
+    if (match && Number(match[1]) <= 65_535 && url.protocol === 'http:' && url.hostname === '127.0.0.1') {
+      return { url: value.url, rootSessionId: value.rootSessionId }
+    }
+    if (currentOrigin) {
+      const expected = new URL(currentOrigin)
+      if ((expected.protocol === 'http:' || expected.protocol === 'https:') && url.origin === expected.origin
+        && (url.pathname === '/dsh-web/' || url.pathname.startsWith('/dsh-web/'))) {
+        return { url: value.url, rootSessionId: value.rootSessionId }
+      }
+    }
+  } catch {}
+  return invalid()
 }
 
 export function readModelCapabilities(value: unknown): ModelCapabilities {

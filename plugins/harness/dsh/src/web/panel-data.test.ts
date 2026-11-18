@@ -31,9 +31,13 @@ describe('Harness 面板响应校验', () => {
     for (const value of [{}, { ready: 'true' }, { ready: 1 }, { ready: true, url: 'http://127.0.0.1:4318/' }, { ready: true, rootSessionId: 'main' }]) expect(() => readNativeWebStatus(value)).toThrowError(expect.objectContaining({ code: 'INVALID_HOST_RESPONSE' }))
   })
 
-  it('原生 Web 入口只接受回环官方地址与严格字段，拒绝外部、脚本与额外鉴权字段', () => {
+  it('原生 Web 入口接受回环或同源 /dsh-web/ 代理地址，拒绝外部、跨源与非代理路径', () => {
     const good = 'http://127.0.0.1:4318/session?token=fixture-only'
     expect(readNativeWebLaunch({ url: good, rootSessionId: 'main' })).toEqual({ url: good, rootSessionId: 'main' })
+    const proxy = 'http://100.111.123.102:15181/dsh-web/?token=fixture-only'
+    expect(readNativeWebLaunch({ url: proxy, rootSessionId: 'main' }, 'http://100.111.123.102:15181')).toEqual({ url: proxy, rootSessionId: 'main' })
+    const httpsProxy = 'https://vm-0-16.tail.ts.net/dsh-web/session?token=fixture-only'
+    expect(readNativeWebLaunch({ url: httpsProxy, rootSessionId: 'main' }, 'https://vm-0-16.tail.ts.net')).toEqual({ url: httpsProxy, rootSessionId: 'main' })
     for (const value of [
       {}, { url: good }, { url: good, rootSessionId: '' }, { url: good, rootSessionId: 'x'.repeat(161) },
       { url: 'https://127.0.0.1:4318/', rootSessionId: 'main' },
@@ -41,9 +45,12 @@ describe('Harness 面板响应校验', () => {
       { url: 'http://127.0.0.1:65536/', rootSessionId: 'main' },
       { url: 'http://127.0.0.1:0/', rootSessionId: 'main' },
       { url: 'javascript:alert(1)', rootSessionId: 'main' },
+      { url: 'http://43.134.86.213:15181/dsh-web/?token=fixture-only', rootSessionId: 'main' },
+      { url: 'http://100.111.123.102:15181/api/workspace', rootSessionId: 'main' },
+      { url: 'http://100.111.123.102:15181/dsh-web-other/', rootSessionId: 'main' },
       { url: good, rootSessionId: 'main', token: 'fixture-only' },
       { url: good, rootSessionId: 'main', readOnly: false },
       { url: `${good} extra`, rootSessionId: 'main' },
-    ]) expect(() => readNativeWebLaunch(value)).toThrowError(expect.objectContaining({ code: 'INVALID_HOST_RESPONSE' }))
+    ]) expect(() => readNativeWebLaunch(value, 'http://100.111.123.102:15181')).toThrowError(expect.objectContaining({ code: 'INVALID_HOST_RESPONSE' }))
   })
 })

@@ -19,10 +19,35 @@ describe('explicit Host server access configuration', () => {
     expect(validateServerAccess({})).toEqual({ listenHost: '127.0.0.1' })
   })
 
-  it('parses public binding and allows optional token protection on loopback', () => {
+  it('parses public binding, optional extra origins, and allows optional token protection on loopback', () => {
     expect(parseServerAccess({ EATING_LISTEN_HOST: '0.0.0.0', EATING_PUBLIC_ORIGIN: publicOrigin, EATING_OWNER_TOKEN: token })).toEqual({ listenHost: '0.0.0.0', publicOrigin, ownerToken: token })
+    expect(parseServerAccess({
+      EATING_LISTEN_HOST: '0.0.0.0',
+      EATING_PUBLIC_ORIGIN: publicOrigin,
+      EATING_EXTRA_ORIGINS: ' http://100.111.123.102:5181 , https://tail.example.test , http://[fd7a:115c::1]:5181 , http://100.111.123.102:5181 ',
+      EATING_OWNER_TOKEN: token,
+    })).toEqual({
+      listenHost: '0.0.0.0',
+      publicOrigin,
+      extraOrigins: ['http://100.111.123.102:5181', 'https://tail.example.test', 'http://[fd7a:115c::1]:5181'],
+      ownerToken: token,
+    })
     expect(parseServerAccess({ EATING_OWNER_TOKEN: token })).toEqual({ listenHost: '127.0.0.1', ownerToken: token })
     expect(parseServerAccess({ EATING_LISTEN_HOST: '0.0.0.0', EATING_PUBLIC_ORIGIN: 'https://example.test', EATING_OWNER_TOKEN: token })).toEqual({ listenHost: '0.0.0.0', publicOrigin: 'https://example.test', ownerToken: token })
+  })
+
+  it.each(['', ' ', 'http://good.test:5181,', 'http://good.test:5181, ,http://other.test:5181', 'ftp://example.test', 'http://example.test/', 'http://owner@example.test'])('rejects invalid extra origins case %# without echoing supplied values', extra => {
+    let failure: unknown
+    try { parseServerAccess({ EATING_LISTEN_HOST: '0.0.0.0', EATING_PUBLIC_ORIGIN: publicOrigin, EATING_EXTRA_ORIGINS: extra, EATING_OWNER_TOKEN: token }) } catch (error) { failure = error }
+    expect(failure).toBeInstanceOf(Error)
+    const message = String(failure)
+    expect(message).toContain('EATING_EXTRA_ORIGINS')
+    if (extra.trim()) expect(message).not.toContain(extra.trim())
+  })
+
+  it('rejects conflicting HTTP and HTTPS schemes for the same host across origins', () => {
+    expect(() => validateServerAccess({ listenHost: '0.0.0.0', publicOrigin: 'http://example.test:5181', extraOrigins: ['https://example.test:5181'], ownerToken: token })).toThrow('HTTP 与 HTTPS')
+    expect(() => validateServerAccess({ listenHost: '0.0.0.0', publicOrigin, extraOrigins: ['http://dual.example:5181', 'https://dual.example:5181'], ownerToken: token })).toThrow('HTTP 与 HTTPS')
   })
 
   it.each([

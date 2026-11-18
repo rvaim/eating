@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
-import { request } from 'node:http'
+import { createServer, request } from 'node:http'
 import type { IncomingHttpHeaders } from 'node:http'
+import WebSocket, { WebSocketServer } from 'ws'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -265,5 +266,186 @@ describe('real Host URL token owner boundary', () => {
     const restartedUrl = await restarted.listen()
     denied(await http(restartedUrl, '/api/bootstrap', { headers: { Cookie: session.cookie } }), context.ownerToken)
     expect((await http(restartedUrl, '/?token=' + context.ownerToken)).status).toBe(303)
+  })
+
+  it('supports configured extra origins while keeping Host/Origin enforcement and per-host Secure cookies', async () => {
+    const context = await fixture({
+      listenHost: '0.0.0.0',
+      publicOrigin: 'http://wan.example.test:15181',
+      extraOrigins: ['http://100.111.123.102:15181', 'https://lan.example.test'],
+    })
+    for (const [hostHeader, originHeader, expectedSecure] of [
+      ['wan.example.test:15181', 'http://wan.example.test:15181', false],
+      ['100.111.123.102:15181', 'http://100.111.123.102:15181', false],
+      ['lan.example.test', 'https://lan.example.test', true],
+    ] as const) {
+      const headers = { Host: hostHeader, Origin: originHeader }
+      const entered = await http(context.url, '/?token=' + context.ownerToken, { headers })
+      expect(entered.status).toBe(303)
+      const accessHeader = entered.headers['set-cookie']![0]!
+      expect(accessHeader.includes('; Secure')).toBe(expectedSecure)
+      const accessCookie = accessHeader.split(';')[0]!
+      const bootstrap = await http(context.url, '/api/bootstrap', { headers: { ...headers, Cookie: accessCookie } })
+      expect(bootstrap.status).toBe(200)
+      expect(bootstrap.headers['set-cookie']![0]!.includes('; Secure')).toBe(expectedSecure)
+      const cookie = `${accessCookie}; ${bootstrap.headers['set-cookie']![0]!.split(';')[0]!}`
+      const workspace = await http(context.url, '/api/workspace', { headers: { ...headers, Cookie: cookie } })
+      expect(workspace.status).toBe(200)
+      const wrongOrigin = await http(context.url, '/api/workspace', { headers: { Host: hostHeader, Origin: 'http://evil.example.test:15181', Cookie: cookie } })
+      expect(wrongOrigin.status).toBe(403)
+      const wrongTokenQuery = await http(context.url, '/api/workspace?token=' + context.ownerToken, { headers: { ...headers, Cookie: cookie } })
+      expect(wrongTokenQuery.status).toBe(401)
+    }
+    expect((await http(context.url, '/?token=' + context.ownerToken, { headers: { Host: 'unlisted.example.test:15181', Origin: 'http://unlisted.example.test:15181' } })).status).toBe(403)
+  })
+
+  it('proxies DSH native Web HTTP, cookies, and WebSocket under the caller origin while isolating credentials', async () => {
+    const dshLaunchToken = 'dsh-fixture-launch-token'
+    const observedUpstream: Array<{ method: string; url: string; host?: string; origin?: string; cookie?: string }> = []
+    let dshPort = 0
+    const upstreamWss = new WebSocketServer({ noServer: true })
+    upstreamWss.on('connection', (ws, req) => {
+      observedUpstream.push({ method: 'WS', url: req.url ?? '', host: req.headers.host, origin: req.headers.origin, cookie: req.headers.cookie })
+      ws.on('message', data => ws.send(`echo:${String(data)}`))
+    })
+    const upstreamServer = createServer((req, res) => {
+      observedUpstream.push({ method: req.method ?? '', url: req.url ?? '', host: req.headers.host, origin: req.headers.origin, cookie: req.headers.cookie })
+      if (req.headers.host !== `127.0.0.1:${dshPort}`) { res.writeHead(403); res.end('bad host'); return }
+      if (req.headers.origin && req.headers.origin !== `http://127.0.0.1:${dshPort}`) { res.writeHead(403); res.end('bad origin'); return }
+      if (req.method === 'GET' && req.url === `/?token=${dshLaunchToken}`) {
+        res.writeHead(303, { Location: './', 'Set-Cookie': 'dsh-auth-fixture=dsh-ok; Path=/; HttpOnly; SameSite=Strict' })
+        res.end(); return
+      }
+      if (req.method === 'GET' && req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end('<!doctype html><head><base href="./"></head><body>DSH Web Fixture</body>')
+        return
+      }
+      if (req.method === 'POST' && req.url === '/api/session/list') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, host: req.headers.host, origin: req.headers.origin, cookie: req.headers.cookie ?? null }))
+        return
+      }
+      res.writeHead(404); res.end('not found')
+    })
+    upstreamServer.on('upgrade', (req, socket, head) => {
+      if (req.url !== '/api/remote.mux' || req.headers.host !== `127.0.0.1:${dshPort}` || req.headers.origin !== `http://127.0.0.1:${dshPort}`) {
+        socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return
+      }
+      upstreamWss.handleUpgrade(req, socket, head, ws => upstreamWss.emit('connection', ws, req))
+    })
+    await new Promise<void>(resolveListen => upstreamServer.listen(0, '127.0.0.1', resolveListen))
+    dshPort = (upstreamServer.address() as { port: number }).port
+    cleanups.push(async () => {
+      upstreamWss.close()
+      upstreamServer.closeAllConnections()
+      await new Promise<void>(resolveClose => upstreamServer.close(() => resolveClose()))
+    })
+
+    const home = await temporaryHome(), ownerToken = randomBytes(32).toString('base64url')
+    let dshConnected = true
+    const host = new EatingHost({
+      dataDirectory: home, port: 0, listenHost: '0.0.0.0', publicOrigin: 'http://wan.example.test:15181',
+      extraOrigins: ['http://100.111.123.102:15181', 'https://lan.example.test'], ownerToken, allowedUiOrigins: [], autoConnectOnStartup: false,
+      entries: [entry('dsh', 'harness', {
+        disconnect: async () => { dshConnected = false },
+        manage: async operation => {
+          if (operation !== 'open-native-web') throw new Error('unexpected op')
+          if (!dshConnected) throw new Error('not ready')
+          return { url: `http://127.0.0.1:${dshPort}/?token=${dshLaunchToken}`, rootSessionId: 'root-session-1' }
+        },
+      })],
+    })
+    cleanups.push(() => host.close())
+    const hostUrl = await host.listen()
+
+    const lanHeaders = { Host: '100.111.123.102:15181', Origin: 'http://100.111.123.102:15181' }
+    const entered = await http(hostUrl, '/?token=' + ownerToken, { headers: lanHeaders })
+    const accessCookie = entered.headers['set-cookie']![0]!.split(';')[0]!
+    const boot = await http(hostUrl, '/api/bootstrap', { headers: { ...lanHeaders, Cookie: accessCookie } })
+    const sessionCookie = `${accessCookie}; ${boot.headers['set-cookie']![0]!.split(';')[0]!}`
+    const csrf = String(boot.body.csrfToken)
+
+    // Disallow unauthenticated or unlisted-host access to /dsh-web/ even when carrying DSH token
+    expect((await http(hostUrl, `/dsh-web/?token=${dshLaunchToken}`, { headers: lanHeaders })).status).toBe(401)
+    expect((await http(hostUrl, `/dsh-web/?token=${dshLaunchToken}`, { headers: { Host: 'evil.example.test:15181', Origin: 'http://evil.example.test:15181', Cookie: accessCookie } })).status).toBe(403)
+
+    // Launch URL returned by /api/plugins/dsh/manage reflects the caller's verified LAN host
+    const launch = await http(hostUrl, '/api/plugins/dsh/manage', {
+      method: 'POST', headers: { ...lanHeaders, Cookie: sessionCookie, 'X-Eating-CSRF': csrf }, body: { operation: 'open-native-web', input: {} },
+    })
+    expect(launch.status).toBe(200)
+    expect(launch.body).toEqual({ url: `http://100.111.123.102:15181/dsh-web/?token=${dshLaunchToken}`, rootSessionId: 'root-session-1' })
+
+    // Missing trailing slash redirects cleanly to /dsh-web/
+    const noSlash = await http(hostUrl, '/dsh-web', { headers: { ...lanHeaders, Cookie: accessCookie } })
+    expect(noSlash.status).toBe(308)
+    expect(noSlash.headers.location).toBe('/dsh-web/')
+
+    // Opening /dsh-web/?token=... forwards to DSH /?token=..., scopes DSH Set-Cookie to /dsh-web/, and strips Eating cookies
+    const dshAuth = await http(hostUrl, `/dsh-web/?token=${dshLaunchToken}`, { headers: { ...lanHeaders, Cookie: sessionCookie } })
+    expect(dshAuth.status).toBe(303)
+    expect(dshAuth.headers.location).toBe('./')
+    const dshSetCookie = dshAuth.headers['set-cookie']![0]!
+    expect(dshSetCookie).toContain('Path=/dsh-web/')
+    expect(dshSetCookie).not.toContain('; Secure')
+    const dshCookie = dshSetCookie.split(';')[0]!
+
+    // HTTPS origin gets ; Secure on both launch URL and proxied DSH Set-Cookie
+    const httpsHeaders = { Host: 'lan.example.test', Origin: 'https://lan.example.test' }
+    const httpsEnter = await http(hostUrl, '/?token=' + ownerToken, { headers: httpsHeaders })
+    const httpsAccess = httpsEnter.headers['set-cookie']![0]!.split(';')[0]!
+    const httpsBoot = await http(hostUrl, '/api/bootstrap', { headers: { ...httpsHeaders, Cookie: httpsAccess } })
+    const httpsSession = `${httpsAccess}; ${httpsBoot.headers['set-cookie']![0]!.split(';')[0]!}`
+    const httpsLaunch = await http(hostUrl, '/api/plugins/dsh/manage', {
+      method: 'POST', headers: { ...httpsHeaders, Cookie: httpsSession, 'X-Eating-CSRF': String(httpsBoot.body.csrfToken) }, body: { operation: 'open-native-web', input: {} },
+    })
+    expect(httpsLaunch.body).toEqual({ url: `https://lan.example.test/dsh-web/?token=${dshLaunchToken}`, rootSessionId: 'root-session-1' })
+    const httpsDshAuth = await http(hostUrl, `/dsh-web/?token=${dshLaunchToken}`, { headers: { ...httpsHeaders, Cookie: httpsAccess } })
+    expect(httpsDshAuth.headers['set-cookie']![0]!).toContain('Path=/dsh-web/')
+    expect(httpsDshAuth.headers['set-cookie']![0]!).toContain('; Secure')
+
+    // DSH page and POST /api RPC work under /dsh-web/ with Host/Origin normalized and Eating cookies omitted upstream
+    const dshIndex = await http(hostUrl, '/dsh-web/', { headers: { ...lanHeaders, Cookie: `${sessionCookie}; ${dshCookie}` } })
+    expect(dshIndex.status).toBe(200)
+    expect(dshIndex.text).toContain('DSH Web Fixture')
+    const dshRpc = await http(hostUrl, '/dsh-web/api/session/list', {
+      method: 'POST', headers: { ...lanHeaders, Cookie: `${sessionCookie}; ${dshCookie}` }, body: {},
+    })
+    expect(dshRpc.status).toBe(200)
+    expect(dshRpc.body).toEqual({ ok: true, host: `127.0.0.1:${dshPort}`, origin: `http://127.0.0.1:${dshPort}`, cookie: 'dsh-auth-fixture=dsh-ok' })
+
+    // WebSocket upgrade enforces Host/Origin/EatingOwnerAccess and tunnels messages cleanly
+    const wsPort = new URL(hostUrl).port
+    await expect(new Promise<void>((resolveWs, rejectWs) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${wsPort}/dsh-web/api/remote.mux`, { headers: lanHeaders })
+      ws.on('open', () => rejectWs(new Error('Expected 401')))
+      ws.on('unexpected-response', (_req, res) => { expect(res.statusCode).toBe(401); resolveWs() })
+      ws.on('error', () => {})
+    })).resolves.toBeUndefined()
+    await expect(new Promise<void>((resolveWs, rejectWs) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${wsPort}/dsh-web/api/remote.mux`, { headers: { Host: 'evil.example.test:15181', Origin: 'http://evil.example.test:15181', Cookie: accessCookie } })
+      ws.on('open', () => rejectWs(new Error('Expected 403')))
+      ws.on('unexpected-response', (_req, res) => { expect(res.statusCode).toBe(403); resolveWs() })
+      ws.on('error', () => {})
+    })).resolves.toBeUndefined()
+
+    const echoed = await new Promise<string>((resolveWs, rejectWs) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${wsPort}/dsh-web/api/remote.mux`, { headers: { ...lanHeaders, Cookie: `${sessionCookie}; ${dshCookie}` } })
+      ws.on('open', () => ws.send('hello-lan-ws'))
+      ws.on('message', data => { ws.close(); resolveWs(String(data)) })
+      ws.on('error', rejectWs)
+    })
+    expect(echoed).toBe('echo:hello-lan-ws')
+    const wsUpstream = observedUpstream.find(item => item.method === 'WS')!
+    expect(wsUpstream.url).toBe('/api/remote.mux')
+    expect(wsUpstream.host).toBe(`127.0.0.1:${dshPort}`)
+    expect(wsUpstream.cookie).toBe('dsh-auth-fixture=dsh-ok')
+
+    // Disconnecting DSH clears proxy target cleanly
+    expect((await http(hostUrl, '/api/plugins/dsh/disconnect', {
+      method: 'POST', headers: { ...lanHeaders, Cookie: sessionCookie, 'X-Eating-CSRF': csrf }, body: {},
+    })).status).toBe(200)
+    expect((await http(hostUrl, '/dsh-web/', { headers: { ...lanHeaders, Cookie: `${sessionCookie}; ${dshCookie}` } })).status).toBe(503)
   })
 })

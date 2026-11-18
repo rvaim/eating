@@ -8,7 +8,7 @@ const run = new Function('fixtureRepository', 'spawnSync', 'chmodSync', 'existsS
 const parent = fs.realpathSync(tmpdir())
 const directory = fs.realpathSync(fs.mkdtempSync(join(parent, 'eating-service-check-')))
 let checks = 0
-function fixture(rootUser = false, configurationInside = false, symlinkState = false) {
+function fixture(rootUser = false, configurationInside = false, symlinkState = false, overrides = {}) {
   const base = fs.mkdtempSync(join(directory, 'case-'))
   const repository = join(base, 'repository')
   const home = join(base, 'home')
@@ -18,7 +18,7 @@ function fixture(rootUser = false, configurationInside = false, symlinkState = f
   const dsh = join(privateDirectory, 'dsh.js')
   fs.writeFileSync(node, 'fixture')
   fs.writeFileSync(dsh, 'fixture')
-  const config = { dataDirectory: join(privateDirectory, 'data'), runtimeNode: node, runtimeDsh: dsh, toolingBin: privateDirectory, listenHost: '0.0.0.0', publicOrigin: 'http://example.invalid:54321', ownerToken: 'fixture_token_'.repeat(4), port: 54321 }
+  const config = { dataDirectory: join(privateDirectory, 'data'), runtimeNode: node, runtimeDsh: dsh, toolingBin: privateDirectory, listenHost: '0.0.0.0', publicOrigin: 'http://example.invalid:54321', ownerToken: 'fixture_token_'.repeat(4), port: 54321, ...overrides }
   const actualConfiguration = join(privateDirectory, 'service.json')
   fs.writeFileSync(actualConfiguration, JSON.stringify(config))
   let configPath = actualConfiguration
@@ -45,6 +45,16 @@ try {
   assert(!success.output.join('\n').includes(success.config.ownerToken))
   assert.equal(fs.readdirSync(success.repository).length, 0)
   checks += 8
+  const withExtra = fixture(false, false, false, { extraOrigins: ['http://100.111.123.102:54321', 'https://tail.example.invalid'] })
+  assert.equal(withExtra.code, 0)
+  assert(fs.readFileSync(join(withExtra.home, '.config/systemd/user/eating-managed.service'), 'utf8').includes('EATING_EXTRA_ORIGINS=http://100.111.123.102:54321,https://tail.example.invalid'))
+  checks += 2
+  for (const badExtra of [['not-an-origin'], 'http://100.111.123.102:54321', ['https://example.invalid:54321']]) {
+    const rejected = fixture(false, false, false, { extraOrigins: badExtra })
+    assert.equal(rejected.code, 1)
+    assert.equal(rejected.calls.length, 0)
+    checks++
+  }
   for (const [rootUser, inside, symlinkState] of [[true, false, false], [false, true, false], [false, false, true]]) {
     const result = fixture(rootUser, inside, symlinkState)
     assert.equal(result.code, 1)

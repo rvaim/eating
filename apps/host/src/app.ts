@@ -1,5 +1,6 @@
 import { createServer } from 'node:http'
-import type { IncomingMessage, Server, ServerResponse } from 'node:http'
+import type { ClientRequest, IncomingMessage, Server, ServerResponse } from 'node:http'
+import type { Duplex } from 'node:stream'
 import { createHash, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve, extname, sep } from 'node:path'
@@ -27,6 +28,7 @@ import { servePluginLogStream } from './plugin-log-stream'
 import { createOwnerTokenVerifier, OWNER_ACCESS_COOKIE, ownerAccessCookie, validateServerAccess } from './server-access'
 import type { ServerAccessOptions } from './server-access'
 import { SESSION_COOKIE, getBearer, json, readJson, requireSession, safeError, sameSecret, secret, validateLocalRequest } from './security'
+import { DSH_WEB_PROXY_PREFIX, proxyDshWebHttp, proxyDshWebUpgrade, rewriteDshWebLaunch, validateLoopbackDshWebEntry } from './dsh-web-proxy'
 
 function immutableConfiguration<T>(value: T): T {
   if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -94,13 +96,20 @@ export class EatingHost {
   private readonly listenHost: '127.0.0.1' | '0.0.0.0'
   private readonly verifyOwnerToken?: (candidate: string | null) => boolean
   private readonly ownerAccessSession = secret()
-  private readonly secureCookies: boolean
+  private readonly httpsHosts = new Set<string>()
+  private dshWebOrigin: string | undefined
+  private readonly dshProxyRequests = new Set<ClientRequest>()
+  private readonly dshProxySockets = new Set<Duplex>()
 
   constructor(options: HostOptions) {
     const access = validateServerAccess(options)
     this.listenHost = access.listenHost
     this.verifyOwnerToken = access.ownerToken ? createOwnerTokenVerifier(access.ownerToken) : undefined
-    this.secureCookies = access.publicOrigin?.startsWith('https:') ?? false
+    for (const candidate of [access.publicOrigin, ...(access.extraOrigins ?? [])]) {
+      if (!candidate) continue
+      const parsed = new URL(candidate)
+      if (parsed.protocol === 'https:') this.httpsHosts.add(parsed.host)
+    }
     const { ownerToken: _ownerToken, ...configuration } = options
     this.options = configuration
     this.releaseLock = options.workspaceLock ?? acquireWorkspaceLock(resolve(options.dataDirectory, 'host'))
@@ -126,8 +135,10 @@ export class EatingHost {
       for (const entry of options.entries) this.registerEntry(entry, enabledIds.includes(entry.id))
       this.allowedOrigins = new Set(options.allowedUiOrigins ?? ['http://127.0.0.1:5180', 'http://localhost:5180', 'http://127.0.0.1:4180'])
       if (access.publicOrigin) this.allowedOrigins.add(access.publicOrigin)
+      for (const extraOrigin of access.extraOrigins ?? []) this.allowedOrigins.add(extraOrigin)
       for (const origin of this.allowedOrigins) this.allowedHosts.add(new URL(origin).host)
       this.server = createServer((request, response) => { void this.route(request, response) })
+      this.server.on('upgrade', (request, socket, head) => { void this.routeUpgrade(request, socket, head) })
     } catch (error) { openedStore?.close(); this.releaseLock(); throw error }
   }
 
@@ -419,21 +430,34 @@ export class EatingHost {
         return
       }
       response.setHeader('Referrer-Policy', 'no-referrer')
+      const secureRequest = this.isSecureRequest(request)
+      const isDshProxy = pathname === '/dsh-web' || pathname.startsWith(DSH_WEB_PROXY_PREFIX)
       if (this.verifyOwnerToken) {
-        if (requestUrl.searchParams.has('token')) {
+        if (requestUrl.searchParams.has('token') && !isDshProxy) {
           const tokens = requestUrl.searchParams.getAll('token')
           if (request.method !== 'GET' || !requestTarget.startsWith('/?') || pathname !== '/' || tokens.length !== 1 || !this.verifyOwnerToken(tokens[0]!)) throw new PlatformError('OWNER_AUTHENTICATION_REQUIRED', '需要有效的主人访问入口。', 401, 'not-sent')
           requestUrl.searchParams.delete('token')
-          response.setHeader('Set-Cookie', `${OWNER_ACCESS_COOKIE}=${this.ownerAccessSession}; HttpOnly; SameSite=Strict; Path=/${this.secureCookies ? '; Secure' : ''}`)
+          response.setHeader('Set-Cookie', `${OWNER_ACCESS_COOKIE}=${this.ownerAccessSession}; HttpOnly; SameSite=Strict; Path=/${secureRequest ? '; Secure' : ''}`)
           response.writeHead(303, { Location: '/' + requestUrl.search, 'Cache-Control': 'no-store' })
           response.end()
           return
         }
         if (!sameSecret(ownerAccessCookie(request), this.ownerAccessSession)) throw new PlatformError('OWNER_AUTHENTICATION_REQUIRED', '需要有效的主人访问入口。', 401, 'not-sent')
       }
+      if (pathname === '/dsh-web' && (request.method === 'GET' || request.method === 'HEAD')) {
+        response.writeHead(308, { Location: `${DSH_WEB_PROXY_PREFIX}${requestUrl.search}`, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' })
+        response.end()
+        return
+      }
+      if (pathname.startsWith(DSH_WEB_PROXY_PREFIX)) {
+        const upstreamOrigin = await this.resolveDshWebOrigin()
+        const upstreamPath = '/' + pathname.slice(DSH_WEB_PROXY_PREFIX.length) + requestUrl.search
+        proxyDshWebHttp(upstreamOrigin, upstreamPath, secureRequest, request, response, this.dshProxyRequests)
+        return
+      }
       if (request.method === 'GET' && pathname.startsWith('/plugins/')) { await this.servePluginAsset(pathname, response); return }
       if (pathname === '/api/bootstrap' && request.method === 'GET') {
-        response.setHeader('Set-Cookie', `${SESSION_COOKIE}=${this.ownerSession}; HttpOnly; SameSite=Strict; Path=/api${this.secureCookies ? '; Secure' : ''}`)
+        response.setHeader('Set-Cookie', `${SESSION_COOKIE}=${this.ownerSession}; HttpOnly; SameSite=Strict; Path=/api${secureRequest ? '; Secure' : ''}`)
         json(response, 200, { protocolVersion: 1, csrfToken: this.csrf })
         return
       }
@@ -634,7 +658,16 @@ export class EatingHost {
           else if (operation === 'disconnect') { this.revokeHarnessSinks(id); await plugin.disconnect(); json(response, 200, plugin.getStatus()) }
           else if (operation === 'enable') { await this.setEnabled(id, true); json(response, 200, { ok: true }) }
           else if (operation === 'disable') { await this.setEnabled(id, false); json(response, 200, { ok: true }) }
-          else if (operation === 'manage') json(response, 200, await plugin.manage!((body as JsonObject).operation as string, (body as JsonObject).input))
+          else if (operation === 'manage') {
+            const managedOperation = (body as JsonObject).operation as string
+            let result = await plugin.manage!(managedOperation, (body as JsonObject).input)
+            if (id === 'dsh' && managedOperation === 'open-native-web') {
+              const rewritten = rewriteDshWebLaunch(result, request.headers.host!, secureRequest)
+              this.dshWebOrigin = rewritten.upstreamOrigin
+              result = rewritten.result
+            }
+            json(response, 200, result)
+          }
         })
         return
       }
@@ -737,7 +770,61 @@ export class EatingHost {
     })
   }
 
+  private isSecureRequest(request: IncomingMessage): boolean {
+    return Boolean(request.headers.host && this.httpsHosts.has(request.headers.host))
+  }
+
+  private clearDshWebProxy(): void {
+    this.dshWebOrigin = undefined
+    for (const req of this.dshProxyRequests) req.destroy()
+    this.dshProxyRequests.clear()
+    for (const sock of this.dshProxySockets) sock.destroy()
+    this.dshProxySockets.clear()
+  }
+
+  private async resolveDshWebOrigin(): Promise<string> {
+    if (this.closed) throw new PlatformError('HOST_STOPPED', 'Host 正在停止。', 503, 'not-sent')
+    if (!this.enabled.has('dsh')) throw new PlatformError('NATIVE_WEB_NOT_READY', 'DSH Web 尚未就绪，请先启动 Harness。', 503, 'not-sent')
+    if (this.dshWebOrigin) return this.dshWebOrigin
+    const dsh = this.plugins.get('dsh')
+    if (!dsh?.manage) throw new PlatformError('NATIVE_WEB_NOT_READY', 'DSH Web 尚未就绪，请先启动 Harness。', 503, 'not-sent')
+    try {
+      const entry = await dsh.manage('open-native-web', {})
+      const upstream = validateLoopbackDshWebEntry(entry)
+      if (!upstream) throw new PlatformError('NATIVE_WEB_NOT_READY', 'DSH Web 尚未就绪，请先启动 Harness。', 503, 'not-sent')
+      this.dshWebOrigin = upstream.origin
+      return upstream.origin
+    } catch (error) {
+      if (error instanceof PlatformError && error.statusCode >= 500) throw error
+      throw new PlatformError('NATIVE_WEB_NOT_READY', 'DSH Web 尚未就绪，请先启动 Harness。', 503, 'not-sent')
+    }
+  }
+
+  private async routeUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
+    const rejectSocket = (failure: PlatformError) => {
+      if (socket.destroyed) return
+      const payload = JSON.stringify({ ok: false, error: { code: failure.code, message: failure.message, outcome: failure.outcome } })
+      socket.end(`HTTP/1.1 ${failure.statusCode} ${failure.statusCode === 401 ? 'Unauthorized' : failure.statusCode === 403 ? 'Forbidden' : failure.statusCode === 404 ? 'Not Found' : 'Service Unavailable'}\r\nContent-Type: application/json; charset=utf-8\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(payload)}\r\n\r\n${payload}`)
+    }
+    try {
+      if (this.closed) throw new PlatformError('HOST_STOPPED', 'Host 正在停止。', 503)
+      validateLocalRequest(request, this.allowedHosts, this.allowedOrigins)
+      const requestTarget = request.url ?? '/'
+      if (!requestTarget.startsWith('/') || requestTarget.startsWith('//') || requestTarget.includes('\\')) throw new PlatformError('INVALID_PATH', '非法请求路径。', 403, 'not-sent')
+      const requestUrl = new URL(requestTarget, this.url || 'http://127.0.0.1')
+      const pathname = requestUrl.pathname
+      if (this.verifyOwnerToken && !sameSecret(ownerAccessCookie(request), this.ownerAccessSession)) throw new PlatformError('OWNER_AUTHENTICATION_REQUIRED', '需要有效的主人访问入口。', 401, 'not-sent')
+      if (!pathname.startsWith(DSH_WEB_PROXY_PREFIX)) throw new PlatformError('NOT_FOUND', '接口不存在。', 404)
+      const upstreamOrigin = await this.resolveDshWebOrigin()
+      const upstreamPath = '/' + pathname.slice(DSH_WEB_PROXY_PREFIX.length) + requestUrl.search
+      proxyDshWebUpgrade(upstreamOrigin, upstreamPath, this.isSecureRequest(request), request, socket, head, this.dshProxySockets)
+    } catch (error) {
+      rejectSocket(safeError(error))
+    }
+  }
+
   private revokeHarnessSinks(id: string): void {
+    if (id === 'dsh') this.clearDshWebProxy()
     this.memoryAccess?.revokeHarness(id)
     this.agentAccess.revokeHarness(id)
     this.capabilityAccess?.revokeHarness(id)
@@ -830,6 +917,7 @@ export class EatingHost {
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
+    this.clearDshWebProxy()
     this.memoryAccess.close()
     this.packageManager.close()
     await this.capabilityAccess.close()

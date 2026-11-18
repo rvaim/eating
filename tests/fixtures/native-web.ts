@@ -23,9 +23,9 @@ export async function connectNativeWeb(value: unknown, expectedRootId: string) {
   const cookie = auth.headers.get('set-cookie')?.split(';')[0]
   await auth.arrayBuffer()
   if (auth.status !== 303 || !cookie) throw new Error(`Native Web owner entry exchange failed (${auth.status})`)
-  const origin = url.origin
+  const origin = url.origin, base = new URL('./', url)
   const rpc = async (method: string, args: JsonObject): Promise<JsonObject> => {
-    const response = await fetch(new URL('/api/' + method, origin), { method: 'POST', signal: AbortSignal.timeout(10000),
+    const response = await fetch(new URL('api/' + method, base), { method: 'POST', signal: AbortSignal.timeout(10000),
       headers: { Cookie: cookie, 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'client-request', rpcId: randomUUID(), method, payload: { args } }) })
     const body = object(await response.json()), result = object(body.result)

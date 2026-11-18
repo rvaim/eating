@@ -23,6 +23,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api': { target: `http://127.0.0.1:${process.env.EATING_HOST_PORT ?? '5181'}` },
+      '/dsh-web': { target: `http://127.0.0.1:${process.env.EATING_HOST_PORT ?? '5181'}`, ws: true },
       '/plugins': { target: `http://127.0.0.1:${process.env.EATING_HOST_PORT ?? '5181'}` },
       '/_eating/runtime': { target: `http://127.0.0.1:${process.env.EATING_HOST_PORT ?? '5181'}` },
     },

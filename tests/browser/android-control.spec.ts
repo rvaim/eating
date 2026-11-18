@@ -368,4 +368,99 @@ test.describe('完整 ADB 本机管理与 USB／网络设备面板端到端', ()
     await expect(page.getByRole('button', { name: 'Install ADB' })).toBeDisabled()
     expect(existsSync(toolsDir)).toBe(false)
   })
+
+  test('continues polling ANDROID_IMAGE_PENDING via android_process_read with progress and localizes image failures', async ({ page }) => {
+    await page.goto(url + '/#plugins/android-control')
+    const connTab = page.getByRole('tabpanel', { name: 'ADB 与设备连接' })
+    await page.getByRole('tab', { name: 'ADB 与设备连接' }).click()
+    await connTab.getByLabel('自定义 ADB 绝对路径（留空则自动检测）', { exact: true }).fill(adbHandle.path)
+    await connTab.getByRole('button', { name: /保存高级配置|停止运行时、保存配置并重连/ }).click()
+    const reconnectConfirm = connTab.getByRole('alertdialog', { name: '保存并重启 ADB 运行时？' }).getByRole('button', { name: '停止运行时、保存配置并重连' })
+    if (await reconnectConfirm.isVisible().catch(() => false)) {
+      await reconnectConfirm.click()
+      await expect(connTab.getByText('已停止原运行时、保存配置并重新连接。')).toBeVisible()
+    } else {
+      await expect(connTab.getByText('连接配置已保存。')).toBeVisible()
+    }
+    const enableSwitch = page.getByRole('switch')
+    if (!(await enableSwitch.isChecked())) await enableSwitch.click()
+    const connectBtn = page.getByRole('button', { name: '连接服务' })
+    if (await connectBtn.isVisible().catch(() => false)) await connectBtn.click()
+    await expect(page.getByRole('button', { name: '断开服务' })).toBeVisible()
+
+    let readCount = 0
+    let failMode = false
+    const pendingPid = '11111111-1111-4111-8111-111111111111'
+    await page.route('**/api/plugins/android-control/invoke', async route => {
+      const body = route.request().postDataJSON() as { name?: string }
+      if (body.name === 'android_screenshot') {
+        if (failMode) {
+          await route.fulfill({
+            json: {
+              ok: true,
+              result: {
+                content: [{ type: 'text', text: JSON.stringify({ processId: pendingPid, status: 'exited', output_error: 'ANDROID_IMAGE_UNAVAILABLE' }) }],
+                structuredContent: { processId: pendingPid, status: 'exited', output_error: 'ANDROID_IMAGE_UNAVAILABLE' },
+              },
+            },
+          })
+          return
+        }
+        await route.fulfill({
+          json: {
+            ok: true,
+            result: {
+              content: [{ type: 'text', text: JSON.stringify({ processId: pendingPid, status: 'running', stdoutBytes: 1048576, output_error: 'ANDROID_IMAGE_PENDING' }) }],
+              structuredContent: { processId: pendingPid, status: 'running', stdoutBytes: 1048576, output_error: 'ANDROID_IMAGE_PENDING' },
+            },
+          },
+        })
+        return
+      }
+      if (body.name === 'android_process_read') {
+        readCount++
+        if (readCount === 1) {
+          await route.fulfill({
+            json: {
+              ok: true,
+              result: {
+                content: [{ type: 'text', text: JSON.stringify({ processId: pendingPid, status: 'running', stdoutBytes: 2097152, output_error: 'ANDROID_IMAGE_PENDING' }) }],
+                structuredContent: { processId: pendingPid, status: 'running', stdoutBytes: 2097152, output_error: 'ANDROID_IMAGE_PENDING' },
+              },
+            },
+          })
+          return
+        }
+        await route.fulfill({
+          json: {
+            ok: true,
+            result: {
+              content: [
+                { type: 'text', text: JSON.stringify({ processId: pendingPid, status: 'exited', exitCode: 0, stdoutBytes: adbFixturePng.length, complete: true }) },
+                { type: 'image', mimeType: 'image/png', data: adbFixturePng.toString('base64') },
+              ],
+              structuredContent: { processId: pendingPid, status: 'exited', exitCode: 0, stdoutBytes: adbFixturePng.length, complete: true },
+            },
+          },
+        })
+        return
+      }
+      await route.continue()
+    })
+
+    const filesTab = page.getByRole('tabpanel', { name: '屏幕与文件传输' })
+    await page.getByRole('tab', { name: '屏幕与文件传输' }).click()
+    await filesTab.getByRole('button', { name: '立即截图' }).click()
+    await expect(filesTab.getByText(/正在接收屏幕截图（已收到 1\.0 MB，进程 11111111）/)).toBeVisible()
+    await expect(filesTab.getByRole('button', { name: '取消本次截图' })).toBeVisible()
+    await expect(filesTab.getByText(/已收到 2\.0 MB/)).toBeVisible()
+    const shotImg = filesTab.getByAltText('安卓设备实时屏幕截图')
+    await expect(shotImg).toBeVisible()
+    expect(await shotImg.evaluate(img => (img as HTMLImageElement).complete && (img as HTMLImageElement).naturalWidth > 0)).toBe(true)
+    await expect(filesTab.getByRole('alert')).toHaveCount(0)
+
+    failMode = true
+    await filesTab.getByRole('button', { name: '立即截图' }).click()
+    await expect(filesTab.getByRole('alert')).toContainText('截图未能成图（命令失败、设备离线或图片大小超过上限）')
+  })
 })

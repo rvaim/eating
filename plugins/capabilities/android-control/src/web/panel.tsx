@@ -71,6 +71,21 @@ interface DirectoryListing {
   readonly entries: ReadonlyArray<{ readonly name: string; readonly directory: boolean }>
 }
 
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'))
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      reject(new DOMException('Aborted', 'AbortError'))
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 export function AndroidPanel({ enabled, saved, connectionBusy, onRefresh, onFeedback, onDirtyChange }: PluginPanelProps) {
   const { t, formatDateTime, formatNumber } = useI18n('android-control')
   const prefix = useId()
@@ -117,6 +132,7 @@ export function AndroidPanel({ enabled, saved, connectionBusy, onRefresh, onFeed
   const [screenSerial, setScreenSerial] = useState('')
   const [screenUrl, setScreenUrl] = useState<string | null>(null)
   const [screenError, setScreenError] = useState<string | null>(null)
+  const [screenProgress, setScreenProgress] = useState<{ readonly processId: string; readonly bytes: number } | null>(null)
   const [screenHiddenCleared, setScreenHiddenCleared] = useState(false)
 
   // Ephemeral wireless pairing code (visibilitychange cleared!)
@@ -192,6 +208,7 @@ export function AndroidPanel({ enabled, saved, connectionBusy, onRefresh, onFeed
           return ''
         })
         updateScreenUrl(null)
+        setScreenProgress(null)
         setScreenHiddenCleared(true)
         updateOutputUrl(null)
       }
@@ -202,6 +219,7 @@ export function AndroidPanel({ enabled, saved, connectionBusy, onRefresh, onFeed
       if (fileInputRef.current) fileInputRef.current.value = ''
       setPairCode('')
       updateScreenUrl(null)
+      setScreenProgress(null)
       updateOutputUrl(null)
     }
     document.addEventListener('visibilitychange', onVisibility)
@@ -447,21 +465,60 @@ export function AndroidPanel({ enabled, saved, connectionBusy, onRefresh, onFeed
     setFilesNotice(t('downloadSucceeded', { path: resolvedPath, bytes: merged.length }))
   }
 
+  const cancelActiveScreenshot = useCallback((processId: string) => {
+    abortRef.current?.abort()
+    abortRef.current = null
+    setScreenProgress(null)
+    void invokeAndroid('android_process_stop', { process_id: processId, signal: 'terminate' }, undefined, createRequestId(), false).catch(() => {})
+  }, [])
+
   const captureScreenshot = async (signal: AbortSignal) => {
     setScreenHiddenCleared(false)
+    setScreenProgress(null)
     const trimmed = screenSerial.trim()
-    const res = await invokeAndroid(
-      'android_screenshot',
-      trimmed ? { serial: trimmed } : {},
-      signal,
-      createRequestId(),
-      true,
-    )
-    const { image, structured } = decodeToolOutput(res)
-    if (image) {
-      updateScreenUrl(base64ToBlobUrl(image.mimeType, image.data))
-    } else if (typeof structured.output_error === 'string') {
-      setScreenError(structured.output_error)
+    try {
+      let current = decodeToolOutput(await invokeAndroid(
+        'android_screenshot',
+        { ...(trimmed ? { serial: trimmed } : {}), wait_ms: 15000 },
+        signal,
+        createRequestId(),
+        true,
+      ))
+      let attempts = 0
+      while (
+        !current.image
+        && current.structured.output_error === 'ANDROID_IMAGE_PENDING'
+        && typeof current.structured.processId === 'string'
+        && attempts < 150
+      ) {
+        const processId = current.structured.processId
+        const bytes = typeof current.structured.stdoutBytes === 'number'
+          ? current.structured.stdoutBytes
+          : typeof current.structured.retainedBytes === 'number'
+            ? current.structured.retainedBytes
+            : 0
+        if (mountedRef.current) setScreenProgress({ processId, bytes })
+        await abortableDelay(1200, signal)
+        attempts++
+        current = decodeToolOutput(await invokeAndroid(
+          'android_process_read',
+          { process_id: processId, output: 'image' },
+          signal,
+          createRequestId(),
+          true,
+        ))
+      }
+      if (current.image) {
+        updateScreenUrl(base64ToBlobUrl(current.image.mimeType, current.image.data))
+      } else if (typeof current.structured.output_error === 'string') {
+        const code = current.structured.output_error
+        if (code === 'ANDROID_IMAGE_PENDING' && typeof current.structured.processId === 'string') {
+          setSelectedPid(current.structured.processId)
+        }
+        setScreenError(t(androidErrorKey(code)))
+      }
+    } finally {
+      if (mountedRef.current) setScreenProgress(null)
     }
   }
 
@@ -1068,8 +1125,23 @@ export function AndroidPanel({ enabled, saved, connectionBusy, onRefresh, onFeed
                 <Camera size={15} aria-hidden="true" />
                 {t('captureBtn')}
               </ActionButton>
+              {screenProgress && (
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => cancelActiveScreenshot(screenProgress.processId)}>
+                  <Square size={14} aria-hidden="true" />
+                  {t('cancelScreenshotBtn')}
+                </button>
+              )}
             </div>
 
+            {screenProgress && (
+              <div className="android-feedback is-info" role="status">
+                <RefreshCw size={15} aria-hidden="true" />
+                <span>{t('screenshotPendingProgress', { size: formatByteSize(screenProgress.bytes), pid: screenProgress.processId.slice(0, 8) })}</span>
+              </div>
+            )}
             {screenError && (
               <div className="android-feedback is-error" role="alert">
                 <AlertCircle size={15} aria-hidden="true" />

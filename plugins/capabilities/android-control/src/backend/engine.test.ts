@@ -307,5 +307,38 @@ describe('完整 ADB 执行核心与严格 v2 配置', () => {
     expect(exec2.status).toBe('exited')
     const shot2 = await plugin.invokeCapability('android_screenshot', { wait_ms: 5000 }, 'req-lease2-shot', { agentId: reusedActor, agentTypeId: 'android-control.phone', signal: lease2.signal }) as JsonObject
     expect((shot2.content as Array<{ type: string }>).some(part => part.type === 'image')).toBe(true)
+
+    // Slow screenshot: returns ANDROID_IMAGE_PENDING while transferring, then full PNG on android_process_read
+    const slowAdb = join(f.directory, 'slow-screencap-adb.mjs')
+    await writeFile(slowAdb, `#!${process.execPath}
+const args = process.argv.slice(2)
+if (args[0] === 'devices') { console.log('List of devices attached\\n'); process.exit(0) }
+if (args.includes('screencap')) {
+  process.stdout.write(Buffer.from('${adbFixturePng.subarray(0, 12).toString('base64')}', 'base64'))
+  setTimeout(() => {
+    process.stdout.write(Buffer.from('${adbFixturePng.subarray(12).toString('base64')}', 'base64'))
+    process.exit(0)
+  }, 150)
+}
+`, { mode: 0o700 })
+    const slowEngine = new AndroidEngine(join(f.directory, 'slow-state'), slowAdb, join(f.directory, 'slow-work'))
+    stops.push(() => slowEngine.close())
+    const pendingShot = structured(await slowEngine.invoke('android_screenshot', { wait_ms: 20 }, 'owner', 'req-slow-shot-1'))
+    expect(pendingShot.status).toBe('running')
+    expect(pendingShot.output_error).toBe('ANDROID_IMAGE_PENDING')
+    expect(typeof pendingShot.processId).toBe('string')
+    let settledShot: JsonObject = pendingShot
+    for (let i = 0; i < 20; i++) {
+      const readRes = await slowEngine.invoke('android_process_read', { process_id: String(pendingShot.processId), output: 'image' }, 'owner', 'req-slow-read-' + i)
+      const sc = structured(readRes)
+      if (sc.complete === true) {
+        settledShot = readRes
+        break
+      }
+      expect(sc.output_error).toBe('ANDROID_IMAGE_PENDING')
+      await new Promise(r => setTimeout(r, 40))
+    }
+    const parts = settledShot.content as Array<{ type: string; mimeType?: string; data?: string }>
+    expect(parts.some(p => p.type === 'image' && p.mimeType === 'image/png' && Buffer.from(p.data!, 'base64').equals(adbFixturePng))).toBe(true)
   })
 })

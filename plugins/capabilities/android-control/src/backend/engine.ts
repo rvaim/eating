@@ -272,11 +272,12 @@ export class AndroidEngine {
     const stream = args.stream ?? 'stdout'; if (stream !== 'stdout' && stream !== 'stderr') throw failure('ANDROID_ARGUMENTS_INVALID')
     const offset = integer(args.offset, 0, 0, Number.MAX_SAFE_INTEGER), mode = outputMode(args.output), requested = integer(args.limit, mode === 'image' ? OUTPUT_BYTES : mode === 'text' ? TEXT_BYTES : BLOCK_BYTES, 1, mode === 'image' ? OUTPUT_BYTES : BLOCK_BYTES), limit = mode === 'text' ? Math.min(requested, TEXT_BYTES) : requested
     const file = join(this.directory, row.processId + '.' + stream), retained = existsSync(file) ? statSync(file).size : 0
-    const bytes = Buffer.alloc(Math.min(limit, Math.max(0, retained - offset)))
+    const pendingOrInvalidImage = mode === 'image' && (row.status !== 'exited' || row.exitCode !== 0 || row.stdoutBytes > OUTPUT_BYTES)
+    const bytes = pendingOrInvalidImage ? Buffer.alloc(0) : Buffer.alloc(Math.min(limit, Math.max(0, retained - offset)))
     if (bytes.length) { const fd = openSync(file, 'r'); try { readSync(fd, bytes, 0, bytes.length, offset) } finally { closeSync(fd) } }
     const decoded = mode === 'text' ? utf8Prefix(bytes) : bytes
     const value: JsonObject = { ...this.summary(row), stream, offset, nextOffset: offset + decoded.length, retainedBytes: retained, complete: row.status !== 'queued' && row.status !== 'running', ...(mode === 'binary' ? { data: bytes.toString('base64'), encoding: 'base64' } : mode === 'text' ? { text: decoded.toString('utf8') } : {}) }
-    if (mode === 'image' && (row.status !== 'exited' || row.exitCode !== 0 || row.stdoutBytes > OUTPUT_BYTES)) return resultContent({ ...value, output_error: row.status === 'running' || row.status === 'queued' ? 'ANDROID_IMAGE_PENDING' : 'ANDROID_IMAGE_UNAVAILABLE' })
+    if (pendingOrInvalidImage) return resultContent({ ...value, output_error: row.status === 'running' || row.status === 'queued' ? 'ANDROID_IMAGE_PENDING' : 'ANDROID_IMAGE_UNAVAILABLE' })
     return resultContent(value, mode === 'image' ? bytes : undefined, mode)
   }
   private once(requestId: string, input: JsonObject, action: () => JsonObject): JsonObject {

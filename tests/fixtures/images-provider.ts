@@ -3,11 +3,13 @@ import type { IncomingHttpHeaders } from 'node:http'
 import { createImageFixturePng } from './image'
 import type { JsonObject } from '@eating/plugin-sdk'
 
-interface EditCapture { readonly path: string | undefined; readonly headers: IncomingHttpHeaders; readonly fields: JsonObject; readonly image: Buffer; readonly mimeType: string }
-function readMultipart(body: Buffer, contentType: string): { fields: JsonObject; image: Buffer; mimeType: string } {
+interface EditFilePart { readonly fieldName: string; readonly filename: string; readonly bytes: Buffer; readonly mimeType: string }
+interface EditCapture { readonly path: string | undefined; readonly headers: IncomingHttpHeaders; readonly fields: JsonObject; readonly image: Buffer; readonly mimeType: string; readonly images: readonly EditFilePart[] }
+function readMultipart(body: Buffer, contentType: string): { fields: JsonObject; image: Buffer; mimeType: string; images: readonly EditFilePart[] } {
   const boundary = /boundary=(?:"([^"]+)"|([^;]+))/.exec(contentType)?.slice(1).find(Boolean)
   if (!boundary) throw new Error('Multipart fixture has no boundary')
-  const fields: JsonObject = {}; let image = Buffer.alloc(0), mimeType = ''
+  const fields: JsonObject = {}, images: EditFilePart[] = []
+  let image = Buffer.alloc(0), mimeType = ''
   for (const raw of body.toString('latin1').split('--' + boundary)) {
     const section = raw.replace(/^\r\n/, '').replace(/\r\n$/, '')
     if (!section || section === '--') continue
@@ -15,10 +17,14 @@ function readMultipart(body: Buffer, contentType: string): { fields: JsonObject;
     if (split < 0) continue
     const headers = section.slice(0, split), content = Buffer.from(section.slice(split + 4), 'latin1'), name = /name="([^"]+)"/.exec(headers)?.[1]
     if (!name) continue
-    if (/filename="/.test(headers)) { image = content; mimeType = /Content-Type:\s*([^\r\n]+)/i.exec(headers)?.[1]?.trim() ?? '' }
-    else fields[name] = content.toString('utf8')
+    const filenameMatch = /filename="([^"]*)"/.exec(headers)
+    if (filenameMatch) {
+      image = content
+      mimeType = /Content-Type:\s*([^\r\n]+)/i.exec(headers)?.[1]?.trim() ?? ''
+      images.push({ fieldName: name, filename: filenameMatch[1]!, bytes: content, mimeType })
+    } else fields[name] = content.toString('utf8')
   }
-  return { fields, image, mimeType }
+  return { fields, image, mimeType, images }
 }
 
 /** Independent OpenAI Images wire fixture; never a configured product provider. */

@@ -4,11 +4,13 @@ import type { Duplex } from 'node:stream'
 import { createHash, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve, extname, sep } from 'node:path'
-import type { BackendPlugin, BackendPluginEntry, HarnessHostServices, HarnessMessageSink, HarnessRemount, HarnessRemountReport, HostPluginContext, JsonObject, PluginResourceServices, CapabilityInvocationScope } from '@eating/plugin-sdk'
+import type { BackendPlugin, BackendPluginEntry, HarnessHostServices, HarnessMessageSink, HarnessOwnerConfiguration, HarnessRemount, HarnessRemountReport, HostPluginContext, JsonObject, JsonValue, PluginResourceServices, CapabilityInvocationScope } from '@eating/plugin-sdk'
 import { PlatformError, checkedImageResource, composeAgentPrompt, isJsonObject, validateDeliverySettings } from '@eating/plugin-sdk'
 import { AgentAccessRegistry, collectAgentContributions } from './agent-access'
 import { TaskActionJournal } from './task-actions'
 import { CapabilityAccess } from './capability-access'
+import type { BuiltinCapabilityService } from './capability-access'
+import { PersonaAppearanceStore } from './persona-appearances'
 import { MemoryAccess } from './memory-access'
 import { verifiedAudioAsset, verifiedImageAsset, verifiedReceivedAudio } from './media-assets'
 import { ImageLimitsService } from './image-limits'
@@ -63,6 +65,7 @@ export class EatingHost {
   readonly imageLimits: ImageLimitsService
   readonly harness: HarnessGateway
   readonly authoring: AuthoringService
+  readonly personaAppearances: PersonaAppearanceStore
   private readonly server: Server
   private readonly plugins = new Map<string, BackendPlugin>()
   private readonly entries = new Map<string, BackendPluginEntry>()
@@ -121,6 +124,7 @@ export class EatingHost {
       this.taskActions = new TaskActionJournal(this.store)
       this.agentAccess = new AgentAccessRegistry(id => this.requirePlugin(id, true), id => !this.closed && this.enabled.has(id), this.taskActions)
       this.authoring = new AuthoringService(this.store, () => collectAgentContributions(this.plugins.values(), this.enabled))
+      this.personaAppearances = new PersonaAppearanceStore(resolve(options.dataDirectory, 'host', 'persona-appearances'), () => this.imageLimits.snapshot())
       const enabledIds = persistedEnabledIds(this.store.getSetting('platforms.enabled'), options.entries.map(entry => entry.id))
       this.directMcp = new DirectMcpConnections(resolve(options.dataDirectory, 'host', 'mcp'), async (sourceId, refresh) => {
         this.capabilityAccess.revokeSource(sourceId)
@@ -128,6 +132,7 @@ export class EatingHost {
       })
       this.memoryAccess = new MemoryAccess({ plugins: () => this.plugins.values(), enabled: id => !this.closed && this.enabled.has(id) })
       this.capabilityAccess = new CapabilityAccess({ store: this.store, taskActions: this.taskActions, direct: this.directMcp, plugins: () => this.plugins.values(), enabled: id => !this.closed && this.enabled.has(id),
+        builtinServices: () => this.personaAppearanceServices(),
         imageLimits: () => this.imageLimits.snapshot(),
         memoryContext: (harnessId, agentId) => this.memoryAccess.context(harnessId, agentId),
         executeIdempotent: (pluginId, action, params, requestId, execute) => this.store.executeIdempotent(pluginId, action, params, requestId, execute) })
@@ -240,7 +245,133 @@ export class EatingHost {
         assertAllowed()
         return verifiedImageAsset(asset, assertAllowed, limits.imageBytes)
       },
+      readPersonaAppearanceImage: async (imageId, scope) => {
+        const caller = requireCaller()
+        if (this.closed) throw new PlatformError('HOST_STOPPED', 'Host 正在停止。', 503, 'not-sent')
+        const activeId = this.authoring.getActivePersonaId()
+        if (!activeId) throw new PlatformError('PERSONA_APPEARANCE_UNAVAILABLE', '当前未启用人格，无法读取人格外貌参考图。', 409, 'not-sent')
+        const assertAllowed = () => {
+          if (this.closed || requireCaller() !== caller || !this.enabled.has(callerId) || this.authoring.getActivePersonaId() !== activeId
+            || scope && (scope.signal?.aborted || scope.source?.signal?.aborted || !this.capabilityAccess.activeService({ agentId: scope.agentId, agentTypeId: scope.agentTypeId }, 'plugin.' + callerId))) {
+            throw new PlatformError('ASSET_ACCESS_DENIED', '人格外貌参考图读取授权已撤销。', 403, 'not-sent')
+          }
+        }
+        assertAllowed()
+        const resource = checkedImageResource(this.personaAppearances.readImageResource(activeId, imageId), this.imageLimits.snapshot().imageBytes)
+        assertAllowed()
+        return resource
+      },
     }
+  }
+
+  private readEffectiveOwnerConfiguration(): HarnessOwnerConfiguration {
+    const base = this.authoring.readOwnerConfiguration()
+    if (!base.activePersona) return base
+    const images = this.personaAppearances.list(base.activePersona.id).images
+    if (!images.length) return base
+    return { ...base, activePersonaAppearances: images }
+  }
+
+  private activePersonaAppearanceState(): { readonly personaId: string | null; readonly hasImages: boolean } {
+    const personaId = this.authoring.getActivePersonaId()
+    if (!personaId) return { personaId: null, hasImages: false }
+    return { personaId, hasImages: this.personaAppearances.list(personaId).images.length > 0 }
+  }
+
+  private async syncPersonaAppearanceTopology(previous: { readonly personaId: string | null; readonly hasImages: boolean }): Promise<void> {
+    const next = this.activePersonaAppearanceState()
+    if (!previous.hasImages && !next.hasImages) return
+    if (previous.hasImages !== next.hasImages || previous.personaId !== next.personaId) {
+      this.capabilityAccess.revokeSource('host.persona-appearance')
+      if (previous.hasImages !== next.hasImages) await this.changeCapabilityTopology(async () => {})
+    }
+  }
+
+  private personaAppearanceServices(): readonly BuiltinCapabilityService[] {
+    const activeId = this.authoring.getActivePersonaId()
+    if (!activeId) return []
+    const current = this.personaAppearances.list(activeId)
+    if (!current.images.length) return []
+    return [{
+      id: 'host.persona-appearance',
+      serverName: 'persona_appearance',
+      tools: [
+        {
+          name: 'persona_appearance_list',
+          title: '查看当前人格外貌参考图列表',
+          description: '列出当前启用人格绑定的全部外貌设定参考图元数据（imageId、说明、尺寸与格式），不含二进制图片；需要看原图再调用 persona_appearance_get。',
+          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+          readOnly: true,
+          destructive: false,
+          resultFormat: 'json',
+        },
+        {
+          name: 'persona_appearance_get',
+          title: '查看当前人格指定外貌参考图',
+          description: '按 imageId 读取当前启用人格的一张真实外貌设定参考图供识图。仅用于确认自我外貌与搭配 image_generate 的 {kind:"persona",imageId} 引用，不可直接作为普通 QQ 图片发出。',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              imageId: { type: 'string', pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$', description: '由当前人格清单或 persona_appearance_list 提供的 imageId。' },
+            },
+            required: ['imageId'],
+            additionalProperties: false,
+          },
+          readOnly: true,
+          destructive: false,
+          resultFormat: 'content',
+        },
+      ],
+      invoke: async (name, args) => {
+        const active = this.authoring.readOwnerConfiguration().activePersona
+        if (!active) throw new PlatformError('PERSONA_APPEARANCE_UNAVAILABLE', '当前未启用人格。', 404, 'not-sent')
+        const snapshot = this.personaAppearances.list(active.id)
+        if (!snapshot.images.length) throw new PlatformError('PERSONA_APPEARANCE_UNAVAILABLE', '当前人格未配置外貌参考图。', 404, 'not-sent')
+        if (name === 'persona_appearance_list') {
+          if (Object.keys(args).length > 0) throw new PlatformError('INVALID_INPUT', 'persona_appearance_list 不接受参数。', 400, 'not-sent')
+          return {
+            personaId: active.id,
+            personaName: active.name,
+            images: snapshot.images.map(image => ({
+              imageId: image.id,
+              label: image.label,
+              mimeType: image.mimeType,
+              byteLength: image.byteLength,
+              width: image.width,
+              height: image.height,
+              createdAt: image.createdAt,
+            })),
+          } as unknown as JsonObject
+        }
+        if (name === 'persona_appearance_get') {
+          if (Object.keys(args).some(key => key !== 'imageId') || typeof args.imageId !== 'string') {
+            throw new PlatformError('INVALID_INPUT', '请提供有效的参考图 imageId。', 400, 'not-sent')
+          }
+          const summary = snapshot.images.find(image => image.id === args.imageId)
+          if (!summary) throw new PlatformError('PERSONA_APPEARANCE_NOT_FOUND', '当前启用人格中不存在该外貌参考图。', 404, 'not-sent')
+          const resource = this.personaAppearances.readImageResource(active.id, summary.id)
+          const metadata = {
+            personaId: active.id,
+            personaName: active.name,
+            imageId: summary.id,
+            label: summary.label,
+            mimeType: resource.mimeType,
+            byteLength: summary.byteLength,
+            width: summary.width,
+            height: summary.height,
+            imageGenerateSource: { kind: 'persona', imageId: summary.id },
+          }
+          return {
+            content: [
+              { type: 'image', mimeType: resource.mimeType, data: resource.data },
+              { type: 'text', text: JSON.stringify(metadata) },
+            ],
+            structuredContent: metadata,
+          } as unknown as JsonValue
+        }
+        throw new PlatformError('TOOL_NOT_FOUND', '未提供此外貌查询工具。', 404, 'not-sent')
+      },
+    }]
   }
 
   private saveEnabled(): void { this.store.setSetting('platforms.enabled', JSON.stringify({ version: 1, ids: [...this.enabled] })) }
@@ -517,7 +648,7 @@ export class EatingHost {
           if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '提示词预览需使用 POST。', 405)
           const input = await readJson(request)
           if (!isJsonObject(input) || !(input.agentTypeId === null || typeof input.agentTypeId === 'string') || Object.keys(input).some(key => key !== 'agentTypeId')) throw new PlatformError('INVALID_AUTHORING_REQUEST', '请指定需要预览的代理类型。', 400, 'not-sent')
-          json(response, 200, composeAgentPrompt(this.authoring.readOwnerConfiguration(), input.agentTypeId, { 当前时间: new Date().toISOString() })); return
+          json(response, 200, composeAgentPrompt(this.readEffectiveOwnerConfiguration(), input.agentTypeId, { 当前时间: new Date().toISOString() })); return
         }
         const promptMatch = /^\/api\/prompts\/([^/]{1,220})(?:\/(reset))?$/.exec(pathname)
         if (promptMatch) {
@@ -530,6 +661,61 @@ export class EatingHost {
           let promptId: string
           try { promptId = decodeURIComponent(promptMatch[1]!) } catch { throw new PlatformError('INVALID_AUTHORING_REQUEST', '提示词标识无效。', 400, 'not-sent') }
           json(response, 200, reset ? this.authoring.resetPrompt(promptId, input.expectedRevision) : this.authoring.updatePrompt(promptId, input.body as string, input.expectedRevision)); return
+        }
+        const appearanceContentMatch = /^\/api\/personas\/([a-zA-Z0-9-]{1,80})\/appearances\/([a-zA-Z0-9-]{1,80})\/content$/.exec(pathname)
+        if (appearanceContentMatch) {
+          if (request.method !== 'GET') throw new PlatformError('METHOD_NOT_ALLOWED', '查看外貌参考图仅支持 GET。', 405)
+          const [, personaId, imageId] = appearanceContentMatch
+          this.authoring.getPersona(personaId!)
+          const { bytes, mimeType } = this.personaAppearances.readImageBytes(personaId!, imageId!)
+          response.writeHead(200, {
+            'Content-Type': mimeType,
+            'Content-Length': bytes.length,
+            'Cache-Control': 'private, no-store',
+            'X-Content-Type-Options': 'nosniff',
+            'Referrer-Policy': 'no-referrer',
+          })
+          response.end(bytes); return
+        }
+        const appearanceMatch = /^\/api\/personas\/([a-zA-Z0-9-]{1,80})\/appearances(?:\/(reorder)|\/([a-zA-Z0-9-]{1,80})\/(label|delete))?$/.exec(pathname)
+        if (appearanceMatch) {
+          const [, personaId, reorderOp, imageId, imageOp] = appearanceMatch
+          this.authoring.getPersona(personaId!)
+          if (!reorderOp && !imageOp && request.method === 'GET') {
+            json(response, 200, this.personaAppearances.list(personaId!)); return
+          }
+          if (request.method !== 'POST') throw new PlatformError('METHOD_NOT_ALLOWED', '人格外貌参考图操作仅支持 GET 或 POST。', 405)
+          if (!reorderOp && !imageOp) {
+            const previous = this.activePersonaAppearanceState()
+            const input = await readJson(request, this.imageLimits.snapshot().uploadBytes)
+            const result = this.personaAppearances.add(personaId!, input)
+            await this.syncPersonaAppearanceTopology(previous)
+            json(response, 201, result); return
+          }
+          const input = await readJson(request)
+          if (!isJsonObject(input) || typeof input.expectedRevision !== 'number') {
+            throw new PlatformError('INVALID_AUTHORING_REQUEST', '外貌参考图操作缺少版本号。', 400, 'not-sent')
+          }
+          if (reorderOp === 'reorder') {
+            if (!Array.isArray(input.imageIds) || Object.keys(input).some(key => !['imageIds', 'expectedRevision'].includes(key))) {
+              throw new PlatformError('INVALID_AUTHORING_REQUEST', '外貌参考图排序参数无效。', 400, 'not-sent')
+            }
+            json(response, 200, this.personaAppearances.reorder(personaId!, input.imageIds as string[], input.expectedRevision)); return
+          }
+          if (imageOp === 'label') {
+            if (typeof input.label !== 'string' || Object.keys(input).some(key => !['label', 'expectedRevision'].includes(key))) {
+              throw new PlatformError('INVALID_AUTHORING_REQUEST', '外貌参考图说明参数无效。', 400, 'not-sent')
+            }
+            json(response, 200, this.personaAppearances.updateLabel(personaId!, imageId!, input.label, input.expectedRevision)); return
+          }
+          if (Object.keys(input).some(key => !['confirmed', 'expectedRevision'].includes(key))) {
+            throw new PlatformError('INVALID_AUTHORING_REQUEST', '外貌参考图删除参数无效。', 400, 'not-sent')
+          }
+          if (input.confirmed !== true) throw new PlatformError('PERSONA_APPEARANCE_DELETE_CONFIRMATION_REQUIRED', '请确认删除此外貌参考图。', 409)
+          const previous = this.activePersonaAppearanceState()
+          const result = this.personaAppearances.remove(personaId!, imageId!, input.expectedRevision)
+          await this.syncPersonaAppearanceTopology(previous)
+          json(response, 200, result); return
         }
         const personaMatch = /^\/api\/personas(?:\/([a-zA-Z0-9-]{1,80})(?:\/(activate|delete))?)?$/.exec(pathname)
         if (personaMatch) {
@@ -545,12 +731,17 @@ export class EatingHost {
           if (typeof input.expectedRevision !== 'number') throw new PlatformError('INVALID_AUTHORING_REQUEST', '人格操作缺少版本，请重新读取。')
           if (operation === 'activate') {
             if (typeof input.enabled !== 'boolean' || Object.keys(input).some(key => !['enabled', 'expectedRevision'].includes(key))) throw new PlatformError('INVALID_AUTHORING_REQUEST', '请明确选择启用或停用人格。')
-            json(response, 200, this.authoring.setPersonaEnabled(id, input.enabled, input.expectedRevision)); return
+            const previous = this.activePersonaAppearanceState()
+            const snapshot = this.authoring.setPersonaEnabled(id, input.enabled, input.expectedRevision)
+            await this.syncPersonaAppearanceTopology(previous)
+            json(response, 200, snapshot); return
           }
           if (operation === 'delete') {
             if (Object.keys(input).some(key => !['confirmed', 'expectedRevision'].includes(key))) throw new PlatformError('INVALID_AUTHORING_REQUEST', '人格删除参数无效。')
             if (input.confirmed !== true) throw new PlatformError('PERSONA_DELETE_CONFIRMATION_REQUIRED', '请确认删除此人格配置。', 409)
-            json(response, 200, this.authoring.deletePersona(id, input.expectedRevision)); return
+            const snapshot = this.authoring.deletePersona(id, input.expectedRevision)
+            this.personaAppearances.removePersona(id)
+            json(response, 200, snapshot); return
           }
           if (typeof input.name !== 'string' || typeof input.body !== 'string' || Object.keys(input).some(key => !['name', 'body', 'expectedRevision'].includes(key))) throw new PlatformError('INVALID_AUTHORING_REQUEST', '请提供人格名称和设定。')
           json(response, 200, this.authoring.updatePersona(id, input.name, input.body, input.expectedRevision)); return
@@ -724,7 +915,7 @@ export class EatingHost {
       },
       readOwnerConfiguration: () => {
         this.requireHarnessAccess(id)
-        return immutableConfiguration(this.authoring.readOwnerConfiguration())
+        return immutableConfiguration(this.readEffectiveOwnerConfiguration())
       },
       getMcpConnection: (pluginId: string, scope: import('@eating/plugin-sdk').AgentInvocationScope, policy?: import('@eating/plugin-sdk').ScopedAccessPolicy, taskId?: string) => {
         this.requireHarnessAccess(id)

@@ -67,9 +67,15 @@ export class ExecutionControl {
     task.state = settledTaskState(body.status as TaskEndState, receipt); this.save()
     return { ok: true, status: task.state, actions: receipt.actions as unknown as JsonValue[] }
   }
+  private taskSummary(agentTypeId: string, state: Task['state']): string {
+    if (state === 'pending') return `独立执行代理（${agentTypeId}）仍在运行中；优先用 eating_task_control 的 message 补充或调整指令，非必要不中断。`
+    if (state === 'unknown') return `该历史任务（${agentTypeId}）的最后动作结果待核对，切勿盲目换号重放原写操作；如需继续使用，可先核对当前状态并用 eating_start_execution 重新启动新任务。`
+    if (state === 'interrupted') return `该次独立执行（${agentTypeId}）此前已中断结束；执行代理并未被停用，随时可通过 eating_start_execution 重新拉起新任务。`
+    return `该次独立执行（${agentTypeId}）已结束（${state}）；如需继续使用，可通过 eating_start_execution 启动新任务。`
+  }
   list(rootId: string, nonce: string, taskId?: string): JsonObject[] {
     this.reconcile(nonce)
-    return this.bindings.filter(b => b.parentId === rootId).flatMap(b => b.tasks.filter(t => taskId === undefined || t.taskId === taskId).map(t => ({ taskId: t.taskId, contextRef: t.contextRef, childId: b.agentId, status: t.state === 'pending' ? 'running' : t.state, summary: '', actions: taskId === undefined ? [] : this.host.readTaskActions(b.agentId, t.taskId).actions as unknown as JsonValue[], kind: 'execution' })))
+    return this.bindings.filter(b => b.parentId === rootId).flatMap(b => b.tasks.filter(t => taskId === undefined || t.taskId === taskId).map(t => ({ taskId: t.taskId, contextRef: t.contextRef, childId: b.agentId, agentTypeId: b.agentTypeId, status: t.state === 'pending' ? 'running' : t.state, summary: this.taskSummary(b.agentTypeId, t.state), actions: taskId === undefined ? [] : this.host.readTaskActions(b.agentId, t.taskId).actions as unknown as JsonValue[], kind: 'execution' })))
   }
   pending(): boolean { return this.bindings.some(b => b.tasks.some(t => t.state === 'pending')) }
   close(): void {

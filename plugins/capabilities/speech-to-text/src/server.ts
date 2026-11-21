@@ -8,7 +8,7 @@ import type { RecognitionJob, RecognitionSource } from './types'
 const asJson = (v: unknown) => v as JsonObject
 const failure = (code: string, outcome: 'not-sent' | 'unknown' = 'not-sent') => new PlatformError(code, ({ ASR_NOT_FOUND: '识别任务不存在。', ASR_REQUEST_CONFLICT: '相同请求标识不能用于不同音频、来源或配置。', ASR_CAPACITY: '识别任务已满，请由主人删除旧任务。', ASR_BUSY: '已有运行中的识别任务，请先查询。', ASR_ACCESS_DENIED: '当前会话没有此语音识别结果的访问权限。' } as Record<string, string>)[code] ?? '语音识别操作未完成，请核对配置与原任务。', code === 'ASR_NOT_FOUND' ? 404 : code === 'ASR_ACCESS_DENIED' ? 403 : 409, outcome)
 export class RecognitionPlugin implements BackendPlugin {
-  readonly id = 'speech-to-text'; readonly kind = 'capability' as const; readonly name = '语音识别'; readonly version = '0.2.1'
+  readonly id = 'speech-to-text'; readonly kind = 'capability' as const; readonly name = '语音识别'; readonly version = '0.2.2'
   readonly configurationChangesTools = true
   readonly managementInputMaxBytes = Math.ceil(MAX_INPUT_AUDIO_BYTES / 3) * 4 + 4096
   readonly tools = recognitionTools

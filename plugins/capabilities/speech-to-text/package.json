@@ -1,6 +1,6 @@
 {
   "name": "@eating/plugin-speech-to-text",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "description": "独立云端语音识别插件，支持可扩展协议与受控会话音频。",
   "files": [

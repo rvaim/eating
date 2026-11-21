@@ -49,7 +49,7 @@ test.describe('用户文案与宿主/独立插件的共享语言', () => {
       if (request.method() !== 'POST' || !request.url().startsWith(url + '/api/')) return
       if (request.url() === `${url}/api/plugins/qq/manage`) {
         const body = request.postDataJSON() as { operation?: string; input?: Record<string, unknown> }
-        if ((body.operation === 'media-transport' || body.operation === 'audio-input') && body.input && Object.keys(body.input).length === 0) return
+        if ((body.operation === 'media-transport' || body.operation === 'audio-input' || body.operation === 'message-split') && body.input && Object.keys(body.input).length === 0) return
       }
       mutations.push(request.url())
     })

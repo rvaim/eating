@@ -49,9 +49,9 @@ function requestUrl(configuration: ModelConfiguration, path: string, query?: Rea
   if (!isDshApiProtocol(configuration.protocol)) {
     throw new PlatformError('INVALID_CONFIGURATION', '模型 API 协议不受支持。', 400, 'not-sent')
   }
-  if (!configuration.endpoint.trim()) throw new PlatformError('NOT_CONFIGURED', '请先保存模型服务基础地址。', 409, 'not-sent')
+  if (!configuration.endpoint.trim()) throw new PlatformError('NOT_CONFIGURED', '请先填写或保存模型服务基础地址。', 409, 'not-sent')
   if (protocolRequiresApiKey(configuration.protocol) && !configuration.apiKey.trim()) {
-    throw new PlatformError('NOT_CONFIGURED', '请先保存 Google Gemini API Key。', 409, 'not-sent')
+    throw new PlatformError('NOT_CONFIGURED', '请先填写或保存 Google Gemini API Key。', 409, 'not-sent')
   }
   let url: URL
   try { url = new URL(configuration.endpoint) }
@@ -243,7 +243,7 @@ function validResponsesResult(value: unknown): boolean {
 
 /** A real, minimal provider request; success does not imply the DSH runtime can start. */
 export async function testModelConnection(configuration: ModelConfiguration & Pick<DshConfiguration, 'model'>, signal?: AbortSignal): Promise<{ ok: true; model: string; latencyMs: number }> {
-  if (!configuration.model.trim()) throw new PlatformError('NOT_CONFIGURED', '请先保存要测试的模型名称。', 409, 'not-sent')
+  if (!configuration.model.trim()) throw new PlatformError('NOT_CONFIGURED', '请先填写或保存要测试的模型名称。', 409, 'not-sent')
   if (configuration.model.length > 160 || controlCharacters.test(configuration.model)) throw new PlatformError('INVALID_CONFIGURATION', '模型名称需为 1 至 160 个有效字符。', 400, 'not-sent')
   const started = performance.now()
   if (configuration.protocol === 'google-generative-ai') {

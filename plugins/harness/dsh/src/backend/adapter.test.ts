@@ -236,15 +236,18 @@ describe('DSH isolated runtime lifecycle', () => {
     expect(new DshSessionFile(setup.directory).read()!.sessionId).toBe(metadata.sessionId)
   })
 
-  it('wires Google Gemini protocol via catalog provider google, enforces API key, and resets manual image override on switch', async () => {
+  it('wires Google Gemini protocol via catalog provider google, keeps saved API key unless cleared, and resets manual image override on switch', async () => {
     const setup = fixture()
     await configure(setup.plugin)
     await setup.plugin.manage('save-model-capabilities', { expectedRevision: 0, imageInput: true })
     expect(await setup.plugin.manage('get-model-capabilities', {})).toMatchObject({ imageInput: true })
     await setup.plugin.updateConfiguration({ protocol: 'google-generative-ai', endpoint: 'https://generativelanguage.googleapis.com/v1beta/', model: 'gemini-2.5-flash' })
+    expect(setup.plugin.getPublicConfiguration()).toMatchObject({ protocol: 'google-generative-ai', apiKeyConfigured: true })
+    expect(setup.plugin.getStatus().state).toBe('disconnected')
+    expect(await setup.plugin.manage('get-model-capabilities', {})).toMatchObject({ imageInput: false })
+    await setup.plugin.updateConfiguration({ clearApiKey: true })
     expect(setup.plugin.getPublicConfiguration()).toMatchObject({ protocol: 'google-generative-ai', apiKeyConfigured: false })
     expect(setup.plugin.getStatus().state).toBe('unconfigured')
-    expect(await setup.plugin.manage('get-model-capabilities', {})).toMatchObject({ imageInput: false })
     await expect(setup.plugin.connect()).rejects.toMatchObject({ code: 'NOT_CONFIGURED', outcome: 'not-sent' })
     await setup.plugin.updateConfiguration({ apiKey: 'fixture-only-gemini-key' })
     expect(setup.plugin.getStatus().state).toBe('disconnected')
@@ -642,6 +645,83 @@ describe('DSH reliable single-batch handoff', () => {
     expect(JSON.stringify(config)).not.toContain('fixture-only-api-key')
     const cleared = await setup.plugin.updateConfiguration({ clearApiKey: true })
     expect(cleared.apiKeyConfigured).toBe(false)
+  })
+
+  it('clears bridge delivery state cleanly on session history reset and fails fast with bridge error codes on startup', async () => {
+    const setup = fixture()
+    Object.assign(setup.context.harness!, { hasPendingMessages: () => false })
+    await configure(setup.plugin)
+    await setup.plugin.connect()
+    await setup.plugin.deliverBatch(batch(), new AbortController().signal)
+    setup.clients[0]!.run.resolve(result(setup.clients[0]!))
+    await vi.waitFor(() => expect(setup.plugin.isReady()).toBe(true))
+    await setup.plugin.disconnect()
+    const preview = await setup.plugin.manage('preview-session-history', {}) as { previewId: string }
+    await setup.plugin.manage('clear-session-history', { previewId: preview.previewId, requestId: '00000000-0000-4000-8000-000000000099', confirmed: true })
+    expect(existsSync(join(setup.directory, 'bridge', 'deliveries.json'))).toBe(false)
+    expect(existsSync(join(setup.directory, 'bridge', `expected-${'a'.repeat(64)}.json`))).toBe(false)
+    await setup.plugin.connect()
+    expect(setup.plugin.getStatus().state).toBe('connected')
+
+    const bridgeErrSetup = fixture({
+      adapter: {
+        createHarness: launch => {
+          const nonce = launch.env!.EATING_DSH_BRIDGE_NONCE!
+          const sessionId = launch.env!.EATING_DSH_SESSION_ID!
+          const bridge = launch.env!.EATING_DSH_BRIDGE_DIRECTORY!
+          return {
+            start: async () => { writeRestrictedJson(join(bridge, 'error.json'), { schemaVersion: 1, nonce, sessionId, code: 'SESSION_RECOVERY_FAILED', message: 'fixture session recovery failed' }) },
+            session: () => ({ id: sessionId, getWorkingDirectory: async () => launch.cwd!, run: async () => ({ sessionId, finalResponse: '', events: [], notifications: [] }) }),
+            resumeSession: async () => { throw new Error('unused') },
+            close: async () => {},
+          }
+        },
+      },
+    })
+    await configure(bridgeErrSetup.plugin)
+    await expect(bridgeErrSetup.plugin.connect()).rejects.toMatchObject({ code: 'SESSION_RECOVERY_FAILED' })
+  })
+
+  it('allows list-models and test-connection directly from unsaved drafts without saving or stopping a running runtime', async () => {
+    const setup = fixture()
+    await configure(setup.plugin)
+    await setup.plugin.connect()
+    const beforeCache = await setup.plugin.manage('get-model-information', {})
+    const originalFetch = globalThis.fetch
+    const calls: Array<{ url: string; auth: string | null }> = []
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      const headers = new Headers(init?.headers)
+      calls.push({ url, auth: headers.get('authorization') })
+      if (url.endsWith('/models')) {
+        return new Response(JSON.stringify({ data: [{ id: 'draft-model-1' }, { id: 'draft-model-2' }] }), { headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] }), { headers: { 'Content-Type': 'application/json' } })
+    }) as typeof fetch
+    try {
+      const listed = await setup.plugin.manage('list-models', {
+        protocol: 'openai-completions',
+        endpoint: 'https://unsaved-draft.example.test/v1',
+        model: '',
+        apiKey: 'unsaved-draft-key',
+      })
+      expect(listed).toEqual({ models: [{ id: 'draft-model-1' }, { id: 'draft-model-2' }] })
+      const tested = await setup.plugin.manage('test-connection', {
+        protocol: 'openai-completions',
+        endpoint: 'https://unsaved-draft.example.test/v1',
+        model: 'draft-model-2',
+      })
+      expect(tested).toMatchObject({ ok: true, model: 'draft-model-2' })
+      expect(calls).toEqual([
+        { url: 'https://unsaved-draft.example.test/v1/models', auth: 'Bearer unsaved-draft-key' },
+        { url: 'https://unsaved-draft.example.test/v1/chat/completions', auth: 'Bearer fixture-only-api-key' },
+      ])
+      expect(setup.plugin.getStatus().state).toBe('connected')
+      expect(setup.clients[0]!.closeCalls).toBe(0)
+      expect(await setup.plugin.manage('get-model-information', {})).toEqual(beforeCache)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 
   it('reconstructs ACK evidence on restart and never resends an already durable batch', async () => {

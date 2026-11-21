@@ -12,6 +12,13 @@ import { secret, sameSecret } from './security'
 import { toolResult } from './tool-results'
 import { TaskActionJournal } from './task-actions'
 
+export interface BuiltinCapabilityService {
+  readonly id: string
+  readonly serverName: string
+  readonly tools: readonly PluginToolDefinition[]
+  invoke(name: string, args: JsonObject, requestId: string, scope: CapabilityInvocationScope): Promise<JsonValue>
+}
+
 interface Options {
   readonly taskActions: TaskActionJournal
   readonly imageLimits?: () => import('@eating/plugin-sdk').ImageLimits
@@ -19,6 +26,7 @@ interface Options {
   readonly direct: DirectMcpConnections
   readonly plugins: () => Iterable<BackendPlugin>
   readonly enabled: (id: string) => boolean
+  readonly builtinServices?: () => readonly BuiltinCapabilityService[]
   readonly memoryContext?: (harnessId: string, agentId: string) => import('@eating/plugin-sdk').MemoryContext | null | undefined
   readonly executeIdempotent: (pluginId: string, action: string, params: JsonObject, requestId: string, execute: () => Promise<JsonValue>) => Promise<JsonValue>
 }
@@ -105,6 +113,17 @@ export class CapabilityAccess {
     return value
   }
   private plugin(id: string): BackendPlugin | undefined { return [...this.options.plugins()].find(plugin => plugin.id === id) }
+  private builtin(id: string): BuiltinCapabilityService | undefined {
+    return (this.options.builtinServices?.() ?? []).find(service => service.id === id)
+  }
+  private resolveService(id: string):
+    | { readonly kind: 'builtin'; readonly service: BuiltinCapabilityService; readonly tools: readonly PluginToolDefinition[] }
+    | { readonly kind: 'plugin' | 'direct'; readonly summary: McpServiceSummary; readonly tools: readonly PluginToolDefinition[] } {
+    const builtin = this.builtin(id)
+    if (builtin) return { kind: 'builtin', service: builtin, tools: builtin.tools }
+    const summary = this.source(id)
+    return { kind: summary.source.kind, summary, tools: summary.tools }
+  }
   private sources(agentTypeIds = ['main', ...[...this.options.plugins()].flatMap(plugin => (plugin.agentTypes ?? []).map(type => type.id))]): McpServiceSummary[] {
     const { policies } = this.readPolicies()
     const plugins = [...this.options.plugins()].filter(plugin => plugin.tools.length > 0).map(plugin => {
@@ -165,6 +184,10 @@ export class CapabilityAccess {
   allowed(scope: CapabilityInvocationScope, sourceId: string, toolName: string): boolean {
     if (this.closed || scope.signal?.aborted || scope.source?.signal?.aborted || !identifier(scope.agentId) || !identifier(scope.agentTypeId)
       || scope.readOnly !== undefined && typeof scope.readOnly !== 'boolean' || scope.source?.readOnly !== undefined && typeof scope.source.readOnly !== 'boolean') return false
+    const builtin = this.builtin(sourceId)
+    if (builtin) {
+      return builtin.tools.some(tool => tool.name === toolName && (!(scope.readOnly === true || scope.source?.readOnly === true) || tool.readOnly === true))
+    }
     let source: McpServiceSummary
     try { source = this.source(sourceId) } catch { return false }
     return source.enabled && source.state === 'connected' && source.accessPolicy !== null && source.configuration.permissionsManagedByPlugin !== true && source.tools.some(tool => tool.name === toolName && (!(scope.readOnly === true || scope.source?.readOnly === true) || tool.readOnly === true))
@@ -210,6 +233,14 @@ export class CapabilityAccess {
       this.leases.set(lease.token, lease)
       result.push({ id: source.id, serverName: source.id.length <= 24 ? source.id.replace(/[^a-zA-Z0-9_]/g, '_') : 'service_' + createHash('sha256').update(source.id).digest('hex').slice(0, 16), url: `${baseUrl}/mcp-services/${encodeURIComponent(source.id)}`, headers: { Authorization: 'Bearer ' + lease.token }, tools })
     }
+    for (const builtin of this.options.builtinServices?.() ?? []) {
+      const tools = builtin.tools.filter(tool => this.allowed(scope, builtin.id, tool.name)).map(tool => tool.name)
+      if (!tools.length) continue
+      if (this.leases.size >= 1024) throw new PlatformError('MCP_LEASE_CAPACITY', '当前 MCP 代理连接已达到上限，请停止未使用的 Harness。', 429, 'not-sent')
+      const lease: Lease = { harnessId, sourceId: builtin.id, scope: structuredClone(scope), token: secret(), abort: new AbortController(), ...(taskId !== undefined ? { taskId } : {}) }
+      this.leases.set(lease.token, lease)
+      result.push({ id: builtin.id, serverName: builtin.serverName, url: `${baseUrl}/mcp-services/${encodeURIComponent(builtin.id)}`, headers: { Authorization: 'Bearer ' + lease.token }, tools })
+    }
     return result
   }
   private requireLease(token: string, id: string): Lease {
@@ -220,7 +251,16 @@ export class CapabilityAccess {
   private async invoke(lease: Lease, name: string, input: JsonObject): Promise<CallToolResult> {
     this.requireLease(lease.token, lease.sourceId)
     if (!this.allowed(lease.scope, lease.sourceId, name)) return deny()
-    const source = this.source(lease.sourceId), tool = source.tools.find(tool => tool.name === name)!
+    const resolved = this.resolveService(lease.sourceId), tool = resolved.tools.find(tool => tool.name === name)!
+    if (resolved.kind === 'builtin') {
+      if (!tool.readOnly && !requestId(input.request_id)) throw new PlatformError('REQUEST_ID_REQUIRED', '写入工具需要稳定 request_id。', 400, 'not-sent')
+      const key = tool.readOnly ? randomUUID() : 'agent-' + createHash('sha256').update(lease.harnessId + '\0' + lease.scope.agentId + '\0' + String(input.request_id)).digest('hex')
+      const args = { ...input, ...(!tool.readOnly ? { request_id: key } : {}) }
+      const result = await resolved.service.invoke(name, args, key, { ...structuredClone(lease.scope), signal: lease.abort.signal })
+      if (!this.allowed(lease.scope, lease.sourceId, name)) return deny()
+      return toolResult(tool, result, key, this.options.imageLimits?.() ?? DEFAULT_IMAGE_LIMITS)
+    }
+    const source = resolved.summary
     if (source.source.kind === 'plugin') {
       const plugin = this.plugin(source.source.pluginId)
       if (!plugin?.invokeCapability) return deny()
@@ -253,19 +293,20 @@ export class CapabilityAccess {
   async handle(id: string, token: string, request: IncomingMessage, response: ServerResponse, body: unknown): Promise<void> {
     const lease = this.requireLease(token, id)
     if (request.method !== 'POST') { response.writeHead(405, { Allow: 'POST' }); response.end(); return }
-    const source = this.source(id)
+    const initialService = this.resolveService(id)
     const server = new Server({ name: id, version: '1.0.0' }, { capabilities: { tools: {} } })
-    server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: this.source(id).tools.filter(tool => this.allowed(lease.scope, id, tool.name)).map(tool => proxyTool(tool, source.source.kind === 'direct')) }))
+    server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: this.resolveService(id).tools.filter(tool => this.allowed(lease.scope, id, tool.name)).map(tool => proxyTool(tool, initialService.kind === 'direct')) }))
     server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
       let tracked: AgentActionReceipt | undefined
       try {
         this.requireLease(token, id)
         const args = params.arguments ?? {}
         if (!isJsonObject(args)) throw new PlatformError('INVALID_MCP_ARGUMENTS', '工具参数必须是对象。')
-        const definition = this.source(id).tools.find(tool => tool.name === params.name)
+        const resolved = this.resolveService(id)
+        const definition = resolved.tools.find(tool => tool.name === params.name)
         if (lease.taskId && definition?.readOnly === false && requestId(args.request_id)) {
           const receipt: AgentActionReceipt = { requestId: args.request_id, tool: 'mcp__' + id.replace(/[^a-zA-Z0-9_]/g, '_') + '__' + params.name, outcome: 'unknown' }
-          const ledger = { pluginId: source.source.kind === 'plugin' ? source.source.pluginId : 'mcp.' + id, scopeKey: '',
+          const ledger = { pluginId: resolved.kind === 'plugin' ? resolved.summary.source.kind === 'plugin' ? resolved.summary.source.pluginId : id : 'mcp.' + id, scopeKey: '',
             requestId: 'agent-' + createHash('sha256').update(lease.harnessId + '\0' + lease.scope.agentId + '\0' + args.request_id).digest('hex') }
           this.options.taskActions.begin(lease.harnessId, lease.scope.agentId, lease.taskId, id, ledger, receipt)
           tracked = receipt
@@ -274,14 +315,14 @@ export class CapabilityAccess {
         if (tracked) this.recordTaskAction(lease, { ...tracked, outcome: result.isError ? 'unknown' : 'succeeded' })
         this.requireLease(token, id)
         if (!this.allowed(lease.scope, id, params.name)) return deny()
-        const tool = this.source(id).tools.find(tool => tool.name === params.name)
+        const tool = this.resolveService(id).tools.find(tool => tool.name === params.name)
         if (tool && !tool.readOnly && requestId(args.request_id)) this.remember(lease, { requestId: args.request_id, tool: 'mcp__' + id.replace(/[^a-zA-Z0-9_]/g, '_') + '__' + params.name, outcome: result.isError ? 'unknown' : 'succeeded' })
         if (Buffer.byteLength(JSON.stringify(result)) > 12 * 1024 * 1024) throw new PlatformError('MCP_RESULT_TOO_LARGE', 'MCP 返回内容过大。', 502, 'unknown')
         return result
       } catch (error) {
         if (tracked) this.recordTaskAction(lease, { ...tracked, outcome: error instanceof PlatformError ? error.outcome : 'unknown', ...(error instanceof PlatformError ? { code: error.code } : {}) })
         const args = params.arguments
-        if (isJsonObject(args) && requestId(args.request_id) && this.leases.has(lease.token) && this.source(id).tools.find(tool => tool.name === params.name)?.readOnly === false
+        if (isJsonObject(args) && requestId(args.request_id) && this.leases.has(lease.token) && this.resolveService(id).tools.find(tool => tool.name === params.name)?.readOnly === false
           && !(error instanceof PlatformError && error.code === 'MCP_ACTION_ALREADY_RECORDED')) {
           this.remember(lease, { requestId: args.request_id, tool: params.name, outcome: error instanceof PlatformError ? error.outcome : 'unknown', ...(error instanceof PlatformError ? { code: error.code } : {}) })
         }

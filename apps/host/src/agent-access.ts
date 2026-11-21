@@ -100,7 +100,17 @@ export class AgentAccessRegistry {
   }
   private responseMetadata(result: JsonValue): JsonValue | undefined {
     if (result === null) return null
-    if (isJsonObject(result) && (typeof result.message_id === 'string' || typeof result.message_id === 'number')) return { message_id: result.message_id }
+    if (!isJsonObject(result)) return undefined
+    const hasId = typeof result.message_id === 'string' || typeof result.message_id === 'number'
+    const ids = Array.isArray(result.message_ids)
+      ? result.message_ids.filter((item): item is string | number => (typeof item === 'string' || typeof item === 'number') && opaque(String(item), 2048)).slice(0, 64)
+      : []
+    if (hasId || ids.length > 0) {
+      return {
+        ...(hasId ? { message_id: result.message_id } : {}),
+        ...(ids.length > 0 ? { message_ids: ids } : {}),
+      }
+    }
     return undefined
   }
   private recordTaskAction(lease: Lease, receipt: AgentActionReceipt): void {
@@ -128,8 +138,17 @@ export class AgentAccessRegistry {
         const metadata = this.responseMetadata(result)
         const receipt: AgentActionReceipt = { requestId, tool: name, outcome: 'succeeded', ...(metadata !== undefined ? { result: metadata } : {}) }
         this.recordTaskAction(lease, receipt); this.remember(receipts, receipt)
-        if (isJsonObject(result) && (typeof result.message_id === 'string' || typeof result.message_id === 'number') && opaque(String(result.message_id), 2048)) {
-          actor.returnedMessageIds = boundedReferences([...actor.returnedMessageIds, String(result.message_id)])
+        const returnedIds: string[] = []
+        if (isJsonObject(result)) {
+          if ((typeof result.message_id === 'string' || typeof result.message_id === 'number') && opaque(String(result.message_id), 2048)) returnedIds.push(String(result.message_id))
+          if (Array.isArray(result.message_ids)) {
+            for (const item of result.message_ids) {
+              if ((typeof item === 'string' || typeof item === 'number') && opaque(String(item), 2048)) returnedIds.push(String(item))
+            }
+          }
+        }
+        if (returnedIds.length > 0) {
+          actor.returnedMessageIds = boundedReferences([...actor.returnedMessageIds, ...returnedIds])
           actor.scope = { ...actor.baseScope, messageIds: [...new Set([...actor.baseScope.messageIds, ...actor.returnedMessageIds])] }
         }
       }

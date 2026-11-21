@@ -17,7 +17,7 @@ export class AndroidPlugin implements BackendPlugin {
   readonly id = 'android-control'
   readonly kind = 'capability' as const
   readonly name = '玩手机'
-  readonly version = '0.3.2'
+  readonly version = '0.3.3'
   readonly configurationManageOperations = [
     'configuration',
     'rebuild-configuration',

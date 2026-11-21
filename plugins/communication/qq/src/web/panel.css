@@ -158,6 +158,50 @@
 .qq-policy-tool small { display: block; margin-top: 3px; color: var(--color-muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .qq-policy-tool small.qq-policy-action { color: var(--color-warm-ink); }
 
+.qq-message-split .qq-split-delay-control { display: grid; gap: 8px; max-width: 670px; min-width: 0; }
+.qq-split-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--color-line); display: grid; gap: 12px; min-width: 0; }
+.qq-split-section-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px 16px; }
+.qq-split-section-head h4 { margin: 0; font-size: 13px; font-weight: 600; color: var(--color-ink); }
+.qq-split-section-head p { margin: 3px 0 0; font-size: 12px; color: var(--color-muted); max-width: 68ch; }
+.qq-split-section-head .button { min-height: 34px; padding: 5px 12px; font-size: 12px; }
+.qq-split-rules-actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.qq-split-presets { display: flex; flex-wrap: wrap; gap: 8px; }
+.qq-split-preset-chip { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; min-height: 44px; padding: 7px 12px; border: 1px solid var(--color-line-strong); border-radius: var(--radius); background: var(--color-surface); color: var(--color-ink); text-align: left; cursor: pointer; transition: border-color 140ms ease, background-color 140ms ease; }
+.qq-split-preset-chip:hover { border-color: var(--color-primary); background: var(--color-hover); }
+.qq-split-preset-chip.is-added { border-color: var(--color-line-success); background: var(--color-success-surface); }
+.qq-split-preset-chip strong { font-size: 12px; font-weight: 600; color: var(--color-ink-strong); }
+.qq-split-preset-chip span { font-size: 11px; color: var(--color-muted); }
+.qq-split-preset-chip.is-added span { color: var(--color-success-ink); }
+.qq-split-empty { margin: 0; padding: 14px 16px; border: 1px dashed var(--color-line-strong); border-radius: var(--radius); background: var(--color-surface); color: var(--color-muted); font-size: 12px; }
+.qq-split-rule-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.qq-split-rule-card { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid var(--color-line); border-radius: var(--radius); background: var(--color-surface); min-width: 0; }
+.qq-split-rule-card.is-disabled { background: var(--color-surface-quiet); opacity: .78; }
+.qq-split-rule-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.qq-split-rule-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; flex: 1 1 280px; min-width: 0; }
+.qq-split-rule-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-ink-soft); cursor: pointer; white-space: nowrap; }
+.qq-split-rule-toggle input { width: 15px; height: 15px; accent-color: var(--color-primary); }
+.qq-split-rule-name { flex: 1 1 160px; min-width: 0; padding: 6px 10px; border: 1px solid var(--color-line-input); border-radius: var(--radius); background: var(--color-surface); color: var(--color-ink); font-size: 13px; }
+.qq-split-rule-name:focus { border-color: var(--color-primary); }
+.qq-split-rule-body { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(190px, 1fr); gap: 10px 14px; min-width: 0; }
+.qq-split-field { display: grid; gap: 5px; align-content: start; min-width: 0; }
+.qq-split-field label { font-size: 12px; font-weight: 500; color: var(--color-ink-soft); }
+.qq-split-field :where(input, select, textarea) { width: 100%; min-width: 0; padding: 7px 10px; border: 1px solid var(--color-line-input); border-radius: var(--radius); background: var(--color-surface); color: var(--color-ink); font-size: 13px; }
+.qq-split-field :where(input, select, textarea):focus { border-color: var(--color-primary); }
+.qq-split-field.is-invalid :where(input, select, textarea) { border-color: var(--color-line-invalid); }
+.qq-split-pattern-input { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.qq-split-flags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.qq-split-flags-label { font-size: 12px; color: var(--color-muted); }
+.qq-split-preview-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px 18px; align-items: start; min-width: 0; }
+.qq-split-preview-textarea { min-height: 132px; resize: vertical; line-height: 1.6; }
+.qq-split-preview-output { padding: 12px 14px; border: 1px solid var(--color-line); border-radius: var(--radius); background: var(--color-surface-sunken); display: grid; gap: 8px; min-width: 0; }
+.qq-split-preview-summary { font-size: 12px; color: var(--color-ink-strong); }
+.qq-split-preview-note { margin: 0; padding: 6px 10px; border: 1px solid var(--color-line-info); border-radius: var(--radius); background: var(--color-info-surface); color: var(--color-info-ink); font-size: 12px; line-height: 1.5; }
+.qq-split-preview-warn { margin: 0; padding: 6px 10px; border: 1px solid var(--color-line-alert); border-radius: var(--radius); background: var(--color-warning-surface); color: var(--color-warning-ink); font-size: 12px; line-height: 1.5; }
+.qq-split-bubble-list { list-style: none; margin: 2px 0 0; padding: 0; display: grid; gap: 8px; }
+.qq-split-bubble { display: flex; align-items: flex-start; gap: 8px; padding: 8px 11px; border: 1px solid var(--color-line); border-radius: var(--radius); background: var(--color-surface); min-width: 0; }
+.qq-split-bubble-index { flex-shrink: 0; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; background: var(--color-tint); color: var(--color-primary-strong); font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
+.qq-split-bubble-text { font-size: 13px; line-height: 1.55; color: var(--color-ink); white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
+
 @media (max-width: 1100px) {
   .qq-paths > div { grid-template-columns: 95px minmax(0, 1fr); gap: 16px; }
   .qq-switch-row { margin-inline-start: 111px; }
@@ -170,6 +214,8 @@
   .qq-tool-description, .qq-no-arguments, .qq-tool-help { margin-left: 0; }
   .qq-target-preview > div { grid-template-columns: 1fr; gap: 3px; }
   .qq-policy-tools { grid-template-columns: minmax(0, 1fr); }
+  .qq-split-rule-body { grid-template-columns: minmax(0, 1fr); }
+  .qq-split-preview-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 600px) {
   .qq-tabs { margin-bottom: 23px; }
@@ -187,5 +233,7 @@
   .qq-mcp-modal { padding: 16px 14px; }
   .qq-mcp-modal-details .button { min-height: 44px; width: 100%; }
   .qq-mcp-modal-footer .button { min-height: 44px; flex: 1 1 auto; }
+  .qq-split-section-head .button { min-height: 44px; width: 100%; }
+  .qq-split-preset-chip { flex: 1 1 calc(50% - 4px); }
 }
-@media (prefers-reduced-motion: reduce) { .qq-panel textarea { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .qq-panel textarea, .qq-split-preset-chip { transition: none; } }

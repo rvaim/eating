@@ -76,6 +76,20 @@ export interface PersonaDocument extends PersonaSummary {
   readonly body: string
 }
 
+export const MAX_PERSONA_APPEARANCE_IMAGES = 10
+export const MAX_PERSONA_APPEARANCE_LABEL_LENGTH = 80
+
+export interface PersonaAppearanceImageSummary {
+  readonly id: string
+  readonly label: string
+  readonly mimeType: 'image/png' | 'image/jpeg' | 'image/webp'
+  readonly byteLength: number
+  readonly width: number | null
+  readonly height: number | null
+  readonly sha256: string
+  readonly createdAt: string
+}
+
 export interface AuthoringSnapshot {
   readonly protocolVersion: 1
   readonly revision: number
@@ -271,7 +285,29 @@ export function composeAgentPrompt(configuration: HarnessOwnerConfiguration, age
   const persona = configuration.activePersona
   if (persona !== null) {
     if (typeof persona.body !== 'string' || !persona.body.trim() || !Number.isSafeInteger(persona.revision) || persona.revision < 1) invalid()
-    layers.push({ id: `persona:${persona.id}`, title: persona.name, revision: persona.revision, body: renderTemplate(persona.body, 'persona', values) })
+    const basePersonaBody = renderTemplate(persona.body, 'persona', values)
+    const appearances = configuration.activePersonaAppearances
+    let renderedPersonaBody = basePersonaBody
+    if (appearances !== undefined) {
+      if (!Array.isArray(appearances) || appearances.length > MAX_PERSONA_APPEARANCE_IMAGES) invalid()
+      if (appearances.length > 0) {
+        const lines = appearances.map((image, index) => {
+          if (!image || typeof image.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(image.id)
+            || typeof image.label !== 'string' || image.label.length > MAX_PERSONA_APPEARANCE_LABEL_LENGTH || /[\u0000-\u001f\u007f]/.test(image.label)
+            || !['image/png', 'image/jpeg', 'image/webp'].includes(image.mimeType)
+            || typeof image.byteLength !== 'number' || !Number.isSafeInteger(image.byteLength) || image.byteLength < 1
+            || (image.width !== null && (typeof image.width !== 'number' || !Number.isSafeInteger(image.width) || image.width < 1))
+            || (image.height !== null && (typeof image.height !== 'number' || !Number.isSafeInteger(image.height) || image.height < 1))
+            || typeof image.sha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(image.sha256)
+            || typeof image.createdAt !== 'string' || !image.createdAt) invalid()
+          const cleanLabel = image.label.trim()
+          const dimensions = image.width && image.height ? `, ${image.width}x${image.height}` : ''
+          return `- ${index + 1}. imageId: ${image.id}${cleanLabel ? `（${cleanLabel}）` : ''} [${image.mimeType}${dimensions}]`
+        })
+        renderedPersonaBody = `${basePersonaBody}\n\n[外貌参考图（仅用于自我识图与生图参考，不可直接作为普通 QQ 图片发出）]\n当前人格已绑定 ${appearances.length} 张外貌设定参考图：\n${lines.join('\n')}\n需要确认自己的外貌细节（如发色、瞳色、服装、五官特征）时，可调用 persona_appearance_list 与 persona_appearance_get（传入 imageId）直接查看原图。绘制或编辑包含自己的画面时，可在 image_generate 中传入 source={kind:"persona",imageId:"<imageId>"} 或 sources=[{kind:"persona",imageId:"<imageId>"}, ...] 作为参考，保持形象一致。`
+      }
+    }
+    layers.push({ id: `persona:${persona.id}`, title: persona.name, revision: persona.revision, body: renderedPersonaBody })
   } else layers.push({ id: 'persona', title: '人格', revision: 0, body: '' })
   return { revision: configuration.revision, agentTypeId, layers, systemPrompt: layers.map(item => item.body).join('\n\n'), bindings: { ...values } }
 }

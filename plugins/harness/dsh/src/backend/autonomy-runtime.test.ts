@@ -148,6 +148,42 @@ describe('native autonomous driver publication lifecycle', () => {
     }
   })
 
+  it('ignores persistent execution flights when deciding autonomy busy phase, while blocking on ordinary tasks', async () => {
+    vi.useFakeTimers()
+    const releases: (() => void)[] = []
+    const initialization = new AbortController()
+    try {
+      const observedPhases: string[] = []
+      const taskFlights = new Map<string, { persistent?: boolean; status: string }>()
+      taskFlights.set('phone-child', { persistent: true, status: 'running' })
+      const agent = { id: 'root', status: 'idle', session: { id: 'root' }, followup: vi.fn(), cancel: () => {}, inbox: { nextTurn: [], nextStep: [], remove: () => false },
+        ctx: { tools: { register: () => {} }, systemPrompt: { section: () => {} } } }
+      const ctx = { agents: { get: () => agent }, sessions: { flush: async () => true }, on: () => () => {}, get: () => undefined }
+      const context = {
+        process: { env: { EATING_DSH_AUTONOMY: 'true' } }, sessionId: 'root', taskFlights, waitForAutonomyTasks: async () => {}, ctx, releases, initialization, nonce: 'fixture-runtime',
+        loadModule: async () => ({ createUserMessage: () => ({ id: 'fixture-auto-msg' }) }),
+        control: async (operation: string, body?: { phase?: string }) => {
+          if (operation === 'autonomy-observe' && body?.phase) observedPhases.push(body.phase)
+          if (operation === 'autonomy-snapshot') return { ready: true, configuration: { enabled: true }, state: { ownerPaused: false, errorCode: null, active: null } }
+          if (operation === 'autonomy-claim') return { admitted: false }
+          return {}
+        },
+        record: (value: unknown) => value !== null && typeof value === 'object', opaque: () => true,
+      }
+      const mount = new Function(...Object.keys(context), getAutonomyRuntimeSource() + '\nreturn mountAutonomy;')(...Object.values(context)) as (agent: unknown) => Promise<string[]>
+      await mount(agent)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(observedPhases).toEqual(['idle'])
+      taskFlights.set('chat-child', { persistent: false, status: 'running' })
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(observedPhases).toEqual(['idle', 'busy'])
+    } finally {
+      for (const release of releases) release()
+      initialization.abort()
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the wake check alive across delayed native publication and replaces a retired root driver on cold restoration', async () => {
     vi.useFakeTimers()
     try {

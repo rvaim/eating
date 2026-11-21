@@ -20,14 +20,21 @@ export interface TaskActionStore {
 function fail(code = 'TASK_ACTIONS_INVALID', message = '任务动作回执无效，未覆盖原数据。'): never { throw new PlatformError(code, message, 500, 'not-sent') }
 const keys = (v: object, names: string[]) => Object.keys(v).sort().join(',') === names.sort().join(',')
 
+function validIdentifier(value: unknown): value is string | number {
+  return typeof value === 'number' && Number.isSafeInteger(value) || text(value, 160)
+}
+
 /** Only bounded identifiers from action results may enter this journal. */
 export function actionMetadata(result: JsonValue | undefined): JsonValue | undefined {
   if (result === null) return null
   if (!isJsonObject(result)) return undefined
-  for (const key of ['message_id', 'jobId']) {
-    const value = result[key]
-    if (typeof value === 'number' && Number.isSafeInteger(value) || text(value, 160)) return { [key]: value! }
+  if (validIdentifier(result.message_id)) {
+    const ids = Array.isArray(result.message_ids) && result.message_ids.length > 0 && result.message_ids.length <= 20 && result.message_ids.every(validIdentifier)
+      ? result.message_ids
+      : undefined
+    return ids ? { message_id: result.message_id, message_ids: ids } : { message_id: result.message_id }
   }
+  if (validIdentifier(result.jobId)) return { jobId: result.jobId }
   return undefined
 }
 function validReceipt(value: unknown): value is AgentActionReceipt {

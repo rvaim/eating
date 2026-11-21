@@ -66,6 +66,7 @@ export interface PluginResourceServices {
   readAsset(reference: ImageAssetReference, scope?: CapabilityInvocationScope): Promise<ImageResource>
   getAsset(reference: ImageAssetReference, scope?: CapabilityInvocationScope): Promise<ImageAssetLease>
   getAudioAsset(reference: ImageAssetReference, scope?: CapabilityInvocationScope): Promise<AudioAssetLease>
+  readPersonaAppearanceImage?(imageId: string, scope?: CapabilityInvocationScope): Promise<ImageResource>
 }
 export interface PluginMediaProvider {
   /** Tool authorization required when another plugin resolves one of this plugin's assets. */

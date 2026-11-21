@@ -180,6 +180,11 @@ describe('session history owner management through actual Host HTTP', () => {
     await put(bindings, JSON.stringify({ schemaVersion: 2, bindings: [{ key: 'history-integration-binding', parentId: rootId, configurationRevision: current.host.authoring.getSnapshot().revision,
       scope: { agentId: childId, agentTypeId: 'history-chat.private', pluginId: 'history-chat', instanceId: 'history-chat', accountId: '100', conversationId: 'history-chat:100:private:200', kind: 'private', targetId: '200', messageIds: [], resourceIds: [] }, taskRefs: [] }] }))
     await put(join(current.directory, 'proactive-bindings.json'), JSON.stringify({ schemaVersion: 1, bindings: [] }))
+    const deliveryBatchId = 'a'.repeat(64)
+    const deliveryFile = join(current.directory, 'bridge', 'deliveries.json')
+    const expectedDeliveryFile = join(current.directory, 'bridge', `expected-${deliveryBatchId}.json`)
+    await put(deliveryFile, JSON.stringify({ schemaVersion: 1, revision: 1, deliveries: [] }))
+    await put(expectedDeliveryFile, JSON.stringify({ schemaVersion: 1, batchId: deliveryBatchId }))
     const attachment = join(current.directory, 'dsh-home', 'attachments', 'v1', 'objects', 'fixture-content')
     const cache = join(current.directory, 'dsh-home', 'storages', 'session_projcache', 'sessions', rootId + '.json')
     await put(attachment, 'SESSION-HISTORY-ATTACHMENT')
@@ -202,7 +207,7 @@ describe('session history owner management through actual Host HTTP', () => {
     const input = { previewId: preview.previewId, requestId: randomUUID(), confirmed: true }
     const result = await current.api.manage('clear-session-history', input)
     expect(result).toEqual({ requestId: input.requestId, status: 'completed', deletedCount: 2 })
-    for (const path of [rootLog, childLog, attachment, cache, bindings, join(current.directory, 'session.json'), join(current.directory, 'proactive-bindings.json'), join(current.directory, 'bridge', 'session-ready.json'), join(current.directory, 'bridge', 'owner-policy.json')]) {
+    for (const path of [rootLog, childLog, attachment, cache, bindings, deliveryFile, expectedDeliveryFile, join(current.directory, 'session.json'), join(current.directory, 'proactive-bindings.json'), join(current.directory, 'bridge', 'session-ready.json'), join(current.directory, 'bridge', 'owner-policy.json')]) {
       await expect(lstat(path)).rejects.toMatchObject({ code: 'ENOENT' })
     }
     expect(await nativeLogs(current.directory)).toEqual([])

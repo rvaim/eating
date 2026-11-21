@@ -128,7 +128,7 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await expect(page.getByText('尚未连接', { exact: true })).toBeVisible()
   })
 
-  test('支持切换 OpenAI Responses 与 Google Gemini 协议，自动填入默认地址、分协议暂存草稿并强制密钥隔离', async ({ page }, testInfo) => {
+  test('支持切换 OpenAI Responses 与 Google Gemini 协议，保留已填 URL、模型和密钥并可按需填入 Gemini 默认地址', async ({ page }, testInfo) => {
     await open(page)
     const openaiRadio = page.getByRole('radio', { name: /OpenAI 兼容/ })
     const responsesRadio = page.getByRole('radio', { name: /OpenAI Responses/ })
@@ -141,36 +141,26 @@ test.describe('Harness 独立面板与泛型目录', () => {
 
     await responsesRadio.click()
     await expect(responsesRadio).toBeChecked()
-    await expect(page.getByLabel('API 基础地址', { exact: true })).toHaveValue('')
-    await expect(page.getByText('已保存密钥（不回显）', { exact: true })).toHaveCount(0)
-    await expect(page.getByText('已切换协议，原密钥不会跨协议复用；请填写新协议对应的 API Key 后保存。', { exact: true })).toBeVisible()
-    await page.getByLabel('API 基础地址', { exact: true }).fill('https://responses.example.test/v1')
-    await page.getByLabel('模型名称', { exact: true }).fill('gpt-5')
+    await expect(page.getByLabel('API 基础地址', { exact: true })).toHaveValue('https://openai.example.test/v1')
+    await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('gpt-4o-mini')
+    await expect(page.getByText('已保存密钥（不回显）', { exact: true })).toBeVisible()
+    await page.getByLabel('API Key', { exact: true }).fill('draft-typed-key')
 
     await geminiRadio.click()
     await expect(geminiRadio).toBeChecked()
-    await expect(page.getByLabel('API 基础地址', { exact: true })).toHaveValue('https://generativelanguage.googleapis.com/v1beta')
-    await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('')
-    await expect(page.getByText('已保存密钥（不回显）', { exact: true })).toHaveCount(0)
-    await expect(page.getByText('已切换协议，原密钥不会跨协议复用；请填写新协议对应的 API Key 后保存。', { exact: true })).toBeVisible()
-    await page.getByLabel('API 基础地址', { exact: true }).fill('https://gemini-proxy.example.test/v1beta')
+    await expect(page.getByLabel('API 基础地址', { exact: true })).toHaveValue('https://openai.example.test/v1')
+    await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('gpt-4o-mini')
+    await expect(page.getByLabel('API Key', { exact: true })).toHaveValue('draft-typed-key')
+    await expect(page.getByRole('button', { name: '获取模型列表', exact: true })).toBeEnabled()
+    await expect(page.getByRole('button', { name: '测试模型连接', exact: true })).toBeEnabled()
     await expect(page.getByRole('button', { name: '填入官方默认地址', exact: true })).toBeVisible()
     await page.getByRole('button', { name: '填入官方默认地址', exact: true }).click()
     await expect(page.getByLabel('API 基础地址', { exact: true })).toHaveValue('https://generativelanguage.googleapis.com/v1beta')
     await page.getByLabel('模型名称', { exact: true }).fill('gemini-2.5-flash')
 
-    // Switch back across all three protocols and verify drafts are preserved independently
-    await openaiRadio.click()
-    await expect(page.getByLabel('API 基础地址', { exact: true })).toHaveValue('https://openai.example.test/v1')
-    await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('gpt-4o-mini')
-    await responsesRadio.click()
-    await expect(page.getByLabel('API 基础地址', { exact: true })).toHaveValue('https://responses.example.test/v1')
-    await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('gpt-5')
-    await geminiRadio.click()
-    await expect(page.getByLabel('API 基础地址', { exact: true })).toHaveValue('https://generativelanguage.googleapis.com/v1beta')
-    await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('gemini-2.5-flash')
-
-    // Saving Gemini without entering a key clears the previous OpenAI key and keeps status unconfigured
+    // Clearing typed draft key still keeps the saved key preserved across protocol switches
+    await page.getByLabel('API Key', { exact: true }).fill('')
+    await page.getByRole('button', { name: '清除已保存的 API Key', exact: true }).click()
     await save(page)
     await expect(page.getByText('待配置', { exact: true }).first()).toBeVisible()
     await expect(page.getByRole('button', { name: '获取模型列表', exact: true })).toBeDisabled()
@@ -178,11 +168,11 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await expect(page.getByRole('button', { name: '启动 Harness', exact: true })).toBeDisabled()
 
     await page.getByLabel('API Key', { exact: true }).fill('gemini-fixture-key')
+    await expect(page.getByRole('button', { name: '获取模型列表', exact: true })).toBeEnabled()
+    await expect(page.getByRole('button', { name: '测试模型连接', exact: true })).toBeEnabled()
     await save(page)
     await expect(page.getByText('未启动', { exact: true }).first()).toBeVisible()
     await expect(page.getByText('已保存密钥（不回显）', { exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: '获取模型列表', exact: true })).toBeEnabled()
-    await expect(page.getByRole('button', { name: '测试模型连接', exact: true })).toBeEnabled()
     await page.setViewportSize({ width: 1440, height: 1100 })
     await page.locator('#main-content').evaluate(node => node.scrollTo({ top: 0, behavior: 'instant' }))
     await page.screenshot({ path: testInfo.outputPath('harness-gemini-desktop-light.png'), animations: 'disabled' })

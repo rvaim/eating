@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rename
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_CONFIGURATION, DshConfigurationFile, DshSessionFile, parseConfiguration } from './config'
+import { DEFAULT_CONFIGURATION, DshConfigurationFile, DshSessionFile, parseConfiguration, resolveDraftConfiguration } from './config'
 
 vi.mock('node:fs', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs')>()
@@ -23,22 +23,26 @@ function fixture() {
 afterEach(() => { vi.mocked(renameSync).mockReset(); for (const cleanup of cleanups.splice(0).reverse()) cleanup() })
 
 describe('DSH configuration validation', () => {
-  it('allows empty drafts, supports openai and google gemini protocols, and isolates keys across protocol switch', () => {
+  it('allows empty drafts, supports openai and google gemini protocols, and preserves saved keys across protocol switch unless cleared or replaced', () => {
     expect(parseConfiguration({})).toEqual(DEFAULT_CONFIGURATION)
     const previous = parseConfiguration({ endpoint: ' http://127.0.0.1:1234/v1 ', model: ' fixture-model ', apiKey: 'fixture-only-key' })
     expect(previous).toMatchObject({ protocol: 'openai-completions', endpoint: 'http://127.0.0.1:1234/v1', model: 'fixture-model' })
     expect(parseConfiguration({ apiKey: '' }, previous).apiKey).toBe('fixture-only-key')
     expect(parseConfiguration({ clearApiKey: true, apiKey: 'ignored-fixture-key' }, previous).apiKey).toBe('')
     expect(parseConfiguration({ endpoint: ' ', model: ' ' }, previous)).toMatchObject({ endpoint: '', model: '' })
-    const geminiWithoutNewKey = parseConfiguration({ protocol: 'google-generative-ai', endpoint: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash' }, previous)
-    expect(geminiWithoutNewKey).toMatchObject({ protocol: 'google-generative-ai', endpoint: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash', apiKey: '' })
+    const geminiRetainingKey = parseConfiguration({ protocol: 'google-generative-ai', endpoint: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash' }, previous)
+    expect(geminiRetainingKey).toMatchObject({ protocol: 'google-generative-ai', endpoint: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash', apiKey: 'fixture-only-key' })
     const geminiWithNewKey = parseConfiguration({ protocol: 'google-generative-ai', endpoint: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash', apiKey: 'fixture-gemini-key' }, previous)
     expect(geminiWithNewKey.apiKey).toBe('fixture-gemini-key')
     expect(parseConfiguration({ model: 'gemini-2.5-pro' }, geminiWithNewKey).apiKey).toBe('fixture-gemini-key')
-    const responsesWithoutKey = parseConfiguration({ protocol: 'openai-responses', endpoint: 'https://api.openai.com/v1', model: 'gpt-5' }, geminiWithNewKey)
-    expect(responsesWithoutKey).toMatchObject({ protocol: 'openai-responses', endpoint: 'https://api.openai.com/v1', model: 'gpt-5', apiKey: '' })
-    const responsesWithKey = parseConfiguration({ apiKey: 'fixture-responses-key' }, responsesWithoutKey)
-    expect(responsesWithKey.apiKey).toBe('fixture-responses-key')
+    const responsesPreservingKey = parseConfiguration({ protocol: 'openai-responses', endpoint: 'https://api.openai.com/v1', model: 'gpt-5' }, geminiWithNewKey)
+    expect(responsesPreservingKey).toMatchObject({ protocol: 'openai-responses', endpoint: 'https://api.openai.com/v1', model: 'gpt-5', apiKey: 'fixture-gemini-key' })
+    const responsesCleared = parseConfiguration({ protocol: 'openai-responses', endpoint: 'https://api.openai.com/v1', model: 'gpt-5', clearApiKey: true }, geminiWithNewKey)
+    expect(responsesCleared).toMatchObject({ protocol: 'openai-responses', apiKey: '' })
+    const draft = resolveDraftConfiguration({ protocol: 'openai-responses', endpoint: 'https://draft.example.test/v1', model: 'gpt-5' }, geminiWithNewKey)
+    expect(draft).toMatchObject({ protocol: 'openai-responses', endpoint: 'https://draft.example.test/v1', model: 'gpt-5', apiKey: 'fixture-gemini-key' })
+    expect(resolveDraftConfiguration({}, geminiWithNewKey)).toBe(geminiWithNewKey)
+    expect(() => resolveDraftConfiguration({ autoConnect: true }, geminiWithNewKey)).toThrowError(expect.objectContaining({ code: 'INVALID_CONFIGURATION' }))
   })
 
   it.each(['file:///tmp/model', 'https://name:pass@example.test/v1', 'https://example.test/v1?key=fixture', 'https://example.test/v1#fixture', 'https://example.test/v1?', 'https://example.test/v1#'])('rejects an unsafe endpoint without echoing it: %s', endpoint => {

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { CapabilityInvocationScope, HostPluginContext, JsonObject } from '@eating/plugin-sdk'
 import type { ImageGenerationJob, ImageGenerationJobError, ImageGenerationParameters, ImageRequestParameters } from '../types'
@@ -8,6 +9,12 @@ import { ImageGenerationStore } from './store'
 import type { ImageRequestParametersStore } from './request-parameters'
 import { generationHash, generationIntent, identifier, object, parseGeneration, safeInteger } from './validation'
 import type { ResolvedSourceImage } from './validation'
+
+function computeSourceHash(sources: readonly ResolvedSourceImage[]): string | null {
+  if (sources.length === 0) return null
+  if (sources.length === 1) return sources[0]!.hash
+  return createHash('sha256').update(sources.map(item => item.hash).join(':')).digest('hex')
+}
 
 interface ActiveJob {
   jobId: string | null
@@ -37,15 +44,21 @@ export class ImageGenerationJobs {
   private assertActive(active: ActiveJob): void {
     if (this.active !== active || !this.ready || active.controller.signal.aborted) throw new PlatformError(cancellation.code, cancellation.message, 409, 'unknown')
   }
-  async submit(input: unknown, scope?: CapabilityInvocationScope, source?: ResolvedSourceImage): Promise<ImageGenerationJob> {
+  async submit(input: unknown, scope?: CapabilityInvocationScope, sourceOrSources?: ResolvedSourceImage | readonly ResolvedSourceImage[]): Promise<ImageGenerationJob> {
     this.assertReady()
-    const parameters = parseGeneration(input), sourceHash = source?.hash ?? null, requestHash = generationHash(parameters, sourceHash)
+    const sources = Array.isArray(sourceOrSources) ? sourceOrSources : sourceOrSources ? [sourceOrSources] : []
+    const parameters = parseGeneration(input), sourceHash = computeSourceHash(sources), requestHash = generationHash(parameters, sourceHash)
     const previous = this.store.existing(parameters.request_id, requestHash)
     if (previous) return previous
     if (scope?.signal?.aborted || scope?.source?.signal?.aborted) throw new PlatformError(cancellation.code, cancellation.message, 409, 'not-sent')
     if (this.active) throw new PlatformError('IMAGE_GENERATION_BUSY', '已有一个生成任务正在执行，请先查询其结果。', 409, 'not-sent')
-    const maximumImageBytes = this.context.imageLimits().imageBytes
-    if (source && source.bytes.length > maximumImageBytes) throw new PlatformError('IMAGE_GENERATION_INVALID_SOURCE_IMAGE', '参考图片超过当前图片大小设置，未发送生成请求。', 413, 'not-sent')
+    const limits = this.context.imageLimits(), maximumImageBytes = limits.imageBytes
+    let totalSourceBytes = 0
+    for (const src of sources) {
+      if (src.bytes.length > maximumImageBytes) throw new PlatformError('IMAGE_GENERATION_INVALID_SOURCE_IMAGE', '参考图片超过当前图片大小设置，未发送生成请求。', 413, 'not-sent')
+      totalSourceBytes += src.bytes.length
+    }
+    if (totalSourceBytes > limits.batchBytes) throw new PlatformError('IMAGE_GENERATION_INVALID_SOURCE_IMAGE', '多张参考图片总大小超过当前请求上限，未发送生成请求。', 413, 'not-sent')
     this.store.ensureCapacity(maximumImageBytes)
     const configuration = this.configuration.snapshot(), requestParameters = this.requestParameters.snapshot().parameters, controller = new AbortController()
     let finish!: () => void
@@ -62,7 +75,7 @@ export class ImageGenerationJobs {
         this.assertActive(active)
         const existing = this.store.existing(parameters.request_id, requestHash)
         if (existing) return { jobId: existing.jobId, submitted: true }
-        const job = this.store.enqueue(parameters.request_id, requestHash, parameters.prompt, configuration.model, source, active.maximumImageBytes)
+        const job = this.store.enqueue(parameters.request_id, requestHash, parameters.prompt, configuration.model, sources, active.maximumImageBytes)
         active.jobId = job.jobId; created = true
         return { jobId: job.jobId, submitted: true }
       })
@@ -75,7 +88,7 @@ export class ImageGenerationJobs {
       }
       // Schedule only after the durable plugin index and Host submission receipt exist.
       queueMicrotask(() => {
-        void this.run(active, configuration, parameters, source, requestParameters).catch(() => {
+        void this.run(active, configuration, parameters, sources, requestParameters).catch(() => {
           this.lastFailure = '生图工作任务异常结束，结果待核对；未自动重放。'
           this.release(active)
         })
@@ -90,14 +103,14 @@ export class ImageGenerationJobs {
       throw error
     }
   }
-  private async run(active: ActiveJob, configuration: ReturnType<ImageConfigurationStore['snapshot']>, parameters: ImageGenerationParameters, source: ResolvedSourceImage | undefined, requestParameters: ImageRequestParameters): Promise<void> {
+  private async run(active: ActiveJob, configuration: ReturnType<ImageConfigurationStore['snapshot']>, parameters: ImageGenerationParameters, sources: readonly ResolvedSourceImage[], requestParameters: ImageRequestParameters): Promise<void> {
     if (this.active !== active) return
     active.started = true
     let generated = false
     try {
       this.assertActive(active)
       this.store.running(active.jobId!)
-      const image = await generateImage(configuration, parameters, source, active.controller.signal, requestParameters, active.assertBeforePost, active.maximumImageBytes)
+      const image = await generateImage(configuration, parameters, sources, active.controller.signal, requestParameters, active.assertBeforePost, active.maximumImageBytes)
       generated = true
       this.assertActive(active)
       this.store.complete(active.jobId!, image, () => this.assertActive(active))

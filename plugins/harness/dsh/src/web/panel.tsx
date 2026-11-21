@@ -60,7 +60,6 @@ interface Draft {
   readonly timeoutMs: string
   readonly maxTokens: string
 }
-type ProtocolDraftMap = Partial<Record<DshApiProtocol, { readonly endpoint: string; readonly model: string }>>
 interface Failure {
   readonly code: string
   readonly error: unknown
@@ -226,7 +225,6 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
   const [dirty, setDirty] = useState(false)
   const [nativeDirty, setNativeDirty] = useState(false)
   const dirtyRef = useRef(false)
-  const protocolDrafts = useRef<ProtocolDraftMap>({})
   const [secretClearedOnHide, setSecretClearedOnHide] = useState(false)
   const [loading, setLoading] = useState(true)
   const [reading, setReading] = useState(false)
@@ -273,7 +271,6 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
       setPlugin(response); setRefreshFailure(null)
       if (!response.enabled) setDraft(current => current ? { ...current, apiKey: '', clearApiKey: false } : current)
       else if (!dirtyRef.current) {
-        protocolDrafts.current = {}
         setDraft(makeDraft(response.configuration))
       }
       setReadSerial(++readCount.current)
@@ -379,20 +376,16 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
   function selectProtocol(nextProtocol: DshApiProtocol) {
     setDraft(current => {
       if (!current || current.protocol === nextProtocol) return current
-      protocolDrafts.current[current.protocol] = { endpoint: current.endpoint, model: current.model }
       const savedConfig = savedConfigRef.current
-      const restored = protocolDrafts.current[nextProtocol]
-        ?? (savedConfig && savedConfig.protocol === nextProtocol
-          ? { endpoint: savedConfig.endpoint, model: savedConfig.model }
-          : nextProtocol === 'google-generative-ai'
-            ? { endpoint: GOOGLE_GEMINI_DEFAULT_ENDPOINT, model: '' }
-            : { endpoint: '', model: '' })
+      const endpoint = current.endpoint.trim()
+        ? current.endpoint
+        : nextProtocol === 'google-generative-ai'
+          ? GOOGLE_GEMINI_DEFAULT_ENDPOINT
+          : current.endpoint
       const next: Draft = {
         ...current,
         protocol: nextProtocol,
-        endpoint: restored.endpoint,
-        model: restored.model,
-        clearApiKey: false,
+        endpoint,
       }
       const nextDirty = next.apiKey.length > 0 || next.clearApiKey || isNonSecretDraftDirty(next, savedConfig)
       dirtyRef.current = nextDirty
@@ -414,14 +407,16 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
   const active = state === 'connected'
   const needsSavedKey = Boolean(saved && protocolRequiresApiKey(saved.protocol) && !saved.apiKeyConfigured)
   const configured = Boolean(saved?.endpoint.trim() && saved.model.trim() && !needsSavedKey)
-  const protocolChanged = Boolean(draft && saved && draft.protocol !== saved.protocol)
   const endpointOrKeyDirty = Boolean(draft && saved && (draft.protocol !== saved.protocol || draft.endpoint.trim() !== saved.endpoint.trim() || draft.apiKey.length > 0 || draft.clearApiKey))
-  const modelIdentityDirty = endpointOrKeyDirty || Boolean(draft && saved && draft.model.trim() !== saved.model.trim())
+  const draftHasEffectiveKey = Boolean(draft && (draft.apiKey.trim().length > 0 || (saved?.apiKeyConfigured === true && !draft.clearApiKey)))
+  const needsDraftKey = Boolean(draft && protocolRequiresApiKey(draft.protocol) && !draftHasEffectiveKey)
+  const canFetchModels = Boolean(plugin?.enabled && draft?.endpoint.trim() && !needsDraftKey)
+  const canTestConnection = Boolean(canFetchModels && draft?.model.trim())
   const blocked = operation !== null || modelOperation !== null || capabilitySaving || starting || !visible || refreshFailure !== null || uncertain !== null
 
   async function requestModel(next: ModelOperation) {
-    if (!plugin?.enabled || !saved?.endpoint.trim() || needsSavedKey || endpointOrKeyDirty) return
-    if (next === 'test-connection' && (!configured || modelIdentityDirty)) return
+    if (!draft || !plugin?.enabled || !canFetchModels) return
+    if (next === 'test-connection' && !canTestConnection) return
     if (blocked || actionLock.current) return
     actionLock.current = true; setModelOperation(next); setModelFailure(null); setModelTest(null)
     if (next === 'list-models') setModels(null)
@@ -432,11 +427,21 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
     modelController.current = controller
     const timer = window.setTimeout(() => deadline.abort(), 15_000)
     const valid = () => mounted.current && !document.hidden && !controller.signal.aborted && modelGeneration.current === ticket
+    const timeout = integerIn(draft.timeoutMs, 1000, 120000) ? Number(draft.timeoutMs) : undefined
+    const payload: Record<string, unknown> = {
+      protocol: draft.protocol,
+      endpoint: draft.endpoint.trim(),
+      model: draft.model.trim(),
+      ...(draft.apiKey.trim() ? { apiKey: draft.apiKey } : {}),
+      ...(draft.clearApiKey ? { clearApiKey: true } : {}),
+      ...(timeout !== undefined ? { timeoutMs: timeout } : {}),
+    }
+    const expectedModel = draft.model.trim()
     try {
-      const value = await hostRequest<unknown>('/plugins/dsh/manage', { method: 'POST', body: { operation: next, input: {} }, signal: AbortSignal.any([controller.signal, deadline.signal]) })
+      const value = await hostRequest<unknown>('/plugins/dsh/manage', { method: 'POST', body: { operation: next, input: payload }, signal: AbortSignal.any([controller.signal, deadline.signal]) })
       if (!valid()) return
       if (next === 'list-models') setModels(readModels(value))
-      else setModelTest(readModelTest(value, saved.model))
+      else setModelTest(readModelTest(value, expectedModel))
     } catch (error) {
       if (valid()) setModelFailure({ ...failureFrom(deadline.signal.aborted ? new HostApiError('MODEL_REQUEST_TIMEOUT', '') : error), outcome: 'failed' })
     } finally {
@@ -457,7 +462,6 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
       setFieldIssues(issues)
       if (Object.keys(issues).length > 0) { setActionFailure({ code: 'INVALID_CONFIGURATION', error: { code: 'INVALID_CONFIGURATION' }, messageKey: 'validation.configuration', outcome: 'not-sent' }); return }
     }
-    const draftHasEffectiveKey = draft.apiKey.trim().length > 0 || (saved?.apiKeyConfigured === true && draft.protocol === saved.protocol && !draft.clearApiKey)
     if (next === 'save-and-start' && (!draft.endpoint.trim() || !draft.model.trim() || (protocolRequiresApiKey(draft.protocol) && !draftHasEffectiveKey) || !runtime?.system.found || active)) return
     if (next === 'connect' && (dirtyRef.current || !configured || !runtime?.system.found || active)) return
     if (next === 'disconnect' && !active && state !== 'error') return
@@ -468,7 +472,7 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
     let stage: Exclude<Operation, 'save-and-start'> = savesConfig ? 'save' : next
     try {
       if (savesConfig) {
-        const shouldClearKey = draft.clearApiKey && draft.protocol === saved?.protocol
+        const shouldClearKey = draft.clearApiKey
         const response = readConfiguration(await hostRequest<unknown>('/plugins/dsh/configuration', { method: 'POST', signal: controller.signal, body: {
           displayName: draft.displayName.trim(), protocol: draft.protocol, endpoint: draft.endpoint.trim(), model: draft.model.trim(), autoConnect: draft.autoConnect,
           timeoutMs: Number(draft.timeoutMs), maxTokens: Number(draft.maxTokens),
@@ -476,9 +480,7 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
           ...(shouldClearKey ? { clearApiKey: true } : {}),
         } }))
         if (!mounted.current || controller.signal.aborted) return
-        protocolDrafts.current = {}
-        dirtyRef.current = false; setDirty(false); setDraft(makeDraft(response)); setSecretClearedOnHide(false); setModelTest(null); setModelFailure(null)
-        if (next === 'save') setModels(null)
+        dirtyRef.current = false; setDirty(false); setDraft(makeDraft(response)); setSecretClearedOnHide(false); setModelFailure(null)
         setPlugin(current => current ? { ...current, configuration: response } : current)
         setResult('result.saved'); callbacks.current.onFeedback(translate('dsh', 'feedback.saved'))
       }
@@ -540,21 +542,18 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
   const outcomeKey = runtime?.lastOutcome ? outcomeKeys[runtime.lastOutcome] : undefined
   const statusLabel = plugin ? refreshFailure ? t('state.unconfirmed') : t(stateKeys[plugin.status.state]) : t('state.loading')
   const statusDotClass = active && runtime?.ready ? 'is-live' : starting ? 'is-starting' : state === 'error' || systemRuntimeError ? 'is-error' : ''
-  const draftHasEffectiveKey = Boolean(draft && (draft.apiKey.trim().length > 0 || (saved?.apiKeyConfigured === true && !protocolChanged && !draft.clearApiKey)))
   const canSaveAndStart = Boolean(draft && dirty && draft.endpoint.trim() && draft.model.trim() && (!protocolRequiresApiKey(draft.protocol) || draftHasEffectiveKey) && systemFound && !active)
   const activeProtocolMeta = protocolCopy[draft?.protocol ?? 'openai-completions']
   const isGemini = draft?.protocol === 'google-generative-ai'
-  const apiKeyHintKey: DshTranslationKey = protocolChanged && saved?.apiKeyConfigured
-    ? 'field.apiKey.hint.protocolSwitched'
-    : saved?.apiKeyConfigured && !protocolChanged
-      ? 'field.apiKey.hint.saved'
-      : activeProtocolMeta.emptyApiKeyHint
-  const modelActionHelpKey: DshTranslationKey = endpointOrKeyDirty
-    ? 'models.saveEndpointFirst'
-    : needsSavedKey
-      ? 'models.saveKeyFirst'
-      : modelIdentityDirty
-        ? 'models.saveFirst'
+  const apiKeyHintKey: DshTranslationKey = saved?.apiKeyConfigured
+    ? 'field.apiKey.hint.saved'
+    : activeProtocolMeta.emptyApiKeyHint
+  const modelActionHelpKey: DshTranslationKey = needsDraftKey
+    ? 'models.saveKeyFirst'
+    : !draft?.endpoint.trim()
+      ? 'models.enterEndpointFirst'
+      : !draft.model.trim()
+        ? 'models.enterModelFirst'
         : 'models.savedOnly'
   const saveNoticeKey: DshTranslationKey = dirty
     ? 'saveHint.dirty'
@@ -696,7 +695,7 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
               <PasswordInput
                 id={id('apiKey')}
                 value={draft.apiKey}
-                saved={saved?.apiKeyConfigured === true && !protocolChanged}
+                saved={saved?.apiKeyConfigured === true}
                 clear={draft.clearApiKey}
                 hiddenClearedNotice={secretClearedOnHide}
                 maxLength={4096}
@@ -705,7 +704,7 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
                 aria-describedby={describedBy('apiKey')}
                 aria-invalid={Boolean(fieldErrors.apiKey)}
                 onChange={value => updateDraft('apiKey', value)}
-                onClearChange={saved?.apiKeyConfigured === true && !protocolChanged ? checked => updateDraft('clearApiKey', checked) : undefined}
+                onClearChange={saved?.apiKeyConfigured === true ? checked => updateDraft('clearApiKey', checked) : undefined}
               />
             </Field>
           </div>
@@ -750,21 +749,21 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
             <div className="dsh-model-feedback">
               <div className="dsh-model-actions">
                 <ActionButton
-                  reasonCode={!plugin?.enabled ? 'enable' : blocked ? 'busy' : endpointOrKeyDirty ? 'draft' : 'configure'}
-                  reason={endpointOrKeyDirty ? t('models.saveEndpointFirst') : needsSavedKey ? t('models.saveKeyFirst') : undefined}
+                  reasonCode={!plugin?.enabled ? 'enable' : blocked ? 'busy' : 'configure'}
+                  reason={needsDraftKey ? t('models.saveKeyFirst') : !draft.endpoint.trim() ? t('models.enterEndpointFirst') : undefined}
                   className="button button-secondary"
                   type="button"
-                  disabled={blocked || endpointOrKeyDirty || !saved?.endpoint.trim() || needsSavedKey || !plugin?.enabled}
+                  disabled={blocked || !canFetchModels}
                   onClick={() => void requestModel('list-models')}>
                   <RefreshCw size={15} aria-hidden="true" />
                   {t(modelOperation === 'list-models' ? 'models.fetching' : 'models.fetch')}
                 </ActionButton>
                 <ActionButton
-                  reasonCode={!plugin?.enabled ? 'enable' : blocked ? 'busy' : modelIdentityDirty ? 'draft' : 'configure'}
-                  reason={needsSavedKey && !modelIdentityDirty ? t('models.saveKeyFirst') : undefined}
+                  reasonCode={!plugin?.enabled ? 'enable' : blocked ? 'busy' : 'configure'}
+                  reason={needsDraftKey ? t('models.saveKeyFirst') : !draft.endpoint.trim() ? t('models.enterEndpointFirst') : !draft.model.trim() ? t('models.enterModelFirst') : undefined}
                   className="button button-secondary"
                   type="button"
-                  disabled={blocked || modelIdentityDirty || !configured || !plugin?.enabled}
+                  disabled={blocked || !canTestConnection}
                   onClick={() => void requestModel('test-connection')}>
                   {t(modelOperation === 'test-connection' ? 'models.testing' : 'models.test')}
                 </ActionButton>
@@ -839,7 +838,6 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
           onSave={() => void mutate('save')}
           onDiscard={() => {
             if (!saved) return
-            protocolDrafts.current = {}
             dirtyRef.current = false
             setDirty(false)
             setDraft(makeDraft(saved))

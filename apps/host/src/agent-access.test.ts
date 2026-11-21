@@ -358,4 +358,49 @@ describe('Host scoped agent MCP and plugin prompt registry', () => {
     await api('/plugins/test-harness/disable', {})
     expect((await raw(last.headers.Authorization!)).status).toBe(401)
   })
+
+  it('splits Harness QQ messages via configured regex rules, records all returned message_ids in scope, and replays idempotently', async () => {
+    const f = await setup(), binding = f.scope(), taskId = 'c'.repeat(64)
+    await f.api('/plugins/qq/manage', {
+      operation: 'save-message-split',
+      input: {
+        expectedRevision: 0,
+        enabled: true,
+        maxSegments: 8,
+        delayMs: 0,
+        trimSegments: true,
+        rules: [
+          { id: 'blank', name: '空行', enabled: true, pattern: '\\r?\\n(?:[ \\t]*\\r?\\n)+', flags: '', delimiterMode: 'drop' },
+          { id: 'period', name: '句号', enabled: true, pattern: '。+|(?<!\\d|\\.)\\.(?![A-Za-z0-9_./-])', flags: '', delimiterMode: 'drop' },
+          { id: 'exclaim', name: '感叹问号', enabled: true, pattern: '[？！]+|[?!]+(?![A-Za-z0-9_=&/%-])', flags: '', delimiterMode: 'keep-end' },
+        ],
+      },
+    })
+    const { mcp } = await f.client(binding, undefined, taskId)
+    const sent = await mcp.callTool({
+      name: 'qq_send_private_message',
+      arguments: { user_id: binding.targetId, message: '你好呀！今天真不错。\n\n明天见。', request_id: 'split-scoped-req-001' },
+    })
+    expect(sent).toMatchObject({ isError: false })
+    const sentPayloads = f.onebot.requests.filter(r => r.action === 'send_private_msg').map(r => r.params.message)
+    expect(sentPayloads).toEqual(['你好呀！', '今天真不错', '明天见'])
+
+    // All split message_ids are authorized for subsequent reads/recalls by the same scoped agent.
+    expect(await mcp.callTool({ name: 'qq_get_message', arguments: { message_id: '1002' } })).toMatchObject({ isError: false })
+    expect(await mcp.callTool({ name: 'qq_get_message', arguments: { message_id: '1003' } })).toMatchObject({ isError: false })
+
+    // Replaying the same request_id must not re-send any split messages.
+    expect(await mcp.callTool({
+      name: 'qq_send_private_message',
+      arguments: { user_id: binding.targetId, message: '你好呀！今天真不错。\n\n明天见。', request_id: 'split-scoped-req-001' },
+    })).toMatchObject({ isError: false })
+    expect(f.onebot.requests.filter(r => r.action === 'send_private_msg')).toHaveLength(3)
+
+    const finished = f.services.finishTaskActions(binding.agentId, taskId)
+    expect(finished).toMatchObject({
+      available: true,
+      closed: true,
+      actions: [{ outcome: 'succeeded', result: { message_id: 1001, message_ids: [1001, 1002, 1003] } }],
+    })
+  })
 })

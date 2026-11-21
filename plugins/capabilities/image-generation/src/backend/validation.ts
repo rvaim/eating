@@ -5,7 +5,7 @@ import type { ImageGenerationParameters, ImageGenerationSourceKind } from '../ty
 import { IMAGE_GENERATION_LIMITS } from '../types'
 
 export interface ImageSourceReference {
-  readonly kind: 'received' | 'asset'
+  readonly kind: 'received' | 'asset' | 'persona'
   readonly messageId?: string
   readonly imageId?: string
   readonly assetId?: string
@@ -16,6 +16,7 @@ export interface ResolvedSourceImage {
   readonly bytes: Buffer
   readonly hash: string
   readonly assetId?: string
+  readonly imageId?: string
 }
 
 export function invalid(message = '生图参数不完整或包含不支持的字段。'): never { throw new PlatformError('IMAGE_GENERATION_INVALID_INPUT', message, 400, 'not-sent') }
@@ -54,7 +55,9 @@ function reference(value: unknown, maximum: number, label: string): string {
   if (typeof value !== 'string' || value.length < 1 || value.length > maximum || /[\u0000-\u001f\u007f]/.test(value)) invalid(`${label}格式或长度无效。`)
   return value
 }
-/** Model-facing reference: only a current communication message image or this plugin's own asset. */
+const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+/** Model-facing reference: a current message image, this plugin's own asset, or an active persona appearance image. */
 export function parseSourceReference(input: unknown): ImageSourceReference {
   const args = object(input, ['kind', 'messageId', 'imageId', 'assetId'], ['kind'])
   if (args.kind === 'received') {
@@ -65,7 +68,24 @@ export function parseSourceReference(input: unknown): ImageSourceReference {
     if (args.messageId !== undefined || args.imageId !== undefined) invalid('已有图片只能提供 assetId。')
     return { kind: 'asset', assetId: assetIdentifier(args.assetId) }
   }
-  invalid('图片来源只能是 received 或 asset。')
+  if (args.kind === 'persona') {
+    if (args.messageId !== undefined || args.assetId !== undefined) invalid('人格外貌参考图只能提供 imageId。')
+    if (typeof args.imageId !== 'string' || !uuidV4.test(args.imageId)) invalid('人格外貌参考图 imageId 无效。')
+    return { kind: 'persona', imageId: args.imageId }
+  }
+  invalid('图片来源只能是 received、asset 或 persona。')
+}
+export function parseSourceReferences(sourceInput: unknown, sourcesInput: unknown): readonly ImageSourceReference[] {
+  if (sourceInput !== undefined && sourcesInput !== undefined) {
+    invalid('source 与 sources 不能同时传递。')
+  }
+  if (sourcesInput !== undefined) {
+    if (!Array.isArray(sourcesInput) || sourcesInput.length < 1 || sourcesInput.length > 4) {
+      invalid('sources 需包含 1 至 4 张参考图片。')
+    }
+    return sourcesInput.map(parseSourceReference)
+  }
+  return sourceInput !== undefined ? [parseSourceReference(sourceInput)] : []
 }
 export function generationIntent(input: ImageGenerationParameters, sourceHash: string | null = null): JsonObject { return { prompt: input.prompt, size: input.size ?? null, quality: input.quality ?? null, responseFormat: input.response_format ?? null, ...(sourceHash ? { sourceHash } : {}) } }
 export function generationHash(input: ImageGenerationParameters, sourceHash: string | null = null): string { return createHash('sha256').update(JSON.stringify(generationIntent(input, sourceHash))).digest('hex') }

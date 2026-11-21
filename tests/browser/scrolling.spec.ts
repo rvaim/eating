@@ -19,7 +19,7 @@ function isReadOnlyPanelRequest(request: Request): boolean {
   const body = request.postDataJSON()
   if (request.url().endsWith('/api/plugins/dsh/manage')) return ['get-model-capabilities', 'get-model-information', 'read-model-information'].includes(body?.operation)
   // Management reads also use POST; an empty media/audio settings query does not save settings.
-  return Boolean(request.url().endsWith('/api/plugins/qq/manage') && ['media-transport', 'audio-input'].includes(body?.operation) && body.input && typeof body.input === 'object' && !Array.isArray(body.input) && Object.keys(body.input).length === 0)
+  return Boolean(request.url().endsWith('/api/plugins/qq/manage') && ['media-transport', 'audio-input', 'message-split'].includes(body?.operation) && body.input && typeof body.input === 'object' && !Array.isArray(body.input) && Object.keys(body.input).length === 0)
 }
 const copy = {
   'zh-CN': { configuration: '连接配置', tests: '功能测试', mcp: 'MCP 能力', disable: '停用插件' },

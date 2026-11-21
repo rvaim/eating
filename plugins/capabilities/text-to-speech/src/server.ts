@@ -8,7 +8,7 @@ import type { SpeechJob } from './types'
 
 const asJson = (value: unknown) => value as JsonObject
 export class SpeechPlugin implements BackendPlugin {
-  readonly id = 'text-to-speech'; readonly kind = 'capability' as const; readonly name = '语音合成'; readonly version = '0.3.1'
+  readonly id = 'text-to-speech'; readonly kind = 'capability' as const; readonly name = '语音合成'; readonly version = '0.3.2'
   readonly configurationChangesTools = true
   get tools() { return speechTools(this.configuration.snapshot().provider.protocol === 'openai-realtime') }
   get capabilities() { return this.tools.map(tool => ({ id: tool.name, name: tool.title, description: tool.description, support: 'supported' as const, toolName: tool.name })) }

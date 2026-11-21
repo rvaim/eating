@@ -63,7 +63,7 @@ function seed(root: string) {
     `dsh-home/sessions/${PROJECT}/${ROOT}/session.v2.jsonl`,
     `dsh-home/sessions/${PROJECT}/${ROOT}/session.v3.jsonl`,
     'session.json', 'agent-bindings.json', 'proactive-bindings.json',
-    'bridge/owner-policy.json', 'bridge/expected.json', 'bridge/ready.json', 'bridge/session-ready.json', 'bridge/native-web-ready.json', 'bridge/error.json', `bridge/ack-${'a'.repeat(64)}.json`, 'bridge/.bridge-00000000-0000-4000-8000-000000000005.tmp',
+    'bridge/owner-policy.json', 'bridge/expected.json', 'bridge/deliveries.json', 'bridge/async-outbox.json', 'bridge/ready.json', 'bridge/session-ready.json', 'bridge/native-web-ready.json', 'bridge/error.json', `bridge/ack-${'a'.repeat(64)}.json`, `bridge/expected-${'a'.repeat(64)}.json`, 'bridge/.bridge-00000000-0000-4000-8000-000000000005.tmp',
     'dsh-home/attachments/v1/objects/nested/object', 'dsh-home/attachments/v1/file-objects/source', 'dsh-home/attachments/v1/files/file', 'dsh-home/attachments/v1/tmp/upload', 'dsh-home/cache/attachments/request-images/image',
     `${cacheDirectory}/${ROOT}.json`, `${cacheDirectory}/${ROOT}.json.bak.202611041030`, `${cacheDirectory}/${CHILD}.json`,
   ]

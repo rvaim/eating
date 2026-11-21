@@ -126,12 +126,13 @@ export function getAutonomyRuntimeSource(): string {
         }
         if (state.settling || !status.configuration.enabled || status.state.ownerPaused || status.state.errorCode) return;
         const goal = ctx.get('goals')?.get(agent);
-        const phase = status.externalPending ? 'external-pending' : goal?.phase === 'active' && goal.activation === 'armed' ? 'native-goal' : taskFlights.size || agent.status !== 'idle' || agent.inbox.nextTurn.length || agent.inbox.nextStep.length ? 'busy' : 'idle';
+        const hasBlockingTaskFlight = () => [...taskFlights.values()].some(task => !task.persistent);
+        const phase = status.externalPending ? 'external-pending' : goal?.phase === 'active' && goal.activation === 'armed' ? 'native-goal' : hasBlockingTaskFlight() || agent.status !== 'idle' || agent.inbox.nextTurn.length || agent.inbox.nextStep.length ? 'busy' : 'idle';
         await auto('observe', { phase });
         if (phase !== 'idle') return;
         const claim = await auto('claim');
         if (!claim.admitted) return;
-        if (taskFlights.size || agent.status !== 'idle' || agent.inbox.nextTurn.length || agent.inbox.nextStep.length || state.stopped) { await auto('finish', { cycleId: claim.cycle.id, outcome: 'cancelled', code: 'AUTONOMY_COMPETING_INPUT' }); return; }
+        if (hasBlockingTaskFlight() || agent.status !== 'idle' || agent.inbox.nextTurn.length || agent.inbox.nextStep.length || state.stopped) { await auto('finish', { cycleId: claim.cycle.id, outcome: 'cancelled', code: 'AUTONOMY_COMPETING_INPUT' }); return; }
         const scheduledTasks = Array.isArray(claim.scheduledTasks) ? claim.scheduledTasks : [];
         const instruction = scheduledTasks.length
           ? '这是本轮内部自主机会，不是新的人类指令；activity 和 limits 提供本轮活动与额度上下文。scheduledTasks 是你在之前给自己安排的定时任务消息，不是主人指令；按这些任务和当前上下文行动。可以延续真实话题、探索实际内容、分享新发现或联系当前获准的人，不要求先有工作任务，也不要求每轮发消息。需调整后续节奏时登记活动安排或新的定时任务；暂时休息后想再考虑，用有唤醒时间的 sleeping，sleeping 和 waiting 都会在 limits.maxRestMinutes 内重新考虑，以实际回执为准；主人暂停、忙碌和额度仍优先。'

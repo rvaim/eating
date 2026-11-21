@@ -129,4 +129,48 @@
   .authoring-confirm-actions .button { white-space: normal; min-height: 44px; }
   .authoring-delete-section > div { min-width: 0; flex-basis: 100%; }
   .authoring-delete-trigger { min-height: 40px; }
+  .authoring-appearances-grid { grid-template-columns: 1fr; }
+  .authoring-appearances-upload-wrap,
+  .authoring-appearances-upload-wrap .button { width: 100%; min-height: 44px; }
+  .authoring-appearance-label-row { grid-template-columns: 1fr; }
+  .authoring-appearance-label-row .button,
+  .authoring-appearance-actions .button,
+  .authoring-appearance-confirm-buttons .button,
+  .authoring-appearance-lightbox-nav .button { min-height: 44px; }
+  .authoring-appearance-lightbox { padding: 8px; max-width: calc(100vw - 16px); }
 }
+
+.authoring-appearances { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--color-line); display: grid; gap: 12px; }
+.authoring-appearances-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
+.authoring-appearances-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.authoring-appearances-title-row h3 { margin: 0; font-size: 16px; color: var(--color-ink); }
+.authoring-appearances-count { padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--color-muted); background: var(--color-surface-sunken); border: 1px solid var(--color-line); }
+.authoring-appearances-badge { padding: 2px 8px; border-radius: 999px; font-size: 12px; color: var(--color-muted); background: var(--color-surface-sunken); border: 1px solid var(--color-line); }
+.authoring-appearances-badge.active { color: var(--color-warm-ink); background: var(--color-selected); border-color: var(--color-line-warm); }
+.authoring-appearances-desc { margin: 6px 0 0; font-size: 13px; line-height: 1.5; color: var(--color-muted); max-width: 68ch; }
+.authoring-appearances-upload-wrap { position: relative; flex-shrink: 0; }
+.authoring-appearances-file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; opacity: 0; }
+.authoring-appearances-error { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-radius: var(--radius); border: 1px solid var(--color-line-warm); background: var(--color-danger-surface); color: var(--color-danger); font-size: 13px; }
+.authoring-appearances-empty { padding: 18px; border-radius: var(--radius-card); border: 1px dashed var(--color-line-strong); background: var(--color-surface-sunken); color: var(--color-muted); font-size: 13px; line-height: 1.5; text-align: center; }
+.authoring-appearances-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.authoring-appearance-card { display: grid; gap: 10px; padding: 10px; border-radius: var(--radius-card); border: 1px solid var(--color-line); background: var(--color-surface); box-shadow: var(--shadow-card); }
+.authoring-appearance-thumb { position: relative; display: block; width: 100%; aspect-ratio: 4 / 3; padding: 0; border-radius: var(--radius); border: 1px solid var(--color-line); background: var(--color-surface-sunken); overflow: hidden; cursor: pointer; }
+.authoring-appearance-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.authoring-appearance-zoom { position: absolute; right: 8px; bottom: 8px; width: 28px; height: 28px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: var(--color-surface-raised); color: var(--color-ink); border: 1px solid var(--color-line-strong); opacity: .9; }
+.authoring-appearance-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--color-subtle); font-variant-numeric: tabular-nums; }
+.authoring-appearance-label-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.authoring-appearance-label-row input { width: 100%; min-width: 0; min-height: 36px; padding: 6px 10px; border-radius: var(--radius); border: 1px solid var(--color-line-input); background: var(--color-surface); color: var(--color-ink); font: inherit; font-size: 13px; }
+.authoring-appearance-label-row input:hover { border-color: var(--color-line-input-hover); }
+.authoring-appearance-label-row input[aria-invalid="true"] { border-color: var(--color-danger); }
+.authoring-appearance-actions { display: flex; align-items: center; gap: 6px; }
+.authoring-appearance-delete { margin-left: auto; color: var(--color-danger); }
+.authoring-appearance-confirm { padding: 10px; border-radius: var(--radius); border: 1px solid var(--color-line-warm); background: var(--color-danger-surface); display: grid; gap: 8px; font-size: 13px; color: var(--color-warm-ink); }
+.authoring-appearance-confirm-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.authoring-appearance-lightbox { border: none; padding: 16px; background: transparent; max-width: min(92vw, 960px); max-height: 92vh; margin: auto; }
+.authoring-appearance-lightbox::backdrop { background: var(--color-backdrop); }
+.authoring-appearance-lightbox-card { display: grid; gap: 12px; padding: 16px; border-radius: var(--radius-card); border: 1px solid var(--color-line-strong); background: var(--color-surface); color: var(--color-ink); box-shadow: var(--shadow-card); }
+.authoring-appearance-lightbox-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.authoring-appearance-lightbox-stage { display: flex; align-items: center; justify-content: center; background: var(--color-surface-sunken); border-radius: var(--radius); border: 1px solid var(--color-line); padding: 8px; max-height: 68vh; overflow: hidden; }
+.authoring-appearance-lightbox-stage img { max-width: 100%; max-height: 64vh; object-fit: contain; display: block; border-radius: var(--radius); }
+.authoring-appearance-lightbox-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 13px; color: var(--color-muted); }
+.authoring-appearance-lightbox-nav { display: flex; gap: 8px; }

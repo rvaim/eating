@@ -31,7 +31,18 @@ describe('independent capability execution identities', () => {
     const restored = new ExecutionControl(f.directory, f.host), secondId = 'b'.repeat(64), second = restored.prepare({ agentId: root, agentTypeId: 'android-control.phone', taskId: secondId }, root, 'nonce-two')
     expect(second.agentId).toBe(prepared.agentId)
     expect(() => restored.handle('finish-task', { agentId: prepared.agentId!, taskId, contextRef: taskId, status: 'completed' }, 'nonce-one')).toThrow('任务引用或配置无效')
-    expect(restored.pending()).toBe(true); restored.close()
+    expect(restored.pending()).toBe(true)
+    const duringRun = restored.list(root, 'nonce-two')
+    expect(duringRun).toEqual(expect.arrayContaining([
+      expect.objectContaining({ taskId, agentTypeId: 'android-control.phone', status: 'completed', summary: expect.stringContaining('eating_start_execution') }),
+      expect.objectContaining({ taskId: secondId, agentTypeId: 'android-control.phone', status: 'running', summary: expect.stringContaining('message') }),
+    ]))
+    restored.handle('finish-task', { agentId: prepared.agentId!, taskId: secondId, contextRef: secondId, status: 'interrupted' }, 'nonce-two')
+    const afterInterrupt = restored.list(root, 'nonce-two', secondId)
+    expect(afterInterrupt).toEqual([
+      expect.objectContaining({ taskId: secondId, agentTypeId: 'android-control.phone', status: 'interrupted', summary: expect.stringContaining('eating_start_execution') }),
+    ])
+    restored.close()
   })
   it('rejects another parent, missing capability and model-provided scope fields', () => {
     const f = fixture(), input: JsonObject = { agentId: root, agentTypeId: 'android-control.phone', taskId: 'a'.repeat(64) }

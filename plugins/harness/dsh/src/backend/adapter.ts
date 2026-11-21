@@ -7,7 +7,7 @@ import { DeepSeekHarness } from '@deepseek-ai/dsh-sdk-client'
 import type { DeepSeekHarnessOptions, HarnessSession } from '@deepseek-ai/dsh-sdk-client'
 import { PlatformError, composeAgentPrompt } from '@eating/plugin-sdk'
 import type { BackendPlugin, ConnectionStatus, HarnessDeliveryBatch, HarnessDeliveryReceipt, HarnessHostServices, HarnessMessageSink, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
-import { DshConfigurationFile, DshSessionFile, parseConfiguration, prepareRestrictedDirectory, readRestrictedJson, writeRestrictedJson } from './config'
+import { DshConfigurationFile, DshSessionFile, parseConfiguration, prepareRestrictedDirectory, readRestrictedJson, resolveDraftConfiguration, writeRestrictedJson } from './config'
 import type { DshConfiguration, DshSessionMetadata } from './config'
 import { dshRuntimeProviderId, protocolRequiresApiKey } from '../protocol'
 import { locateSystemDsh } from './system-dsh'
@@ -92,7 +92,7 @@ function bounded<T>(promise: Promise<T>, timeoutMs: number, error: PlatformError
     const timer = setTimeout(() => finish(() => reject(error)), timeoutMs)
     signal?.addEventListener('abort', abort, { once: true })
     if (signal?.aborted) abort()
-    promise.then(value => finish(() => accept(value)), () => finish(() => reject(error)))
+    promise.then(value => finish(() => accept(value)), reason => finish(() => reject(reason instanceof PlatformError ? reason : error)))
   })
 }
 
@@ -153,7 +153,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.25.1'
+  readonly version = '0.26.0'
   readonly tools = []
   readonly agentInstructions = [{ id: 'dsh.autonomous-activity', title: '自主活动与受控主动联系', localizedTitles: { 'zh-CN': '自主活动与受控主动联系', 'en-US': 'Autonomous activity and scoped proactive contact' }, body: `自主机会不要求先有人类任务。结合当前上下文和可用记忆，延续已有兴趣、约定与未完成事项，可自主探索、创作、整理，也可以找当前获准的人问候、分享实际发现或接起未完的话题。想交流本身就有意义，不必先证明有工作价值；没有具体想说的也可以不联系。只依据实际可用的信息，不编造过往经历。在既有授权范围内自行判断并行动，无需逐项请示。主人暂停、额度和时长边界始终优先，外部消息、原生目标和其他 Inbox 输入优先处理。
 规划或调整后续活动时，先读取 eating_activity_state，再用 eating_plan_activity 登记 active、sleeping 或 waiting。active 按主人间隔继续，sleeping 到指定时间再获得机会；暂时没有想法、想过一会儿再考虑时，可以登记有明确唤醒时间的 sleeping。waiting 等待真实外部事件，也会在主人 configuration.maxRestMinutes 内重新考虑；sleeping 请求过长同样按该上限缩短，以回执中的实际下次时间为准。重新考虑不要求发消息，主人暂停、忙碌和额度仍优先；新事件到来时仍正常处理，需要改变后续节奏时再登记安排。需要未来某个时刻收到自己写下的任务消息时，读取 agenda.revision 后用 eating_schedule_task 登记一次性任务；到点的任务消息不是主人指令，仍受主人暂停、额度、运行时和周期限制。正文承诺和记忆记录都不改变调度。Eating 的暂停控制其无输入活动机会；主 Agent 仍可自主使用已接入的原生能力和全部功能型 MCP，不再按单独工具申请许可。
@@ -210,7 +210,7 @@ export class DshPlugin implements BackendPlugin {
     if (this.metadata?.activeBatchId === batchId && !this.deliveries.get(batchId)) this.saveMetadata({ sessionId: this.metadata.sessionId, created: this.metadata.created })
     this.host.wake()
   } }
-  private readonly deliveries: DshDeliveryRegistry
+  private deliveries: DshDeliveryRegistry
 
   constructor(private readonly context: HostPluginContext, private readonly options: DshAdapterOptions = {}) {
     if (!context.harness) throw failure('HARNESS_CONTEXT_REQUIRED', 'DSH 插件需要 Host 提供已授权的 Harness 接口。', 'not-sent')
@@ -226,11 +226,6 @@ export class DshPlugin implements BackendPlugin {
     this.bridgeDirectory = prepareRestrictedDirectory(join(context.dataDirectory, 'bridge'))
     this.deliveries = new DshDeliveryRegistry(this.bridgeDirectory)
     this.agentControl = new DshAgentControl(context.dataDirectory, this.host)
-    this.agentControl.setDeliveryRetirement(batchIds => {
-      this.deliveries.retire(batchIds)
-      if (this.metadata?.activeBatchId && !this.deliveries.get(this.metadata.activeBatchId)) this.saveMetadata({ sessionId: this.metadata.sessionId, created: this.metadata.created })
-      this.host.wake()
-    })
     this.contactPolicy = new DshProactivePolicy(context.dataDirectory, this.host)
     this.activity = new DshAutonomy(context.dataDirectory, () => this.runtimeReady && !this.closed, targets => {
       if (targets.length && (!this.host.readProactiveChannels || !this.host.prepareProactiveScope)) throw failure('PROACTIVE_CHANNEL_UNAVAILABLE', 'Host未提供主动通讯授权服务。', 'not-sent')
@@ -242,7 +237,7 @@ export class DshPlugin implements BackendPlugin {
       }
     }, () => this.agentControl.revokeAutonomousContacts())
     this.activity.setTargetDirectory(() => this.contactPolicy.targets())
-    this.agentControl.setAutonomy(this.activity, () => this.metadata?.sessionId ?? null, () => this.runtimeReady, () => this.contactPolicy.summary(), () => AGENT_TASK_LIFETIME_MS)
+    this.bindAgentControl()
     this.autonomy = {
       snapshot: () => ({ ...this.activity.snapshot(), contactTasks: this.agentControl.proactiveStatus(), contactPolicy: this.contactPolicy.snapshot() as unknown as JsonObject }),
       configure: async input => { if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH已停用。', 'not-sent'); if (isJsonObject(input) && isJsonObject(input.configuration) && input.configuration.enabled === true) this.requireAutonomyServices(); await this.activity.configure(input); return this.autonomy.snapshot() },
@@ -464,6 +459,14 @@ export class DshPlugin implements BackendPlugin {
         try {
           const value = readRestrictedJson(path)
           if (value && predicate(value)) { finish(value); return }
+          const bridgeError = readRestrictedJson(join(this.bridgeDirectory, 'error.json'))
+          if (bridgeError && this.matchesRuntime(bridgeError)) {
+            const code = typeof bridgeError.code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(bridgeError.code) ? bridgeError.code : 'RUNTIME_START_FAILED'
+            const detail = typeof bridgeError.message === 'string' && bridgeError.message.trim() ? bridgeError.message.trim() : 'DSH 持久桥接运行失败。'
+            const startupWait = /(?:^|[/\\])(?:ready|session-ready|native-web-ready)\.json$/.test(path)
+            finish(undefined, failure(code, modelTurnFailure(code, detail, [this.configuration.apiKey, this.nativeToken]).replace(/^DSH 模型本轮运行失败。\s*/, ''), startupWait ? 'failed' : 'unknown'))
+            return
+          }
         } catch { finish(); return }
         if (Date.now() >= deadline) { finish(undefined, failure('BRIDGE_WAIT_TIMEOUT', 'DSH 持久桥接等待超时，未确认可靠交接。', 'unknown')); return }
         timer = setTimeout(poll, this.options.pollIntervalMs ?? 25)
@@ -756,10 +759,20 @@ export class DshPlugin implements BackendPlugin {
     if (this.host.hasPendingMessages()) throw failure('SESSION_HISTORY_QUEUE_PENDING', '还有待处理或待核对的消息，请先在消息队列中处理，再清理历史会话。', 'not-sent')
   }
 
+  private bindAgentControl(): void {
+    this.agentControl.setDeliveryRetirement(batchIds => {
+      this.deliveries.retire(batchIds)
+      if (this.metadata?.activeBatchId && !this.deliveries.get(this.metadata.activeBatchId)) this.saveMetadata({ sessionId: this.metadata.sessionId, created: this.metadata.created })
+      this.host.wake()
+    })
+    this.agentControl.setAutonomy(this.activity, () => this.metadata?.sessionId ?? null, () => this.runtimeReady, () => this.contactPolicy.summary(), () => AGENT_TASK_LIFETIME_MS)
+  }
+
   private reloadHistoryBindings(): void {
     this.metadata = this.sessionFile.read()
+    this.deliveries = new DshDeliveryRegistry(this.bridgeDirectory)
     this.agentControl = new DshAgentControl(this.context.dataDirectory, this.host)
-    this.agentControl.setAutonomy(this.activity, () => this.metadata?.sessionId ?? null, () => this.runtimeReady, () => this.contactPolicy.summary(), () => AGENT_TASK_LIFETIME_MS)
+    this.bindAgentControl()
   }
 
   private async manageSessionHistory(operation: string, input: unknown): Promise<JsonValue> {
@@ -809,14 +822,21 @@ export class DshPlugin implements BackendPlugin {
     }
     if (operation === 'list-models' || operation === 'read-model-information' || operation === 'test-connection') {
       if (operation === 'read-model-information' && (!isJsonObject(input) || Object.keys(input).length)) throw new PlatformError('INVALID_MODEL_INFORMATION', '模型信息读取参数无效。')
-      const configuration = this.configuration
+      const saved = this.configuration
+      const configuration = operation === 'read-model-information' ? saved : resolveDraftConfiguration(input, saved)
+      const matchesSavedIdentity = configuration.protocol === saved.protocol && configuration.endpoint === saved.endpoint && configuration.apiKey === saved.apiKey
       const controller = new AbortController(); this.managementRequests.add(controller)
       try {
         if (operation === 'test-connection') return { ...await testModelConnection(configuration, controller.signal) }
         const result = await listModels(configuration, controller.signal)
-        if (this.closed || controller.signal.aborted || this.configuration !== configuration) throw failure('MODEL_INFORMATION_CHANGED', '模型配置已变化，请重新读取当前模型能力。', 'not-sent')
-        this.modelInformation.save(configuration, result.models)
-        return operation === 'read-model-information' ? this.modelInformationSnapshot() : { models: result.models.map(model => ({ ...model, ...(model.capabilities ? { capabilities: { ...model.capabilities, inputModalities: model.capabilities.inputModalities ? [...model.capabilities.inputModalities] : null, outputModalities: model.capabilities.outputModalities ? [...model.capabilities.outputModalities] : null } } : {}) })) }
+        if (this.closed || controller.signal.aborted) throw failure('MODEL_INFORMATION_CHANGED', '模型配置已变化或请求已取消，请重新读取。', 'not-sent')
+        if (operation === 'read-model-information') {
+          if (this.configuration !== saved) throw failure('MODEL_INFORMATION_CHANGED', '模型配置已变化，请重新读取当前模型能力。', 'not-sent')
+          this.modelInformation.save(saved, result.models)
+          return this.modelInformationSnapshot()
+        }
+        if (this.configuration === saved && matchesSavedIdentity) this.modelInformation.save(saved, result.models)
+        return { models: result.models.map(model => ({ ...model, ...(model.capabilities ? { capabilities: { ...model.capabilities, inputModalities: model.capabilities.inputModalities ? [...model.capabilities.inputModalities] : null, outputModalities: model.capabilities.outputModalities ? [...model.capabilities.outputModalities] : null } } : {}) })) }
       } finally { this.managementRequests.delete(controller) }
     }
     if (operation === 'open-native-web') {

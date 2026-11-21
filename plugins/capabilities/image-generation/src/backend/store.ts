@@ -20,14 +20,27 @@ const exact = (value: object, keys: string[], optional: string[] = []) => keys.e
 const interrupted: ImageGenerationJobError = { code: 'IMAGE_GENERATION_INTERRUPTED', message: '上次任务在重启前未确认完成，未自动重放；请求可能已计费。', outcome: 'unknown' }
 function corrupt(): never { throw new PlatformError('IMAGE_GENERATION_STATE_CORRUPTED', '生图任务或资源索引损坏或不是当前 schema1，原文件未覆盖。', 500, 'not-sent') }
 function publicJob(value: StoredJob): ImageGenerationJob { const { requestHash: _hash, sourceHash: _sourceHash, ...job } = value; return structuredClone(job) }
-function sourceSummary(source: ResolvedSourceImage): ImageGenerationSourceSummary {
-  return { kind: source.kind, mimeType: source.mimeType, bytes: source.bytes.length, ...(source.assetId ? { assetId: source.assetId } : {}) }
+function sourceSummary(sources: readonly ResolvedSourceImage[]): ImageGenerationSourceSummary {
+  const first = sources[0]!
+  const bytes = sources.reduce((total, item) => total + item.bytes.length, 0)
+  return {
+    kind: first.kind,
+    mimeType: first.mimeType,
+    bytes,
+    ...(first.assetId ? { assetId: first.assetId } : {}),
+    ...(first.imageId ? { imageId: first.imageId } : {}),
+    ...(sources.length > 1 ? { count: sources.length } : {}),
+  }
 }
 function validSource(value: unknown): value is ImageGenerationSourceSummary {
-  return isJsonObject(value) && exact(value, ['kind', 'mimeType', 'bytes'], ['assetId']) && ['received', 'asset', 'upload'].includes(String(value.kind))
-    && ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(String(value.mimeType)) && typeof value.bytes === 'number'
-    && Number.isSafeInteger(value.bytes) && value.bytes > 0 && value.bytes <= IMAGE_GENERATION_LIMITS.imageBytes
+  return isJsonObject(value) && exact(value, ['kind', 'mimeType', 'bytes'], ['assetId', 'imageId', 'count'])
+    && ['received', 'asset', 'upload', 'persona'].includes(String(value.kind))
+    && ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(String(value.mimeType))
+    && (value.count === undefined || typeof value.count === 'number' && Number.isSafeInteger(value.count) && value.count >= 2 && value.count <= 4)
+    && typeof value.bytes === 'number' && Number.isSafeInteger(value.bytes) && value.bytes > 0
+    && value.bytes <= IMAGE_GENERATION_LIMITS.imageBytes * (typeof value.count === 'number' ? value.count : 1)
     && (value.kind === 'asset' ? typeof value.assetId === 'string' && /^[a-f0-9]{64}$/.test(value.assetId) : value.assetId === undefined)
+    && (value.kind === 'persona' ? typeof value.imageId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.imageId) : value.imageId === undefined)
 }
 
 /** Only jobs and generated assets are stored here; provider responses, URLs and keys are never indexed. */
@@ -144,10 +157,12 @@ export class ImageGenerationStore {
     const used = this.value.images.reduce((total, item) => total + item.bytes, 0)
     if (this.value.jobs.length >= IMAGE_GENERATION_LIMITS.jobs || this.value.images.length >= IMAGE_GENERATION_LIMITS.images || used + maximum > IMAGE_GENERATION_LIMITS.libraryBytes) throw new PlatformError('IMAGE_GENERATION_CAPACITY_REACHED', '任务或图片容量已满，或剩余空间不足当前单图大小上限；未发送付费请求。', 409, 'not-sent')
   }
-  enqueue(requestId: string, requestHash: string, prompt: string, model: string, source?: ResolvedSourceImage, maximum = DEFAULT_IMAGE_LIMITS.imageBytes): ImageGenerationJob {
+  enqueue(requestId: string, requestHash: string, prompt: string, model: string, sourceOrSources?: ResolvedSourceImage | readonly ResolvedSourceImage[], maximum = DEFAULT_IMAGE_LIMITS.imageBytes): ImageGenerationJob {
     this.ensureCapacity(maximum)
+    const sources = Array.isArray(sourceOrSources) ? sourceOrSources : sourceOrSources ? [sourceOrSources] : []
+    const sourceHash = sources.length === 0 ? null : sources.length === 1 ? sources[0]!.hash : createHash('sha256').update(sources.map(item => item.hash).join(':')).digest('hex')
     const now = new Date().toISOString(), job: StoredJob = { jobId: randomUUID(), requestId, requestHash, prompt, model, status: 'queued', createdAt: now, updatedAt: now, assetIds: [],
-      ...(source ? { source: sourceSummary(source), sourceHash: source.hash } : {}) }
+      ...(sources.length > 0 && sourceHash ? { source: sourceSummary(sources), sourceHash } : {}) }
     this.save({ ...this.value, jobs: [...this.value.jobs, job] })
     return publicJob(job)
   }

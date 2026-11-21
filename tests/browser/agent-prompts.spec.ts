@@ -149,7 +149,7 @@ test.describe('动态代理提示词与已保存组合', () => {
       if (request.method() !== 'POST') return
       if (request.url() === `${url}/api/plugins/qq/manage`) {
         const body = request.postDataJSON() as { operation?: string; input?: Record<string, unknown> }
-        if ((body.operation === 'media-transport' || body.operation === 'audio-input') && body.input && Object.keys(body.input).length === 0) return
+        if ((body.operation === 'media-transport' || body.operation === 'audio-input' || body.operation === 'message-split') && body.input && Object.keys(body.input).length === 0) return
       }
       mutations.push(request.url())
     })

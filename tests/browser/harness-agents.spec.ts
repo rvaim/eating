@@ -12,7 +12,7 @@ import type { JsonValue } from '@eating/plugin-sdk'
 import { EatingHost } from '../../apps/host/src/app'
 import { discoverBackendPlugins } from '../../apps/host/src/discovery'
 import { installPluginPackage } from '../../apps/host/src/plugin-installation'
-import { DEFAULT_CONFIGURATION, parseConfiguration } from '../../plugins/harness/dsh/src/backend/config'
+import { DEFAULT_CONFIGURATION, parseConfiguration, resolveDraftConfiguration } from '../../plugins/harness/dsh/src/backend/config'
 import { listModels, testModelConnection } from '../../plugins/harness/dsh/src/backend/model-service'
 
 const builtDirectory = fileURLToPath(new URL('../../dist/', import.meta.url))
@@ -74,8 +74,8 @@ test.describe('Harness 模型连接（本地夹具）', () => {
           if (operation === 'get-model-capabilities') return target.manage!(operation, input)
           if (operation === 'get-model-information' || operation === 'read-model-information') return { model: configuration.model, capabilities: null, fetchedAt: null, imageInput: false, appliedImageInput: null }
           operations.push({ operation, input })
-          if (operation === 'list-models') return { models: (await listModels(configuration)).models.map(model => ({ ...model })) }
-          if (operation === 'test-connection') return testModelConnection(configuration)
+          if (operation === 'list-models') return { models: (await listModels(resolveDraftConfiguration(input, configuration))).models.map(model => ({ ...model })) }
+          if (operation === 'test-connection') return testModelConnection(resolveDraftConfiguration(input, configuration))
           throw new PlatformError('MANAGEMENT_OPERATION_UNSUPPORTED', 'fixture unsupported')
         }
         const value: unknown = Reflect.get(target, key)
@@ -115,24 +115,27 @@ test.describe('Harness 模型连接（本地夹具）', () => {
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')) })
   }
 
-  test('模型按钮使用保存配置，列表选择只写草稿，真实测试只请求一次且随语言即时翻译', async ({ page }, testInfo) => {
+  test('未保存草稿可直接拉取模型并测试连接，列表选择只写草稿，真实测试只请求一次且随语言即时翻译', async ({ page }, testInfo) => {
     await open(page)
     await expect(page.getByRole('button', { name: '获取模型列表', exact: true })).toBeDisabled()
-    await saveModel(page)
+    await page.getByLabel('API 基础地址', { exact: true }).fill(modelUrl)
+    await page.getByLabel('API Key', { exact: true }).fill('fixture-only-provider-key')
     let saves = 0
     page.on('request', request => { if (request.url().endsWith('/configuration') && request.method() === 'POST') saves++ })
+    // Fetch models and test connection directly on unsaved draft before saving
+    await expect(page.getByRole('button', { name: '获取模型列表', exact: true })).toBeEnabled()
+    await expect(page.getByRole('button', { name: '测试模型连接', exact: true })).toBeDisabled()
     await page.getByRole('button', { name: '获取模型列表', exact: true }).click()
     await expect(page.getByLabel('从模型列表选择', { exact: true })).toBeVisible()
-    await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('fixture-manual')
     await page.getByLabel('从模型列表选择', { exact: true }).selectOption('fixture-beta')
     await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('fixture-beta')
-    await expect(page.getByRole('button', { name: '测试模型连接', exact: true })).toBeDisabled()
-    expect(saves).toBe(0)
-    expect(operations).toEqual([{ operation: 'list-models', input: {} }])
-    await page.getByRole('button', { name: '保存配置', exact: true }).click()
     await expect(page.getByRole('button', { name: '测试模型连接', exact: true })).toBeEnabled()
+    expect(saves).toBe(0)
     await page.getByRole('button', { name: '测试模型连接', exact: true }).click()
     await expect(page.getByText(/模型 fixture-beta 请求成功/)).toBeVisible()
+    expect(saves).toBe(0)
+    await page.getByRole('button', { name: '保存配置', exact: true }).click()
+    await expect(page.getByText('配置已保存，运行已停止。需要时请重新启动 Harness。', { exact: true })).toBeVisible()
     expect(modelRequests).toHaveLength(2)
     expect(modelRequests[0]).toMatchObject({ path: '/custom/api/models', authorization: 'Bearer fixture-only-provider-key' })
     expect(JSON.parse(modelRequests[1]!.body)).toEqual({ model: 'fixture-beta', messages: [{ role: 'user', content: 'Ping.' }], max_tokens: 1, stream: false })
@@ -153,7 +156,7 @@ test.describe('Harness 模型连接（本地夹具）', () => {
     await expect(page.getByLabel('模型名称', { exact: true })).toBeEnabled()
     await page.screenshot({ path: testInfo.outputPath('models-error-zh-desktop.png') })
     await page.getByLabel('模型名称', { exact: true }).fill('manually-kept')
-    await expect(page.getByRole('button', { name: '测试模型连接', exact: true })).toBeDisabled()
+    await expect(page.getByRole('button', { name: '测试模型连接', exact: true })).toBeEnabled()
     expect(modelRequests).toHaveLength(1)
     await page.getByRole('button', { name: '保存配置', exact: true }).click()
     await expect(page.getByRole('button', { name: '获取模型列表', exact: true })).toBeEnabled()

@@ -14,8 +14,39 @@ import { containsQQImageAssets, resolveQQImageAssets } from './backend/media-tra
 import { resolveQQAudioAsset } from './backend/audio-transport'
 import { QQAudioInputConfig } from './backend/audio-input-config'
 import { readQQAudio } from './backend/received-audio'
+import { QQMessageSplitConfiguration } from './backend/message-split-config'
+import { splitOutgoingQQMessage } from './message-split'
 
 type Configuration = OneBotConfig
+
+const splitEligibleActions = new Set(['send_private_msg', 'send_group_msg', 'send_msg'])
+
+function sleepWithAbort(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (delayMs <= 0) return Promise.resolve()
+  if (signal?.aborted) return Promise.reject(new PlatformError('AGENT_SCOPE_VIOLATION', '当前调用授权已撤销。', 403, 'unknown'))
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(new PlatformError('AGENT_SCOPE_VIOLATION', '当前调用授权已撤销。', 403, 'unknown'))
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, delayMs)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+function extractMessageId(result: JsonValue): string | number | null {
+  if (!isJsonObject(result)) return null
+  if (typeof result.message_id === 'string' || typeof result.message_id === 'number') return result.message_id
+  return null
+}
+
+function formatSentSummary(sentCount: number, totalCount: number, messageIds: readonly (string | number)[]): string {
+  const ids = messageIds.length > 0 ? `（已确认 message_id：${messageIds.join(', ')}）` : ''
+  return `消息已拆分为 ${totalCount} 条，前 ${sentCount} 条已发送${ids}`
+}
 
 function createDefaultConfiguration(): Configuration {
   return { displayName: 'QQ', endpoint: '', accessToken: '', autoConnect: false,
@@ -67,7 +98,7 @@ class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly kind = 'communication' as const
   readonly name = 'QQ'
-  readonly version = '0.19.2'
+  readonly version = '0.20.0'
   readonly logs = new LiveLogChannel()
   readonly tools = [...qqTools, qqViewReceivedImageTool]
   readonly capabilities = [
@@ -105,6 +136,7 @@ class QQPlugin implements BackendPlugin {
   private readonly file: QQConfigurationFile
   private readonly audioInput: QQAudioInputConfig
   private readonly mediaTransport: QQMediaTransportConfiguration
+  private readonly messageSplit: QQMessageSplitConfiguration
   private readonly accounts: QQAccountRegistry
   private readonly instanceId: string
   private readonly client: OneBotClient
@@ -115,6 +147,7 @@ class QQPlugin implements BackendPlugin {
     this.file = new QQConfigurationFile(this.accounts.directoryFor(this.instanceId))
     this.mediaTransport = new QQMediaTransportConfiguration(this.file.directory)
     this.audioInput = new QQAudioInputConfig(this.file.directory)
+    this.messageSplit = new QQMessageSplitConfiguration(this.file.directory)
     this.configuration = this.file.read() ?? createDefaultConfiguration()
     this.client = new OneBotClient({ onEvent: event => this.receiveEvent(event), imageLimits: () => this.context.imageLimits() })
   }
@@ -140,6 +173,11 @@ class QQPlugin implements BackendPlugin {
   }
 
   async manage(operation: string, input: unknown): Promise<JsonValue> {
+    if (operation === 'message-split') {
+      if (!isJsonObject(input) || Object.keys(input).length) throw new PlatformError('QQ_MESSAGE_SPLIT_INVALID', '读取消息拆分设置仅接受空对象。', 400, 'not-sent')
+      return this.messageSplit.snapshot() as unknown as JsonObject
+    }
+    if (operation === 'save-message-split') return this.messageSplit.save(input) as unknown as JsonObject
     if (operation === 'audio-input') { if (!isJsonObject(input) || Object.keys(input).length) throw new PlatformError('QQ_AUDIO_INPUT_INVALID', '读取音频目录设置仅接受空对象。', 400, 'not-sent'); return this.audioInput.snapshot(this.mediaConnection()) }
     if (operation === 'save-audio-input') return this.audioInput.save(input, this.mediaConnection())
     if (operation === 'media-transport') {
@@ -191,11 +229,66 @@ class QQPlugin implements BackendPlugin {
       && forwarded.context.self_id !== undefined && String(forwarded.context.self_id) !== this.client.getStatus().accountId) {
       throw new PlatformError('INVALID_INPUT', '快速操作上下文不属于当前登录账号，未执行动作。', 400, 'not-sent')
     }
+    const splitSettings = scope && splitEligibleActions.has(tool.protocolAction ?? '') && typeof params.audio_ref !== 'string'
+      ? this.messageSplit.snapshot()
+      : null
+    const splitMessages = splitSettings
+      ? splitOutgoingQQMessage(forwarded.message, forwarded.auto_escape !== false, splitSettings)
+      : [forwarded.message]
     const execute = async () => {
       if (scope?.signal?.aborted) throw new PlatformError('AGENT_SCOPE_VIOLATION', '当前调用授权已撤销，未发送。', 403, 'not-sent')
       const account = this.client.getStatus().accountId
-      const transport = containsQQImageAssets(forwarded) ? this.mediaTransport.snapshot(this.mediaConnection()) : null
-      const wire = transport ? await resolveQQImageAssets(forwarded, this.context.resources, transport, scope ? { agentId: scope.agentId, agentTypeId: scope.agentTypeId, source: scope } : undefined, this.context.imageLimits()) : { params: forwarded, imageBase64Bytes: 0 }
+      if (splitSettings && splitMessages.length > 1) {
+        const sentResults: JsonValue[] = []
+        const sentMessageIds: Array<string | number> = []
+        for (let index = 0; index < splitMessages.length; index++) {
+          if (index > 0 && splitSettings.delayMs > 0) {
+            try {
+              await sleepWithAbort(splitSettings.delayMs, scope?.signal)
+            } catch {
+              throw new PlatformError('QQ_SPLIT_SEND_INTERRUPTED', `${formatSentSummary(sentResults.length, splitMessages.length, sentMessageIds)}，等待第 ${index + 1} 条期间任务已中断，已停止后续发送，请勿重发已发消息。`, 409, 'unknown')
+            }
+          }
+          if (scope?.signal?.aborted) {
+            if (sentResults.length === 0) throw new PlatformError('AGENT_SCOPE_VIOLATION', '当前调用授权已撤销，未发送。', 403, 'not-sent')
+            throw new PlatformError('QQ_SPLIT_SEND_INTERRUPTED', `${formatSentSummary(sentResults.length, splitMessages.length, sentMessageIds)}，第 ${index + 1} 条发送前授权已撤销，已停止后续发送，请勿重发已发消息。`, 409, 'unknown')
+          }
+          const currentStatus = this.client.getStatus()
+          if (currentStatus.state !== 'connected' || currentStatus.accountId !== account) {
+            if (sentResults.length === 0) throw new PlatformError('ACCOUNT_CHANGED', '发送前账号连接已变化，未发送。', 409, 'not-sent')
+            throw new PlatformError('QQ_SPLIT_SEND_INTERRUPTED', `${formatSentSummary(sentResults.length, splitMessages.length, sentMessageIds)}，第 ${index + 1} 条发送前账号或连接已变化，已停止后续发送，请勿重发已发消息。`, 409, 'unknown')
+          }
+          if (scope) {
+            try {
+              assertQQAgentInvocation(name, params, scope, this.configuration, { instanceId: this.instanceId, accountId: currentStatus.accountId })
+            } catch (error) {
+              if (sentResults.length === 0) throw error
+              throw new PlatformError('QQ_SPLIT_SEND_INTERRUPTED', `${formatSentSummary(sentResults.length, splitMessages.length, sentMessageIds)}，第 ${index + 1} 条发送前权限已变化，已停止后续发送，请勿重发已发消息。`, 409, 'unknown')
+            }
+          }
+          try {
+            const partResult = await this.client.call(action, { ...forwarded, message: splitMessages[index]! }, { timeoutMs: this.configuration.timeoutMs, readOnly: tool.readOnly })
+            sentResults.push(partResult)
+            const id = extractMessageId(partResult)
+            if (id !== null) sentMessageIds.push(id)
+          } catch (error) {
+            if (sentResults.length === 0) throw error
+            const reason = error instanceof Error && error.message ? error.message : '协议端调用失败'
+            throw new PlatformError('QQ_SPLIT_PARTIAL_SEND', `${formatSentSummary(sentResults.length, splitMessages.length, sentMessageIds)}，第 ${index + 1} 条发送未确认完成（${reason}），已停止后续发送，请勿重发已发消息。`, 502, 'unknown')
+          }
+        }
+        return {
+          ...(sentMessageIds.length > 0 ? { message_id: sentMessageIds[0]!, message_ids: sentMessageIds } : {}),
+          split: true,
+          parts_sent: sentResults.length,
+          results: sentResults,
+        }
+      }
+      const singleForwarded = splitSettings && splitMessages.length === 1 && splitMessages[0] !== forwarded.message
+        ? { ...forwarded, message: splitMessages[0]! }
+        : forwarded
+      const transport = containsQQImageAssets(singleForwarded) ? this.mediaTransport.snapshot(this.mediaConnection()) : null
+      const wire = transport ? await resolveQQImageAssets(singleForwarded, this.context.resources, transport, scope ? { agentId: scope.agentId, agentTypeId: scope.agentTypeId, source: scope } : undefined, this.context.imageLimits()) : { params: singleForwarded, imageBase64Bytes: 0 }
       const audio = await resolveQQAudioAsset(wire.params, this.context.resources, scope ? { agentId: scope.agentId, agentTypeId: scope.agentTypeId, source: scope } : undefined)
       if (transport && this.mediaTransport.snapshot(this.mediaConnection()).revision !== transport.revision) throw new PlatformError('QQ_MEDIA_CONFIGURATION_CHANGED', '资源读取期间图片传输设置已变化，未发送。', 409, 'not-sent')
       if (scope?.signal?.aborted) throw new PlatformError('AGENT_SCOPE_VIOLATION', '资源读取期间任务已撤销，未发送。', 403, 'not-sent')

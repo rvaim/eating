@@ -151,4 +151,147 @@ describe('生图尺寸原样传递与服务默认值', () => {
     expect(plugin.getPublicConfiguration()).toMatchObject({ revision: 0, size: '' })
     expect(provider.requests).toHaveLength(0)
   })
+
+  it('校验 source 与 sources 互斥、最多 4 张以及 persona imageId 格式', async () => {
+    const { parseSourceReferences } = await import('./validation')
+    const id1 = '11111111-1111-4111-8111-111111111111'
+    const id2 = '22222222-2222-4222-8222-222222222222'
+    const id3 = '33333333-3333-4333-8333-333333333333'
+    const id4 = '44444444-4444-4444-8444-444444444444'
+    const id5 = '55555555-5555-4555-8555-555555555555'
+
+    expect(parseSourceReferences(undefined, undefined)).toEqual([])
+    expect(parseSourceReferences({ kind: 'persona', imageId: id1 }, undefined)).toEqual([{ kind: 'persona', imageId: id1 }])
+    expect(parseSourceReferences(undefined, [
+      { kind: 'persona', imageId: id1 },
+      { kind: 'persona', imageId: id2 },
+    ])).toEqual([
+      { kind: 'persona', imageId: id1 },
+      { kind: 'persona', imageId: id2 },
+    ])
+
+    expect(() => parseSourceReferences({ kind: 'persona', imageId: id1 }, [{ kind: 'persona', imageId: id2 }])).toThrowError(expect.objectContaining({ code: 'IMAGE_GENERATION_INVALID_INPUT', outcome: 'not-sent' }))
+    expect(() => parseSourceReferences(undefined, [])).toThrowError(expect.objectContaining({ code: 'IMAGE_GENERATION_INVALID_INPUT', outcome: 'not-sent' }))
+    expect(() => parseSourceReferences(undefined, 'not-an-array')).toThrowError(expect.objectContaining({ code: 'IMAGE_GENERATION_INVALID_INPUT', outcome: 'not-sent' }))
+    expect(() => parseSourceReferences(undefined, [id1, id2, id3, id4, id5].map(imageId => ({ kind: 'persona', imageId })))).toThrowError(expect.objectContaining({ code: 'IMAGE_GENERATION_INVALID_INPUT', outcome: 'not-sent' }))
+    expect(() => parseSourceReferences({ kind: 'persona', imageId: 'not-a-uuid' }, undefined)).toThrowError(expect.objectContaining({ code: 'IMAGE_GENERATION_INVALID_INPUT', outcome: 'not-sent' }))
+    expect(() => parseSourceReferences({ kind: 'persona', imageId: id1, assetId: 'a'.repeat(64) }, undefined)).toThrowError(expect.objectContaining({ code: 'IMAGE_GENERATION_INVALID_INPUT', outcome: 'not-sent' }))
+  })
+
+  it('单参考图发送 multipart image，多参考图按顺序发送 image[] 并校验批量大小上限', async () => {
+    const { createServer } = await import('node:http')
+    const { mkdtemp, rm, realpath } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { DEFAULT_IMAGE_LIMITS, isJsonObject } = await import('@eating/plugin-sdk')
+    const { createImageFixturePng } = await import('../../../../../tests/fixtures/image')
+    const { ImageGenerationPlugin } = await import('../server')
+
+    const png1 = createImageFixturePng([10, 20, 30, 255])
+    const png2 = createImageFixturePng([40, 50, 60, 255])
+    const out = createImageFixturePng([70, 80, 90, 255])
+    const id1 = '11111111-1111-4111-8111-111111111111'
+    const id2 = '22222222-2222-4222-8222-222222222222'
+
+    const captured: Array<{ url: string; fileParts: Array<{ field: string; contentType: string; bytes: Buffer }> }> = []
+    const server = createServer((req, res) => {
+      void (async () => {
+        const chunks: Buffer[] = []
+        for await (const chunk of req) chunks.push(Buffer.from(chunk))
+        const body = Buffer.concat(chunks)
+        const contentType = String(req.headers['content-type'] ?? '')
+        const boundary = /boundary=(?:"([^"]+)"|([^;]+))/.exec(contentType)?.slice(1).find(Boolean) ?? ''
+        const fileParts: Array<{ field: string; contentType: string; bytes: Buffer }> = []
+        for (const raw of body.toString('latin1').split('--' + boundary)) {
+          const section = raw.replace(/^\r\n/, '').replace(/\r\n$/, '')
+          if (!section || section === '--') continue
+          const split = section.indexOf('\r\n\r\n')
+          if (split < 0) continue
+          const headers = section.slice(0, split)
+          const data = Buffer.from(section.slice(split + 4), 'latin1')
+          const name = /name="([^"]+)"/.exec(headers)?.[1]
+          if (name && /filename="/.test(headers)) {
+            fileParts.push({
+              field: name,
+              contentType: /Content-Type:\s*([^\r\n]+)/i.exec(headers)?.[1]?.trim() ?? '',
+              bytes: data,
+            })
+          }
+        }
+        captured.push({ url: req.url ?? '', fileParts })
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ data: [{ b64_json: out.toString('base64') }] }))
+      })()
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const addr = server.address()
+    if (!addr || typeof addr === 'string') throw new Error('Missing fixture address')
+    const baseUrl = `http://127.0.0.1:${addr.port}/v1`
+    const dir = await realpath(await mkdtemp(join(await realpath(tmpdir()), 'eating-size-multi-')))
+
+    const personaImages = new Map<string, Buffer>([[id1, png1], [id2, png2]])
+    let maxImageMiB = 10
+    const plugin = new ImageGenerationPlugin({
+      dataDirectory: dir,
+      imageLimits: () => ({
+        ...DEFAULT_IMAGE_LIMITS,
+        maxImageMiB,
+        imageBytes: maxImageMiB === 0 ? 50 : DEFAULT_IMAGE_LIMITS.imageBytes,
+        batchBytes: maxImageMiB === 0 ? 80 : DEFAULT_IMAGE_LIMITS.batchBytes,
+      }),
+      getSetting: () => null,
+      setSetting: () => {},
+      listMessages: () => [],
+      recordEvent: () => ({ inserted: true, eventId: 'evt-multi' }),
+      executeIdempotent: async (_plugin, _action, _params, _id, run) => run(),
+      resources: {
+        getAsset: async () => { throw new Error('unused') },
+        readPersonaAppearanceImage: async (imageId: string) => {
+          const bytes = personaImages.get(imageId)
+          if (!bytes) throw Object.assign(new Error('not found'), { code: 'PERSONA_APPEARANCE_NOT_FOUND' })
+          return { mimeType: 'image/png', data: bytes.toString('base64') }
+        },
+      } as unknown as import('@eating/plugin-sdk').PluginResourceServices,
+    })
+
+    try {
+      await plugin.updateConfiguration({ expectedRevision: 0, baseUrl, model: 'edit-model', apiKey: 'test-key' })
+
+      const single = await plugin.invokeCapability('image_generate', {
+        prompt: 'single persona ref',
+        request_id: 'single-persona-ref-0001',
+        source: { kind: 'persona', imageId: id1 },
+      }, 'single-persona-ref-0001', { agentId: 'a1', agentTypeId: 'main' })
+      expect(isJsonObject(single) ? single.jobId : null).toBeTruthy()
+      const singleDone = await plugin.manage('job', { jobId: (single as { jobId: string }).jobId, waitMs: 20000 })
+      expect(singleDone).toMatchObject({ status: 'succeeded' })
+      expect(captured[0]?.fileParts).toHaveLength(1)
+      expect(captured[0]?.fileParts[0]?.field).toBe('image')
+      expect(captured[0]?.fileParts[0]?.bytes).toEqual(png1)
+
+      const multi = await plugin.invokeCapability('image_generate', {
+        prompt: 'multi persona refs',
+        request_id: 'multi-persona-refs-0001',
+        sources: [{ kind: 'persona', imageId: id1 }, { kind: 'persona', imageId: id2 }],
+      }, 'multi-persona-refs-0001', { agentId: 'a1', agentTypeId: 'main' })
+      const multiDone = await plugin.manage('job', { jobId: (multi as { jobId: string }).jobId, waitMs: 20000 })
+      expect(multiDone).toMatchObject({ status: 'succeeded' })
+      expect(captured[1]?.fileParts).toHaveLength(2)
+      expect(captured[1]?.fileParts.map(p => p.field)).toEqual(['image[]', 'image[]'])
+      expect(captured[1]?.fileParts.map(p => p.bytes)).toEqual([png1, png2])
+
+      maxImageMiB = 0
+      await expect(plugin.invokeCapability('image_generate', {
+        prompt: 'too large batch',
+        request_id: 'multi-persona-too-large-01',
+        sources: [{ kind: 'persona', imageId: id1 }, { kind: 'persona', imageId: id2 }],
+      }, 'multi-persona-too-large-01', { agentId: 'a1', agentTypeId: 'main' })).rejects.toMatchObject({ outcome: 'not-sent' })
+      expect(captured).toHaveLength(2)
+    } finally {
+      await plugin.dispose()
+      server.closeAllConnections()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 })

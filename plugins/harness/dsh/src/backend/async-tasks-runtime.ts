@@ -195,7 +195,7 @@ export function getAsyncTasksRuntimeSource(): string {
   }
   async function mountTaskControl(agent) {
     const output = { schema: { type: 'object', additionalProperties: true }, render: (_, value) => [{ type: 'text', text: JSON.stringify(value) }] };
-    agent.ctx.tools.register({ name: 'eating_task_control', description: '主Agent管理自己的异步子任务。list/status查看真实状态；message向运行中子Agent补充说明，可用context_ref附加同一真实会话的新批次原话和图片引用；不同账号/目标拒绝混入，verify不会升级为reply。interrupt停止该任务后续执行，已发生的外部动作不撤销，unknown不得重发。不会自动选择、中断或追加任务，由主Agent判断。',
+    agent.ctx.tools.register({ name: 'eating_task_control', description: '主Agent管理自己的异步子任务。list/status查看真实状态与说明；message向运行中子Agent补充说明或调整方向，可用context_ref附加同一真实会话的新批次原话和图片引用（独立执行角色不用context_ref）；不同账号/目标拒绝混入，verify不会升级为reply。优先用message调整运行中的独立执行子代理，非必要不用interrupt中断；即使任务已结束或曾interrupt/unknown，对应子代理类型仍可重新启动新任务，仅对unknown动作不盲目重放。',
       parameters: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'status', 'message', 'interrupt'] }, task_id: { type: 'string', pattern: '^[a-f0-9]{64}$' }, context_ref: { type: 'string', pattern: '^[a-f0-9]{64}$' }, message: { type: 'string', maxLength: 8000 } }, required: ['action'], additionalProperties: false }, output,
       async execute(args, exec) {
         if (exec.agent !== agent || ctx.agents.get(sessionId) !== agent || !record(args) || Object.keys(args).some(key => !['action', 'task_id', 'context_ref', 'message'].includes(key)) || !['list', 'status', 'message', 'interrupt'].includes(args.action)) throw new Error('Task control is not authorized');

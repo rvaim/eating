@@ -40,7 +40,6 @@ export function parseConfiguration(input: unknown, previous: DshConfiguration = 
     if (input[name] !== undefined && typeof input[name] !== 'boolean') throw new PlatformError('INVALID_CONFIGURATION', '自动连接与清除密钥选项需为布尔值。')
   }
   const protocol: DshApiProtocol = input.protocol === undefined ? previous.protocol : input.protocol
-  const protocolChanged = protocol !== previous.protocol
   const displayName = typeof input.displayName === 'string' ? input.displayName.trim() : previous.displayName
   if (!displayName || displayName.length > 80) throw new PlatformError('INVALID_CONFIGURATION', '显示名称需为 1 至 80 个字符。')
   const endpoint = typeof input.endpoint === 'string' ? input.endpoint.trim() : previous.endpoint
@@ -56,7 +55,7 @@ export function parseConfiguration(input: unknown, previous: DshConfiguration = 
   }
   const model = typeof input.model === 'string' ? input.model.trim() : previous.model
   if (model.length > 160 || /[\r\n\0]/.test(model)) throw new PlatformError('INVALID_CONFIGURATION', '模型名称需为空草稿或 1 至 160 个字符。')
-  const apiKey = input.clearApiKey === true ? '' : typeof input.apiKey === 'string' && input.apiKey.length ? input.apiKey : protocolChanged ? '' : previous.apiKey
+  const apiKey = input.clearApiKey === true ? '' : typeof input.apiKey === 'string' && input.apiKey.length ? input.apiKey : previous.apiKey
   if (apiKey.length > 4096 || /[\r\n\0]/.test(apiKey)) throw new PlatformError('INVALID_CONFIGURATION', 'API 密钥格式无效。')
   const timeoutMs = input.timeoutMs === undefined ? previous.timeoutMs : input.timeoutMs
   if (typeof timeoutMs !== 'number' || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120_000) {
@@ -68,6 +67,19 @@ export function parseConfiguration(input: unknown, previous: DshConfiguration = 
   }
   return { displayName, protocol, endpoint: normalizedEndpoint, model, apiKey, timeoutMs, maxTokens,
     autoConnect: typeof input.autoConnect === 'boolean' ? input.autoConnect : previous.autoConnect }
+}
+
+const DRAFT_PROBE_KEYS = new Set(['protocol', 'endpoint', 'model', 'apiKey', 'clearApiKey', 'timeoutMs'])
+
+/** Resolves an optional transient connection draft without mutating or writing saved settings. */
+export function resolveDraftConfiguration(input: unknown, saved: DshConfiguration): DshConfiguration {
+  if (input === undefined) return saved
+  if (!isJsonObject(input)) throw new PlatformError('INVALID_CONFIGURATION', 'DSH 连接测试参数必须为对象。')
+  if (Object.keys(input).length === 0) return saved
+  if (Object.keys(input).some(key => !DRAFT_PROBE_KEYS.has(key))) {
+    throw new PlatformError('INVALID_CONFIGURATION', '模型测试参数包含不支持的字段。')
+  }
+  return parseConfiguration(input, saved)
 }
 
 export function prepareRestrictedDirectory(directory: string): string {

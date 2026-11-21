@@ -166,6 +166,7 @@ export interface HarnessOwnerConfiguration {
   readonly revision: number
   readonly prompts: readonly import('./authoring.js').PromptDocument[]
   readonly activePersona: import('./authoring.js').PersonaDocument | null
+  readonly activePersonaAppearances?: readonly import('./authoring.js').PersonaAppearanceImageSummary[]
   readonly agentTypes: readonly import('./agents.js').RegisteredAgentType[]
   readonly pluginInstructions: readonly import('./agents.js').RegisteredAgentInstructions[]
   readonly bindings: Readonly<Record<string, string>>

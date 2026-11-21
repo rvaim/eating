@@ -5,6 +5,7 @@ import { TEMPLATE_SCOPES, TEMPLATE_VARIABLES, analyzeTemplate, getPromptTemplate
 import type { AgentPromptPreview, AuthoringSnapshot, PersonaDocument, PersonaMutationResult, PersonaSummary, PromptDocument, TemplateScope } from '@eating/plugin-sdk'
 import { ActionButton, HostApiError, formatDateTime, getErrorMessage, getLocale, hostRequest, translate, useI18n } from '@eating/ui-sdk'
 import '../i18n/authoring'
+import { PersonaAppearances } from '../components/PersonaAppearances'
 import { TemplateEditor } from '../components/TemplateEditor'
 import { PERSONA_TEMPLATES } from '../persona-templates'
 import './Authoring.css'
@@ -640,6 +641,7 @@ export function Authoring({ mode, selectedId, pluginDisplayNames, onSelect, onFe
             <details className="authoring-preview-layer"><summary>{t('preview.bindings')}</summary><p className="authoring-field-hint">{t('preview.bindingHint')}</p><pre>{JSON.stringify(currentPreview.data.bindings, null, 2)}</pre></details>
           </div>}
         </section>}
+        {mode === 'personas' && <PersonaAppearances personaId={currentDraft.saved ? currentDraft.id : null} active={active} onChanged={cancelPreview} />}
         {mode === 'personas' && currentDraft.saved && <section className="authoring-delete-section" aria-label={t('delete.title')}><div><h3>{t('delete.title')}</h3><p>{t(active ? 'delete.activeHint' : 'delete.hint')}{currentDraft.saved.updatedAt && <span className="authoring-updated">{updatedLabel(currentDraft.saved.updatedAt)}</span>}</p></div><ActionButton reasonCode={busy ? 'busy' : blocked ? 'read' : 'deactivate'} ref={deleteTrigger} type="button" className="text-button authoring-delete-trigger" disabled={busy || blocked || active} onClick={() => { setConfirmRead(null); setConfirmDelete(currentDraft.key) }}><Trash2 size={15} aria-hidden="true" />{t('delete.title')}</ActionButton></section>}
         {confirmDelete === currentDraft.key && <div className="authoring-confirmation" role="group" aria-label={t('delete.confirmLabel', { name: currentDraft.name })}><div><strong>{t('delete.confirmTitle', { name: currentDraft.saved && 'name' in currentDraft.saved ? currentDraft.saved.name : currentDraft.name })}</strong><p>{t(dirty ? 'delete.confirmDirtyDescription' : 'delete.confirmDescription')}</p></div><div className="authoring-confirm-actions"><ActionButton reasonCode="busy" ref={deleteCancel} type="button" className="button button-secondary" onClick={() => { setConfirmDelete(null); deleteTrigger.current?.focus() }}>{t('action.cancel')}</ActionButton><ActionButton reasonCode={busy ? 'busy' : blocked ? 'read' : 'deactivate'} type="button" className="button button-danger" disabled={busy || blocked || active} onClick={() => void mutate('delete')}><Trash2 size={15} aria-hidden="true" />{t('delete.confirmAction')}</ActionButton></div></div>}
       </form>}

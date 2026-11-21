@@ -14,13 +14,20 @@ export interface ImageEditSource { readonly mimeType: ImageMimeType; readonly by
 function failure(code: string, message: string, outcome: 'failed' | 'unknown' = 'unknown'): PlatformError { return new PlatformError(code, message, 502, outcome) }
 function canceled(): PlatformError { return failure('IMAGE_GENERATION_CANCELLED', '生图任务已取消或授权已撤销；请求可能已计费，未自动重放。') }
 
-function multipartBody(fields: readonly (readonly [string, string])[], image: ImageEditSource, boundary: string): Buffer {
+function multipartBody(fields: readonly (readonly [string, string])[], images: readonly ImageEditSource[], boundary: string): Buffer {
   const chunks: Buffer[] = []
   for (const [name, value] of fields) chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`))
-  const extension = image.mimeType === 'image/jpeg' ? 'jpg' : image.mimeType.slice('image/'.length)
-  chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="source.${extension}"\r\nContent-Type: ${image.mimeType}\r\n\r\n`))
-  chunks.push(image.bytes)
-  chunks.push(Buffer.from(`\r\n--${boundary}--\r\n`))
+  const multiple = images.length > 1
+  for (let index = 0; index < images.length; index++) {
+    const image = images[index]!
+    const extension = image.mimeType === 'image/jpeg' ? 'jpg' : image.mimeType.slice('image/'.length)
+    const fieldName = multiple ? 'image[]' : 'image'
+    const fileName = multiple ? `source-${index + 1}.${extension}` : `source.${extension}`
+    chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"; filename="${fileName}"\r\nContent-Type: ${image.mimeType}\r\n\r\n`))
+    chunks.push(image.bytes)
+    chunks.push(Buffer.from('\r\n'))
+  }
+  chunks.push(Buffer.from(`--${boundary}--\r\n`))
   return Buffer.concat(chunks)
 }
 
@@ -65,21 +72,22 @@ function requestBytes(url: URL, signal: AbortSignal, maximum: number, body?: Buf
   })
 }
 
-export async function generateImage(configuration: PrivateImageConfiguration, input: ImageGenerationParameters, editSource: ImageEditSource | undefined, signal: AbortSignal, requestParameters: ImageRequestParameters, assertBeforePost: () => void = () => {}, maximumImageBytes = DEFAULT_IMAGE_LIMITS.imageBytes): Promise<GeneratedImageBytes> {
+export async function generateImage(configuration: PrivateImageConfiguration, input: ImageGenerationParameters, editSourceOrSources: ImageEditSource | readonly ImageEditSource[] | undefined, signal: AbortSignal, requestParameters: ImageRequestParameters, assertBeforePost: () => void = () => {}, maximumImageBytes = DEFAULT_IMAGE_LIMITS.imageBytes): Promise<GeneratedImageBytes> {
   const timeout = new AbortController(), combined = AbortSignal.any([signal, timeout.signal])
   const timer = setTimeout(() => timeout.abort(), configuration.timeoutMs)
+  const editSources = Array.isArray(editSourceOrSources) ? editSourceOrSources : editSourceOrSources ? [editSourceOrSources] : []
   try {
     const size = imageSize(input.size ?? configuration.size), quality = input.quality ?? configuration.quality, format = input.response_format ?? configuration.responseFormat
     let body: Buffer, contentType = 'application/json'
-    if (editSource) {
+    if (editSources.length > 0) {
       const fields: Array<readonly [string, string]> = [['model', configuration.model], ['prompt', input.prompt], ['n', '1'],
         ...(size ? [['size', size] as const] : []), ...(quality ? [['quality', quality] as const] : []), ...(format ? [['response_format', format] as const] : []),
         ...Object.entries(requestParameters).map(([key, value]) => [key, String(value)] as const)]
       const boundary = '----eating-image-' + randomUUID()
-      body = multipartBody(fields, editSource, boundary)
+      body = multipartBody(fields, editSources, boundary)
       contentType = 'multipart/form-data; boundary=' + boundary
     } else body = Buffer.from(JSON.stringify({ ...requestParameters, model: configuration.model, prompt: input.prompt, n: 1, ...(size ? { size } : {}), ...(quality ? { quality } : {}), ...(format ? { response_format: format } : {}) }))
-    const endpoint = new URL(configuration.baseUrl.replace(/\/+$/, '') + (editSource ? '/images/edits' : '/images/generations'))
+    const endpoint = new URL(configuration.baseUrl.replace(/\/+$/, '') + (editSources.length > 0 ? '/images/edits' : '/images/generations'))
     assertBeforePost()
     const response = await requestBytes(endpoint, combined, Math.ceil(maximumImageBytes / 3) * 4 + 1024 * 1024, body, configuration.apiKey, contentType)
     let value: unknown

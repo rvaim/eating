@@ -28,6 +28,7 @@ import { LiveLogs } from './live-logs'
 import { ImageResult, readImagePreview } from './ImageResult'
 import { MediaTransportFields } from './media-transport'
 import { AudioInputFields } from './audio-input'
+import { MessageSplitFields } from './message-split'
 import type { ImagePreviewResult } from './ImageResult'
 import { AgentPolicyFields, agentPolicyDraft } from './agent-policy-fields'
 import { isJsonObject } from '@eating/plugin-sdk'
@@ -211,6 +212,7 @@ export function QQPanel({ onFeedback, onRefresh, onDirtyChange }: QQPanelProps) 
   const [policyDirty, setPolicyDirty] = useState(false)
   const [mediaTransportDirty, setMediaTransportDirty] = useState(false)
   const [audioInputDirty, setAudioInputDirty] = useState(false)
+  const [messageSplitDirty, setMessageSplitDirty] = useState(false)
   const [tokenHiddenCleared, setTokenHiddenCleared] = useState(false)
   const [loading, setLoading] = useState(true)
   const [refreshFailure, setRefreshFailure] = useState<Failure | null>(null)
@@ -222,6 +224,7 @@ export function QQPanel({ onFeedback, onRefresh, onDirtyChange }: QQPanelProps) 
   const [policySaving, setPolicySaving] = useState(false)
   const [mediaSaving, setMediaSaving] = useState(false)
   const [audioSaving, setAudioSaving] = useState(false)
+  const [messageSplitSaving, setMessageSplitSaving] = useState(false)
   const [toolPrefill, setToolPrefill] = useState<ToolPrefill | null>(null)
   const actionLock = useRef(false)
   const mounted = useRef(false)
@@ -231,7 +234,7 @@ export function QQPanel({ onFeedback, onRefresh, onDirtyChange }: QQPanelProps) 
   const callbacks = useRef({ onFeedback, onRefresh, onDirtyChange })
   callbacks.current = { onFeedback, onRefresh, onDirtyChange }
 
-  const anyDirty = dirty || policyDirty || mediaTransportDirty || audioInputDirty
+  const anyDirty = dirty || policyDirty || mediaTransportDirty || audioInputDirty || messageSplitDirty
   useEffect(() => {
     callbacks.current.onDirtyChange?.(anyDirty)
   }, [anyDirty])
@@ -409,10 +412,10 @@ export function QQPanel({ onFeedback, onRefresh, onDirtyChange }: QQPanelProps) 
     }
   }
 
-  const busy = mutation !== null || testing || policySaving || mediaSaving || audioSaving
+  const busy = mutation !== null || testing || policySaving || mediaSaving || audioSaving || messageSplitSaving
   const id = (name: string) => `${prefix}-${name}`
   const describedBy = (name: string) => `${id(name)}-hint${fieldErrors[name] ? ` ${id(name)}-error` : ''}`
-  const connectionTabDirty = dirty || mediaTransportDirty || audioInputDirty
+  const connectionTabDirty = dirty || mediaTransportDirty || audioInputDirty || messageSplitDirty
 
   return <div className="qq-panel">
     <div className="qq-connection-strip"><div><strong>{plugin ? t(`connection.${plugin.status.state}`) : t('connection.loading')}</strong>
@@ -523,8 +526,9 @@ export function QQPanel({ onFeedback, onRefresh, onDirtyChange }: QQPanelProps) 
       {configurationResult && <p className="qq-operation-result" role="status"><Check size={15} aria-hidden="true" />{t(configurationResult.key, { state: configurationResult.state ? t(`connection.${configurationResult.state}`) : undefined })}</p>}
       <ErrorNotice failure={configurationReadFailure} />
       <ErrorNotice failure={configurationFailure} />
-      {plugin && <MediaTransportFields active={tab === 'configuration'} enabled={plugin.enabled} busy={mutation !== null || testing || policySaving || audioSaving} connectionKey={`${saved?.endpoint ?? ''}:${plugin.status.accountId ?? ''}`} actionLock={actionLock} onBusy={setMediaSaving} onDirtyChange={setMediaTransportDirty} onFeedback={onFeedback} />}
-      {plugin && <AudioInputFields active={tab === 'configuration'} enabled={plugin.enabled} busy={mutation !== null || testing || policySaving || mediaSaving} connectionKey={`${saved?.endpoint ?? ''}:${plugin.status.accountId ?? ''}`} actionLock={actionLock} onBusy={setAudioSaving} onDirtyChange={setAudioInputDirty} onFeedback={onFeedback} />}
+      {plugin && <MessageSplitFields active={tab === 'configuration'} enabled={plugin.enabled} busy={mutation !== null || testing || policySaving || mediaSaving || audioSaving} actionLock={actionLock} onBusy={setMessageSplitSaving} onDirtyChange={setMessageSplitDirty} onFeedback={onFeedback} />}
+      {plugin && <MediaTransportFields active={tab === 'configuration'} enabled={plugin.enabled} busy={mutation !== null || testing || policySaving || audioSaving || messageSplitSaving} connectionKey={`${saved?.endpoint ?? ''}:${plugin.status.accountId ?? ''}`} actionLock={actionLock} onBusy={setMediaSaving} onDirtyChange={setMediaTransportDirty} onFeedback={onFeedback} />}
+      {plugin && <AudioInputFields active={tab === 'configuration'} enabled={plugin.enabled} busy={mutation !== null || testing || policySaving || mediaSaving || messageSplitSaving} connectionKey={`${saved?.endpoint ?? ''}:${plugin.status.accountId ?? ''}`} actionLock={actionLock} onBusy={setAudioSaving} onDirtyChange={setAudioInputDirty} onFeedback={onFeedback} />}
       {saved && (saved.instanceId || saved.configurationPath || saved.dataDirectory) && <details className="qq-location-details"><summary>{t('config.locations')}</summary><dl className="qq-paths">{saved.instanceId && <div><dt>{t('config.instance')}</dt><dd>{saved.instanceId}</dd></div>}{saved.configurationPath && <div><dt>{t('config.configurationPath')}</dt><dd>{saved.configurationPath}</dd></div>}{saved.dataDirectory && <div><dt>{t('config.dataDirectory')}</dt><dd>{saved.dataDirectory}</dd></div>}</dl></details>}
     </section>
     <section hidden={tab !== 'agent-policy'} role="tabpanel" id={`${prefix}-panel-agent-policy`} aria-labelledby={`${prefix}-tab-agent-policy`}>
@@ -545,7 +549,7 @@ export function QQPanel({ onFeedback, onRefresh, onDirtyChange }: QQPanelProps) 
       />
     </section>
     <section hidden={tab !== 'tests'} role="tabpanel" id={`${prefix}-panel-tests`} aria-labelledby={`${prefix}-tab-tests`}>
-      <ToolTester active={tab === 'tests'} tools={plugin?.tools ?? []} enabled={plugin?.enabled === true} mutationBusy={mutation !== null || policySaving || mediaSaving || audioSaving} actionLock={actionLock} prefill={toolPrefill} onBusy={setTesting} onFeedback={onFeedback} />
+      <ToolTester active={tab === 'tests'} tools={plugin?.tools ?? []} enabled={plugin?.enabled === true} mutationBusy={mutation !== null || policySaving || mediaSaving || audioSaving || messageSplitSaving} actionLock={actionLock} prefill={toolPrefill} onBusy={setTesting} onFeedback={onFeedback} />
     </section>
     <section hidden={tab !== 'mcp'} role="tabpanel" id={`${prefix}-panel-mcp`} aria-labelledby={`${prefix}-tab-mcp`}>
       <McpCapabilities active={tab === 'mcp'} enabled={plugin?.enabled === true} capabilities={plugin?.capabilities ?? []} harness={workspace?.harness} onFeedback={onFeedback} />

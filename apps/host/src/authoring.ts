@@ -181,6 +181,7 @@ export class AuthoringService {
     return persona
   }
   getSnapshot(): AuthoringSnapshot { const state = this.state(); return snapshot(state.data, state.contributions) }
+  getActivePersonaId(): string | null { return this.read().activePersonaId }
   getPersona(id: string): PersonaDocument { return { ...this.findPersona(this.read(), id) } }
   readOwnerConfiguration(): HarnessOwnerConfiguration {
     const { data, contributions } = this.state()

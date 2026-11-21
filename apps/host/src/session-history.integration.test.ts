@@ -201,12 +201,12 @@ describe('session history owner management through actual Host HTTP', () => {
     const settings = current.host.store.getDeliverySettingsSnapshot()
     const beforePreview = await snapshot(current.directory)
     const preview = await current.api.manage('preview-session-history', {})
-    expect(preview).toEqual({ previewId: expect.stringMatching(uuid), expiresAt: expect.any(String), sessionCount: 2, rootCount: 1, childCount: 1 })
+    expect(preview).toMatchObject({ previewId: expect.stringMatching(uuid), expiresAt: expect.any(String), sessionCount: 2, rootCount: 1, childCount: 1, runtimeRunning: false, hasPendingQueue: false })
     expect(Date.parse(String(preview.expiresAt))).toBeGreaterThan(Date.now())
     expect(await snapshot(current.directory)).toEqual(beforePreview)
     const input = { previewId: preview.previewId, requestId: randomUUID(), confirmed: true }
     const result = await current.api.manage('clear-session-history', input)
-    expect(result).toEqual({ requestId: input.requestId, status: 'completed', deletedCount: 2 })
+    expect(result).toMatchObject({ requestId: input.requestId, status: 'completed', deletedCount: 2, mode: 'clear', restarted: false })
     for (const path of [rootLog, childLog, attachment, cache, bindings, deliveryFile, expectedDeliveryFile, join(current.directory, 'session.json'), join(current.directory, 'proactive-bindings.json'), join(current.directory, 'bridge', 'session-ready.json'), join(current.directory, 'bridge', 'owner-policy.json')]) {
       await expect(lstat(path)).rejects.toMatchObject({ code: 'ENOENT' })
     }
@@ -283,7 +283,9 @@ describe('session history owner management through actual Host HTTP', () => {
     await current.api.post('/api/plugins/dsh/disconnect', {})
     expect(current.host.store.getQueuedHarnessEvents()).toEqual(pending)
     expectError(await current.api.request(managePath, { operation: 'clear-session-history', input: clearInput }), 409, 'SESSION_HISTORY_QUEUE_PENDING')
-    expectError(await current.api.request(managePath, previewBody), 409, 'SESSION_HISTORY_QUEUE_PENDING')
+    const queuePreview = await current.api.request(managePath, previewBody)
+    expect(queuePreview.status).toBe(200)
+    expect(queuePreview.value.hasPendingQueue).toBe(true)
     expect(await snapshot(current.directory)).toEqual(before)
     expect(current.host.store.getQueuedHarnessEvents()).toEqual(pending)
     expect(await header(rootLog)).toMatchObject({ id: rootId, version: 4 })

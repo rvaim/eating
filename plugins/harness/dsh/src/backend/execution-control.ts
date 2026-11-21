@@ -78,6 +78,22 @@ export class ExecutionControl {
     return this.bindings.filter(b => b.parentId === rootId).flatMap(b => b.tasks.filter(t => taskId === undefined || t.taskId === taskId).map(t => ({ taskId: t.taskId, contextRef: t.contextRef, childId: b.agentId, agentTypeId: b.agentTypeId, status: t.state === 'pending' ? 'running' : t.state, summary: this.taskSummary(b.agentTypeId, t.state), actions: taskId === undefined ? [] : this.host.readTaskActions(b.agentId, t.taskId).actions as unknown as JsonValue[], kind: 'execution' })))
   }
   pending(): boolean { return this.bindings.some(b => b.tasks.some(t => t.state === 'pending')) }
+  summaries(): readonly { readonly sessionId: string; readonly parentId: string; readonly agentTypeId: string; readonly hasPendingTask: boolean }[] {
+    return this.bindings.map(b => ({ sessionId: b.agentId, parentId: b.parentId, agentTypeId: b.agentTypeId, hasPendingTask: b.tasks.some(t => t.state === 'pending') }))
+  }
+  removeBindings(agentIds: ReadonlySet<string>): number {
+    const removed = this.bindings.filter(b => agentIds.has(b.agentId))
+    if (!removed.length) return 0
+    for (const binding of removed) {
+      if (binding.tasks.some(t => t.state === 'pending')) {
+        this.host.revokeAgentAccess(binding.agentId)
+        for (const task of binding.tasks) if (task.state === 'pending') this.host.finishTaskActions(binding.agentId, task.taskId)
+      }
+    }
+    this.bindings = this.bindings.filter(b => !agentIds.has(b.agentId))
+    this.save()
+    return removed.length
+  }
   close(): void {
     let changed = false
     for (const binding of this.bindings) for (const task of binding.tasks) if (task.state === 'pending') { this.host.revokeAgentAccess(binding.agentId); task.state = settledTaskState('interrupted', this.host.finishTaskActions(binding.agentId, task.taskId)); changed = true }

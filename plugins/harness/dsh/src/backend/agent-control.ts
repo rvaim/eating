@@ -308,6 +308,101 @@ export class DshAgentControl {
   setDeliveryRetirement(retire: (batchIds: readonly string[]) => void): void { this.retireDeliveries = retire }
   hasPendingTasks(): boolean { return this.executions.pending() || this.hasPendingConversationTasks() }
   hasPendingConversationTasks(): boolean { return this.bindings.some(binding => binding.task?.state === 'pending') || this.proactiveBindings.some(binding => binding.task.state === 'pending') }
+  sessionSummaries(): readonly { readonly sessionId: string; readonly role: 'conversation' | 'proactive' | 'execution'; readonly agentTypeId: string; readonly label: string; readonly platform?: string; readonly kind?: string; readonly targetId?: string; readonly hasPendingTask: boolean }[] {
+    const ownerTypes = this.host.readOwnerConfiguration().agentTypes
+    const proactiveByAgent = new Map(this.proactiveBindings.map(entry => [entry.agentId, entry]))
+    const result: Array<{ sessionId: string; role: 'conversation' | 'proactive' | 'execution'; agentTypeId: string; label: string; platform?: string; kind?: string; targetId?: string; hasPendingTask: boolean }> = []
+    const seen = new Set<string>()
+    for (const binding of this.bindings) {
+      seen.add(binding.scope.agentId)
+      const proactive = proactiveByAgent.get(binding.scope.agentId)
+      result.push({
+        sessionId: binding.scope.agentId,
+        role: 'conversation',
+        agentTypeId: binding.scope.agentTypeId,
+        label: agentInstanceLabel(binding.scope),
+        platform: binding.scope.pluginId,
+        kind: binding.scope.kind,
+        targetId: binding.scope.targetId,
+        hasPendingTask: binding.task?.state === 'pending' || proactive?.task.state === 'pending',
+      })
+    }
+    for (const binding of this.proactiveBindings) {
+      if (seen.has(binding.agentId)) continue
+      seen.add(binding.agentId)
+      result.push({
+        sessionId: binding.agentId,
+        role: 'proactive',
+        agentTypeId: binding.target.agentTypeId,
+        label: binding.target.label,
+        platform: binding.target.pluginId,
+        targetId: binding.target.targetId,
+        hasPendingTask: binding.task.state === 'pending',
+      })
+    }
+    for (const entry of this.executions.summaries()) {
+      if (seen.has(entry.sessionId)) continue
+      seen.add(entry.sessionId)
+      const title = ownerTypes.find(type => type.id === entry.agentTypeId)?.title ?? entry.agentTypeId
+      result.push({
+        sessionId: entry.sessionId,
+        role: 'execution',
+        agentTypeId: entry.agentTypeId,
+        label: title,
+        hasPendingTask: entry.hasPendingTask,
+      })
+    }
+    return result
+  }
+  removeSessionBindings(sessionIds: ReadonlySet<string>): number {
+    if (!sessionIds.size) return 0
+    const removedIds = new Set<string>()
+    const removedTaskIds = new Set<string>()
+    const nextBindings = this.bindings.filter(binding => {
+      if (!sessionIds.has(binding.scope.agentId)) return true
+      removedIds.add(binding.scope.agentId)
+      this.host.revokeAgentAccess(binding.scope.agentId)
+      for (const task of binding.taskRefs) {
+        removedTaskIds.add(task.taskId)
+        if (task.state === 'pending') this.host.finishTaskActions(binding.scope.agentId, task.taskId)
+      }
+      return false
+    })
+    if (nextBindings.length !== this.bindings.length) this.save(nextBindings)
+    const nextProactive = this.proactiveBindings.filter(binding => {
+      if (!sessionIds.has(binding.agentId)) return true
+      removedIds.add(binding.agentId)
+      this.revokeContact(binding)
+      for (const task of binding.taskRefs) removedTaskIds.add(task.taskId)
+      return false
+    })
+    if (nextProactive.length !== this.proactiveBindings.length) {
+      this.proactiveBindings = nextProactive
+      this.saveProactive()
+    }
+    const removedExec = this.executions.removeBindings(sessionIds)
+    for (const id of sessionIds) {
+      this.capabilityAgents.delete(id)
+      const turnId = this.memoryTurns.get(id)
+      if (turnId) {
+        this.host.memory?.end(id, turnId)
+        this.memoryTurns.delete(id)
+        this.memoryTurnBatches.delete(id)
+      }
+    }
+    for (const [contextRef, agentId] of [...this.activeContext.entries()]) {
+      if (sessionIds.has(agentId)) {
+        this.activeContext.delete(contextRef)
+        this.contextScopes.delete(contextRef)
+      }
+    }
+    for (const taskId of removedTaskIds) {
+      this.taskScopes.delete(taskId)
+      this.taskModes.delete(taskId)
+      this.autonomousTasks.delete(taskId)
+    }
+    return removedIds.size + removedExec
+  }
   deliveryReady(): boolean { return !this.stopping && this.deliveryState?.phase === 'idle' && Date.now() - this.deliveryState.observedAt < 3000 }
   get token(): string { return this.secret }
   private save(bindings: AgentBinding[]): void {

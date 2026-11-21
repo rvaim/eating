@@ -132,9 +132,11 @@ describe('DSH model connection test', () => {
   it.each([
     { role: 'assistant', content: null, reasoning_content: 'fixture-only-reasoning' },
     { role: 'assistant', content: '', reasoning: 'fixture-only-reasoning' },
+    { role: 'assistant', reasoning_content: 'fixture-only-reasoning' },
+    { role: 'assistant', reasoning: 'fixture-only-reasoning' },
     { role: 'assistant', tool_calls: [{ id: 'call_fixture', type: 'function', function: { name: 'fixture', arguments: '{}' } }] },
   ])('accepts compatible nullable or tool-call responses without returning model output: %j', async message => {
-    const upstream = await fixture((_request, response) => json(response, { choices: [{ message }] }))
+    const upstream = await fixture((_request, response) => json(response, { error: null, choices: [{ message }] }))
     expect(await testModelConnection(upstream.configuration)).toMatchObject({ ok: true, model: 'fixture-selected-model' })
   })
 
@@ -402,9 +404,16 @@ describe('DSH OpenAI Responses protocol model list and connection test', () => {
     { status: 'incomplete', output: [{ type: 'reasoning', id: 'rs_1', summary: [] }] },
     { status: 'completed', output: [{ type: 'function_call', name: 'ping', call_id: 'call_1', arguments: '{}' }] },
     { object: 'response', status: 'completed', output: [], output_text: 'Pong' },
+    { id: 'resp_null_err', object: 'response', status: 'completed', error: null, incomplete_details: null, output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Pong' }] }] },
+    { id: 'resp_false_err', object: 'response', status: 'completed', error: false, output: [{ type: 'reasoning', id: 'rs_1', summary: [] }] },
   ])('accepts valid OpenAI Responses payload variants: %j', async payload => {
     const upstream = await fixture((_request, response) => json(response, payload))
     expect(await testModelConnection(upstream.responsesConfiguration)).toMatchObject({ ok: true, model: 'gpt-5' })
+  })
+
+  it('still rejects non-empty provider error objects even on HTTP 200', async () => {
+    const upstream = await fixture((_request, response) => json(response, { error: { code: 'server_error', message: 'boom' } }))
+    await failure(testModelConnection(upstream.responsesConfiguration), 'MODEL_CONNECTION_FAILED')
   })
 
   it.each([

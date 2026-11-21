@@ -18,13 +18,13 @@ const digest = (tool: Tool) => {
   const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : value !== null && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, canonical(entry)])) : value
   return createHash('sha256').update(JSON.stringify(canonical(tool))).digest('hex')
 }
-async function fixture(toolGrants: readonly NativeToolGrant[] = [], toolAccessOverrides?: readonly NativeToolGrant[], saved?: NativeCapabilitiesConfiguration) {
+async function fixture(toolGrants: readonly NativeToolGrant[] = [], toolAccessOverrides?: readonly NativeToolGrant[], saved?: NativeCapabilitiesConfiguration, runtime?: { managementOnly?: boolean; sessions?: Map<string, { id: string }>; workspace?: { sessionIds: string[]; detachSession: (id: string) => Promise<void> }; archivedSessionIds?: string[]; pinnedSessionIds?: string[] }) {
   const parent = realpathSync(tmpdir()), directory = realpathSync(mkdtempSync(join(parent, 'eating-native-runtime-')))
   stops.push(async () => { if (realpathSync(directory) !== directory || dirname(directory) !== parent || !basename(directory).startsWith('eating-native-runtime-')) throw new Error('Unsafe native runtime fixture cleanup'); rmSync(directory, { recursive: true }) })
   const configurationPath = join(directory, 'native-configuration.json'), defaults = defaultNativeCapabilities([])
   const configuration: NativeCapabilitiesConfiguration = saved ?? { ...defaults, features: defaults.features.map(feature => ({ ...feature, enabled: false, agentTypeIds: [] })), toolGrants, ...(toolAccessOverrides ? { toolAccessOverrides } : {}) }
   writeFileSync(configurationPath, JSON.stringify(configuration))
-  vi.stubEnv('EATING_DSH_BRIDGE_DIRECTORY', directory); vi.stubEnv('EATING_DSH_BRIDGE_NONCE', 'fixture-nonce'); vi.stubEnv('EATING_DSH_NATIVE_TOKEN', 'fixture-token'); vi.stubEnv('EATING_DSH_NATIVE_CONFIGURATION', configurationPath); vi.stubEnv('EATING_DSH_NATIVE_MANAGEMENT', 'true')
+  vi.stubEnv('EATING_DSH_BRIDGE_DIRECTORY', directory); vi.stubEnv('EATING_DSH_BRIDGE_NONCE', 'fixture-nonce'); vi.stubEnv('EATING_DSH_NATIVE_TOKEN', 'fixture-token'); vi.stubEnv('EATING_DSH_NATIVE_CONFIGURATION', configurationPath); vi.stubEnv('EATING_DSH_NATIVE_MANAGEMENT', runtime?.managementOnly === false ? 'false' : 'true')
   const listeners = new Map<string, Set<(...args: any[]) => unknown>>(), globals = new Map<string, Tool>(), agents = new Map<string, Agent>()
   let native!: Native, restrictionChanges = 0
   const emit = (name: string, ...args: unknown[]) => [...listeners.get(name) ?? []].map(listener => listener(...args))
@@ -34,7 +34,17 @@ async function fixture(toolGrants: readonly NativeToolGrant[] = [], toolAccessOv
     return new Map([...inherited].filter(([name]) => [...agent.masks].every(mask => mask.has(name))).concat([...agent.local]))
   }
   const tools = { schemas: (agent?: Agent) => [...visible(agent).values()], get: (name: string, agent?: Agent) => visible(agent).get(name) }
-  const ctx = { tools, agents: { get: (id: string) => agents.get(id) }, provide: (_name: string, value: Native) => { native = value },
+  const archived = runtime?.archivedSessionIds ?? []
+  const pinned = runtime?.pinnedSessionIds ?? []
+  const sessionStore = runtime?.sessions ? { get: (id: string) => runtime.sessions!.get(id), list: () => [...runtime.sessions!.values()] } : undefined
+  const workspaceRegistry = runtime?.workspace ? {
+    list: () => [runtime.workspace!],
+    get archivedSessionIds() { return [...archived] },
+    get pinnedSessionIds() { return [...pinned] },
+    unarchiveSession: async (id: string) => { const index = archived.indexOf(id); if (index >= 0) archived.splice(index, 1) },
+    unpinSession: async (id: string) => { const index = pinned.indexOf(id); if (index >= 0) pinned.splice(index, 1) },
+  } : undefined
+  const ctx = { tools, agents: { get: (id: string) => agents.get(id), list: () => [...agents.values()] }, get: (name: string) => name === 'sessions' ? sessionStore : name === 'workspaceRegistry' ? workspaceRegistry : undefined, provide: (_name: string, value: Native) => { native = value },
     on: (name: string, listener: (...args: any[]) => unknown) => { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name)!.add(listener); return () => listeners.get(name)!.delete(listener) },
     plugin: vi.fn(), pluginManager: { listPlugins: async () => [], listBundles: async () => [] }, configEditor: { configuration: () => [] }, agentPresets: { register: async () => () => {}, resolve: async () => ({ broken: false }) } }
   const generated = await import(/* @vite-ignore */ 'data:text/javascript;base64,' + Buffer.from(getNativeCapabilitiesRuntimeSource()).toString('base64')) as { apply: (value: typeof ctx) => void }
@@ -199,5 +209,54 @@ describe('generated native runtime automatic global access', () => {
     const rejected = await f.request('validate', { configuration: { ...configuration, toolGrants: [{ ...grant, agentTypeIds: ['qq.private'] }] } })
     expect(rejected.status).toBe(409); expect(rejected.body.error.code).toBe('NATIVE_TOOL_CHANGED')
     expect((await f.request('validate', { configuration: { ...configuration, toolGrants: [{ ...grant, agentTypeIds: ['qq.private'] }], toolAccessOverrides: [{ ...grant, agentTypeIds: [] }] } })).status).toBe(200)
+  })
+  it('reports live agents/sessions/archive/pin state and detaches inactive sessions without stopping runtime', async () => {
+    const liveAgentId = '11111111-1111-4111-8111-111111111111'
+    const liveSessionId = '22222222-2222-4222-8222-222222222222'
+    const idleArchivedId = '33333333-3333-4333-8333-333333333333'
+    const idlePinnedId = '44444444-4444-4444-8444-444444444444'
+    const detached: string[] = []
+    const workspace = {
+      sessionIds: [liveAgentId, liveSessionId, idleArchivedId, idlePinnedId],
+      detachSession: async (id: string) => {
+        detached.push(id)
+        const idx = workspace.sessionIds.indexOf(id)
+        if (idx >= 0) workspace.sessionIds.splice(idx, 1)
+      },
+    }
+    const archivedSessionIds = [idleArchivedId]
+    const pinnedSessionIds = [idlePinnedId]
+    const f = await fixture([], undefined, undefined, {
+      managementOnly: false,
+      sessions: new Map([[liveSessionId, { id: liveSessionId }]]),
+      workspace,
+      archivedSessionIds,
+      pinnedSessionIds,
+    })
+    f.createAgent(liveAgentId)
+    const status = await f.request('session-live-status', {})
+    expect(status.status).toBe(200)
+    expect(status.body.result).toEqual({
+      liveAgentIds: [liveAgentId],
+      liveSessionIds: [liveSessionId],
+      archivedSessionIds: [idleArchivedId],
+      pinnedSessionIds: [idlePinnedId],
+    })
+    const activeAgentDeny = await f.request('detach-sessions', { sessionIds: [liveAgentId] })
+    expect(activeAgentDeny.status).toBe(409)
+    expect(activeAgentDeny.body.error.code).toBe('NATIVE_SESSION_ACTIVE')
+    const activeSessionDeny = await f.request('detach-sessions', { sessionIds: [idleArchivedId, liveSessionId] })
+    expect(activeSessionDeny.status).toBe(409)
+    expect(activeSessionDeny.body.error.code).toBe('NATIVE_SESSION_ACTIVE')
+    expect(detached).toEqual([])
+    const invalidInput = await f.request('detach-sessions', { sessionIds: [idleArchivedId, idleArchivedId] })
+    expect(invalidInput.status).toBe(409)
+    const detachOk = await f.request('detach-sessions', { sessionIds: [idleArchivedId, idlePinnedId] })
+    expect(detachOk.status).toBe(200)
+    expect(detachOk.body.result).toEqual({ detachedIds: [idleArchivedId, idlePinnedId] })
+    expect(detached).toEqual([idleArchivedId, idlePinnedId])
+    expect(workspace.sessionIds).toEqual([liveAgentId, liveSessionId])
+    expect(archivedSessionIds).toEqual([])
+    expect(pinnedSessionIds).toEqual([])
   })
 })

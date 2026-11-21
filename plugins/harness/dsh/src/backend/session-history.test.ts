@@ -118,10 +118,22 @@ describe('offline DSH session history', () => {
     seed(root)
     const before = hashes(root)
     const preview = await new DshSessionHistory(root).preview()
-    expect(preview).toEqual({ previewId: expect.any(String), expiresAt: expect.any(String), sessionCount: 3, rootCount: 2, childCount: 1 })
+    expect(preview).toMatchObject({
+      previewId: expect.any(String),
+      expiresAt: expect.any(String),
+      sessionCount: 3,
+      rootCount: 2,
+      childCount: 1,
+      residualStateCount: expect.any(Number),
+      runtimeRunning: false,
+      hasPendingQueue: false,
+    })
+    expect(preview.sessions).toHaveLength(3)
+    expect(preview.sessions.find(item => item.id === ROOT)).toMatchObject({ isRoot: true, isCurrentRoot: true, archived: true, deletable: true })
+    expect(preview.sessions.find(item => item.id === CHILD)).toMatchObject({ parentId: ROOT, isRoot: false, pinned: true, deletable: true })
     expect(Date.parse(preview.expiresAt) - Date.now()).toBeGreaterThan(299_000)
     expect(JSON.stringify(preview)).not.toContain(root)
-    expect(JSON.stringify(preview)).not.toContain(ROOT)
+    expect(JSON.stringify(preview)).not.toContain(secret)
     expect(hashes(root)).toEqual(before)
     expect(existsSync(join(root, receiptName))).toBe(false)
   })
@@ -132,7 +144,14 @@ describe('offline DSH session history', () => {
     const engine = new DshSessionHistory(root)
     const input = await confirmed(engine)
     const result = await engine.clear(input)
-    expect(result).toEqual({ requestId: input.requestId, status: 'completed', deletedCount: 3 })
+    expect(result).toEqual({
+      requestId: input.requestId,
+      status: 'completed',
+      deletedCount: 3,
+      mode: 'clear',
+      restarted: false,
+      clearedResidualCount: expect.any(Number),
+    })
     for (const name of removed) expect(existsSync(join(root, name)), name).toBe(false)
     for (const [name, bytes] of protectedFiles) expect(readFileSync(join(root, name)).equals(bytes), name).toBe(true)
     expect(existsSync(join(root, `${cacheDirectory}/${UNRELATED}.json`))).toBe(true)
@@ -235,13 +254,21 @@ describe('offline DSH session history', () => {
     expect(existsSync(join(root, receiptName))).toBe(false)
   })
 
-  it.each(['active', 'inactive'])('blocks a native schedule binding before any mutation even when status is %s', async status => {
+  it.each(['active', 'inactive'])('marks scheduled sessions non-deletable in preview and blocks clear/delete even when status is %s', async status => {
     const root = fixture()
     seed(root)
     write(root, 'dsh-home/storages/schedule.json', { unit: { name: 'schedule', version: 1 }, global: null, tables: { tasks: { task: { sessionId: ROOT, record: { prompt: secret }, status, deliveryHistory: [{ prompt: secret }] } } } })
     const before = hashes(root)
-    await expect(new DshSessionHistory(root).preview()).rejects.toMatchObject({ code: 'SESSION_HISTORY_SCHEDULED', outcome: 'not-sent' })
-    expect(hashes(root)).toEqual(before)
+    const engine = new DshSessionHistory(root)
+    const preview = await engine.preview()
+    expect(preview.sessions.find(item => item.id === ROOT)).toMatchObject({ scheduled: true, deletable: false, blockReason: 'scheduled' })
+    await expect(engine.clear({ previewId: preview.previewId, requestId: randomUUID(), confirmed: true })).rejects.toMatchObject({ code: 'SESSION_HISTORY_SCHEDULED', outcome: 'not-sent' })
+    await expect(engine.deleteSelected({ previewId: preview.previewId, requestId: randomUUID(), sessionIds: [ROOT], confirmed: true }, { online: false })).rejects.toMatchObject({ code: 'SESSION_HISTORY_SCHEDULED', outcome: 'not-sent' })
+    const deletedUnscheduled = await engine.deleteSelected({ previewId: preview.previewId, requestId: randomUUID(), sessionIds: [SECOND], confirmed: true }, { online: false })
+    expect(deletedUnscheduled).toMatchObject({ status: 'completed', deletedCount: 1, mode: 'selected-offline' })
+    expect(existsSync(join(root, `dsh-home/sessions/${PROJECT}/${ROOT}/session.v4.jsonl`))).toBe(true)
+    expect(existsSync(join(root, `dsh-home/sessions/${PROJECT}/${SECOND}/session.v4.jsonl`))).toBe(false)
+    expect(hashes(root).get(`dsh-home/sessions/${PROJECT}/${ROOT}/session.v4.jsonl`)).toBe(before.get(`dsh-home/sessions/${PROJECT}/${ROOT}/session.v4.jsonl`))
   })
 
   it('preserves an unrelated native schedule and its delivery history', async () => {
@@ -463,5 +490,98 @@ describe('offline DSH session history', () => {
     const before = hashes(root)
     await expect(new DshSessionHistory(root).preview()).rejects.toMatchObject({ code: 'SESSION_HISTORY_RECEIPT_INVALID', outcome: 'not-sent' })
     expect(hashes(root)).toEqual(before)
+  })
+
+  it('detects and clears residual bridge/session metadata when sessionCount is zero', async () => {
+    const root = fixture()
+    write(root, 'session.json', { schemaVersion: 1, sessionId: ROOT, created: false })
+    write(root, 'bridge/deliveries.json', { schemaVersion: 1, batches: [] })
+    write(root, 'bridge/error.json', { code: 'SESSION_RECOVERY_FAILED' })
+    write(root, `bridge/expected-${'a'.repeat(64)}.json`, { batchId: 'b1' })
+    write(root, 'config.json', { keep: true })
+    const engine = new DshSessionHistory(root)
+    const preview = await engine.preview()
+    expect(preview).toMatchObject({ sessionCount: 0, residualStateCount: 4, runtimeRunning: false, sessions: [] })
+    const res = await engine.clear({ previewId: preview.previewId, requestId: randomUUID(), confirmed: true })
+    expect(res).toMatchObject({ status: 'completed', deletedCount: 0, mode: 'residual', clearedResidualCount: 4 })
+    expect(existsSync(join(root, 'session.json'))).toBe(false)
+    expect(existsSync(join(root, 'bridge/deliveries.json'))).toBe(false)
+    expect(existsSync(join(root, 'bridge/error.json'))).toBe(false)
+    expect(existsSync(join(root, 'config.json'))).toBe(true)
+    expect(await engine.preview()).toMatchObject({ sessionCount: 0, residualStateCount: 0 })
+  })
+
+  it('deletes only selected non-root sessions offline while keeping current root and unrelated data intact', async () => {
+    const root = fixture()
+    seed(root)
+    const engine = new DshSessionHistory(root)
+    const preview = await engine.preview()
+    const result = await engine.deleteSelected({ previewId: preview.previewId, requestId: randomUUID(), sessionIds: [CHILD], confirmed: true }, { online: false })
+    expect(result).toEqual({ requestId: result.requestId, status: 'completed', deletedCount: 1, mode: 'selected-offline', restarted: false, clearedResidualCount: 0 })
+    expect(existsSync(join(root, `dsh-home/sessions/${PROJECT}/${ROOT}/session.v4.jsonl`))).toBe(true)
+    expect(existsSync(join(root, `dsh-home/sessions/${PROJECT}/${SECOND}/session.v4.jsonl`))).toBe(true)
+    expect(existsSync(join(root, `dsh-home/sessions/${PROJECT}/${CHILD}/session.v4.jsonl`))).toBe(false)
+    expect(existsSync(join(root, `${cacheDirectory}/${CHILD}.json`))).toBe(false)
+    expect(existsSync(join(root, `${cacheDirectory}/${ROOT}.json`))).toBe(true)
+    expect(existsSync(join(root, 'session.json'))).toBe(true)
+    expect(existsSync(join(root, 'capabilities/stickers/images/business.png'))).toBe(true)
+    const ws = json(root, workspaceName)
+    expect(ws.global.pinnedSessionIds).toEqual([UNRELATED])
+    expect(ws.tables.workspaces['workspace-fixture'].sessionIds).toEqual([ROOT, SECOND, UNRELATED])
+  })
+
+  it('deletes idle child sessions online while root log appends concurrently, with idempotent receipt replay', async () => {
+    const root = fixture()
+    seed(root)
+    const detached: string[][] = []
+    const removedBindings: string[] = []
+    const engine = new DshSessionHistory(root)
+    const wsBefore = readFileSync(join(root, workspaceName), 'utf8')
+    const preview = await engine.preview({ runtimeRunning: true, liveSessionIds: new Set([ROOT]), currentRootId: ROOT })
+    expect(preview.runtimeRunning).toBe(true)
+    expect(preview.sessions.find(s => s.id === ROOT)).toMatchObject({ live: true, requiresRestart: true })
+    expect(preview.sessions.find(s => s.id === CHILD)).toMatchObject({ live: false, requiresRestart: false, deletable: true })
+    // Simulate active root session appending new events while running
+    write(root, `dsh-home/sessions/${PROJECT}/${ROOT}/session.v4.jsonl`, JSON.stringify({ type: 'session', version: 4, id: ROOT, createdAt: 1_793_770_000_000, isSeeded: false, delegationDepth: 0 }) + '\n{"type":"event","seq":1}\n')
+    const requestId = randomUUID()
+    await expect(engine.deleteSelected({ previewId: preview.previewId, requestId: randomUUID(), sessionIds: [ROOT], confirmed: true }, { online: true })).rejects.toMatchObject({ code: 'SESSION_HISTORY_SESSION_ACTIVE' })
+    const result = await engine.deleteSelected(
+      { previewId: preview.previewId, requestId, sessionIds: [CHILD], confirmed: true },
+      {
+        online: true,
+        detachNativeSessions: async ids => { detached.push([...ids]) },
+        removeBindings: ids => { removedBindings.push(...ids); return ids.size },
+      },
+    )
+    expect(result).toEqual({ requestId, status: 'completed', deletedCount: 1, mode: 'selected-online', restarted: false, clearedResidualCount: 0 })
+    expect(detached).toEqual([[CHILD]])
+    expect(removedBindings).toEqual([CHILD])
+    expect(existsSync(join(root, `dsh-home/sessions/${PROJECT}/${CHILD}/session.v4.jsonl`))).toBe(false)
+    expect(existsSync(join(root, `${cacheDirectory}/${CHILD}.json`))).toBe(false)
+    expect(existsSync(join(root, `dsh-home/sessions/${PROJECT}/${ROOT}/session.v4.jsonl`))).toBe(true)
+    expect(readFileSync(join(root, workspaceName), 'utf8')).toBe(wsBefore)
+    // Idempotent replay succeeds with identical result
+    expect(await engine.deleteSelected({ previewId: preview.previewId, requestId, sessionIds: [CHILD], confirmed: true }, { online: true })).toEqual(result)
+  })
+
+  it('remains backward-compatible with legacy persisted clear entries in session-history-receipt.json', async () => {
+    const root = fixture()
+    log(root, ROOT)
+    const legacyPreview = randomUUID()
+    const legacyReq = randomUUID()
+    const legacyHash = createHash('sha256').update(JSON.stringify({ previewId: legacyPreview, requestId: legacyReq, confirmed: true })).digest('hex')
+    write(root, receiptName, {
+      schemaVersion: 1,
+      entries: [{
+        requestId: legacyReq,
+        previewId: legacyPreview,
+        parametersSha256: legacyHash,
+        acceptedAt: '2026-11-18T10:00:00.000Z',
+        state: 'completed',
+        result: { requestId: legacyReq, status: 'completed', deletedCount: 2 },
+      }],
+    })
+    const engine = new DshSessionHistory(root)
+    expect(await engine.clear({ previewId: legacyPreview, requestId: legacyReq, confirmed: true })).toEqual({ requestId: legacyReq, status: 'completed', deletedCount: 2 })
   })
 })

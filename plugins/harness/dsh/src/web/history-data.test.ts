@@ -10,9 +10,30 @@ const startingLocale = getLocale()
 afterEach(() => setLocale(startingLocale))
 
 describe('session history response verification', () => {
-  it('accepts complete current previews including truthful zero counts', () => {
-    expect(readSessionHistoryPreview(preview)).toEqual(preview)
-    expect(readSessionHistoryPreview({ ...preview, sessionCount: 0, rootCount: 0, childCount: 0 })).toMatchObject({ sessionCount: 0, rootCount: 0, childCount: 0 })
+  it('accepts complete current previews including truthful zero counts and itemized sessions', () => {
+    expect(readSessionHistoryPreview(preview)).toMatchObject(preview)
+    expect(readSessionHistoryPreview({ ...preview, sessionCount: 0, rootCount: 0, childCount: 0, residualStateCount: 3, runtimeRunning: true, hasPendingQueue: true, sessions: [] })).toMatchObject({ sessionCount: 0, residualStateCount: 3, runtimeRunning: true, hasPendingQueue: true })
+    const item = {
+      id: previewId,
+      parentId: null,
+      isRoot: true,
+      isCurrentRoot: true,
+      role: 'root',
+      label: 'DSH Root',
+      agentTypeId: null,
+      live: true,
+      archived: false,
+      pinned: true,
+      scheduled: false,
+      deletable: true,
+      requiresRestart: true,
+      blockReason: null,
+      sizeBytes: 2048,
+      createdAt: '2026-11-04T12:00:00.000Z',
+      updatedAt: '2026-11-04T12:30:00.000Z',
+    }
+    expect(readSessionHistoryPreview({ ...preview, sessionCount: 1, rootCount: 1, childCount: 0, sessions: [item] }).sessions).toEqual([item])
+    expect(() => readSessionHistoryPreview({ ...preview, sessions: [{ ...item, role: 'unknown-role' }] })).toThrow(HostApiError)
   })
   it('rejects inconsistent, fractional, negative, or unsafe counts before showing a deletion total', () => {
     for (const invalid of [{ sessionCount: 5 }, { childCount: 1.5 }, { rootCount: -1 }, { sessionCount: Number.MAX_SAFE_INTEGER + 1 }, { rootCount: '2' }, { rootCount: undefined }]) expect(() => readSessionHistoryPreview({ ...preview, ...invalid })).toThrow(HostApiError)
@@ -21,8 +42,9 @@ describe('session history response verification', () => {
     for (const invalid of [null, {}, { ...preview, previewId: 'arbitrary-path' }, { ...preview, expiresAt: '2026-11-04' }, { ...preview, expiresAt: 'invalid' }, { ...preview, path: '/private/fixture' }, { ...preview, sessionIds: [previewId] }]) expect(() => readSessionHistoryPreview(invalid)).toThrow()
   })
   it('only accepts the clear receipt for this request and the full scanned count', () => {
-    const receipt = { requestId, status: 'completed', deletedCount: 6 }
+    const receipt = { requestId, status: 'completed', deletedCount: 6, mode: 'selected-online', restarted: false, clearedResidualCount: 0 }
     expect(readSessionHistoryResult(receipt, requestId, 6)).toEqual(receipt)
+    expect(readSessionHistoryResult({ requestId, status: 'completed', deletedCount: 0, mode: 'residual', clearedResidualCount: 4 }, requestId, 0)).toMatchObject({ mode: 'residual', clearedResidualCount: 4 })
     for (const invalid of [{ ...receipt, requestId: previewId }, { ...receipt, status: 'pending' }, { ...receipt, deletedCount: 5 }, { ...receipt, deletedCount: -1 }, { ...receipt, path: '/private/fixture' }]) {
       try { readSessionHistoryResult(invalid, requestId, 6); expect.fail('Accepted an unverified clearing receipt') }
       catch (error) { expect(error).toMatchObject({ code: 'SESSION_HISTORY_RESPONSE_INVALID', outcome: 'unknown' }) }

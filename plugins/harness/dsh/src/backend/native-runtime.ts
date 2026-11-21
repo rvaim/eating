@@ -219,6 +219,43 @@ export function apply(ctx) {
       const result = await ctx.pluginManager.inspect(input.spec, undefined, signal);
       return result.status === 'accepted' ? { status: result.status, kind: result.kind, name: result.name || null, version: result.version || null, bundle: result.bundle } : { status: result.status, problem: result.problem };
     }
+    if (operation === 'session-live-status') {
+      fields(input, []);
+      const sessions = typeof ctx.get === 'function' ? ctx.get('sessions') : ctx.sessions;
+      const registry = typeof ctx.get === 'function' ? ctx.get('workspaceRegistry') : ctx.workspaceRegistry;
+      const liveAgentIds = typeof ctx.agents?.list === 'function' ? ctx.agents.list().map(agent => agent.id) : [];
+      const liveSessionIds = typeof sessions?.list === 'function' ? sessions.list().map(session => session.id) : [];
+      const archivedSessionIds = Array.isArray(registry?.archivedSessionIds) ? [...registry.archivedSessionIds] : [];
+      const pinnedSessionIds = Array.isArray(registry?.pinnedSessionIds) ? [...registry.pinnedSessionIds] : [];
+      return { liveAgentIds, liveSessionIds, archivedSessionIds, pinnedSessionIds };
+    }
+    if (operation === 'detach-sessions') {
+      fields(input, ['sessionIds']);
+      if (!Array.isArray(input.sessionIds) || input.sessionIds.length === 0 || input.sessionIds.length > 512) invalid();
+      const seen = new Set();
+      for (const id of input.sessionIds) {
+        if (typeof id !== 'string' || id.length === 0 || id.length > 256 || /[\u0000-\u001f\u007f]/.test(id) || seen.has(id)) invalid();
+        seen.add(id);
+      }
+      const sessions = typeof ctx.get === 'function' ? ctx.get('sessions') : ctx.sessions;
+      const registry = typeof ctx.get === 'function' ? ctx.get('workspaceRegistry') : ctx.workspaceRegistry;
+      for (const id of seen) {
+        if (ctx.agents?.get?.(id) || sessions?.get?.(id)) invalid('NATIVE_SESSION_ACTIVE');
+      }
+      if (registry) {
+        const workspaces = typeof registry.list === 'function' ? registry.list() : [];
+        for (const ws of workspaces) {
+          for (const id of seen) {
+            if (Array.isArray(ws.sessionIds) && ws.sessionIds.includes(id)) await ws.detachSession(id);
+          }
+        }
+        for (const id of seen) {
+          if (Array.isArray(registry.archivedSessionIds) && registry.archivedSessionIds.includes(id)) await registry.unarchiveSession(id);
+          if (Array.isArray(registry.pinnedSessionIds) && registry.pinnedSessionIds.includes(id)) await registry.unpinSession(id);
+        }
+      }
+      return { detachedIds: [...seen] };
+    }
     if (!managementOnly) invalid('NATIVE_STOP_FIRST');
     if (typeof input.requestId !== 'string' || !/^[a-f0-9-]{36}$/.test(input.requestId)) invalid();
     const requestDigest = digest({ operation, input });

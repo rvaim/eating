@@ -127,7 +127,7 @@ async function request(configuration: ModelConfiguration, operation: ModelOperat
     // HTTP error bodies and redirect destinations are never returned to the caller.
     if (!response.ok) throw statusFailure(response.status, operation)
     const value = await boundedJson(response, configuration.protocol)
-    if (object(value) && Object.hasOwn(value, 'error')) {
+    if (object(value) && Object.hasOwn(value, 'error') && value.error !== undefined && value.error !== null && value.error !== false && value.error !== '') {
       const code = object(value.error) ? value.error.code ?? value.error.type ?? value.error.status : undefined
       const status = object(value.error) ? value.error.status : undefined
       if (code === 'invalid_api_key' || code === 'authentication_error' || status === 'UNAUTHENTICATED' || status === 'PERMISSION_DENIED') throw statusFailure(401, operation)
@@ -199,7 +199,8 @@ function validOpenAiChoice(value: unknown): boolean {
   if (!object(value) || !object(value.message) || value.message.role !== 'assistant') return false
   const message = value.message
   if (typeof message.content === 'string' || message.content === null) return true
-  if (Object.hasOwn(message, 'content')) return false
+  if (Object.hasOwn(message, 'content') && message.content !== undefined) return false
+  if (typeof message.reasoning_content === 'string' || typeof message.reasoning === 'string') return true
   return Array.isArray(message.tool_calls) && message.tool_calls.length > 0 && message.tool_calls.every(call => object(call) && typeof call.id === 'string' && call.id.length > 0 && call.type === 'function' && object(call.function) && typeof call.function.name === 'string' && call.function.name.length > 0 && typeof call.function.arguments === 'string')
 }
 

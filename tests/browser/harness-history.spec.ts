@@ -15,7 +15,18 @@ interface ManagementCall { readonly operation: string; readonly input: Record<st
 type Handler = (call: ManagementCall, route: Route) => Promise<boolean>
 const staticDirectory = fileURLToPath(new URL('../../dist/', import.meta.url))
 const json = (route: Route, value: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) })
-const previewFixture = (rootCount = 2, childCount = 4): SessionHistoryPreview => ({ previewId: randomUUID(), expiresAt: new Date(Date.now() + 120000).toISOString(), sessionCount: rootCount + childCount, rootCount, childCount })
+const previewFixture = (rootCount = 2, childCount = 4, extra?: Partial<SessionHistoryPreview>): SessionHistoryPreview => ({
+  previewId: randomUUID(),
+  expiresAt: new Date(Date.now() + 120000).toISOString(),
+  sessionCount: rootCount + childCount,
+  rootCount,
+  childCount,
+  residualStateCount: 0,
+  runtimeRunning: false,
+  hasPendingQueue: false,
+  sessions: [],
+  ...extra,
+})
 const nextFrames = (page: Page) => page.evaluate(() => new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done()))))
 async function workspaceFixture(route: Route, running = false) {
   const response = await route.fetch()
@@ -84,7 +95,7 @@ test.describe('DSH 历史会话清理', () => {
     const fixture = await mockManagement(page)
     await page.setViewportSize({ width: 1440, height: 1000 }); await page.emulateMedia({ colorScheme: 'light' }); await open(page)
     expect(fixture.historyCalls()).toHaveLength(0)
-    await expect(page.getByText('尚未扫描历史会话。扫描只核对数量，确认清理前不会删除会话。', { exact: true })).toBeVisible()
+    await expect(page.getByText('尚未扫描历史会话。扫描只读取会话清单与数量，确认删除前不会删除任何会话。', { exact: true })).toBeVisible()
     await scan(page)
     const counts = page.locator('.dsh-history-counts')
     await expect(counts.locator('div').filter({ hasText: '主会话' }).locator('dd')).toHaveText('2')
@@ -149,16 +160,89 @@ test.describe('DSH 历史会话清理', () => {
     expect(requestIds).toHaveLength(2); expect(requestIds[0]).not.toBe(requestIds[1])
   })
 
-  test('运行中禁用扫描并引导现有停止入口，不自动停止', async ({ page }, info) => {
-    const fixture = await mockManagement(page)
+  test('运行中可在线扫描并多选删除空闲会话（不中断 Harness），含主会话则自动重启', async ({ page }, info) => {
+    const rootId = randomUUID()
+    const idleA = randomUUID()
+    const idleB = randomUUID()
+    const scheduledId = randomUUID()
+    const sessions = [
+      { id: rootId, parentId: null, isRoot: true, isCurrentRoot: true, role: 'root' as const, label: '', agentTypeId: null, live: true, archived: false, pinned: false, scheduled: false, deletable: true, requiresRestart: true, blockReason: null, sizeBytes: 4096, createdAt: '2026-11-20T10:00:00.000Z', updatedAt: '2026-11-21T10:00:00.000Z' },
+      { id: idleA, parentId: rootId, isRoot: false, isCurrentRoot: false, role: 'conversation' as const, label: 'qq-10001-私聊-20002', agentTypeId: 'qq.private', live: false, archived: false, pinned: false, scheduled: false, deletable: true, requiresRestart: false, blockReason: null, sizeBytes: 2048, createdAt: '2026-11-20T11:00:00.000Z', updatedAt: '2026-11-21T09:00:00.000Z' },
+      { id: idleB, parentId: rootId, isRoot: false, isCurrentRoot: false, role: 'execution' as const, label: '玩手机', agentTypeId: 'android-control', live: false, archived: true, pinned: false, scheduled: false, deletable: true, requiresRestart: false, blockReason: null, sizeBytes: 1024, createdAt: '2026-11-20T12:00:00.000Z', updatedAt: '2026-11-21T08:00:00.000Z' },
+      { id: scheduledId, parentId: rootId, isRoot: false, isCurrentRoot: false, role: 'proactive' as const, label: '定时任务会话', agentTypeId: 'qq.private', live: false, archived: false, pinned: false, scheduled: true, deletable: false, requiresRestart: false, blockReason: 'scheduled' as const, sizeBytes: 512, createdAt: '2026-11-20T13:00:00.000Z', updatedAt: '2026-11-21T07:00:00.000Z' },
+    ]
+    const onlinePreview = previewFixture(1, 3, { runtimeRunning: true, sessions })
+    const fixture = await mockManagement(page, async (call, route) => {
+      if (call.operation === 'preview-session-history') { await json(route, onlinePreview); return true }
+      if (call.operation === 'delete-session-history') {
+        const ids = call.input.sessionIds as string[]
+        await json(route, { requestId: call.input.requestId, status: 'completed', deletedCount: ids.length, mode: call.input.allowRestart ? 'selected-offline' : 'selected-online', restarted: Boolean(call.input.allowRestart), clearedResidualCount: 0 })
+        return true
+      }
+      return false
+    })
     let mutations = 0
     await page.route('**/api/plugins/dsh/disconnect', async route => { mutations++; await json(route, {}) })
     await page.route('**/api/workspace', route => workspaceFixture(route, true))
+    await page.setViewportSize({ width: 1440, height: 1000 })
     await open(page)
-    await expect(page.getByRole('button', { name: '扫描历史会话', exact: true })).toBeDisabled()
-    await expect(page.getByText('Harness 正在运行或尚未完全停止。请切回“连接配置”，使用“停止 Harness”，完全停止后再扫描或清理。', { exact: true })).toBeVisible()
-    await page.screenshot({ path: info.outputPath('history-running-zh-desktop.png'), animations: 'disabled' })
-    await nextFrames(page); expect(fixture.historyCalls()).toHaveLength(0); expect(mutations).toBe(0)
+    await expect(page.getByRole('button', { name: '扫描历史会话', exact: true })).toBeEnabled()
+    await scan(page)
+    await expect(page.getByText('已选 2 个会话')).toHaveCount(0)
+    await expect(page.getByRole('checkbox', { name: new RegExp(`定时任务会话 \\(${scheduledId.slice(0, 8)}\\)`) })).toBeDisabled()
+
+    await page.getByRole('button', { name: '选择空闲子会话', exact: true }).click()
+    await expect(page.getByText('已选 2 个会话：将在不中断运行的情况下直接在线删除。', { exact: true })).toBeVisible()
+    await page.screenshot({ path: info.outputPath('history-online-multiselect-zh-desktop.png'), animations: 'disabled' })
+    await page.getByRole('button', { name: '删除所选 (2)', exact: true }).click()
+    await expect(page.getByText('将在线永久删除所选 2 个非活跃会话，不影响当前正在运行的 Harness 主会话。', { exact: true })).toBeVisible()
+    await page.getByRole('checkbox', { name: '我已核对所选会话，确认永久删除其对话历史。', exact: true }).check()
+    await page.getByRole('button', { name: '确认删除 2 个会话', exact: true }).click()
+    await expect(page.getByText('已在线删除 2 个会话，Harness 保持正常运行。', { exact: true })).toBeVisible()
+    const onlineDel = fixture.calls.find(c => c.operation === 'delete-session-history')
+    expect(onlineDel?.input.allowRestart).toBeUndefined()
+    expect((onlineDel?.input.sessionIds as string[]).sort()).toEqual([idleA, idleB].sort())
+    expect(mutations).toBe(0)
+
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await scan(page)
+    await page.getByRole('checkbox', { name: new RegExp(`当前主会话 \\(${rootId.slice(0, 8)}\\)`) }).check()
+    await expect(page.getByText('已选 1 个会话：包含当前主会话或活跃会话，删除时将自动短暂重启 Harness。', { exact: true })).toBeVisible()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.screenshot({ path: info.outputPath('history-online-multiselect-zh-mobile-dark.png'), animations: 'disabled' })
+    await page.getByRole('button', { name: '删除所选 (1)', exact: true }).click()
+    await expect(page.getByText('所选 1 个会话包含当前主会话或活跃子会话。删除将自动停止并重启 Harness。', { exact: true })).toBeVisible()
+    await page.getByRole('checkbox', { name: '我已核对所选会话，确认永久删除其对话历史。', exact: true }).check()
+    await page.getByRole('button', { name: '确认删除 1 个会话', exact: true }).click()
+    await expect(page.getByText('已删除 1 个所选会话。', { exact: true })).toBeVisible()
+    const restartDel = fixture.calls.filter(c => c.operation === 'delete-session-history')[1]
+    expect(restartDel?.input.allowRestart).toBe(true)
+    expect(restartDel?.input.sessionIds).toEqual([rootId])
+  })
+
+  test('零会话但存在残留状态时支持清理残留恢复启动', async ({ page }) => {
+    let cleared = false
+    const fixture = await mockManagement(page, async (call, route) => {
+      if (call.operation === 'preview-session-history') {
+        await json(route, previewFixture(0, 0, { residualStateCount: cleared ? 0 : 4 }))
+        return true
+      }
+      if (call.operation === 'clear-session-history') {
+        cleared = true
+        await json(route, { requestId: call.input.requestId, status: 'completed', deletedCount: 0, mode: 'residual', restarted: false, clearedResidualCount: 4 })
+        return true
+      }
+      return false
+    })
+    await open(page)
+    await scan(page)
+    await expect(page.getByText('当前未发现历史会话日志，但检测到 4 项残留运行或桥接状态。清理这些残留文件后即可正常启动 Harness。', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '清理残留状态', exact: true }).click()
+    await page.getByRole('checkbox', { name: '我确认清理这些无效残留状态文件，以便重新启动 Harness。', exact: true }).check()
+    await page.getByRole('button', { name: '确认清理残留状态', exact: true }).click()
+    await expect(page.getByText('已清理 4 项残留运行状态，可重新启动 Harness。', { exact: true })).toBeVisible()
+    expect(fixture.historyCalls().some(c => c.operation === 'clear-session-history')).toBe(true)
   })
 
   test('三页签键盘循环完整，语言切换不请求且连接草稿跨历史页保留', async ({ page }) => {

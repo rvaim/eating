@@ -53,7 +53,7 @@ test.describe('Harness 模型连接（本地夹具）', () => {
         }
         const isResponses = (request.url ?? '').endsWith('/responses')
         if (isResponses) {
-          response.end(JSON.stringify({ id: 'resp_fixture', object: 'response', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'fixture-output-never-displayed' }] }] }))
+          response.end(JSON.stringify({ id: 'resp_fixture', object: 'response', status: 'completed', error: null, incomplete_details: null, output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'fixture-output-never-displayed' }] }] }))
           return
         }
         response.end(JSON.stringify(request.method === 'GET' ? { data: [{ id: 'fixture-alpha', name: 'Alpha' }, { id: 'fixture-beta' }] } : { choices: [{ message: { role: 'assistant', content: 'fixture-output-never-displayed' } }] }))

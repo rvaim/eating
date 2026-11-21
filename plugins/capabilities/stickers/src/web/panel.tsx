@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import {
   ActionButton, InlineConfirm, TagChipsInput, formatDateTime, formatNumber,
-  hostRequest, splitTagTokens, useI18n,
+  hostRequest, splitTagTokens, useGalleryThumbnails, useI18n,
 } from '@eating/ui-sdk'
 import type { PluginPanelProps } from '@eating/ui-sdk'
 import { HostApiError } from '@eating/ui-sdk'
@@ -20,10 +20,8 @@ import './panel.css'
 interface Selection { readonly item: StickerItem; readonly revision: number }
 interface Filter { readonly query: string; readonly tags: string[] }
 type OpenTarget = StickerItem | 'add' | null
-interface ThumbState { readonly status: 'loading' | 'ready' | 'error'; readonly url?: string }
 
 const blankPage: StickerList = { revision: 0, items: [], offset: 0, limit: 20, total: 0, hasMore: false, nextOffset: null }
-const MAX_CONCURRENT_THUMBS = 3
 
 function bytesLabel(bytes: number): string {
   return `${formatNumber(bytes / 1024, { maximumFractionDigits: 1 })} KiB`
@@ -78,7 +76,6 @@ export function StickersPanel({ enabled, onFeedback, onDirtyChange }: PluginPane
   const [deleting, setDeleting] = useState(false)
   const [pendingOpen, setPendingOpen] = useState<OpenTarget>(null)
   const [discarding, setDiscarding] = useState(false)
-  const [thumbs, setThumbs] = useState<Readonly<Record<string, ThumbState>>>({})
   const [visible, setVisible] = useState(() => !document.hidden)
 
   const mounted = useRef(false)
@@ -90,9 +87,6 @@ export function StickersPanel({ enabled, onFeedback, onDirtyChange }: PluginPane
   const controllers = useRef(new Set<AbortController>())
   const listController = useRef<AbortController | null>(null)
   const previewController = useRef<AbortController | null>(null)
-  const thumbUrlsRef = useRef(new Map<string, string>())
-  const thumbControllersRef = useRef(new Map<string, AbortController>())
-  const thumbBatchRef = useRef(0)
   const imageUrl = useRef<string | null>(null)
   const input = useRef<HTMLInputElement>(null)
   const descriptionInput = useRef<HTMLTextAreaElement>(null)
@@ -152,19 +146,6 @@ export function StickersPanel({ enabled, onFeedback, onDirtyChange }: PluginPane
     if (input.current) input.current.value = ''
   }, [clearPreviewOnly])
 
-  const abortThumbRequests = useCallback(() => {
-    ++thumbBatchRef.current
-    thumbControllersRef.current.forEach(controller => controller.abort())
-    thumbControllersRef.current.clear()
-  }, [])
-
-  const clearThumbnails = useCallback(() => {
-    abortThumbRequests()
-    thumbUrlsRef.current.forEach(url => URL.revokeObjectURL(url))
-    thumbUrlsRef.current.clear()
-    if (mounted.current) setThumbs({})
-  }, [abortThumbRequests])
-
   const newController = useCallback(() => {
     const controller = new AbortController()
     controllers.current.add(controller)
@@ -205,66 +186,11 @@ export function StickersPanel({ enabled, onFeedback, onDirtyChange }: PluginPane
     }
   }, [newController])
 
-  // Load bounded-concurrency thumbnails for visible current page rows while enabled
-  useEffect(() => {
-    if (!enabled || !visible || document.hidden || page.items.length === 0) {
-      clearThumbnails()
-      return
-    }
-    abortThumbRequests()
-    const batch = ++thumbBatchRef.current
-    const keepIds = new Set(page.items.map(item => item.assetId))
-    for (const [idKey, url] of thumbUrlsRef.current) {
-      if (!keepIds.has(idKey)) {
-        URL.revokeObjectURL(url)
-        thumbUrlsRef.current.delete(idKey)
-      }
-    }
-
-    const initial: Record<string, ThumbState> = {}
-    const queue: StickerItem[] = []
-    for (const item of page.items) {
-      const cached = thumbUrlsRef.current.get(item.assetId)
-      if (cached) initial[item.assetId] = { status: 'ready', url: cached }
-      else {
-        initial[item.assetId] = { status: 'loading' }
-        queue.push(item)
-      }
-    }
-    setThumbs(initial)
-
-    let cursor = 0
-    const worker = async () => {
-      while (cursor < queue.length) {
-        const item = queue[cursor++]
-        if (!item || thumbBatchRef.current !== batch || !mounted.current || !enabledRef.current || document.hidden) return
-        const controller = new AbortController()
-        thumbControllersRef.current.set(item.assetId, controller)
-        try {
-          const preview = readStickerPreview(await manage('get', { assetId: item.assetId }, controller.signal))
-          const url = URL.createObjectURL(imageBlob(preview.image))
-          if (controller.signal.aborted || thumbBatchRef.current !== batch || !mounted.current || !enabledRef.current || document.hidden) {
-            URL.revokeObjectURL(url)
-            return
-          }
-          const prevUrl = thumbUrlsRef.current.get(item.assetId)
-          if (prevUrl) URL.revokeObjectURL(prevUrl)
-          thumbUrlsRef.current.set(item.assetId, url)
-          setThumbs(prev => (thumbBatchRef.current === batch ? { ...prev, [item.assetId]: { status: 'ready', url } } : prev))
-        } catch {
-          if (!controller.signal.aborted && thumbBatchRef.current === batch && mounted.current) {
-            setThumbs(prev => (thumbBatchRef.current === batch ? { ...prev, [item.assetId]: { status: 'error' } } : prev))
-          }
-        } finally {
-          thumbControllersRef.current.delete(item.assetId)
-        }
-      }
-    }
-
-    const workers = Array.from({ length: Math.min(MAX_CONCURRENT_THUMBS, queue.length) }, () => void worker())
-    void workers
-    return () => { abortThumbRequests() }
-  }, [enabled, visible, page.items, abortThumbRequests, clearThumbnails])
+  const fetchThumbnail = useCallback(async (assetId: string, signal: AbortSignal) => {
+    const preview = readStickerPreview(await manage('get', { assetId }, signal))
+    return imageBlob(preview.image)
+  }, [])
+  const thumbs = useGalleryThumbnails(page.items, enabled, visible, fetchThumbnail)
 
   useEffect(() => {
     mounted.current = true
@@ -276,7 +202,6 @@ export function StickersPanel({ enabled, onFeedback, onDirtyChange }: PluginPane
         for (const controller of controllers.current) controller.abort()
         controllers.current.clear()
         listController.current = null
-        clearThumbnails()
         clearPreviewOnly()
         if (event.type === 'pagehide') {
           setFile(null)
@@ -290,22 +215,19 @@ export function StickersPanel({ enabled, onFeedback, onDirtyChange }: PluginPane
     }
     document.addEventListener('visibilitychange', handleVisibilityOrPageHide)
     window.addEventListener('pagehide', handleVisibilityOrPageHide)
+    window.addEventListener('pageshow', handleVisibilityOrPageHide)
     return () => {
       mounted.current = false
       ++generation.current
-      ++thumbBatchRef.current
       for (const controller of controllers.current) controller.abort()
       controllers.current.clear()
-      thumbControllersRef.current.forEach(c => c.abort())
-      thumbControllersRef.current.clear()
-      thumbUrlsRef.current.forEach(url => URL.revokeObjectURL(url))
-      thumbUrlsRef.current.clear()
       if (imageUrl.current) URL.revokeObjectURL(imageUrl.current)
       imageUrl.current = null
       document.removeEventListener('visibilitychange', handleVisibilityOrPageHide)
       window.removeEventListener('pagehide', handleVisibilityOrPageHide)
+      window.removeEventListener('pageshow', handleVisibilityOrPageHide)
     }
-  }, [clearPreviewOnly, clearThumbnails, replaceImage])
+  }, [clearPreviewOnly, replaceImage])
 
   useEffect(() => {
     if (!enabled) {
@@ -314,7 +236,6 @@ export function StickersPanel({ enabled, onFeedback, onDirtyChange }: PluginPane
       for (const controller of controllers.current) controller.abort()
       controllers.current.clear()
       listController.current = null
-      clearThumbnails()
       clearImage()
       setPage(blankPage)
       setTagList({ revision: 0, tags: [] })

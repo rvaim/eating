@@ -105,6 +105,7 @@ export function SpeechPanel({ onRefresh, onFeedback, onDirtyChange, enabled }: P
   const identity = useRef<{ intent: string; id: string } | null>(null)
   const offsetRef = useRef(0)
   const listRequest = useRef<AbortController | null>(null)
+  const lastLoadedOffset = useRef<number | null>(null)
   const protocolDrafts = useRef<ProtocolDraftMap>({})
   const configRef = useRef<SpeechConfiguration | null>(null)
   const draftRef = useRef<Draft | null>(null)
@@ -146,6 +147,7 @@ export function SpeechPanel({ onRefresh, onFeedback, onDirtyChange, enabled }: P
     try {
       const value = readPage(await manageSpeech('jobs', { offset: at, limit: 20 }, controller.signal))
       if (alive.current && enabledRef.current && !controller.signal.aborted && offsetRef.current === at) {
+        lastLoadedOffset.current = at
         setPage(value)
         setJobsError(null)
       }
@@ -185,6 +187,7 @@ export function SpeechPanel({ onRefresh, onFeedback, onDirtyChange, enabled }: P
       const hidden = document.hidden || event.type === 'pagehide'
       setVisible(!hidden)
       if (hidden) {
+        if (listRequest.current || mutation.current) lastLoadedOffset.current = null
         reads.current.forEach(c => c.abort())
         reads.current.clear()
         listRequest.current?.abort()
@@ -207,7 +210,7 @@ export function SpeechPanel({ onRefresh, onFeedback, onDirtyChange, enabled }: P
     }
     document.addEventListener('visibilitychange', onHideOrLeave)
     window.addEventListener('pagehide', onHideOrLeave)
-    void load(true)
+    window.addEventListener('pageshow', onHideOrLeave)
     return () => {
       alive.current = false
       reads.current.forEach(c => c.abort())
@@ -218,12 +221,17 @@ export function SpeechPanel({ onRefresh, onFeedback, onDirtyChange, enabled }: P
       clearPreview()
       document.removeEventListener('visibilitychange', onHideOrLeave)
       window.removeEventListener('pagehide', onHideOrLeave)
+      window.removeEventListener('pageshow', onHideOrLeave)
     }
-  }, [load, clearPreview])
+  }, [clearPreview])
+
+  useEffect(() => {
+    if (visible && !configRef.current) void load(true)
+  }, [visible, load])
 
   useEffect(() => {
     if (!enabled || !visible) return
-    void list()
+    if (lastLoadedOffset.current !== offset) void list()
     return () => {
       listRequest.current?.abort()
       listRequest.current = null
@@ -239,6 +247,7 @@ export function SpeechPanel({ onRefresh, onFeedback, onDirtyChange, enabled }: P
 
   useEffect(() => {
     if (!enabled) {
+      lastLoadedOffset.current = null
       listRequest.current?.abort()
       listRequest.current = null
       mutation.current?.abort()

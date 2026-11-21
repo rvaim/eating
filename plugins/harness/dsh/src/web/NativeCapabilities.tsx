@@ -79,7 +79,7 @@ export function NativeCapabilitiesSettings({ active, enabled, runtimeActive, bus
   const [pendingBuilds, setPendingBuilds] = useState<string[]>([])
   const [approveBuilds, setApproveBuilds] = useState(false)
   const alive = useRef(false)
-  const attempted = useRef(false)
+  const requestedRuntime = useRef<boolean | null>(null)
   const request = useRef<AbortController | null>(null)
   const generation = useRef(0)
   const mutating = useRef(false)
@@ -106,6 +106,7 @@ export function NativeCapabilitiesSettings({ active, enabled, runtimeActive, bus
   const cancel = useCallback(() => {
     ++generation.current
     const ownedRequest = request.current !== null
+    if (ownedRequest) requestedRuntime.current = null
     request.current?.abort(); request.current = null
     if (mutating.current && alive.current) { setNeedsRead(true); setFailure({ key: 'error.unknown' }) }
     mutating.current = false
@@ -121,7 +122,7 @@ export function NativeCapabilitiesSettings({ active, enabled, runtimeActive, bus
   useEffect(() => { if (!active || !enabled) cancel() }, [active, enabled, cancel])
   const read = useCallback(async (preserveFailure = false) => {
     if (!props.current.active || !props.current.enabled || document.hidden || request.current || actionLock.current) return
-    attempted.current = true
+    requestedRuntime.current = props.current.runtimeActive
     const controller = new AbortController(), ticket = ++generation.current
     request.current = controller; actionLock.current = true; props.current.onBusy(true); setPending('list'); if (!preserveFailure) setFailure(null)
     try {
@@ -135,7 +136,10 @@ export function NativeCapabilitiesSettings({ active, enabled, runtimeActive, bus
     } catch (error) { if (alive.current && !controller.signal.aborted && ticket === generation.current) setFailure(describe(error, true)) }
     finally { if (request.current === controller) { request.current = null; actionLock.current = false; props.current.onBusy(false); if (alive.current) setPending(null) } }
   }, [actionLock])
-  useEffect(() => { if (active && enabled) void read() }, [active, enabled, runtimeActive, read])
+  useEffect(() => {
+    if (!enabled) requestedRuntime.current = null
+    else if (active && requestedRuntime.current !== runtimeActive) void read()
+  }, [active, enabled, runtimeActive, read])
 
   async function perform(operation: string, input: JsonObject, apply?: (value: Record<string, unknown>) => void) {
     if (!active || !enabled || document.hidden || request.current || actionLock.current || busy || needsRead || operation !== 'inspect' && runtimeActive) return

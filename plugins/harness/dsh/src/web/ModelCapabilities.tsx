@@ -28,6 +28,7 @@ export function ModelCapabilitiesSettings({ active, enabled, runtimeActive, busy
   const attempted = useRef(false)
   const savedRoute = useRef(routeKey)
   const informationRoute = useRef('')
+  const informationRuntime = useRef<boolean | null>(null)
   const alive = useRef(false)
   const generation = useRef(0)
   const informationGeneration = useRef(0)
@@ -35,8 +36,8 @@ export function ModelCapabilitiesSettings({ active, enabled, runtimeActive, busy
   const informationRequest = useRef<AbortController | null>(null)
   const saving = useRef(false)
   const onBusyRef = useRef(onBusy)
-  const context = useRef({ active, enabled, configured, catalogKey })
-  context.current = { active, enabled, configured, catalogKey }; onBusyRef.current = onBusy
+  const context = useRef({ active, enabled, configured, catalogKey, runtimeActive })
+  context.current = { active, enabled, configured, catalogKey, runtimeActive }; onBusyRef.current = onBusy
 
   const cancel = useCallback(() => {
     ++generation.current; ++informationGeneration.current
@@ -71,6 +72,7 @@ export function ModelCapabilitiesSettings({ active, enabled, runtimeActive, busy
     if (!context.current.active || !context.current.enabled || !context.current.configured || document.hidden || informationRequest.current || request.current || actionLock.current) return
     const controller = new AbortController(), ticket = ++informationGeneration.current
     informationRoute.current = context.current.catalogKey
+    informationRuntime.current = context.current.runtimeActive
     informationRequest.current = controller; actionLock.current = true; onBusyRef.current(true); setInformationLoading(true); setInformationFailed(false)
     try {
       const response = readModelInformation(await hostRequest<unknown>('/plugins/dsh/manage', { method: 'POST', body: { operation: refresh ? 'read-model-information' : 'get-model-information', input: {} }, signal: controller.signal }))
@@ -88,7 +90,10 @@ export function ModelCapabilitiesSettings({ active, enabled, runtimeActive, busy
   useEffect(() => {
     if (informationRoute.current !== catalogKey && active && enabled && configured && snapshot) void readInformation()
   }, [active, enabled, configured, catalogKey, snapshot, readInformation])
-  useEffect(() => { if (active && enabled && configured && informationRoute.current === catalogKey) void readInformation(false) }, [runtimeActive, active, enabled, configured, catalogKey, readInformation])
+  useEffect(() => {
+    if (active && enabled && configured && informationRoute.current === catalogKey
+      && informationRuntime.current !== runtimeActive) void readInformation(false)
+  }, [runtimeActive, active, enabled, configured, catalogKey, readInformation])
 
   const sameModel = identityMatches && draftModel.trim() === savedModel
   const listSelection = models?.find(model => model.id === draftModel.trim())

@@ -3,6 +3,7 @@ import { lstatSync, realpathSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { DEFAULT_IMAGE_LIMITS, isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { PluginImageAsset } from '@eating/plugin-sdk'
+import { isImageGenerationSourceSummary } from '../source-summary'
 import { IMAGE_GENERATION_LIMITS } from '../types'
 import type { GeneratedImageItem, ImageGenerationDeleteResult, ImageGenerationJob, ImageGenerationJobError, ImageGenerationPage, ImageGenerationPreview, ImageGenerationSourceSummary } from '../types'
 import { ImageStorageError, jsonBytes, prepareDirectory, readBytes, removeOwnBlob, writeBytes } from './files'
@@ -31,16 +32,6 @@ function sourceSummary(sources: readonly ResolvedSourceImage[]): ImageGeneration
     ...(first.imageId ? { imageId: first.imageId } : {}),
     ...(sources.length > 1 ? { count: sources.length } : {}),
   }
-}
-function validSource(value: unknown): value is ImageGenerationSourceSummary {
-  return isJsonObject(value) && exact(value, ['kind', 'mimeType', 'bytes'], ['assetId', 'imageId', 'count'])
-    && ['received', 'asset', 'upload', 'persona'].includes(String(value.kind))
-    && ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(String(value.mimeType))
-    && (value.count === undefined || typeof value.count === 'number' && Number.isSafeInteger(value.count) && value.count >= 2 && value.count <= 4)
-    && typeof value.bytes === 'number' && Number.isSafeInteger(value.bytes) && value.bytes > 0
-    && value.bytes <= IMAGE_GENERATION_LIMITS.imageBytes * (typeof value.count === 'number' ? value.count : 1)
-    && (value.kind === 'asset' ? typeof value.assetId === 'string' && /^[a-f0-9]{64}$/.test(value.assetId) : value.assetId === undefined)
-    && (value.kind === 'persona' ? typeof value.imageId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.imageId) : value.imageId === undefined)
 }
 
 /** Only jobs and generated assets are stored here; provider responses, URLs and keys are never indexed. */
@@ -85,7 +76,7 @@ export class ImageGenerationStore {
         || typeof item.requestHash !== 'string' || !/^[a-f0-9]{64}$/.test(item.requestHash) || !['queued', 'running', 'succeeded', 'failed', 'unknown'].includes(String(item.status))
         || text(item.prompt, IMAGE_GENERATION_LIMITS.prompt, false) !== item.prompt || text(item.model, 160, false) !== item.model || !stamp(item.createdAt) || !stamp(item.updatedAt) || String(item.updatedAt) < String(item.createdAt)
         || !Array.isArray(item.assetIds) || item.assetIds.length > 1 || item.assetIds.some(id => typeof id !== 'string' || !images.has(id))
-        || item.source !== undefined && !validSource(item.source)
+        || item.source !== undefined && !isImageGenerationSourceSummary(item.source)
         || item.sourceHash !== undefined && (typeof item.sourceHash !== 'string' || !/^[a-f0-9]{64}$/.test(item.sourceHash))
         || (item.source === undefined) !== (item.sourceHash === undefined)) corrupt()
       if (item.error !== undefined && (!isJsonObject(item.error) || !exact(item.error, ['code', 'message', 'outcome']) || typeof item.error.code !== 'string' || item.error.code.length > 160 || typeof item.error.message !== 'string' || item.error.message.length > 2000 || !['not-sent', 'failed', 'unknown'].includes(String(item.error.outcome)))) corrupt()

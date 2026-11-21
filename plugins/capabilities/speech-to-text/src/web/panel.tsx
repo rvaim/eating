@@ -103,6 +103,7 @@ export function RecognitionPanel({ enabled, onRefresh, onFeedback, onDirtyChange
   const alive = useRef(false)
   const reads = useRef(new Set<AbortController>())
   const listRequest = useRef<AbortController | null>(null)
+  const lastLoadedOffset = useRef<number | null>(null)
   const mutation = useRef<AbortController | null>(null)
   const testController = useRef<AbortController | null>(null)
   const enabledRef = useRef(enabled)
@@ -144,6 +145,7 @@ export function RecognitionPanel({ enabled, onRefresh, onFeedback, onDirtyChange
     try {
       const value = readPage(await manageRecognition('jobs', { offset: at, limit: 20 }, controller.signal))
       if (alive.current && enabledRef.current && !controller.signal.aborted && at === offsetRef.current) {
+        lastLoadedOffset.current = at
         setPage(value)
         setJobsError(null)
       }
@@ -182,6 +184,7 @@ export function RecognitionPanel({ enabled, onRefresh, onFeedback, onDirtyChange
       const hidden = document.hidden || isPageHide
       setVisible(!hidden)
       if (hidden) {
+        if (listRequest.current || mutation.current) lastLoadedOffset.current = null
         reads.current.forEach(c => c.abort())
         reads.current.clear()
         listRequest.current?.abort()
@@ -205,7 +208,7 @@ export function RecognitionPanel({ enabled, onRefresh, onFeedback, onDirtyChange
     }
     document.addEventListener('visibilitychange', onHideOrLeave)
     window.addEventListener('pagehide', onHideOrLeave)
-    void load(true)
+    window.addEventListener('pageshow', onHideOrLeave)
     return () => {
       alive.current = false
       ++ticket.current
@@ -217,12 +220,17 @@ export function RecognitionPanel({ enabled, onRefresh, onFeedback, onDirtyChange
       if (fileInput.current) fileInput.current.value = ''
       document.removeEventListener('visibilitychange', onHideOrLeave)
       window.removeEventListener('pagehide', onHideOrLeave)
+      window.removeEventListener('pageshow', onHideOrLeave)
     }
-  }, [load, clearUpload])
+  }, [clearUpload])
+
+  useEffect(() => {
+    if (visible && !configRef.current) void load(true)
+  }, [visible, load])
 
   useEffect(() => {
     if (!enabled || !visible) return
-    void list()
+    if (lastLoadedOffset.current !== offset) void list()
     return () => {
       listRequest.current?.abort()
       listRequest.current = null
@@ -238,6 +246,7 @@ export function RecognitionPanel({ enabled, onRefresh, onFeedback, onDirtyChange
 
   useEffect(() => {
     if (!enabled) {
+      lastLoadedOffset.current = null
       listRequest.current?.abort()
       listRequest.current = null
       mutation.current?.abort()

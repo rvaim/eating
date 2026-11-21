@@ -58,14 +58,10 @@ function system(request: ModelFixtureRequest): string {
   expect(messages).toHaveLength(1)
   return fixtureText(messages[0]!.content)
 }
-function expectMessageSendingRules(text: string) {
-  expect(text).toContain('eating-asset://')
+function expectImageReferenceRules(text: string) {
+  expect(text).toContain('image_ref')
   expect(text).toContain('message')
-  expect(text).toContain('直接传')
-  expect(text).toMatch(/对象[或／]数组/)
-  expect(text).toMatch(/不能[^。\n]*JSON\.stringify/)
-  expect(text).toMatch(/复用[^。\n]*已有(?:图片|资源)|已有图片[^。\n]*复用/)
-  expect(text).toMatch(/生成成功[^。\n]*不等于[^。\n]*发送成功/)
+  expect(text).toContain('auto_escape')
 }
 async function temporaryHome() {
   const parent = await realpath(tmpdir()), home = await realpath(await mkdtemp(join(parent, 'Eating_dialogue_integration_')))
@@ -260,11 +256,10 @@ async function expectCompletedHandoff(f: Awaited<ReturnType<typeof fixture>>) {
     expect(object(schema.properties)).toEqual({ context_ref: { type: 'string', pattern: '^[a-f0-9]{64}$' }, mode: { type: 'string', enum: ['reply', 'verify'] }, context_notes: { type: 'string', maxLength: 8000 } })
     const prompt = system(request)
     expect(prompt.startsWith(f.ownerSystem + '\n\n')).toBe(true)
-    expect(prompt).toContain('图片发送')
-    expectMessageSendingRules(prompt)
+    expectImageReferenceRules(prompt)
     if (f.provider) {
       expect(prompt).toContain('image_job_get')
-      expect(prompt).toMatch(/image_get 返回的 sendable[^。\n]*image 消息段/)
+      expect(prompt).toContain('image_get 返回的 image_ref')
     }
     for (const text of [commonMarker, mainMarker, persona, '轻量分流', 'eating_handle_conversation', 'eating_delegate_task', 'eating_contact_target', '不先撰写完整回复']) expect(prompt).toContain(text)
     for (const text of [childMarker, 'DIALOGUE-TYPE-SCOPE', f.originalText]) expect(prompt).not.toContain(text)
@@ -278,17 +273,16 @@ async function expectCompletedHandoff(f: Awaited<ReturnType<typeof fixture>>) {
     expect(batch(request).payload.events).toEqual(incoming.payload.events)
     const sender = request.tools!.find(tool => tool.function?.name === 'mcp__qq__qq_send_private_message')!.function!
     const message = object(object(object(sender.parameters).properties).message)
-    expectMessageSendingRules(String(message.description))
+    expectImageReferenceRules(String(message.description))
     expect(message.description).toContain('QQ_MESSAGE_FORMAT_INVALID')
     expect(message.$ref).toBe('#/$defs/oneBotMessage')
     expect(message.examples).toEqual(expect.arrayContaining([expect.arrayContaining([
       expect.objectContaining({ type: 'image', data: { file: expect.stringMatching(/^eating-asset:\/\/image-generation\//) } }),
     ])]))
     if (f.provider) {
-      expect(prompt).toContain('图片发送')
-      expectMessageSendingRules(prompt)
+      expectImageReferenceRules(prompt)
       const reader = object(request.tools!.find(tool => tool.function?.name === imagePrefix + 'image_get')!.function)
-      expectMessageSendingRules(String(reader.description))
+      expectImageReferenceRules(String(reader.description))
       expect(reader.description).toContain('sendable')
     }
   }

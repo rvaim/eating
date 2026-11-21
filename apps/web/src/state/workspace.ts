@@ -74,7 +74,12 @@ export class PlatformWorkspace {
             if (typeof value === 'string' || typeof value === 'boolean') values[key] = value
             else if (typeof value === 'number' && Number.isFinite(value)) values[key] = String(value)
           }
-          configurations[plugin.id] = { values, savedAt: typeof plugin.configuration.updatedAt === 'string' ? plugin.configuration.updatedAt : '' }
+          const savedAt = typeof plugin.configuration.updatedAt === 'string' ? plugin.configuration.updatedAt : ''
+          const previous = this.snapshot.configurations[plugin.id]
+          const unchanged = previous?.savedAt === savedAt
+            && Object.keys(previous.values).length === Object.keys(values).length
+            && Object.entries(values).every(([key, value]) => previous.values[key] === value)
+          configurations[plugin.id] = unchanged ? previous : { values, savedAt }
         }
       }
       this.storageFailure = null

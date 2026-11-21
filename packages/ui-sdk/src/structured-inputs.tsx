@@ -36,6 +36,7 @@ export interface TagChipsInputProps {
   readonly addLabel?: string
   readonly allowDuplicates?: boolean
   readonly delimiter?: 'line-or-comma' | 'line-comma-space'
+  readonly commitOnEdit?: boolean
   readonly disabled?: boolean
   readonly maxItems?: number
   readonly className?: string
@@ -54,6 +55,7 @@ export function TagChipsInput({
   addLabel,
   allowDuplicates = false,
   delimiter = 'line-or-comma',
+  commitOnEdit = true,
   disabled = false,
   maxItems,
   className,
@@ -65,6 +67,7 @@ export function TagChipsInput({
   const inputId = id ?? `eating-tags-${generatedId}`
   const [draft, setDraft] = useState('')
   const [localError, setLocalError] = useState<string | null>(null)
+  const composing = useRef(false)
 
   function updateDraft(next: string): void {
     setDraft(next)
@@ -108,10 +111,12 @@ export function TagChipsInput({
           placeholder={placeholder ?? t('structured.inputPlaceholder')}
           aria-label={aria['aria-label']}
           aria-describedby={aria['aria-describedby']}
+          onCompositionStart={() => { composing.current = true }}
+          onCompositionEnd={event => { composing.current = false; updateDraft(event.currentTarget.value) }}
           onChange={event => {
             const next = event.target.value
             const hasDelimiter = delimiter === 'line-comma-space' ? /[\r\n,，;；\s]/.test(next) : /[\r\n,，;；]/.test(next)
-            if (hasDelimiter) commitText(next)
+            if (commitOnEdit && !composing.current && hasDelimiter) commitText(next)
             else { updateDraft(next); setLocalError(null) }
           }}
           onPaste={event => {
@@ -119,10 +124,18 @@ export function TagChipsInput({
             const hasMulti = delimiter === 'line-comma-space' ? /[\r\n,，;；\s]/.test(pasted) : /[\r\n,，;；]/.test(pasted)
             if (hasMulti) {
               event.preventDefault()
-              commitText(`${draft} ${pasted}`.trim())
+              const start = event.currentTarget.selectionStart ?? draft.length
+              const end = event.currentTarget.selectionEnd ?? start
+              if (commitOnEdit) commitText(`${draft} ${pasted}`.trim())
+              else if (!draft.trim() || start === 0 && end === draft.length) commitText(pasted)
+              else {
+                updateDraft(draft.slice(0, start) + pasted.replace(/[\r\n]+/g, ',') + draft.slice(end))
+                setLocalError(null)
+              }
             }
           }}
           onKeyDown={event => {
+            if (composing.current || event.nativeEvent.isComposing) return
             if (event.key === 'Enter') {
               event.preventDefault()
               commitText(draft)
@@ -131,7 +144,7 @@ export function TagChipsInput({
             }
           }}
           onBlur={() => {
-            if (draft.trim()) commitText(draft)
+            if (commitOnEdit && !composing.current && draft.trim()) commitText(draft)
           }}
         />
         <button

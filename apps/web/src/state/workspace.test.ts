@@ -30,7 +30,10 @@ describe('正式 Host 工作区', () => {
     expect(workspace.getSnapshot().plugins.map(entry => entry.id)).toEqual(['qq'])
     expect(workspace.getSnapshot().harness.pending).toBe(2)
     expect(workspace.getSnapshot().statuses.qq?.state).toBe('disconnected')
-    expect(workspace.getSnapshot().configurations.qq?.values.endpoint).toBe('ws://127.0.0.1:3001')
+    const configuration = workspace.getSnapshot().configurations.qq
+    expect(configuration?.values.endpoint).toBe('ws://127.0.0.1:3001')
+    await workspace.refresh()
+    expect(workspace.getSnapshot().configurations.qq).toBe(configuration)
   })
 
   it('准确识别无 endpoint 字段的能力插件已配置状态，不误把未配置默认值认作就绪', async () => {

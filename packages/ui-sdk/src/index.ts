@@ -9,6 +9,7 @@ export * from './structured-inputs.js'
 export * from './segmented-tabs.js'
 export * from './confirm-inline.js'
 export * from './lifecycle-bar.js'
+export * from './gallery-thumbnails.js'
 export type { ManagedPlugin, CommunicationPlugin, HarnessPlugin, CapabilityPlugin, ConfigurationValidation, PluginPanelProps, WorkspaceActionResult } from './contract.js'
 
 /** One shared React instance for independently built frontend contributions. */

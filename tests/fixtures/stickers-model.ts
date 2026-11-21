@@ -1,4 +1,5 @@
 import { createServer } from 'node:http'
+import type { ServerResponse } from 'node:http'
 import { isJsonObject } from '@eating/plugin-sdk'
 import type { JsonObject } from '@eating/plugin-sdk'
 import { fixturePendingTask, fixtureResolveTaskTurns } from './async-tasks'
@@ -43,15 +44,59 @@ export function fixtureToolTurns(request: ModelFixtureRequest): FixtureToolTurn[
   return fixtureResolveTaskTurns(request, turns)
 }
 
+function readResponsesRequest(payload: JsonObject): ModelFixtureRequest {
+  const readContent = (content: unknown) => Array.isArray(content) ? content.map(block => isJsonObject(block)
+    && ['input_text', 'output_text'].includes(String(block.type)) ? { type: 'text', text: block.text } : block) : content
+  const messages: NonNullable<ModelFixtureRequest['messages']>[number][] = []
+  if (typeof payload.instructions === 'string') messages.push({ role: 'system', content: payload.instructions })
+  for (const item of Array.isArray(payload.input) ? payload.input.filter(isJsonObject) : []) {
+    if (item.type === 'function_call') {
+      messages.push({ role: 'assistant', tool_calls: [{ id: item.call_id, function: { name: item.name, arguments: item.arguments } }] })
+    } else if (item.type === 'function_call_output') {
+      const message = { role: 'tool', content: readContent(item.output), tool_call_id: item.call_id }
+      messages.push(message)
+    } else if (typeof item.role === 'string') {
+      messages.push({ role: item.role === 'developer' ? 'system' : item.role, content: readContent(item.content) })
+    }
+  }
+  const tools = Array.isArray(payload.tools) ? payload.tools.filter(isJsonObject).map(tool => ({
+    function: { name: typeof tool.name === 'string' ? tool.name : undefined, parameters: tool.parameters },
+  })) : []
+  return { model: typeof payload.model === 'string' ? payload.model : undefined, stream: payload.stream === true, messages, tools }
+}
+
+function writeResponsesAction(response: ServerResponse, action: FixtureModelAction, id: string) {
+  const sse = (type: string, data: JsonObject) => response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`)
+  const base = { id, object: 'response' }
+  sse('response.created', { response: { ...base, status: 'in_progress', output: [] } })
+  let item: JsonObject
+  if (typeof action === 'string') {
+    const message = { id: 'msg_' + id, type: 'message', role: 'assistant' }
+    sse('response.output_item.added', { output_index: 0, item: { ...message, status: 'in_progress', content: [] } })
+    sse('response.output_text.delta', { output_index: 0, content_index: 0, item_id: message.id, delta: action })
+    item = { ...message, status: 'completed', content: [{ type: 'output_text', text: action, annotations: [] }] }
+  } else {
+    const call = { id: 'fc_' + id, type: 'function_call', call_id: 'call_' + id, name: action.name }
+    const args = JSON.stringify(action.arguments)
+    sse('response.output_item.added', { output_index: 0, item: { ...call, status: 'in_progress', arguments: '' } })
+    sse('response.function_call_arguments.delta', { output_index: 0, item_id: call.id, delta: args })
+    sse('response.function_call_arguments.done', { output_index: 0, item_id: call.id, arguments: args })
+    item = { ...call, status: 'completed', arguments: args }
+  }
+  sse('response.output_item.done', { output_index: 0, item })
+  sse('response.completed', { response: { ...base, status: 'completed', output: [item], usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } })
+  response.end()
+}
+
 /** Only the loopback model protocol is fixed; every emitted call must traverse the real native tool executor. */
-export async function startStickersModel(choose: (request: ModelFixtureRequest) => FixtureModelAction | Promise<FixtureModelAction>, options: { allowPending?: boolean } = {}) {
+export async function startStickersModel(choose: (request: ModelFixtureRequest) => FixtureModelAction | Promise<FixtureModelAction>, options: { allowPending?: boolean; responses?: boolean } = {}) {
   const requests: ModelFixtureRequest[] = [], decisions: ModelFixtureRequest[] = []
   const actions: FixtureModelAction[] = []
   const errors: string[] = []
   const apiKey = 'stickers-actual-sdk-local-fixture'
   const server = createServer((request, response) => {
     void (async () => {
-      if (request.method !== 'POST' || request.url !== '/v1/chat/completions') { response.writeHead(404); response.end(); return }
+      if (request.method !== 'POST' || request.url !== (options.responses ? '/v1/responses' : '/v1/chat/completions')) { response.writeHead(404); response.end(); return }
       if (request.headers.authorization !== `Bearer ${apiKey}`) { response.writeHead(401); response.end(); return }
       const chunks: Buffer[] = []; let length = 0
       for await (const chunk of request) {
@@ -59,7 +104,8 @@ export async function startStickersModel(choose: (request: ModelFixtureRequest) 
         if (length > 4 * 1024 * 1024) throw new Error('Sticker model request exceeds fixture bound')
         chunks.push(bytes)
       }
-      const payload = JSON.parse(Buffer.concat(chunks).toString('utf8')) as ModelFixtureRequest
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      const payload = options.responses ? readResponsesRequest(body) : body as ModelFixtureRequest
       requests.push(payload)
       const pending = !options.allowPending && payload.tools?.some(tool => tool.function?.name === 'eating_task_control') && fixturePendingTask(payload)
       if (!pending) decisions.push(payload)
@@ -68,6 +114,7 @@ export async function startStickersModel(choose: (request: ModelFixtureRequest) 
       if (typeof action !== 'string' && !payload.tools?.some(tool => tool.function?.name === action.name)) throw new Error(`Fixture attempted a tool absent from the actual request: ${action.name}`)
       const id = `stickers-fixture-${requests.length}`
       response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' })
+      if (options.responses) { writeResponsesAction(response, action, id); return }
       const chunk = (delta: JsonObject, finish: string | null) => response.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created: 1, model: payload.model,
         choices: [{ index: 0, delta, finish_reason: finish }], ...(finish ? { usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } } : {}) })}\n\n`)
       if (typeof action === 'string') { chunk({ role: 'assistant', content: action }, null); chunk({}, 'stop') }

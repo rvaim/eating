@@ -8,7 +8,7 @@ import {
 import type { JsonObject } from '@eating/plugin-sdk'
 import {
   ActionButton, DurationInput, FormSaveBar, HostApiError, InlineConfirm, PasswordInput,
-  SegmentedTabs, UnknownOutcomeCard, createRequestId, hostRequest, useI18n,
+  SegmentedTabs, UnknownOutcomeCard, createRequestId, hostRequest, useGalleryThumbnails, useI18n,
 } from '@eating/ui-sdk'
 import type { PluginPanelProps } from '@eating/ui-sdk'
 import type {
@@ -46,10 +46,9 @@ type SourceDraft =
   | { readonly kind: 'asset'; readonly assetId: string; readonly name: string; readonly bytes: number; readonly key: string }
 
 interface DeleteSelection { readonly revision: number; readonly items: readonly GeneratedImageItem[] }
-interface ThumbState { readonly status: 'loading' | 'ready' | 'error'; readonly url?: string }
 
 const pageLimit = 20
-const MAX_CONCURRENT_THUMBS = 3
+const noAssets: readonly GeneratedImageItem[] = []
 const formats: readonly ImageGenerationResponseFormat[] = ['', 'b64_json', 'url']
 const SIZE_PRESETS = ['1024x1024', '1536x1024', '1024x1536', 'auto'] as const
 
@@ -106,7 +105,7 @@ function validUrl(value: string): boolean {
   }
 }
 
-export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyChange }: PluginPanelProps) {
+export function ImageGenerationPanel({ enabled, status, onFeedback, onRefresh, onDirtyChange }: PluginPanelProps) {
   const { t, formatNumber, formatDateTime } = useI18n('image-generation')
   const prefix = useId()
   const [tab, setTab] = useState<PanelTab>('studio')
@@ -129,9 +128,8 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
   const [assetsPage, setAssetsPage] = useState<ImageGenerationPage<GeneratedImageItem> | null>(null)
   const [jobsLoading, setJobsLoading] = useState(false)
   const [assetsLoading, setAssetsLoading] = useState(false)
-  const listLoading = jobsLoading || assetsLoading
-  const [listFailure, setListFailure] = useState<string | null>(null)
-  const [thumbs, setThumbs] = useState<Readonly<Record<string, ThumbState>>>({})
+  const [jobsFailure, setJobsFailure] = useState<string | null>(null)
+  const [assetsFailure, setAssetsFailure] = useState<string | null>(null)
 
   const [query, setQuery] = useState('')
   const searchQuery = useRef('')
@@ -183,14 +181,13 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
   const sourcePreviewUrl = useRef<string | null>(null)
   const sourceKindRef = useRef<'upload' | 'asset' | null>(null)
   const sourceReadController = useRef<AbortController | null>(null)
-  const thumbUrlsRef = useRef(new Map<string, string>())
-  const thumbControllersRef = useRef(new Map<string, AbortController>())
-  const thumbBatchRef = useRef(0)
   const sourceInput = useRef<HTMLInputElement | null>(null)
   const promptRef = useRef<HTMLTextAreaElement | null>(null)
   const confirmHostRef = useRef<HTMLDivElement | null>(null)
   const discardHostRef = useRef<HTMLDivElement | null>(null)
   const assetsOffsetRef = useRef(0)
+  const jobsOffsetRef = useRef(0)
+  const needsRead = useRef({ config: true, jobs: true, assets: true })
   const activeJobs = useRef<ReadonlySet<string>>(new Set())
   const requestIdentity = useRef<RequestIdentity | null>(null)
   const callbacks = useRef({ onFeedback, onRefresh, onDirtyChange })
@@ -209,20 +206,11 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
   }, [configDirty, parametersDirty])
   useEffect(() => () => { callbacks.current.onDirtyChange?.(false) }, [])
 
-  const abortThumbRequests = useCallback(() => {
-    ++thumbBatchRef.current
-    thumbControllersRef.current.forEach(controller => controller.abort())
-    thumbControllersRef.current.clear()
-  }, [])
-
-  const clearThumbnails = useCallback(() => {
-    abortThumbRequests()
-    thumbUrlsRef.current.forEach(url => URL.revokeObjectURL(url))
-    thumbUrlsRef.current.clear()
-    if (mounted.current) setThumbs({})
-  }, [abortThumbRequests])
-
   const cancelAll = useCallback(() => {
+    const taskChanged = Boolean(generateController.current || deleteController.current)
+    needsRead.current.config ||= Boolean(configController.current)
+    needsRead.current.jobs ||= Boolean(jobsController.current) || taskChanged
+    needsRead.current.assets ||= Boolean(assetsController.current) || taskChanged
     deleteController.current?.abort()
     sourceReadController.current?.abort()
     sourceReadController.current = null
@@ -236,8 +224,7 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
     previewController.current = null
     generateController.current?.abort()
     generateController.current = null
-    abortThumbRequests()
-  }, [abortThumbRequests])
+  }, [])
 
   const clearPreview = useCallback(() => {
     previewController.current?.abort()
@@ -304,7 +291,9 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
   }, [confirmReload])
 
   const loadConfig = useCallback(async (quiet = false, force = false) => {
+    needsRead.current.config = true
     if (!mounted.current || document.hidden) return
+    needsRead.current.config = false
     const ticket = ++configGeneration.current
     configController.current?.abort()
     const controller = new AbortController()
@@ -333,13 +322,18 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
   }, [])
 
   const loadAssets = useCallback(async (offset = 0, quiet = false) => {
+    assetsOffsetRef.current = offset
+    needsRead.current.assets = true
     if (!mounted.current || document.hidden || !enabledRef.current) return
+    needsRead.current.assets = false
     const ticket = ++assetsGeneration.current
     assetsController.current?.abort()
     const controller = new AbortController()
     assetsController.current = controller
-    setCheckedIds([])
-    if (!quiet) setAssetsLoading(true)
+    if (!quiet) {
+      setCheckedIds([])
+      setAssetsLoading(true)
+    }
     try {
       let page = readAssetPage(await manage('list', { offset, limit: pageLimit, query: searchQuery.current }, controller.signal))
       if (page.offset > 0 && !page.items.length) {
@@ -359,10 +353,12 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
           ? current
           : page
       ))
-      setListFailure(null)
+      if (quiet) setCheckedIds(current => current.filter(id => page.items.some(item => item.assetId === id)))
+      setAssetsFailure(null)
     } catch (error) {
       if (mounted.current && !controller.signal.aborted && enabledRef.current && ticket === assetsGeneration.current) {
-        setListFailure(errorTextFrom(error, it('common.loadFailed')))
+        setAssetsFailure(errorTextFrom(error, it(error instanceof HostApiError && error.code === 'INVALID_HOST_RESPONSE'
+          ? 'resources.invalidResponse' : 'resources.loadFailed')))
       }
     } finally {
       if (mounted.current && ticket === assetsGeneration.current) {
@@ -372,8 +368,11 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
     }
   }, [])
 
-  const loadJobs = useCallback(async (offset = 0, quiet = false, includeAssets = !quiet) => {
+  const loadJobs = useCallback(async (offset = 0, quiet = false) => {
+    jobsOffsetRef.current = offset
+    needsRead.current.jobs = true
     if (!mounted.current || document.hidden || !enabledRef.current) return
+    needsRead.current.jobs = false
     const ticket = ++jobsGeneration.current
     jobsController.current?.abort()
     const controller = new AbortController()
@@ -387,11 +386,12 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
       const settled = page.items.some(job => job.status === 'succeeded' && wasActive.has(job.jobId))
       activeJobs.current = nowActive
       setJobsPage(page)
-      setListFailure(null)
-      if (settled || includeAssets) void loadAssets(assetsOffsetRef.current, true)
+      setJobsFailure(null)
+      if (settled) void loadAssets(assetsOffsetRef.current, true)
     } catch (error) {
       if (mounted.current && !controller.signal.aborted && enabledRef.current && ticket === jobsGeneration.current) {
-        setListFailure(errorTextFrom(error, it('common.loadFailed')))
+        setJobsFailure(errorTextFrom(error, it(error instanceof HostApiError && error.code === 'INVALID_HOST_RESPONSE'
+          ? 'jobs.invalidResponse' : 'jobs.loadFailed')))
       }
     } finally {
       if (mounted.current && ticket === jobsGeneration.current) {
@@ -403,60 +403,51 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
 
   useEffect(() => {
     mounted.current = true
-    void loadConfig()
-    const visibility = () => {
-      const next = !document.hidden
-      setVisible(next)
-      if (next) {
-        void loadConfig(true)
-        if (enabledRef.current) {
-          void loadJobs(0, true)
-          void loadAssets(0, true)
-        }
-        return
-      }
+    const suspend = () => {
       cancelAll()
-      clearThumbnails()
-      setDraft(current => {
-        if (!current) return current
-        if (current.apiKey.length > 0) setHiddenClearedNotice(true)
-        return current.apiKey.length > 0 ? { ...current, apiKey: '' } : current
-      })
       setConfigSaving(false)
       setGenerating(false)
       setConfirming(false)
       setPreviewLoading(false)
       setSourcePreparing(false)
-      setCheckedIds([])
       setDeleteSelection(null)
       clearPreview()
       if (sourceKindRef.current === 'asset') clearSource()
+      setDraft(current => {
+        if (!current) return current
+        if (current.apiKey.length > 0) setHiddenClearedNotice(true)
+        return current.apiKey.length > 0 ? { ...current, apiKey: '' } : current
+      })
+    }
+    const visibility = () => {
+      setVisible(!document.hidden)
+      if (document.hidden) suspend()
     }
     const pagehide = () => {
-      cancelAll()
-      clearThumbnails()
+      setVisible(false)
+      suspend()
       setCheckedIds([])
-      setDeleteSelection(null)
-      clearPreview()
       clearSource()
     }
+    const pageshow = () => setVisible(!document.hidden)
     document.addEventListener('visibilitychange', visibility)
     window.addEventListener('pagehide', pagehide)
+    window.addEventListener('pageshow', pageshow)
     return () => {
       mounted.current = false
       ++configGeneration.current
       ++jobsGeneration.current
       ++assetsGeneration.current
       cancelAll()
-      clearThumbnails()
       document.removeEventListener('visibilitychange', visibility)
       window.removeEventListener('pagehide', pagehide)
+      window.removeEventListener('pageshow', pageshow)
       if (previewUrl.current) URL.revokeObjectURL(previewUrl.current)
       previewUrl.current = null
       if (sourcePreviewUrl.current) URL.revokeObjectURL(sourcePreviewUrl.current)
       sourcePreviewUrl.current = null
     }
-  }, [loadConfig, loadJobs, loadAssets, cancelAll, clearThumbnails, clearPreview, clearSource])
+  }, [cancelAll, clearPreview, clearSource])
 
   useEffect(() => {
     if (!enabled) {
@@ -470,7 +461,10 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
       generateController.current = null
       deleteController.current?.abort()
       deleteController.current = null
-      clearThumbnails()
+      needsRead.current.jobs = true
+      needsRead.current.assets = true
+      assetsOffsetRef.current = 0
+      jobsOffsetRef.current = 0
       clearPreview()
       clearSource()
       activeJobs.current = new Set()
@@ -479,7 +473,8 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
       setAssetsPage(null)
       setJobsLoading(false)
       setAssetsLoading(false)
-      setListFailure(null)
+      setJobsFailure(null)
+      setAssetsFailure(null)
       setDeleteFailure(null)
       setGenerateFailure(null)
       setUncertainSubmit(null)
@@ -487,106 +482,33 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
       setConfirming(false)
       setCheckedIds([])
       setDeleteSelection(null)
-      void loadConfig(true)
-      return
     }
-    if (visible) {
-      void loadConfig(true)
-      void loadJobs(0, false, false)
-      void loadAssets(0)
-    }
-  }, [enabled, visible, loadConfig, loadJobs, loadAssets, clearThumbnails, clearPreview, clearSource])
+  }, [enabled, clearPreview, clearSource])
 
-  // Bounded-concurrency (<= 3) thumbnail hydration with strict Blob URL tracking & revocation.
+  useEffect(() => { void loadConfig(Boolean(configRef.current)) }, [enabled, status?.state, loadConfig])
+
   useEffect(() => {
-    abortThumbRequests()
-    if (!enabled || !visible || !assetsPage) {
-      clearThumbnails()
-      return
-    }
-    const items = assetsPage.items
-    const visibleIds = new Set(items.map(item => item.assetId))
-    for (const [assetId, url] of thumbUrlsRef.current.entries()) {
-      if (!visibleIds.has(assetId)) {
-        URL.revokeObjectURL(url)
-        thumbUrlsRef.current.delete(assetId)
-      }
-    }
-    setThumbs(current => {
-      const next: Record<string, ThumbState> = {}
-      for (const item of items) {
-        const cachedUrl = thumbUrlsRef.current.get(item.assetId)
-        if (cachedUrl) next[item.assetId] = { status: 'ready', url: cachedUrl }
-        else if (current[item.assetId]?.status === 'error') next[item.assetId] = { status: 'error' }
-      }
-      return next
-    })
+    if (!visible) return
+    if (needsRead.current.config) void loadConfig(Boolean(configRef.current))
+    if (!enabled) return
+    if (needsRead.current.jobs) void loadJobs(jobsOffsetRef.current)
+    if (needsRead.current.assets) void loadAssets(assetsOffsetRef.current, Boolean(assetsPage))
+  }, [enabled, visible, loadConfig, loadJobs, loadAssets, assetsPage])
 
-    const queue = items.filter(item => !thumbUrlsRef.current.has(item.assetId))
-    if (queue.length === 0) return
-
-    const batch = ++thumbBatchRef.current
-    setThumbs(current => {
-      const next = { ...current }
-      for (const item of queue) next[item.assetId] = { status: 'loading' }
-      return next
-    })
-
-    let cursor = 0
-    const worker = async () => {
-      while (mounted.current && enabledRef.current && !document.hidden && batch === thumbBatchRef.current) {
-        const index = cursor++
-        if (index >= queue.length) return
-        const item = queue[index]!
-        const controller = new AbortController()
-        thumbControllersRef.current.set(item.assetId, controller)
-        try {
-          const preview = readPreview(await manage('get', { assetId: item.assetId }, controller.signal))
-          const url = URL.createObjectURL(imageBlob(preview.image))
-          if (
-            !mounted.current ||
-            controller.signal.aborted ||
-            document.hidden ||
-            !enabledRef.current ||
-            batch !== thumbBatchRef.current
-          ) {
-            URL.revokeObjectURL(url)
-            return
-          }
-          const prevUrl = thumbUrlsRef.current.get(item.assetId)
-          if (prevUrl && prevUrl !== url) URL.revokeObjectURL(prevUrl)
-          thumbUrlsRef.current.set(item.assetId, url)
-          setThumbs(current => ({ ...current, [item.assetId]: { status: 'ready', url } }))
-        } catch {
-          if (
-            mounted.current &&
-            !controller.signal.aborted &&
-            enabledRef.current &&
-            !document.hidden &&
-            batch === thumbBatchRef.current
-          ) {
-            setThumbs(current => ({ ...current, [item.assetId]: { status: 'error' } }))
-          }
-        } finally {
-          if (thumbControllersRef.current.get(item.assetId) === controller) {
-            thumbControllersRef.current.delete(item.assetId)
-          }
-        }
-      }
-    }
-
-    const workers = Math.min(MAX_CONCURRENT_THUMBS, queue.length)
-    for (let i = 0; i < workers; i++) void worker()
-  }, [assetsPage, enabled, visible, abortThumbRequests, clearThumbnails])
+  const fetchThumbnail = useCallback(async (assetId: string, signal: AbortSignal) => {
+    const preview = readPreview(await manage('get', { assetId }, signal))
+    return imageBlob(preview.image)
+  }, [])
+  const thumbs = useGalleryThumbnails(assetsPage?.items ?? noAssets, enabled, visible && tab === 'studio', fetchThumbnail)
 
   const hasActiveJob = Boolean(jobsPage?.items.some(job => isBusyStatus(job.status))) || generating
   useEffect(() => {
     if (!enabled || !visible || !hasActiveJob) return
     const timer = window.setInterval(() => {
-      if (!document.hidden && enabledRef.current) void loadJobs(jobsPage?.offset ?? 0, true)
+      if (!document.hidden && enabledRef.current && !jobsController.current) void loadJobs(jobsOffsetRef.current, true)
     }, 2500)
     return () => window.clearInterval(timer)
-  }, [enabled, visible, hasActiveJob, jobsPage?.offset, loadJobs])
+  }, [enabled, visible, hasActiveJob, loadJobs])
 
   function searchAssets(event: FormEvent) {
     event.preventDefault()
@@ -622,14 +544,7 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
         throw new Error('Unexpected deletion receipt')
       }
       if (mounted.current && !controller.signal.aborted) {
-        for (const id of result.deletedAssetIds) {
-          const thumbUrl = thumbUrlsRef.current.get(id)
-          if (thumbUrl) {
-            URL.revokeObjectURL(thumbUrl)
-            thumbUrlsRef.current.delete(id)
-          }
-          if (source?.kind === 'asset' && source.assetId === id) clearSource()
-        }
+        if (source?.kind === 'asset' && result.deletedAssetIds.includes(source.assetId)) clearSource()
         callbacks.current.onFeedback(it('resources.deleted', { count: result.deletedAssetIds.length }))
       }
     } catch (error) {
@@ -915,6 +830,7 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
           ? { ...current, items: [job, ...current.items].slice(0, pageLimit), total: current.total + 1 }
           : { revision: 0, items: [job], offset: 0, limit: pageLimit, total: 1, hasMore: false, nextOffset: null }
       ))
+      if (isBusyStatus(job.status)) activeJobs.current = new Set([...activeJobs.current, job.jobId])
       callbacks.current.onFeedback(it('generate.submitted'))
       void loadJobs(0, true)
     } catch (error) {
@@ -1258,7 +1174,10 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
             title={t('generate.unknownTitle')}
             body={t('generate.unknownBody')}
             requestId={uncertainSubmit?.requestId ?? unknownJob?.requestId ?? null}
-            onRefresh={() => void loadJobs(jobsPage?.offset ?? 0)}
+            onRefresh={() => {
+              void loadJobs(jobsOffsetRef.current)
+              void loadAssets(assetsOffsetRef.current, true)
+            }}
             onConfirmReviewed={() => setUncertainSubmit(null)}
           />
         )}
@@ -1277,10 +1196,10 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
                 )}
               </div>
               <ActionButton
-                reasonCode={!enabled ? 'enable' : listLoading ? 'loading' : 'active'}
+                reasonCode={!enabled ? 'enable' : jobsLoading ? 'loading' : 'active'}
                 type="button"
                 className="text-button"
-                disabled={!enabled || listLoading || hasActive}
+                disabled={!enabled || jobsLoading || hasActive}
                 onClick={() => void loadJobs(jobsPage?.offset ?? 0)}>
                 <RefreshCw size={14} aria-hidden="true" />
                 {t('jobs.refresh')}
@@ -1291,13 +1210,13 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
               <p className="image-hint">{t('setupCta.disabledBody')}</p>
             ) : (
               <>
-                {listFailure && (
+                {jobsFailure && (
                   <div className="image-notice" role="alert">
                     <AlertCircle size={16} aria-hidden="true" />
-                    <span>{listFailure}</span>
+                    <span>{jobsFailure}</span>
                   </div>
                 )}
-                {listLoading && !jobsPage && (
+                {jobsLoading && !jobsPage && (
                   <p className="image-loading" role="status">
                     <LoaderCircle size={15} className="image-spin" aria-hidden="true" />
                     {t('jobs.loading')}
@@ -1341,16 +1260,9 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
                             <div className="image-job-meta">
                               <span>{t('jobs.model', { model: job.model })}</span>
                               {job.source && (
-                                <span>
-                                  {t(
-                                    job.source.kind === 'received'
-                                      ? 'jobs.source.received'
-                                      : job.source.kind === 'asset'
-                                        ? 'jobs.source.asset'
-                                        : 'jobs.source.upload',
-                                  )}
-                                </span>
+                                <span>{t(`jobs.source.${job.source.kind}`)}</span>
                               )}
+                              {job.source?.count && <span>{t('jobs.sourceCount', { count: job.source.count })}</span>}
                               {job.assetIds.length > 0 && (
                                 <span>{t('jobs.assets', { count: job.assetIds.length, value: formatNumber(job.assetIds.length) })}</span>
                               )}
@@ -1417,20 +1329,20 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
                     </span>
                     <div>
                       <ActionButton
-                        reasonCode={listLoading ? 'loading' : 'firstPage'}
+                        reasonCode={jobsLoading ? 'loading' : 'firstPage'}
                         type="button"
                         className="button button-secondary"
                         aria-label={t('jobs.previous')}
-                        disabled={listLoading || jobsPage.offset === 0}
+                        disabled={jobsLoading || jobsPage.offset === 0}
                         onClick={() => void loadJobs(Math.max(0, jobsPage.offset - jobsPage.limit))}>
                         <ChevronLeft size={16} aria-hidden="true" />
                       </ActionButton>
                       <ActionButton
-                        reasonCode={listLoading ? 'loading' : 'lastPage'}
+                        reasonCode={jobsLoading ? 'loading' : 'lastPage'}
                         type="button"
                         className="button button-secondary"
                         aria-label={t('jobs.next')}
-                        disabled={listLoading || !jobsPage.hasMore}
+                        disabled={jobsLoading || !jobsPage.hasMore}
                         onClick={() => void loadJobs(jobsPage.nextOffset ?? 0)}>
                         <ChevronRight size={16} aria-hidden="true" />
                       </ActionButton>
@@ -1454,7 +1366,7 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
                 reasonCode={!enabled ? 'enable' : 'busy'}
                 type="button"
                 className="text-button"
-                disabled={!enabled || listLoading || deleting}
+                disabled={!enabled || assetsLoading || deleting}
                 onClick={() => void loadAssets(assetsPage?.offset ?? 0)}>
                 <RefreshCw size={14} aria-hidden="true" />
                 {t('resources.refresh')}
@@ -1492,6 +1404,7 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
                   </div>
                 </form>
 
+                {assetsFailure && <p className="image-error" role="alert">{assetsFailure}</p>}
                 {deleteFailure && <p className="image-error" role="alert">{deleteFailure}</p>}
                 {assetsLoading && <p className="image-loading" role="status">{t('resources.loading')}</p>}
                 {assetsPage && assets.length === 0 && (
@@ -1520,7 +1433,7 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
                         reasonCode={hasActive ? 'active' : 'empty'}
                         type="button"
                         className="button button-danger"
-                        disabled={!checkedIds.length || listLoading || deleting || hasActive}
+                        disabled={!checkedIds.length || assetsLoading || deleting || hasActive}
                         onClick={() => confirmDelete(assets.filter(item => checkedIds.includes(item.assetId)))}>
                         <Trash2 size={15} aria-hidden="true" />
                         {t('resources.deleteSelected')}
@@ -1583,7 +1496,7 @@ export function ImageGenerationPanel({ enabled, onFeedback, onRefresh, onDirtyCh
                                 type="button"
                                 className="text-button image-row-delete"
                                 aria-label={t('resources.deleteImage', { prompt: asset.prompt })}
-                                disabled={listLoading || deleting || hasActive}
+                                disabled={assetsLoading || deleting || hasActive}
                                 onClick={() => confirmDelete([asset])}>
                                 <Trash2 size={16} aria-hidden="true" />
                               </ActionButton>

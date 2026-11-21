@@ -191,7 +191,9 @@ export function MemoryPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPane
   useEffect(() => {
     mounted.current = true
     void load()
+    let resumeRead = false
     const hide = () => {
+      resumeRead ||= Boolean(configController.current)
       ++configGeneration.current
       configController.current?.abort()
       configController.current = null
@@ -221,7 +223,10 @@ export function MemoryPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPane
       const next = !document.hidden
       setVisible(next)
       if (!next) hide()
-      else void load(false, true)
+      else if (resumeRead || !configRef.current) {
+        resumeRead = false
+        void load(false, Boolean(configRef.current))
+      }
     }
     const pagehide = () => {
       setVisible(false)
@@ -229,6 +234,7 @@ export function MemoryPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPane
     }
     document.addEventListener('visibilitychange', visibility)
     window.addEventListener('pagehide', pagehide)
+    window.addEventListener('pageshow', visibility)
     return () => {
       mounted.current = false
       ++configGeneration.current
@@ -239,6 +245,7 @@ export function MemoryPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPane
       draftRef.current = null
       document.removeEventListener('visibilitychange', visibility)
       window.removeEventListener('pagehide', pagehide)
+      window.removeEventListener('pageshow', visibility)
     }
     // Locale and drafts are presentation state and never initiate requests.
   }, [load])

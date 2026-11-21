@@ -3,7 +3,7 @@
   "id": "android-control",
   "name": "玩手机",
   "description": "由插件管理本机 ADB 与 USB／网络安卓设备，支持完整命令、交互进程、文件传输与屏幕截图。",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "kind": "capability",
   "apiVersion": 4,
   "assets": [],

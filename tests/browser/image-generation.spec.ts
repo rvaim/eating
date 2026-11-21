@@ -60,18 +60,58 @@ test.describe('生图插件真实临时 Host', () => {
     await page.getByRole('tab', { name: '创作与图库', exact: true }).click()
     await expect(page.getByLabel('提示词', { exact: true })).toBeVisible()
   }
-  async function seedHistory(page: Page, count: number) {
+  async function seedHistory(page: Page, count: number, withPersonaJob = false) {
     await host.close()
     const store = new ImageGenerationStore(join(directory, 'capabilities/image-generation'))
     for (let index = 1; index <= count; index++) {
       const job = store.enqueue(`history-fixture-${index}`, String(index).padStart(64, '0'), `历史图片 ${index}：晨光花园`, index % 2 ? 'watercolor' : 'photo')
       store.complete(job.jobId, { bytes: createImageFixturePng([index * 10 % 255, 165, 94, 255]), mimeType: 'image/png' }, () => {})
     }
+    if (withPersonaJob) {
+      const bytes = createImageFixturePng([70, 165, 94, 255])
+      const hash = createHash('sha256').update(bytes).digest('hex')
+      const source = { kind: 'persona' as const, imageId: 'f8cef5c6-3237-413d-be83-ab07d868265c', mimeType: 'image/png' as const, bytes, hash }
+      const job = store.enqueue('persona-edit-fixture', hash, '人格参考图编辑回归', 'photo', [source, source])
+      store.fail(job.jobId, { code: 'IMAGE_GENERATION_HTTP_400', message: 'Fixture edit rejected', outcome: 'failed' })
+    }
     host = await createInstalledHost({ dataDirectory: directory, staticDirectory, port: 0, allowedUiOrigins: [], autoConnectOnStartup: false })
     url = await host.listen()
     const bootstrap = await page.request.get(url + '/api/bootstrap')
     csrf = (await bootstrap.json() as { csrfToken: string }).csrfToken
   }
+
+  test('人格参考图任务显示真实失败，切回窗口复用图库和选择', async ({ page }) => {
+    await seedHistory(page, 2, true)
+    const requests: string[] = []
+    page.on('request', request => {
+      if (request.url().endsWith('/api/plugins/image-generation/manage') && request.method() === 'POST') {
+        requests.push(request.postDataJSON().operation)
+      }
+      if (request.url().endsWith('/api/plugins/image-generation/configuration')) requests.push('configuration')
+    })
+    await open(page)
+    const job = page.locator('.image-job').filter({ hasText: '人格参考图编辑回归' })
+    await expect(job).toContainText('使用人格外貌参考图')
+    await expect(job).toContainText('2 张参考图')
+    await expect(job).toContainText('HTTP 400')
+    const thumbnails = page.locator('.image-asset-thumb')
+    const decodedThumbnails = () => thumbnails.evaluateAll(images => images.filter(image => (image as HTMLImageElement).naturalWidth > 0).length)
+    await expect.poll(decodedThumbnails).toBe(2)
+    const checked = page.locator('.image-row-check input').first()
+    await checked.check()
+    const galleryRequests = [...requests]
+    const hidden = (value: boolean) => page.evaluate(state => {
+      Object.defineProperty(document, 'hidden', { configurable: true, value: state })
+      document.dispatchEvent(new Event('visibilitychange'))
+    }, value)
+    await hidden(true)
+    await expect(thumbnails).toHaveCount(0)
+    await hidden(false)
+    await expect.poll(decodedThumbnails).toBe(2)
+    await expect(checked).toBeChecked()
+    await expect(job).toBeVisible()
+    expect(requests).toEqual(galleryRequests)
+  })
 
   test('请求参数默认low，保存只更新本地，文生图及编辑实际使用已保存参数', async ({ page }, info) => {
     await open(page)
@@ -197,7 +237,8 @@ test.describe('生图插件真实临时 Host', () => {
     await expect(page.getByRole('dialog', { name: 'Delete 1 image?', exact: true })).toBeVisible()
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')) })
     await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')) })
-    await expect(history.getByText('0 selected', { exact: true })).toBeVisible()
+    await expect(page.getByRole('dialog', { name: 'Delete 1 image?', exact: true })).not.toBeVisible()
+    await expect(history.getByText('1 selected', { exact: true })).toBeVisible()
     expect(deletes).toHaveLength(2); expect(provider.requests).toHaveLength(0)
     await host.close()
     const store = new ImageGenerationStore(join(directory, 'capabilities/image-generation'))

@@ -76,7 +76,11 @@ describe('QQ authorized image assets with real OneBot transport', () => {
       expect(f.executeIdempotent).not.toHaveBeenCalled()
       expect(f.getAsset).not.toHaveBeenCalled()
     }
-    await expect(f.send([reference])).resolves.toEqual({ message_id: 1001 })
+    const sendReference = () => f.plugin.invokeScoped!('qq_send_private_message', {
+      user_id: '234567', image_ref: reference.data.file, request_id: 'qq-asset-send-0001',
+    }, 'qq-asset-send-0001', f.scope)
+    await expect(sendReference()).resolves.toEqual({ message_id: 1001 })
+    // The direct reference and identical OneBot segment share the same action intent.
     await expect(f.send([reference])).resolves.toEqual({ message_id: 1001 })
     expect(f.sends()).toHaveLength(1)
     expect(f.getAsset).toHaveBeenCalledTimes(1)

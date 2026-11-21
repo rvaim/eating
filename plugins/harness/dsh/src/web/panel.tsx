@@ -258,13 +258,13 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
   }, [overallDirty])
   useEffect(() => () => { callbacks.current.onDirtyChange?.(false) }, [])
 
-  const refreshWorkspace = useCallback(async (duringMutation = false) => {
+  const refreshWorkspace = useCallback(async (duringMutation = false, quiet = false) => {
     if (!mounted.current || document.hidden || actionLock.current && !duringMutation) return
     const ticket = ++generation.current
     readController.current?.abort()
     const controller = new AbortController()
     readController.current = controller
-    setReading(true)
+    if (!quiet) setReading(true)
     try {
       const response = readPlugin(await hostRequest<unknown>('/workspace', { signal: controller.signal }))
       if (!mounted.current || controller.signal.aborted || ticket !== generation.current) return
@@ -324,8 +324,10 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
     const startPolling = () => {
       stopPolling()
       if (document.hidden) return
-      void refreshWorkspace()
-      timer = window.setInterval(() => { if (!readController.current && !document.hidden) void refreshWorkspace() }, 2000)
+      if (!savedConfigRef.current) void refreshWorkspace()
+      timer = window.setInterval(() => {
+        if (!readController.current && !document.hidden) void refreshWorkspace(false, Boolean(savedConfigRef.current))
+      }, 2000)
     }
     const visibilityChanged = () => {
       setVisible(!document.hidden)

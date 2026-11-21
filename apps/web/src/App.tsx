@@ -51,8 +51,15 @@ export function App({ workspace }: { readonly workspace: PlatformWorkspace }) {
   const guardRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    void workspace.refresh()
-    const timer = window.setInterval(() => { if (!document.hidden) void workspace.refresh() }, 3000)
+    let pending = false
+    const refresh = async () => {
+      if (pending || document.hidden) return
+      pending = true
+      try { await workspace.refresh() }
+      finally { pending = false }
+    }
+    void refresh()
+    const timer = window.setInterval(() => { void refresh() }, 3000)
     return () => window.clearInterval(timer)
   }, [workspace])
 

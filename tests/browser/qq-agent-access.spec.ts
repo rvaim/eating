@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
@@ -36,6 +36,14 @@ test.describe('QQ multi-owner and per-role access', () => {
   }
   const identityField = (page: Page, label: string) => page.locator('.field').filter({ has: page.getByLabel(label, { exact: true }) })
   const identityChips = (page: Page, label: string) => identityField(page, label).locator('.eating-chip > span')
+  async function pasteNumbers(input: Locator, numbers: string) {
+    await input.focus()
+    await input.evaluate((element, text) => {
+      const clipboardData = new DataTransfer()
+      clipboardData.setData('text/plain', text)
+      element.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
+    }, numbers)
+  }
   async function expectCardInset(page: Page, ownerLabel: string, padding: number) {
     const card = page.locator('fieldset.form-fields').filter({ has: page.getByLabel(ownerLabel, { exact: true }) })
     const edge = (await card.boundingBox())!.x
@@ -62,8 +70,24 @@ test.describe('QQ multi-owner and per-role access', () => {
     await expectCardInset(page, '主人 QQ', 24)
     await page.screenshot({ path: info.outputPath('qq-agent-access-zh-desktop.png'), fullPage: true })
     const connections = onebot.connections.length
-    await page.getByLabel('主人 QQ', { exact: true }).fill('987654321, 222222222\n987654321')
-    await page.getByLabel('管理员 QQ', { exact: true }).fill('987654321，111111111')
+    const owner = page.getByLabel('主人 QQ', { exact: true })
+    const administrator = page.getByLabel('管理员 QQ', { exact: true })
+    await owner.pressSequentially('321')
+    await owner.press('Tab')
+    await expect(owner).toHaveValue('321')
+    await expect(identityChips(page, '主人 QQ')).toHaveCount(0)
+    await administrator.fill('654')
+    await administrator.evaluate(element => {
+      element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }))
+      element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true }))
+      element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }))
+    })
+    await expect(administrator).toHaveValue('654')
+    await expect(identityChips(page, '管理员 QQ')).toHaveCount(0)
+    await owner.selectText()
+    await administrator.fill('')
+    await pasteNumbers(owner, '987654321, 222222222\n987654321')
+    await pasteNumbers(administrator, '987654321，111111111')
     await expect(identityChips(page, '主人 QQ')).toHaveText(['987654321', '222222222'])
     await expect(identityChips(page, '管理员 QQ')).toHaveText(['987654321', '111111111'])
     await page.getByLabel('主人 QQ', { exact: true }).fill('1000abc')
@@ -113,7 +137,8 @@ test.describe('QQ multi-owner and per-role access', () => {
     await api(page, '/plugins/qq/manage', { operation: 'save-agent-policy', input: { expectedRevision: original.policyRevision, owners: ['222222222'], administrators: [], agentTools: original.agentTools } })
     await page.getByRole('button', { name: '保存代理与权限', exact: true }).click()
     await expect(page.getByRole('alert').getByText('其他页面已更新代理与权限，当前草稿已保留。请放弃草稿并读取已保存配置，核对后重新修改。', { exact: true })).toBeVisible()
-    await expect(identityChips(page, '主人 QQ')).toHaveText(['111111111'])
+    await expect(page.getByLabel('主人 QQ', { exact: true })).toHaveValue('111111111')
+    await expect(identityChips(page, '主人 QQ')).toHaveCount(0)
     await expect(page.getByRole('button', { name: '保存代理与权限', exact: true })).toBeDisabled()
     expect((await api(page, '/plugins/qq/configuration')).owners).toEqual(['222222222'])
     await page.getByRole('button', { name: '放弃草稿并读取已保存配置', exact: true }).click()
@@ -128,7 +153,7 @@ test.describe('QQ multi-owner and per-role access', () => {
   test('英文窄屏目录完整，语言切换保留草稿且不隐式保存', async ({ page }, info) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await open(page)
-    await page.getByLabel('主人 QQ', { exact: true }).fill('987654321, 222222222')
+    await pasteNumbers(page.getByLabel('主人 QQ', { exact: true }), '987654321, 222222222')
     let writes = 0
     page.on('request', request => { if (request.method() === 'POST') writes++ })
     await page.locator('#display-language').selectOption('en-US')

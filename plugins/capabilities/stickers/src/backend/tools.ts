@@ -16,7 +16,7 @@ export const stickerTools: readonly PluginToolDefinition[] = [
   tool('sticker_list', '查找表情', '按关键字和标签筛选表情元数据，不返回图片数据。标签按 AND 匹配；分页时可传 expectedRevision 避免跨版本漏项。', {
     query: { type: 'string', maxLength: 1000 }, tags, offset: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 }, limit: { type: 'integer', minimum: 1, maximum: 50, default: 20 }, expectedRevision,
   }, [], true),
-  tool('sticker_get', '读取表情图片', '读取指定表情的真实图片和可发送 image 消息段。发送时使用 sendable 中的 eating-asset 引用，无需搬运 Base64。', { assetId, expectedRevision }, ['assetId'], true, true),
+  tool('sticker_get', '读取表情图片', '读取指定表情的真实图片和 image_ref（另含 sendable 图片段）。发送时复制 image_ref 到 QQ 发送工具同名顶层字段，省略 message 和 auto_escape。', { assetId, expectedRevision }, ['assetId'], true, true),
   tool('sticker_update', '编辑表情资料', '以表情库版本 CAS 更新指定表情的完整描述和标签，不替换图片内容。', { assetId, description, tags, expectedRevision }, ['assetId', 'description', 'tags', 'expectedRevision'], false),
   tool('sticker_delete', '删除表情', '以表情库版本 CAS 删除表情及库内图片。此操作无法撤销。', { assetId, expectedRevision }, ['assetId', 'expectedRevision'], false),
   tool('sticker_list_tags', '查看表情标签', '列出表情库中所有标签及对应表情数量，不包含图片数据。', { expectedRevision }, [], true),

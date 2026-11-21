@@ -40,6 +40,7 @@ export function RequestParameters({
   const mounted = useRef(false)
   const enabledRef = useRef(enabled)
   const action = useRef<AbortController | null>(null)
+  const needsLoad = useRef(true)
   const saving = useRef(false)
   const discardHostRef = useRef<HTMLDivElement | null>(null)
   const callbacks = useRef({ onDirtyChange, onReadyChange })
@@ -71,7 +72,9 @@ export function RequestParameters({
   }
 
   const load = useCallback(async (force = false) => {
+    needsLoad.current = true
     if (!enabledRef.current || document.hidden || saving.current) return
+    needsLoad.current = false
     action.current?.abort()
     const controller = new AbortController()
     action.current = controller
@@ -153,23 +156,27 @@ export function RequestParameters({
 
   useEffect(() => {
     mounted.current = true
+    const suspend = () => {
+      if (action.current) needsLoad.current = true
+      action.current?.abort()
+      action.current = null
+      if (mounted.current) setBusy(false)
+    }
     const visibility = () => {
-      if (document.hidden) {
-        action.current?.abort()
-        action.current = null
-        if (mounted.current) setBusy(false)
-      } else if (enabledRef.current) {
+      if (document.hidden) suspend()
+      else if (needsLoad.current) {
         void load()
       }
     }
-    const pagehide = () => action.current?.abort()
     document.addEventListener('visibilitychange', visibility)
-    window.addEventListener('pagehide', pagehide)
+    window.addEventListener('pagehide', suspend)
+    window.addEventListener('pageshow', visibility)
     return () => {
       mounted.current = false
       action.current?.abort()
       document.removeEventListener('visibilitychange', visibility)
-      window.removeEventListener('pagehide', pagehide)
+      window.removeEventListener('pagehide', suspend)
+      window.removeEventListener('pageshow', visibility)
     }
   }, [load])
 

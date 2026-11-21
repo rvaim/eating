@@ -23,15 +23,22 @@ const audioRefProperty: JsonObject = {
   type: 'string', pattern: '^eating-audio://[a-z][a-z0-9-]{0,63}/[a-f0-9]{64}$', maxLength: 256,
   description: '发送已有语音时，直接复制 speech_get 返回的 audio_ref。不要提供 message、CQ码、本机路径或Base64；后台构造独立record段并授权读取音频。',
 }
-const sendContentConstraints: JsonObject = {
-  oneOf: [
-    { required: ['message'], not: { required: ['audio_ref'] } },
-    { required: ['audio_ref'], not: { anyOf: [{ required: ['message'] }, { required: ['auto_escape'] }] } },
-  ],
+const imageRefProperty: JsonObject = {
+  type: 'string', pattern: '^eating-asset://[a-z][a-z0-9-]{0,63}/[A-Za-z0-9_-]{1,128}$', maxLength: 208,
+  description: '发送一张已有图片时，直接复制 image_get 或 sticker_get 返回的 image_ref，例如 eating-asset://image-generation/<assetId>。只传引用字符串，不填 message 或 auto_escape。QQ 后台负责授权读取及生成图片段。',
 }
 const autoEscapeProperty: JsonObject = {
   type: 'boolean', default: true,
   description: 'Eating 为保留既有纯文本行为默认 true；OneBot 标准默认 false。显式 false 才解析字符串中的 CQ 码，消息段对象／数组不受此参数影响。',
+}
+const sendContent = { message: oneBotMessageSchema, image_ref: imageRefProperty, audio_ref: audioRefProperty, auto_escape: autoEscapeProperty }
+const sendContentDescription = '发送已有图片传 image_ref，发送已有语音传 audio_ref，普通文字和标准消息段传 message。三者选一。'
+const sendContentConstraints: JsonObject = {
+  oneOf: [
+    { required: ['message'], not: { anyOf: [{ required: ['image_ref'] }, { required: ['audio_ref'] }] } },
+    { required: ['image_ref'], not: { anyOf: [{ required: ['message'] }, { required: ['audio_ref'] }, { required: ['auto_escape'] }] } },
+    { required: ['audio_ref'], not: { anyOf: [{ required: ['message'] }, { required: ['image_ref'] }, { required: ['auto_escape'] }] } },
+  ],
 }
 const noCacheProperty: JsonObject = { type: 'boolean', default: false, description: 'true 跳过 OneBot 缓存。' }
 const durationProperty: JsonObject = { type: 'integer', minimum: 0, maximum: MAX_SAFE, default: 1800, description: '禁言秒数，0 表示取消普通成员禁言。' }
@@ -150,12 +157,12 @@ const quickOperationConstraints: JsonObject = {
 }
 
 export const qqTools: readonly PluginToolDefinition[] = [
-  defineTool('send_private_msg', '发送私聊消息', '向指定 QQ 号发送消息。发送语音直接传audio_ref，不填message；文字／其他消息用message。核对收件人和内容；request_id 用于防止重复执行。',
-    { user_id: oneBotIdSchema, message: oneBotMessageSchema, audio_ref: audioRefProperty, auto_escape: autoEscapeProperty }, ['user_id'], { name: 'qq_send_private_message', messages: true, constraints: sendContentConstraints }),
-  defineTool('send_group_msg', '发送群消息', '向指定群发送消息。发送语音直接传audio_ref，不填message；文字／其他消息用message。核对群号和内容；request_id 用于防止重复执行。',
-    { group_id: oneBotIdSchema, message: oneBotMessageSchema, audio_ref: audioRefProperty, auto_escape: autoEscapeProperty }, ['group_id'], { name: 'qq_send_group_message', messages: true, constraints: sendContentConstraints }),
-  defineTool('send_msg', '发送消息', '按 message_type 发送私聊／群消息。省略类型时必须只提供一个目标；提供类型时必须包含对应目标。',
-    { message_type: { type: 'string', enum: ['private', 'group'] }, user_id: oneBotIdSchema, group_id: oneBotIdSchema, message: oneBotMessageSchema, audio_ref: audioRefProperty, auto_escape: autoEscapeProperty },
+  defineTool('send_private_msg', '发送私聊消息', '向指定 QQ 号发送消息。' + sendContentDescription + '核对收件人和内容，使用稳定 request_id 防重。',
+    { user_id: oneBotIdSchema, ...sendContent }, ['user_id'], { name: 'qq_send_private_message', messages: true, constraints: sendContentConstraints }),
+  defineTool('send_group_msg', '发送群消息', '向指定群发送消息。' + sendContentDescription + '核对群号和内容，使用稳定 request_id 防重。',
+    { group_id: oneBotIdSchema, ...sendContent }, ['group_id'], { name: 'qq_send_group_message', messages: true, constraints: sendContentConstraints }),
+  defineTool('send_msg', '发送消息', '按 message_type 发送私聊／群消息。省略类型时必须只提供一个目标，提供类型时必须包含对应目标。' + sendContentDescription,
+    { message_type: { type: 'string', enum: ['private', 'group'] }, user_id: oneBotIdSchema, group_id: oneBotIdSchema, ...sendContent },
     [], { name: 'qq_send_message', messages: true, constraints: { allOf: [sendTargetConstraints, sendContentConstraints] } }),
   defineTool('delete_msg', '撤回消息', '撤回指定真实消息，受当前账号与群权限限制。',
     { message_id: oneBotMessageIdSchema }, ['message_id'], { name: 'qq_delete_message', destructive: true }),
@@ -240,7 +247,9 @@ export function prepareOneBotCall(tool: PluginToolDefinition, params: JsonObject
   assertQQMessage(input.message)
   if (registered.protocolAction === '.handle_quick_operation' && input.operation && typeof input.operation === 'object' && !Array.isArray(input.operation)) assertQQMessage(input.operation.reply, 'operation.reply')
   const forwarded: JsonObject = { ...input }
+  if (typeof input.image_ref === 'string') forwarded.message = [{ type: 'image', data: { file: input.image_ref } }]
   if (typeof input.audio_ref === 'string') forwarded.message = [{ type: 'record', data: { file: input.audio_ref } }]
+  delete forwarded.image_ref
   delete forwarded.audio_ref
   delete forwarded.request_id
   delete forwarded.instance_id

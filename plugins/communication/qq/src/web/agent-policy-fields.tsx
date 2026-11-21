@@ -97,7 +97,6 @@ export function AgentPolicyFields({ configuration, agentTypes, tools, enabled, c
   const [dirty, setDirty] = useState(false)
   const [pendingInputs, setPendingInputs] = useState<{ owners: string; administrators: string }>({ owners: '', administrators: '' })
   const [chipReset, setChipReset] = useState(0)
-  const dirtyRef = useRef(false)
   const [saving, setSaving] = useState(false)
   const [reloading, setReloading] = useState(false)
   const [errors, setErrors] = useState<Partial<Record<'owners' | 'administrators', QQTranslationKey>>>({})
@@ -122,10 +121,10 @@ export function AgentPolicyFields({ configuration, agentTypes, tools, enabled, c
       callbacks.current.onDirtyChange?.(false)
     }
   }, [actionLock])
-  useEffect(() => { if (!dirtyRef.current && reading.draft) setDraft(reading.draft) }, [reading])
+  useEffect(() => { if (!effectiveDirty && reading.draft) setDraft(reading.draft) }, [reading, effectiveDirty])
 
   function update(next: AgentPolicyDraft) {
-    setDraft(next); dirtyRef.current = true; setDirty(true); setSaved(false)
+    setDraft(next); setDirty(true); setSaved(false)
   }
   async function discard() {
     if (actionLock.current) return
@@ -135,7 +134,7 @@ export function AgentPolicyFields({ configuration, agentTypes, tools, enabled, c
       const response = await hostRequest<JsonObject>('/plugins/qq/configuration', { signal: pending.signal })
       if (!alive.current || pending.signal.aborted) return
       setDraft(agentPolicyDraft(response, agentTypes))
-      dirtyRef.current = false; setDirty(false)
+      setDirty(false)
       setPendingInputs({ owners: '', administrators: '' })
       setChipReset(count => count + 1)
       setErrors({}); setFailure(null); setSaved(false)
@@ -161,7 +160,7 @@ export function AgentPolicyFields({ configuration, agentTypes, tools, enabled, c
       const response = await hostRequest<JsonObject>('/plugins/qq/manage', { method: 'POST', signal: pending.signal, body: { operation: 'save-agent-policy', input: { expectedRevision: draft.expectedRevision, owners, administrators, agentTools: draft.agentTools } } })
       if (!alive.current || pending.signal.aborted) return
       setDraft(agentPolicyDraft(response, agentTypes))
-      dirtyRef.current = false; setDirty(false)
+      setDirty(false)
       setPendingInputs({ owners: '', administrators: '' })
       setChipReset(count => count + 1)
       setSaved(true)
@@ -201,6 +200,7 @@ export function AgentPolicyFields({ configuration, agentTypes, tools, enabled, c
               id={`${prefix}-${field}`}
               values={splitTagTokens(draft[field], 'line-comma-space')}
               delimiter="line-comma-space"
+              commitOnEdit={false}
               maxItems={100}
               disabled={blocked}
               placeholder={t(`policy.${field}.placeholder`)}

@@ -239,7 +239,9 @@ function validResponsesResult(value: unknown): boolean {
   if (!object(value) || !Array.isArray(value.output)) return false
   if (value.object !== undefined && value.object !== 'response') return false
   if (value.status !== undefined && !['completed', 'incomplete'].includes(String(value.status))) return false
-  return value.output.every(validResponsesOutputItem) && (value.output.length > 0 || typeof value.output_text === 'string')
+  if (!value.output.every(validResponsesOutputItem)) return false
+  if (value.output.length > 0 || typeof value.output_text === 'string') return true
+  return value.status === 'incomplete' && object(value.incomplete_details) && typeof value.incomplete_details.reason === 'string' && value.incomplete_details.reason.length > 0
 }
 
 /** A real, minimal provider request; success does not imply the DSH runtime can start. */

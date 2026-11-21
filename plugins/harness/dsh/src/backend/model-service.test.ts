@@ -406,6 +406,7 @@ describe('DSH OpenAI Responses protocol model list and connection test', () => {
     { object: 'response', status: 'completed', output: [], output_text: 'Pong' },
     { id: 'resp_null_err', object: 'response', status: 'completed', error: null, incomplete_details: null, output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Pong' }] }] },
     { id: 'resp_false_err', object: 'response', status: 'completed', error: false, output: [{ type: 'reasoning', id: 'rs_1', summary: [] }] },
+    { id: 'resp_reasoning_cap', object: 'response', status: 'incomplete', error: null, incomplete_details: { reason: 'max_output_tokens' }, output: [], usage: { input_tokens: 33, output_tokens: 16, output_tokens_details: { reasoning_tokens: 13 }, total_tokens: 49 } },
   ])('accepts valid OpenAI Responses payload variants: %j', async payload => {
     const upstream = await fixture((_request, response) => json(response, payload))
     expect(await testModelConnection(upstream.responsesConfiguration)).toMatchObject({ ok: true, model: 'gpt-5' })
@@ -422,6 +423,8 @@ describe('DSH OpenAI Responses protocol model list and connection test', () => {
     { status: 'failed', output: [] },
     { object: 'list', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'bad' }] }] },
     { status: 'completed', output: [] },
+    { status: 'incomplete', output: [] },
+    { status: 'incomplete', incomplete_details: { reason: '' }, output: [] },
     { status: 'completed', output: [{ type: 'message', role: 'user', content: [{ type: 'output_text', text: 'wrong-role' }] }] },
   ])('rejects non-Responses HTTP-200 payloads: %j', async payload => {
     const upstream = await fixture((_request, response) => json(response, payload))

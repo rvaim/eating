@@ -798,4 +798,18 @@ describe('DSH reliable single-batch handoff', () => {
     expect(setup.clients).toHaveLength(2)
     expect(setup.plugin.getStatus().state).toBe('connected')
   })
+
+  it('provides a non-empty placeholder EATING_DSH_API_KEY only for keyless OpenAI-compatible local endpoints while keeping apiKeyConfigured false', async () => {
+    const setup = fixture()
+    for (const protocol of ['openai-responses', 'openai-completions'] as const) {
+      const env = createRuntimeEnvironment(setup.directory, { ...DEFAULT_CONFIGURATION, protocol, endpoint: 'http://127.0.0.1:1/v1', model: 'local-model', apiKey: '' }, 'nonce', 'session')
+      expect(env.EATING_DSH_API_KEY).toBe('eating-local-no-key')
+    }
+    const geminiEnv = createRuntimeEnvironment(setup.directory, { ...DEFAULT_CONFIGURATION, protocol: 'google-generative-ai', endpoint: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash', apiKey: '' }, 'nonce', 'session')
+    expect(geminiEnv.EATING_DSH_API_KEY).toBe('')
+    await setup.plugin.updateConfiguration({ protocol: 'openai-responses', endpoint: 'http://127.0.0.1:1/v1', model: 'local-model', clearApiKey: true })
+    expect(setup.plugin.getPublicConfiguration().apiKeyConfigured).toBe(false)
+    await setup.plugin.connect()
+    expect(setup.clients[0]!.launch.env!.EATING_DSH_API_KEY).toBe('eating-local-no-key')
+  })
 })

@@ -8,9 +8,9 @@ import type { ModelInformation } from '../model-information'
 import type { DshConfiguration } from './config'
 import { readRestrictedJson, writeRestrictedJson } from './config'
 
-type Identity = Pick<DshConfiguration, 'endpoint' | 'apiKey'>
+type Identity = Pick<DshConfiguration, 'protocol' | 'endpoint' | 'apiKey'>
 interface Catalog { readonly schemaVersion: 1; readonly signature: string; readonly fetchedAt: string; readonly models: readonly ModelInformation[] }
-const signature = (configuration: Identity) => createHash('sha256').update(configuration.endpoint + '\0' + configuration.apiKey).digest('hex')
+const signature = (configuration: Identity) => createHash('sha256').update(configuration.protocol + '\0' + configuration.endpoint + '\0' + configuration.apiKey).digest('hex')
 export class DshModelInformationFile {
   readonly filePath: string
   constructor(directory: string) { this.filePath = join(directory, 'model-information.json') }

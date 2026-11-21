@@ -7,11 +7,12 @@ import { DshModelInformationFile } from './model-information'
 const directories: string[] = []
 afterEach(() => { for (const directory of directories.splice(0)) { if (realpathSync(directory) !== directory || dirname(directory) !== realpathSync(tmpdir()) || !basename(directory).startsWith('eating-model-information-')) throw new Error('Unsafe fixture cleanup'); rmSync(directory, { recursive: true }) } })
 function fixture() { const directory = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), 'eating-model-information-'))); directories.push(directory); return new DshModelInformationFile(directory) }
-const identity = { endpoint: 'https://fixture.invalid/v1', apiKey: 'fixture-private-catalog-key', model: 'fixture-model' }
+const identity = { protocol: 'openai-completions' as const, endpoint: 'https://fixture.invalid/v1', apiKey: 'fixture-private-catalog-key', model: 'fixture-model' }
 
 describe('provider model capability metadata', () => {
-  it('reads explicit modalities and supported parameters without any model-name heuristics', () => {
+  it('reads explicit modalities, Gemini token limits, and thinking flags without model-name heuristics', () => {
     expect(reportedModelCapabilities({ id: 'arbitrary', modalities: { input: ['text', 'image'], output: ['text'] }, tool_call: true, reasoning: true, context_length: 1000000, context_window: 1000000, max_output_tokens: 128000, supported_parameters: ['tools', 'reasoning'] })).toEqual({ imageInput: true, toolCalling: true, reasoning: true, inputModalities: ['text', 'image'], outputModalities: ['text'], contextWindow: 1000000, maxOutputTokens: 128000 })
+    expect(reportedModelCapabilities({ name: 'models/gemini-2.5-flash', inputTokenLimit: 1048576, outputTokenLimit: 65536, thinking: true })).toEqual({ imageInput: null, toolCalling: null, reasoning: true, inputModalities: null, outputModalities: null, contextWindow: 1048576, maxOutputTokens: 65536 })
     expect(reportedModelCapabilities({ id: 'vision-super-reasoning-image' })).toBeUndefined()
   })
   it('preserves explicit false and marks contradictory or malformed declarations unknown', () => {
@@ -20,10 +21,11 @@ describe('provider model capability metadata', () => {
     expect(value.toolCalling).toBe(false); expect(value.reasoning).toBe(false)
     expect(reportedModelCapabilities({ input: ['unrecognized-secret-token'], context_length: '1000000', tool_call: 'true' })).toBeUndefined()
   })
-  it('binds stored facts to provider credentials and exact model, without writing secrets', () => {
+  it('binds stored facts to protocol, provider credentials, and exact model without writing secrets', () => {
     const file = fixture(), capabilities = reportedModelCapabilities({ modalities: { input: ['text', 'image'] } })!
     file.save(identity, [{ id: identity.model, capabilities }])
     expect(file.selected(identity).model?.capabilities?.imageInput).toBe(true)
+    expect(file.selected({ ...identity, protocol: 'google-generative-ai' }).model).toBeNull()
     expect(file.selected({ ...identity, model: 'other-model' }).model).toBeNull()
     expect(file.selected({ ...identity, apiKey: 'other-private-key' }).model).toBeNull()
     expect(file.selected({ ...identity, endpoint: 'https://other.invalid/v1' }).model).toBeNull()

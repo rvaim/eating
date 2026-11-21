@@ -1,30 +1,59 @@
 import { performance } from 'node:perf_hooks'
 import { PlatformError } from '@eating/plugin-sdk'
 import type { DshConfiguration } from './config'
-
-type ModelConfiguration = Pick<DshConfiguration, 'endpoint' | 'apiKey' | 'timeoutMs'>
-type ModelOperation = 'list' | 'test'
+import { isDshApiProtocol, protocolRequiresApiKey } from '../protocol'
+import type { DshApiProtocol } from '../protocol'
 import { reportedModelCapabilities } from '../model-information'
 import type { ModelInformation } from '../model-information'
+
+type ModelConfiguration = Pick<DshConfiguration, 'protocol' | 'endpoint' | 'apiKey' | 'timeoutMs'>
+type ModelOperation = 'list' | 'test'
 
 const MAX_REQUEST_MS = 15_000
 const MAX_RESPONSE_BYTES = 1024 * 1024
 const MAX_MODELS = 2000
+const GEMINI_LIST_PAGE_SIZE = 1000
 const controlCharacters = /[\u0000-\u001f\u007f-\u009f]/
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-function invalidResponse(): PlatformError {
-  return new PlatformError('MODEL_RESPONSE_INVALID', '模型服务返回的内容不符合 OpenAI 兼容接口格式。', 502, 'failed')
+function invalidResponse(protocol: DshApiProtocol): PlatformError {
+  return new PlatformError(
+    'MODEL_RESPONSE_INVALID',
+    protocol === 'google-generative-ai'
+      ? '模型服务返回的内容不符合 Google Gemini 接口格式。'
+      : '模型服务返回的内容不符合 OpenAI 兼容接口格式。',
+    502,
+    'failed',
+  )
 }
 
-function requestUrl(configuration: ModelConfiguration, path: string): URL {
-  if (!configuration.endpoint.trim()) throw new PlatformError('NOT_CONFIGURED', '请先保存 OpenAI 兼容基础地址。', 409, 'not-sent')
+function geminiModelPath(model: string): string {
+  const trimmed = model.trim()
+  if (!trimmed || trimmed.length > 160 || controlCharacters.test(trimmed) || trimmed.includes('..') || /[?&#\\]/.test(trimmed)) {
+    throw new PlatformError('INVALID_CONFIGURATION', '模型名称需为 1 至 160 个有效字符。', 400, 'not-sent')
+  }
+  const prefixed = /^(models|tunedModels)\/([^/]+)$/.exec(trimmed)
+  if (prefixed) return `${prefixed[1]}/${encodeURIComponent(prefixed[2]!)}`
+  if (trimmed.includes('/')) {
+    throw new PlatformError('INVALID_CONFIGURATION', 'Google Gemini 模型名称不能包含无效路径分隔符。', 400, 'not-sent')
+  }
+  return `models/${encodeURIComponent(trimmed)}`
+}
+
+function requestUrl(configuration: ModelConfiguration, path: string, query?: Readonly<Record<string, string>>): URL {
+  if (!isDshApiProtocol(configuration.protocol)) {
+    throw new PlatformError('INVALID_CONFIGURATION', '模型 API 协议不受支持。', 400, 'not-sent')
+  }
+  if (!configuration.endpoint.trim()) throw new PlatformError('NOT_CONFIGURED', '请先保存模型服务基础地址。', 409, 'not-sent')
+  if (protocolRequiresApiKey(configuration.protocol) && !configuration.apiKey.trim()) {
+    throw new PlatformError('NOT_CONFIGURED', '请先保存 Google Gemini API Key。', 409, 'not-sent')
+  }
   let url: URL
   try { url = new URL(configuration.endpoint) }
-  catch { throw new PlatformError('INVALID_CONFIGURATION', '请填写有效的 OpenAI 兼容 HTTP 或 HTTPS 基础地址。', 400, 'not-sent') }
+  catch { throw new PlatformError('INVALID_CONFIGURATION', '请填写有效的 HTTP 或 HTTPS 模型服务基础地址。', 400, 'not-sent') }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || /^[a-z]+:\/\/[^/?#]*@/i.test(url.href) || url.search || url.hash || /[?#]/.test(configuration.endpoint) || configuration.endpoint.length > 2048) {
     throw new PlatformError('INVALID_CONFIGURATION', '模型地址仅支持 HTTP/HTTPS，且不能包含账号、密码、查询参数或片段。', 400, 'not-sent')
   }
@@ -33,6 +62,9 @@ function requestUrl(configuration: ModelConfiguration, path: string): URL {
   }
   // A leading slash in new URL(path, base) would silently discard a custom base path.
   url.pathname = `${url.pathname.replace(/\/+$/, '')}/${path}`
+  if (query) {
+    for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value)
+  }
   return url
 }
 
@@ -41,14 +73,14 @@ function statusFailure(status: number, operation: ModelOperation): PlatformError
   if (status === 429) return new PlatformError('MODEL_RATE_LIMITED', '模型服务请求过于频繁或额度不足，请稍后重试并检查账户额度。', 503, 'failed')
   if (operation === 'list' && [404, 405, 501].includes(status)) return new PlatformError('MODEL_LIST_UNSUPPORTED', '此基础地址未提供可用的模型列表接口，请手动填写模型名称。', 502, 'failed')
   return operation === 'list'
-    ? new PlatformError('MODEL_LIST_FAILED', '获取模型列表失败，请检查已保存的基础地址和提供商服务状态。', 502, 'failed')
-    : new PlatformError('MODEL_CONNECTION_FAILED', '所选模型的实际请求失败，请检查模型名称、访问权限与提供商服务状态。', 502, 'failed')
+    ? new PlatformError('MODEL_LIST_FAILED', '获取模型列表失败，请检查已保存的基础地址、协议、API 密钥和提供商服务状态。', 502, 'failed')
+    : new PlatformError('MODEL_CONNECTION_FAILED', '所选模型的实际请求失败，请检查模型名称、协议、API 密钥、访问权限与提供商服务状态。', 502, 'failed')
 }
 
-async function boundedJson(response: Response): Promise<unknown> {
+async function boundedJson(response: Response, protocol: DshApiProtocol): Promise<unknown> {
   const length = response.headers.get('content-length')
-  if (length !== null && (!/^\d+$/.test(length) || Number(length) > MAX_RESPONSE_BYTES)) throw invalidResponse()
-  if (!response.body) throw invalidResponse()
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > MAX_RESPONSE_BYTES)) throw invalidResponse(protocol)
+  if (!response.body) throw invalidResponse(protocol)
   const reader = response.body.getReader()
   const chunks: Uint8Array[] = []
   let bytes = 0
@@ -57,16 +89,23 @@ async function boundedJson(response: Response): Promise<unknown> {
       const { done, value } = await reader.read()
       if (done) break
       bytes += value.byteLength
-      if (bytes > MAX_RESPONSE_BYTES) throw invalidResponse()
+      if (bytes > MAX_RESPONSE_BYTES) throw invalidResponse(protocol)
       chunks.push(value)
     }
   } finally { reader.releaseLock() }
   try { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, bytes))) as unknown }
-  catch { throw invalidResponse() }
+  catch { throw invalidResponse(protocol) }
 }
 
-async function request(configuration: ModelConfiguration, operation: ModelOperation, signal?: AbortSignal, payload?: object): Promise<unknown> {
-  const url = requestUrl(configuration, operation === 'list' ? 'models' : 'chat/completions')
+function authHeaders(configuration: ModelConfiguration): Record<string, string> {
+  if (!configuration.apiKey.trim()) return {}
+  return configuration.protocol === 'google-generative-ai'
+    ? { 'x-goog-api-key': configuration.apiKey }
+    : { Authorization: `Bearer ${configuration.apiKey}` }
+}
+
+async function request(configuration: ModelConfiguration, operation: ModelOperation, path: string, query?: Readonly<Record<string, string>>, signal?: AbortSignal, payload?: object): Promise<unknown> {
+  const url = requestUrl(configuration, path, query)
   if (signal?.aborted) throw new PlatformError('MODEL_REQUEST_ABORTED', '模型请求已取消。', 503, 'not-sent')
   const timeout = new AbortController()
   const combined = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal
@@ -76,17 +115,21 @@ async function request(configuration: ModelConfiguration, operation: ModelOperat
   try {
     const response = await fetch(url, {
       method: operation === 'list' ? 'GET' : 'POST', redirect: 'error', signal: combined,
-      headers: { Accept: 'application/json', ...(configuration.apiKey.trim() ? { Authorization: `Bearer ${configuration.apiKey}` } : {}),
-        ...(payload ? { 'Content-Type': 'application/json' } : {}) },
+      headers: {
+        Accept: 'application/json',
+        ...authHeaders(configuration),
+        ...(payload ? { 'Content-Type': 'application/json' } : {}),
+      },
       ...(payload ? { body: JSON.stringify(payload) } : {}),
     })
     // HTTP error bodies and redirect destinations are never returned to the caller.
     if (!response.ok) throw statusFailure(response.status, operation)
-    const value = await boundedJson(response)
+    const value = await boundedJson(response, configuration.protocol)
     if (object(value) && Object.hasOwn(value, 'error')) {
-      const code = object(value.error) ? value.error.code ?? value.error.type : undefined
-      if (code === 'invalid_api_key' || code === 'authentication_error') throw statusFailure(401, operation)
-      if (code === 'rate_limit_exceeded' || code === 'rate_limit_error' || code === 'insufficient_quota') throw statusFailure(429, operation)
+      const code = object(value.error) ? value.error.code ?? value.error.type ?? value.error.status : undefined
+      const status = object(value.error) ? value.error.status : undefined
+      if (code === 'invalid_api_key' || code === 'authentication_error' || status === 'UNAUTHENTICATED' || status === 'PERMISSION_DENIED') throw statusFailure(401, operation)
+      if (code === 'rate_limit_exceeded' || code === 'rate_limit_error' || code === 'insufficient_quota' || status === 'RESOURCE_EXHAUSTED') throw statusFailure(429, operation)
       throw statusFailure(500, operation)
     }
     return value
@@ -103,13 +146,10 @@ async function request(configuration: ModelConfiguration, operation: ModelOperat
   }
 }
 
-/** Queries only the saved provider configuration; it never changes config or runtime state. */
-export async function listModels(configuration: Pick<DshConfiguration, 'endpoint' | 'apiKey' | 'timeoutMs'>, signal?: AbortSignal): Promise<{ models: readonly ModelInformation[] }> {
-  const value = await request(configuration, 'list', signal)
-  if (!object(value) || !Array.isArray(value.data)) throw invalidResponse()
+function parseOpenAiModels(value: unknown, secret: string): ModelInformation[] {
+  if (!object(value) || !Array.isArray(value.data)) throw invalidResponse('openai-completions')
   const models: ModelInformation[] = []
   const seen = new Set<string>()
-  const secret = configuration.apiKey.trim()
   for (const entry of value.data) {
     if (!object(entry) || typeof entry.id !== 'string' || !entry.id || entry.id !== entry.id.trim() || entry.id.length > 160 || controlCharacters.test(entry.id) || seen.has(entry.id) || secret && entry.id.includes(secret)) continue
     seen.add(entry.id)
@@ -118,11 +158,42 @@ export async function listModels(configuration: Pick<DshConfiguration, 'endpoint
     models.push({ id: entry.id, ...(name ? { name } : {}), ...(capabilities ? { capabilities } : {}) })
     if (models.length === MAX_MODELS) break
   }
-  if (!models.length) throw invalidResponse()
-  return { models }
+  if (!models.length) throw invalidResponse('openai-completions')
+  return models
 }
 
-function validChoice(value: unknown): boolean {
+function parseGeminiModels(value: unknown, secret: string): ModelInformation[] {
+  if (!object(value) || !Array.isArray(value.models)) throw invalidResponse('google-generative-ai')
+  const models: ModelInformation[] = []
+  const seen = new Set<string>()
+  for (const entry of value.models) {
+    if (!object(entry) || typeof entry.name !== 'string') continue
+    if (Array.isArray(entry.supportedGenerationMethods) && !entry.supportedGenerationMethods.includes('generateContent')) continue
+    const rawName = entry.name
+    const id = rawName.startsWith('models/') ? rawName.slice('models/'.length) : rawName
+    if (!id || id !== id.trim() || id.length > 160 || controlCharacters.test(id) || seen.has(id) || secret && id.includes(secret)) continue
+    seen.add(id)
+    const name = typeof entry.displayName === 'string' && entry.displayName.trim() && entry.displayName.length <= 256 && !controlCharacters.test(entry.displayName) && !(secret && entry.displayName.includes(secret)) ? entry.displayName : undefined
+    const capabilities = reportedModelCapabilities(entry)
+    models.push({ id, ...(name ? { name } : {}), ...(capabilities ? { capabilities } : {}) })
+    if (models.length === MAX_MODELS) break
+  }
+  if (!models.length) throw invalidResponse('google-generative-ai')
+  return models
+}
+
+/** Queries only the saved provider configuration; it never changes config or runtime state. */
+export async function listModels(configuration: ModelConfiguration, signal?: AbortSignal): Promise<{ models: readonly ModelInformation[] }> {
+  const secret = configuration.apiKey.trim()
+  if (configuration.protocol === 'google-generative-ai') {
+    const value = await request(configuration, 'list', 'models', { pageSize: String(GEMINI_LIST_PAGE_SIZE) }, signal)
+    return { models: parseGeminiModels(value, secret) }
+  }
+  const value = await request(configuration, 'list', 'models', undefined, signal)
+  return { models: parseOpenAiModels(value, secret) }
+}
+
+function validOpenAiChoice(value: unknown): boolean {
   if (!object(value) || !object(value.message) || value.message.role !== 'assistant') return false
   const message = value.message
   if (typeof message.content === 'string' || message.content === null) return true
@@ -130,12 +201,37 @@ function validChoice(value: unknown): boolean {
   return Array.isArray(message.tool_calls) && message.tool_calls.length > 0 && message.tool_calls.every(call => object(call) && typeof call.id === 'string' && call.id.length > 0 && call.type === 'function' && object(call.function) && typeof call.function.name === 'string' && call.function.name.length > 0 && typeof call.function.arguments === 'string')
 }
 
+function validGeminiPart(part: unknown): boolean {
+  if (!object(part)) return false
+  if (typeof part.text === 'string') return true
+  return object(part.functionCall) && typeof part.functionCall.name === 'string' && part.functionCall.name.length > 0
+}
+
+function validGeminiCandidate(candidate: unknown): boolean {
+  if (!object(candidate)) return false
+  const hasFinishReason = typeof candidate.finishReason === 'string' && candidate.finishReason.length > 0
+  if (candidate.content === undefined) return hasFinishReason
+  if (!object(candidate.content)) return false
+  if (candidate.content.role !== undefined && candidate.content.role !== 'model') return false
+  if (candidate.content.parts === undefined) return hasFinishReason
+  return Array.isArray(candidate.content.parts) && candidate.content.parts.every(validGeminiPart) && (candidate.content.parts.length > 0 || hasFinishReason)
+}
+
 /** A real, minimal provider request; success does not imply the DSH runtime can start. */
-export async function testModelConnection(configuration: Pick<DshConfiguration, 'endpoint' | 'apiKey' | 'timeoutMs' | 'model'>, signal?: AbortSignal): Promise<{ ok: true; model: string; latencyMs: number }> {
+export async function testModelConnection(configuration: ModelConfiguration & Pick<DshConfiguration, 'model'>, signal?: AbortSignal): Promise<{ ok: true; model: string; latencyMs: number }> {
   if (!configuration.model.trim()) throw new PlatformError('NOT_CONFIGURED', '请先保存要测试的模型名称。', 409, 'not-sent')
   if (configuration.model.length > 160 || controlCharacters.test(configuration.model)) throw new PlatformError('INVALID_CONFIGURATION', '模型名称需为 1 至 160 个有效字符。', 400, 'not-sent')
   const started = performance.now()
-  const value = await request(configuration, 'test', signal, { model: configuration.model, messages: [{ role: 'user', content: 'Ping.' }], max_tokens: 1, stream: false })
-  if (!object(value) || !Array.isArray(value.choices) || !value.choices.length || !value.choices.every(validChoice)) throw invalidResponse()
+  if (configuration.protocol === 'google-generative-ai') {
+    const modelPath = geminiModelPath(configuration.model)
+    const value = await request(configuration, 'test', `${modelPath}:generateContent`, undefined, signal, {
+      contents: [{ role: 'user', parts: [{ text: 'Ping.' }] }],
+      generationConfig: { maxOutputTokens: 1 },
+    })
+    if (!object(value) || !Array.isArray(value.candidates) || !value.candidates.length || !value.candidates.every(validGeminiCandidate)) throw invalidResponse('google-generative-ai')
+    return { ok: true, model: configuration.model, latencyMs: Math.max(0, Math.round(performance.now() - started)) }
+  }
+  const value = await request(configuration, 'test', 'chat/completions', undefined, signal, { model: configuration.model, messages: [{ role: 'user', content: 'Ping.' }], max_tokens: 1, stream: false })
+  if (!object(value) || !Array.isArray(value.choices) || !value.choices.length || !value.choices.every(validOpenAiChoice)) throw invalidResponse('openai-completions')
   return { ok: true, model: configuration.model, latencyMs: Math.max(0, Math.round(performance.now() - started)) }
 }

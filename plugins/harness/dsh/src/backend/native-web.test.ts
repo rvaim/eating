@@ -30,10 +30,18 @@ describe('Eating private native Web profile', () => {
     expect(first).toContain('openBrowser: false')
     expect(first).toContain('port: 0')
     expect(first).toContain('defaultPreset: danger-full-access')
+    expect(first).toContain('provider: eating-openai')
     expect(first).not.toContain('readOnly')
     prepareNativeWebProfile(f.bridge, { model: 'fixture-model' }, write)
     expect(readFileSync(f.patch, 'utf8')).toBe(first)
     expect(JSON.parse(readFileSync(join(dirname(f.patch), 'package.json'), 'utf8')).dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-sdk-minimal'])
+  })
+  it('writes google as default provider when initialized for Google Gemini protocol', () => {
+    const f = fixture()
+    prepareNativeWebProfile(f.bridge, { protocol: 'google-generative-ai', model: 'gemini-2.5-flash' }, write)
+    const content = readFileSync(f.patch, 'utf8')
+    expect(content).toContain('provider: google')
+    expect(content).toContain('model: gemini-2.5-flash')
   })
   it('keeps the existing writable user layer, JS expressions and comments', () => {
     const f = fixture()

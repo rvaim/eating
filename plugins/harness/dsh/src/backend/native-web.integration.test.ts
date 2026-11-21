@@ -357,7 +357,7 @@ describe.runIf(enabled)('system DSH official native Web and SDK integration', ()
       expect(launch.env?.EATING_DSH_SYSTEM_BIN).toBe(systemBin)
       expect(launch.dshHome).toBe(join(f.home, 'dsh-home'))
       for (const key of ['HOME', 'DSH_HOME', 'DSH_AGENTS_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME']) expect(launch.env?.[key]?.startsWith(f.home + '/'), key).toBe(true)
-      for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'NODE_OPTIONS', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY']) expect(launch.env?.[key], key).toBeUndefined()
+      for (const key of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'NODE_OPTIONS', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY']) expect(launch.env?.[key], key).toBeUndefined()
     }
     const webToken = new URL(entry.url).searchParams.get('token'); expect(webToken).toBeTruthy()
     const publicJson = JSON.stringify({ config: f.plugin.getPublicConfiguration(), status: f.plugin.getStatus() })
@@ -468,5 +468,157 @@ describe.runIf(enabled)('system DSH official native Web and SDK integration', ()
     await expect(fetch(new URL(resumed.url).origin, { signal: AbortSignal.timeout(2000) })).rejects.toThrow()
     await vi.waitFor(() => expect(resumedPids.filter(alive)).toEqual([]), { timeout: 5000, interval: 50 })
     expect(f.closeCalls).toBe(2)
+  }, 120000)
+
+  it('runs Google Gemini native protocol end-to-end through real system DSH (list, test, SSE streaming, tool call + thoughtSignature replay)', async () => {
+    const parent = realpathSync(tmpdir()), home = realpathSync(mkdtempSync(join(parent, 'eating-system-native-web-')))
+    stops.push(() => { if (realpathSync(home) !== home || dirname(home) !== parent || !basename(home).startsWith('eating-system-native-web-')) throw new Error('Unsafe native Web fixture cleanup'); rmSync(home, { recursive: true }) })
+    const fixtureKey = 'gemini-loopback-fixture-key'
+    const geminiRequests: { method: string; url: string; apiKey: string | string[] | undefined; authorization: string | undefined; body: JsonObject | null }[] = []
+    const modelErrors: string[] = []
+    const server = createServer((request, response) => {
+      void (async () => {
+        const chunks: Buffer[] = []
+        for await (const chunk of request) chunks.push(Buffer.from(chunk))
+        const raw = Buffer.concat(chunks).toString('utf8')
+        const body = raw ? object(JSON.parse(raw)) : null
+        geminiRequests.push({ method: request.method ?? '', url: request.url ?? '', apiKey: request.headers['x-goog-api-key'], authorization: request.headers.authorization, body })
+        if (request.headers['x-goog-api-key'] !== fixtureKey || request.headers.authorization !== undefined) {
+          response.writeHead(401, { 'Content-Type': 'application/json' })
+          response.end(JSON.stringify({ error: { code: 401, status: 'UNAUTHENTICATED', message: 'Invalid key' } }))
+          return
+        }
+        if (request.method === 'GET' && request.url === '/v1beta/models?pageSize=1000') {
+          response.writeHead(200, { 'Content-Type': 'application/json' })
+          response.end(JSON.stringify({
+            models: [
+              { name: 'models/gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', inputTokenLimit: 1048576, outputTokenLimit: 65536, thinking: true, supportedGenerationMethods: ['generateContent', 'countTokens'] },
+              { name: 'models/text-embedding-004', displayName: 'Embedding', supportedGenerationMethods: ['embedContent'] },
+            ],
+          }))
+          return
+        }
+        if (request.method === 'POST' && request.url === '/v1beta/models/gemini-2.5-flash:generateContent') {
+          response.writeHead(200, { 'Content-Type': 'application/json' })
+          response.end(JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: 'Pong' }] }, finishReason: 'MAX_TOKENS' }] }))
+          return
+        }
+        if (request.method === 'POST' && (request.url === '/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse' || request.url === '/v1beta/models/gemini-99-custom-preview:streamGenerateContent?alt=sse')) {
+          const streamTurn = geminiRequests.filter(item => item.url.includes(':streamGenerateContent')).length
+          response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' })
+          const send = (chunk: object) => response.write(`data: ${JSON.stringify(chunk)}\n\n`)
+          if (streamTurn === 1) {
+            send({
+              responseId: 'gemini-resp-1',
+              candidates: [{
+                content: {
+                  role: 'model',
+                  parts: [
+                    { text: 'Checking available agent types.', thought: true, thoughtSignature: 'dGhvdWdodC1zaWctMQ==' },
+                    { functionCall: { name: 'eating_list_agent_types', args: {} }, thoughtSignature: 'dGhvdWdodC1zaWctMQ==' },
+                  ],
+                },
+                finishReason: 'STOP',
+              }],
+              usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 10, thoughtsTokenCount: 4, totalTokenCount: 34 },
+            })
+          } else {
+            send({
+              responseId: `gemini-resp-${streamTurn}`,
+              candidates: [{
+                content: { role: 'model', parts: [{ text: streamTurn === 2 ? 'GEMINI-NATIVE-SDK-SSE-REPLY' : 'GEMINI-CUSTOM-MODEL-REPLY' }] },
+                finishReason: 'STOP',
+              }],
+              usageMetadata: { promptTokenCount: 40, candidatesTokenCount: 8, totalTokenCount: 48 },
+            })
+          }
+          response.end()
+          return
+        }
+        throw new Error(`Unexpected Gemini fixture request: ${request.method} ${request.url}`)
+      })().catch(error => { modelErrors.push(String(error)); if (!response.headersSent) response.writeHead(500); response.end() })
+    })
+    await new Promise<void>((accept, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', accept) })
+    stops.push(async () => { const closed = new Promise<void>((accept, reject) => server.close(error => error ? reject(error) : accept())); server.closeAllConnections(); await closed })
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing loopback Gemini port')
+    const owner: HarnessOwnerConfiguration = {
+      revision: 1, activePersona: null, pluginInstructions: [], bindings: { 主人: '', 管理员: '' },
+      prompts: [
+        { id: 'common', scope: 'common', source: 'owner', title: 'Fixture common', body: 'Isolated Gemini fixture.', revision: 1, updatedAt: null },
+        { id: 'main', scope: 'main', source: 'owner', title: 'Fixture main', body: 'Check agent types then reply.', revision: 1, updatedAt: null },
+        { id: 'subagent', scope: 'subagent', source: 'owner', title: 'Fixture subagent', body: 'Unused.', revision: 1, updatedAt: null },
+        { id: 'agent:qq.group', scope: 'agent', source: 'plugin', pluginId: 'qq', agentTypeId: 'qq.group', title: 'Fixture group', body: 'Unused.', revision: 1, updatedAt: null },
+      ],
+      agentTypes: [{ id: 'qq.group', title: 'Fixture group', description: 'Synthetic.', conversationKind: 'group', pluginId: 'qq', pluginName: 'Fixture QQ', enabled: true, availableTools: [], defaultTools: [], enabledTools: [], defaultPrompt: 'Unused.', identity: { owners: [], administrators: [] } }],
+    }
+    const finish = vi.fn(async () => {})
+    const host: HostPluginContext = {
+      imageLimits: () => DEFAULT_IMAGE_LIMITS, dataDirectory: home, getSetting: () => null, setSetting: vi.fn(), recordEvent: vi.fn(), listMessages: () => [], executeIdempotent: vi.fn(),
+      harness: withTaskReceipts({
+        registerSink: () => () => {}, wake: vi.fn(), readOwnerConfiguration: () => structuredClone(owner), readDeliverySettings: () => ({ ...DEFAULT_DELIVERY_SETTINGS, aggregationWindowMs: 0 }),
+        deliveryReceiptAccepted: () => false, extendAgentScope: vi.fn(), readAgentActions: () => [], revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: vi.fn(),
+        hasPendingMessages: () => false, readProactiveChannels: () => [], prepareProactiveScope: vi.fn(),
+        memory: { begin: vi.fn(async () => ({ text: '', items: [] })), append: vi.fn(async () => ({ text: '', items: [] })), finish, flush: vi.fn(async () => {}), end: vi.fn() },
+      }),
+    }
+    const launches: DeepSeekHarnessOptions[] = []
+    const plugin = new DshPlugin(host, {
+      locateSystemDsh: () => ({ bin: systemBin!, version: 'system', source: 'override' }),
+      createHarness: options => {
+        launches.push(options)
+        const sdk = new DeepSeekHarness(options)
+        return { start: () => sdk.start(), session: id => sdk.session(id), resumeSession: id => sdk.resumeSession(id), close: () => sdk.close() }
+      },
+    })
+    stops.push(() => plugin.dispose())
+    await plugin.updateConfiguration({
+      protocol: 'google-generative-ai',
+      endpoint: `http://127.0.0.1:${address.port}/v1beta`,
+      model: 'gemini-2.5-flash',
+      apiKey: fixtureKey,
+      timeoutMs: 30000,
+      maxTokens: 256,
+      autoConnect: false,
+    })
+    const listed = object(await plugin.manage('list-models', {}))
+    expect(listed.models).toEqual([
+      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', capabilities: { imageInput: null, toolCalling: null, reasoning: true, inputModalities: null, outputModalities: null, contextWindow: 1048576, maxOutputTokens: 65536 } },
+    ])
+    expect(await plugin.manage('test-connection', {})).toMatchObject({ ok: true, model: 'gemini-2.5-flash' })
+    await plugin.connect()
+    expect(launches[0]).toMatchObject({ provider: 'google', model: 'gemini-2.5-flash' })
+    expect(launches[0]!.env?.GEMINI_API_KEY).toBeUndefined()
+    const now = new Date().toISOString()
+    const batch: HarnessDeliveryBatch = {
+      protocolVersion: 1, batchId: createHash('sha256').update(randomUUID()).digest('hex'), conversationId: 'qq:100:group:200', createdAt: now, reason: 'aggregation-window',
+      events: [{ protocolVersion: 1, eventId: randomUUID(), pluginId: 'qq', platform: 'qq', instanceId: 'synthetic-gemini-instance', accountId: '100', conversationId: 'qq:100:group:200', senderId: '300', targetId: '200', messageId: 'synthetic-gemini-message', resourceIds: [], source: { trust: 'external', kind: 'group', senderRole: 'user' }, receivedAt: now, content: 'GEMINI-LOOPBACK-INPUT', text: 'GEMINI-LOOPBACK-INPUT' }],
+    }
+    const receipt = await plugin.deliverBatch(batch, new AbortController().signal)
+    expect(receipt).toMatchObject({ accepted: true, durable: true })
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce(), { timeout: 20000 })
+    const streamCalls = geminiRequests.filter(item => item.url.includes(':streamGenerateContent'))
+    expect(streamCalls).toHaveLength(2)
+    expect(JSON.stringify(streamCalls[0]!.body)).toContain('GEMINI-LOOPBACK-INPUT')
+    expect(JSON.stringify(streamCalls[1]!.body)).toContain('dGhvdWdodC1zaWctMQ==')
+    expect(JSON.stringify(streamCalls[1]!.body)).toContain('functionResponse')
+    expect(finish).toHaveBeenCalledWith(expect.objectContaining({ assistantText: 'GEMINI-NATIVE-SDK-SSE-REPLY', outcome: 'completed', actions: [{ tool: 'eating_list_agent_types', outcome: 'returned' }] }))
+    expect(plugin.getStatus().lastError).toBeNull()
+    expect(modelErrors).toEqual([])
+    await plugin.disconnect()
+    // Also verify a brand-new Gemini model ID not present in pi-ai's static catalog works via sharedCatalogApi('google')
+    await plugin.updateConfiguration({ model: 'gemini-99-custom-preview' })
+    await plugin.connect()
+    const customBatch: HarnessDeliveryBatch = {
+      ...batch,
+      batchId: createHash('sha256').update(randomUUID()).digest('hex'),
+      events: [{ ...batch.events[0]!, eventId: randomUUID(), messageId: 'synthetic-gemini-custom-message', content: 'GEMINI-CUSTOM-MODEL-INPUT', text: 'GEMINI-CUSTOM-MODEL-INPUT' }],
+    }
+    expect(await plugin.deliverBatch(customBatch, new AbortController().signal)).toMatchObject({ accepted: true, durable: true })
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledTimes(2), { timeout: 20000 })
+    expect(geminiRequests.some(item => item.url === '/v1beta/models/gemini-99-custom-preview:streamGenerateContent?alt=sse')).toBe(true)
+    expect(finish).toHaveBeenLastCalledWith(expect.objectContaining({ assistantText: 'GEMINI-CUSTOM-MODEL-REPLY', outcome: 'completed' }))
+    expect(plugin.getStatus().lastError).toBeNull()
+    expect(modelErrors).toEqual([])
+    await plugin.disconnect()
   }, 120000)
 })

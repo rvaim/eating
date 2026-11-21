@@ -40,7 +40,18 @@ test.describe('Harness 模型连接（本地夹具）', () => {
       request.on('end', () => {
         modelRequests.push({ path: request.url ?? '', authorization: request.headers.authorization, body: Buffer.concat(chunks).toString('utf8') })
         response.writeHead(modelStatus, { 'Content-Type': 'application/json' })
-        response.end(JSON.stringify(modelStatus !== 200 ? { error: { message: 'fixture-only-provider-key' } } : request.method === 'GET' ? { data: [{ id: 'fixture-alpha', name: 'Alpha' }, { id: 'fixture-beta' }] } : { choices: [{ message: { role: 'assistant', content: 'fixture-output-never-displayed' } }] }))
+        if (modelStatus !== 200) {
+          response.end(JSON.stringify({ error: { message: 'fixture-only-provider-key' } }))
+          return
+        }
+        const isGemini = request.headers['x-goog-api-key'] !== undefined
+        if (isGemini) {
+          response.end(JSON.stringify(request.method === 'GET'
+            ? { models: [{ name: 'models/gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', inputTokenLimit: 1048576, outputTokenLimit: 65536, thinking: true, supportedGenerationMethods: ['generateContent'] }] }
+            : { candidates: [{ content: { role: 'model', parts: [{ text: 'fixture-output-never-displayed' }] }, finishReason: 'MAX_TOKENS' }] }))
+          return
+        }
+        response.end(JSON.stringify(request.method === 'GET' ? { data: [{ id: 'fixture-alpha', name: 'Alpha' }, { id: 'fixture-beta' }] } : { choices: [{ message: { role: 'assistant', content: 'fixture-output-never-displayed' } }] }))
       })
     })
     modelServer.listen(0, '127.0.0.1'); await once(modelServer, 'listening')
@@ -155,5 +166,26 @@ test.describe('Harness 模型连接（本地夹具）', () => {
     held.resolve(); await show(page)
     await expect(page.getByLabel('从模型列表选择', { exact: true })).toBeDisabled()
     await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('manually-kept')
+  })
+
+  test('Google Gemini 协议拉取模型列表、展示 token 容量并完成真实 generateContent 连接测试', async ({ page }) => {
+    await open(page)
+    await page.getByRole('radio', { name: /Google Gemini/ }).click()
+    await page.getByLabel('API 基础地址', { exact: true }).fill(modelUrl)
+    await page.getByLabel('API Key', { exact: true }).fill('fixture-only-gemini-key')
+    await page.getByRole('button', { name: '保存配置', exact: true }).click()
+    await expect(page.getByText('配置已保存，运行已停止。需要时请重新启动 Harness。', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '获取模型列表', exact: true }).click()
+    await page.getByLabel('从模型列表选择', { exact: true }).selectOption('gemini-2.5-flash')
+    await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('gemini-2.5-flash')
+    await expect(page.locator('.dsh-model-capabilities')).toContainText('1,048,576 token')
+    await expect(page.locator('.dsh-model-capabilities')).toContainText('65,536 token')
+    await page.getByRole('button', { name: '保存配置', exact: true }).click()
+    await page.getByRole('button', { name: '测试模型连接', exact: true }).click()
+    await expect(page.getByText(/模型 gemini-2.5-flash 请求成功/)).toBeVisible()
+    expect(modelRequests).toHaveLength(2)
+    expect(modelRequests[0]).toMatchObject({ path: '/custom/api/models?pageSize=1000', authorization: undefined })
+    expect(modelRequests[1]).toMatchObject({ path: '/custom/api/models/gemini-2.5-flash:generateContent', authorization: undefined })
+    expect(JSON.parse(modelRequests[1]!.body)).toEqual({ contents: [{ role: 'user', parts: [{ text: 'Ping.' }] }], generationConfig: { maxOutputTokens: 1 } })
   })
 })

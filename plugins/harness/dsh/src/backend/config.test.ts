@@ -23,13 +23,18 @@ function fixture() {
 afterEach(() => { vi.mocked(renameSync).mockReset(); for (const cleanup of cleanups.splice(0).reverse()) cleanup() })
 
 describe('DSH configuration validation', () => {
-  it('allows empty drafts and preserves a write-only key unless explicitly cleared', () => {
+  it('allows empty drafts, supports openai and google gemini protocols, and isolates keys across protocol switch', () => {
     expect(parseConfiguration({})).toEqual(DEFAULT_CONFIGURATION)
     const previous = parseConfiguration({ endpoint: ' http://127.0.0.1:1234/v1 ', model: ' fixture-model ', apiKey: 'fixture-only-key' })
-    expect(previous).toMatchObject({ endpoint: 'http://127.0.0.1:1234/v1', model: 'fixture-model' })
+    expect(previous).toMatchObject({ protocol: 'openai-completions', endpoint: 'http://127.0.0.1:1234/v1', model: 'fixture-model' })
     expect(parseConfiguration({ apiKey: '' }, previous).apiKey).toBe('fixture-only-key')
     expect(parseConfiguration({ clearApiKey: true, apiKey: 'ignored-fixture-key' }, previous).apiKey).toBe('')
     expect(parseConfiguration({ endpoint: ' ', model: ' ' }, previous)).toMatchObject({ endpoint: '', model: '' })
+    const geminiWithoutNewKey = parseConfiguration({ protocol: 'google-generative-ai', endpoint: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash' }, previous)
+    expect(geminiWithoutNewKey).toMatchObject({ protocol: 'google-generative-ai', endpoint: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash', apiKey: '' })
+    const geminiWithNewKey = parseConfiguration({ protocol: 'google-generative-ai', endpoint: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash', apiKey: 'fixture-gemini-key' }, previous)
+    expect(geminiWithNewKey.apiKey).toBe('fixture-gemini-key')
+    expect(parseConfiguration({ model: 'gemini-2.5-pro' }, geminiWithNewKey).apiKey).toBe('fixture-gemini-key')
   })
 
   it.each(['file:///tmp/model', 'https://name:pass@example.test/v1', 'https://example.test/v1?key=fixture', 'https://example.test/v1#fixture', 'https://example.test/v1?', 'https://example.test/v1#'])('rejects an unsafe endpoint without echoing it: %s', endpoint => {
@@ -37,7 +42,7 @@ describe('DSH configuration validation', () => {
     try { parseConfiguration({ endpoint }) } catch (error) { expect(String(error)).not.toContain(endpoint) }
   })
 
-  it.each([{ maxTokens: 0 }, { maxTokens: 131073 }, { timeoutMs: 999 }, { timeoutMs: 120001 }, { model: 'x'.repeat(161) }, { apiKey: 'fixture\nkey' }, { autoConnect: 'yes' }, { model: 1 }])('rejects invalid configuration fields: %j', input => {
+  it.each([{ protocol: 'anthropic-messages' }, { protocol: '' }, { protocol: 1 }, { maxTokens: 0 }, { maxTokens: 131073 }, { timeoutMs: 999 }, { timeoutMs: 120001 }, { model: 'x'.repeat(161) }, { apiKey: 'fixture\nkey' }, { autoConnect: 'yes' }, { model: 1 }])('rejects invalid configuration fields: %j', input => {
     expect(() => parseConfiguration(input)).toThrowError(expect.objectContaining({ code: 'INVALID_CONFIGURATION' }))
   })
 })
@@ -80,11 +85,13 @@ describe('DSH restricted persistence', () => {
     expect(readFileSync(file.filePath, 'utf8')).toBe(bytes)
   })
 
-  it.each(['wrong-version', 'missing-timestamp', 'missing-current-field', 'unsupported-field'] as const)('rejects %s configuration without migration or rewriting', mode => {
+  it.each(['wrong-version', 'legacy-v1', 'missing-timestamp', 'missing-current-field', 'unsupported-field'] as const)('rejects %s configuration without migration or rewriting', mode => {
     const file = new DshConfigurationFile(fixture())
-    const configuration = mode === 'missing-current-field' ? { ...DEFAULT_CONFIGURATION, timeoutMs: undefined }
-      : mode === 'unsupported-field' ? { ...DEFAULT_CONFIGURATION, messageTemplate: 'obsolete' } : DEFAULT_CONFIGURATION
-    const bytes = JSON.stringify({ schemaVersion: mode === 'wrong-version' ? 0 : 1, updatedAt: mode === 'missing-timestamp' ? undefined : '2026-10-28T00:00:00Z', configuration })
+    const { protocol: _legacyOmitted, ...legacyConfiguration } = DEFAULT_CONFIGURATION
+    const configuration = mode === 'legacy-v1' ? legacyConfiguration
+      : mode === 'missing-current-field' ? { ...DEFAULT_CONFIGURATION, timeoutMs: undefined }
+        : mode === 'unsupported-field' ? { ...DEFAULT_CONFIGURATION, messageTemplate: 'obsolete' } : DEFAULT_CONFIGURATION
+    const bytes = JSON.stringify({ schemaVersion: mode === 'wrong-version' ? 0 : mode === 'legacy-v1' ? 1 : 2, updatedAt: mode === 'missing-timestamp' ? undefined : '2026-10-28T00:00:00Z', configuration })
     writeFileSync(file.filePath, bytes)
     expect(() => file.read()).toThrowError(expect.objectContaining({ code: 'CONFIGURATION_CORRUPTED' }))
     expect(readFileSync(file.filePath, 'utf8')).toBe(bytes)

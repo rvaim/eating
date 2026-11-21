@@ -1,15 +1,16 @@
 import { BrainCircuit } from 'lucide-react'
 import { translate } from '@eating/ui-sdk'
 import type { HarnessPlugin } from '@eating/ui-sdk'
+import { DEFAULT_DSH_API_PROTOCOL } from '../protocol'
 import './i18n'
 import { DSHPanel, validateConfiguration } from './panel'
 
 const plugin: HarnessPlugin = {
   id: 'dsh', kind: 'harness', name: 'DeepSeek Harness',
   get description() { return translate('dsh', 'plugin.description') },
-  version: '0.23.3', apiVersion: 4, order: 10,
+  version: '0.24.0', apiVersion: 4, order: 10,
   icon: BrainCircuit, brandColor: '#3876b6', defaultRegistered: true,
-  initialValues: { displayName: 'DeepSeek Harness', endpoint: '', model: '', autoConnect: false, timeoutMs: '60000', maxTokens: '4096' },
+  initialValues: { displayName: 'DeepSeek Harness', protocol: DEFAULT_DSH_API_PROTOCOL, endpoint: '', model: '', autoConnect: false, timeoutMs: '60000', maxTokens: '4096' },
   validate: validateConfiguration,
   summary: values => {
     const name = typeof values.displayName === 'string' && values.displayName.trim() ? values.displayName.trim() : 'DeepSeek Harness'

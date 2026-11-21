@@ -1,6 +1,8 @@
 import { existsSync, lstatSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { parseDocument, isSeq } from 'yaml'
+import { DEFAULT_DSH_API_PROTOCOL, dshRuntimeProviderId } from '../protocol'
+import type { DshApiProtocol } from '../protocol'
 import { prepareRestrictedDirectory, writeRestrictedJson } from './config'
 
 /** Official browser plugins, with their shipped Host halves and current dependency roster. */
@@ -40,7 +42,7 @@ export const NATIVE_WEB_MODULES = [
 ] as const
 
 /** Compose the official Web application over the existing SDK kernel without replacing its model tools. */
-export function nativeWebRows(directory: string, configuration: { model: string }): Readonly<Record<string, unknown>>[] {
+export function nativeWebRows(directory: string, configuration: { readonly protocol?: DshApiProtocol; readonly model: string }): Readonly<Record<string, unknown>>[] {
   const id = (name: string): string => ({
     'dsh-credentials-local': 'credentials', 'dsh-typert-registry': 'typert', 'dsh-api-gateway': 'typert-gateway', 'dsh-api-remotes': 'api-remotes', 'dsh-client-ui-permission-presets': 'ui-permission', 'dsh-host-webserver': 'webserver', 'dsh-web-app': 'web-runtime',
     'dsh-host-directory-picker-auto': 'directory-picker', 'dsh-host-plugin-inventory': 'plugin-inventory',
@@ -52,7 +54,7 @@ export function nativeWebRows(directory: string, configuration: { model: string 
   return [
     row('dsh-storage-json', { root: join(dirname(directory), 'dsh-home', 'storages') }),
     row('dsh-storage-domain', { backend: 'json' }),
-    row('dsh-agent-default-model', { provider: 'eating-openai', model: configuration.model }),
+    row('dsh-agent-default-model', { provider: dshRuntimeProviderId(configuration.protocol ?? DEFAULT_DSH_API_PROTOCOL), model: configuration.model }),
     row('dsh-host-webserver', { host: '127.0.0.1', port: 0 }),
     row('dsh-web-app', { printUrl: false, openBrowser: false, surfaceContext: false }),
     row('dsh-message-feedback', { maxNoteBytes: 8192 }),
@@ -66,7 +68,7 @@ export function nativeWebRows(directory: string, configuration: { model: string 
 }
 
 /** Keep native settings in the writable profile layer, separate from the SDK invocation overlay. */
-export function prepareNativeWebProfile(directory: string, configuration: { model: string }, writeSource: (path: string, source: string) => void): void {
+export function prepareNativeWebProfile(directory: string, configuration: { readonly protocol?: DshApiProtocol; readonly model: string }, writeSource: (path: string, source: string) => void): void {
   const profile = prepareRestrictedDirectory(join(dirname(directory), 'dsh-home', 'profiles', 'sdk-minimal'))
   const manifest = join(profile, 'package.json')
   if (!existsSync(manifest)) writeRestrictedJson(manifest, { name: 'dsh-profile-sdk-minimal', private: true, dependencies: {}, dsh: { profile: { bundles: ['@deepseek-ai/dsh-sdk-minimal'] } } })

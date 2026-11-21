@@ -3,9 +3,14 @@ import { randomUUID } from 'node:crypto'
 import { dirname, join, resolve } from 'node:path'
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
 import type { JsonObject } from '@eating/plugin-sdk'
+import { DEFAULT_DSH_API_PROTOCOL, isDshApiProtocol } from '../protocol'
+import type { DshApiProtocol } from '../protocol'
+
+export type { DshApiProtocol }
 
 export interface DshConfiguration {
   readonly displayName: string
+  readonly protocol: DshApiProtocol
   readonly endpoint: string
   readonly model: string
   readonly apiKey: string
@@ -15,7 +20,7 @@ export interface DshConfiguration {
 }
 
 export const DEFAULT_CONFIGURATION: DshConfiguration = Object.freeze({
-  displayName: 'DeepSeek Harness', endpoint: '', model: '', apiKey: '', autoConnect: false,
+  displayName: 'DeepSeek Harness', protocol: DEFAULT_DSH_API_PROTOCOL, endpoint: '', model: '', apiKey: '', autoConnect: false,
   timeoutMs: 60_000, maxTokens: 4096,
 })
 
@@ -28,16 +33,21 @@ export function parseConfiguration(input: unknown, previous: DshConfiguration = 
   for (const name of ['displayName', 'endpoint', 'model', 'apiKey']) {
     if (input[name] !== undefined && typeof input[name] !== 'string') throw new PlatformError('INVALID_CONFIGURATION', '显示名称、地址、模型和密钥需为字符串。')
   }
+  if (input.protocol !== undefined && !isDshApiProtocol(input.protocol)) {
+    throw new PlatformError('INVALID_CONFIGURATION', '模型 API 协议仅支持 OpenAI 兼容或 Google Gemini。')
+  }
   for (const name of ['autoConnect', 'clearApiKey']) {
     if (input[name] !== undefined && typeof input[name] !== 'boolean') throw new PlatformError('INVALID_CONFIGURATION', '自动连接与清除密钥选项需为布尔值。')
   }
+  const protocol: DshApiProtocol = input.protocol === undefined ? previous.protocol : input.protocol
+  const protocolChanged = protocol !== previous.protocol
   const displayName = typeof input.displayName === 'string' ? input.displayName.trim() : previous.displayName
   if (!displayName || displayName.length > 80) throw new PlatformError('INVALID_CONFIGURATION', '显示名称需为 1 至 80 个字符。')
   const endpoint = typeof input.endpoint === 'string' ? input.endpoint.trim() : previous.endpoint
   let normalizedEndpoint = ''
   if (endpoint) {
     let url: URL
-    try { url = new URL(endpoint) } catch { throw new PlatformError('INVALID_CONFIGURATION', '请填写有效的 OpenAI 兼容 HTTP 或 HTTPS 基础地址。') }
+    try { url = new URL(endpoint) } catch { throw new PlatformError('INVALID_CONFIGURATION', '请填写有效的 HTTP 或 HTTPS 模型服务基础地址。') }
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || endpoint.includes('?') || endpoint.includes('#')) {
       throw new PlatformError('INVALID_CONFIGURATION', '模型地址仅支持 HTTP/HTTPS，且不能包含账号、密码、查询参数或片段。')
     }
@@ -46,7 +56,7 @@ export function parseConfiguration(input: unknown, previous: DshConfiguration = 
   }
   const model = typeof input.model === 'string' ? input.model.trim() : previous.model
   if (model.length > 160 || /[\r\n\0]/.test(model)) throw new PlatformError('INVALID_CONFIGURATION', '模型名称需为空草稿或 1 至 160 个字符。')
-  const apiKey = input.clearApiKey === true ? '' : typeof input.apiKey === 'string' && input.apiKey.length ? input.apiKey : previous.apiKey
+  const apiKey = input.clearApiKey === true ? '' : typeof input.apiKey === 'string' && input.apiKey.length ? input.apiKey : protocolChanged ? '' : previous.apiKey
   if (apiKey.length > 4096 || /[\r\n\0]/.test(apiKey)) throw new PlatformError('INVALID_CONFIGURATION', 'API 密钥格式无效。')
   const timeoutMs = input.timeoutMs === undefined ? previous.timeoutMs : input.timeoutMs
   if (typeof timeoutMs !== 'number' || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 120_000) {
@@ -56,7 +66,7 @@ export function parseConfiguration(input: unknown, previous: DshConfiguration = 
   if (typeof maxTokens !== 'number' || !Number.isSafeInteger(maxTokens) || maxTokens < 1 || maxTokens > 131_072) {
     throw new PlatformError('INVALID_CONFIGURATION', '输出 token 上限需为 1 至 131072 之间的整数。')
   }
-  return { displayName, endpoint: normalizedEndpoint, model, apiKey, timeoutMs, maxTokens,
+  return { displayName, protocol, endpoint: normalizedEndpoint, model, apiKey, timeoutMs, maxTokens,
     autoConnect: typeof input.autoConnect === 'boolean' ? input.autoConnect : previous.autoConnect }
 }
 
@@ -126,7 +136,7 @@ export class DshConfigurationFile {
     const data = readRestrictedJson(this.filePath)
     if (!data) return { ...DEFAULT_CONFIGURATION }
     try {
-      if (data.schemaVersion !== 1 || !isJsonObject(data.configuration) || typeof data.updatedAt !== 'string' || !Number.isFinite(Date.parse(data.updatedAt))) throw new Error('schema')
+      if (data.schemaVersion !== 2 || !isJsonObject(data.configuration) || typeof data.updatedAt !== 'string' || !Number.isFinite(Date.parse(data.updatedAt))) throw new Error('schema')
       const configurationValues = data.configuration
       const keys = Object.keys(DEFAULT_CONFIGURATION)
       if (keys.some(key => !Object.hasOwn(configurationValues, key)) || Object.keys(configurationValues).some(key => !keys.includes(key))) throw new Error('schema')
@@ -138,7 +148,7 @@ export class DshConfigurationFile {
 
   write(configuration: DshConfiguration): void {
     const updatedAt = new Date().toISOString()
-    writeRestrictedJson(this.filePath, { schemaVersion: 1, updatedAt, configuration: { ...configuration } })
+    writeRestrictedJson(this.filePath, { schemaVersion: 2, updatedAt, configuration: { ...configuration } })
     this.updatedAt = updatedAt
   }
 }

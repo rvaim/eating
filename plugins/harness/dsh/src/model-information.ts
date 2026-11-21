@@ -23,10 +23,10 @@ export function reportedModelCapabilities(entry: Record<string, unknown>): Repor
   const result: ReportedModelCapabilities = {
     imageInput: consensus([input ? input.includes('image') : null, boolean(entry.supports_vision), boolean(entry.supports_image_input), boolean(capabilities.vision), boolean(capabilities.image_input)]),
     toolCalling: consensus([boolean(entry.tool_call), boolean(entry.supports_tool_calls), boolean(capabilities.tool_calling), parameters.includes('tools') ? true : null]),
-    reasoning: consensus([boolean(entry.reasoning), boolean(capabilities.reasoning), parameters.includes('reasoning') ? true : null]),
+    reasoning: consensus([boolean(entry.reasoning), boolean(entry.thinking), boolean(capabilities.reasoning), parameters.includes('reasoning') ? true : null]),
     inputModalities: input, outputModalities: output,
-    contextWindow: consensus([positive(entry.context_window), positive(entry.context_length)]),
-    maxOutputTokens: positive(entry.max_output_tokens),
+    contextWindow: consensus([positive(entry.context_window), positive(entry.context_length), positive(entry.inputTokenLimit)]),
+    maxOutputTokens: consensus([positive(entry.max_output_tokens), positive(entry.outputTokenLimit)]),
   }
   return Object.values(result).some(value => value !== null) ? result : undefined
 }

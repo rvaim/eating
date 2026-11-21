@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PlatformError } from '@eating/plugin-sdk'
 import { listModels, testModelConnection } from './model-service'
 
-interface CapturedRequest { readonly method: string; readonly url: string; readonly authorization: string | undefined; readonly body: string }
+interface CapturedRequest { readonly method: string; readonly url: string; readonly authorization: string | undefined; readonly googleApiKey: string | string[] | undefined; readonly body: string }
 type Handler = (request: IncomingMessage, response: ServerResponse) => void | Promise<void>
 const cleanups: Array<() => Promise<void>> = []
 const fixtureKey = 'fixture-only-model-key'
@@ -18,7 +18,7 @@ async function fixture(handler: Handler) {
     const chunks: Buffer[] = []
     request.on('data', (chunk: Buffer) => chunks.push(chunk))
     request.on('end', () => {
-      requests.push({ method: request.method ?? '', url: request.url ?? '', authorization: request.headers.authorization, body: Buffer.concat(chunks).toString('utf8') })
+      requests.push({ method: request.method ?? '', url: request.url ?? '', authorization: request.headers.authorization, googleApiKey: request.headers['x-goog-api-key'], body: Buffer.concat(chunks).toString('utf8') })
       Promise.resolve(handler(request, response)).catch(() => response.destroy())
     })
   })
@@ -32,7 +32,12 @@ async function fixture(handler: Handler) {
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Invalid loopback fixture address')
   const base = `http://127.0.0.1:${address.port}`
-  return { base, requests, configuration: { endpoint: `${base}/v1`, apiKey: fixtureKey, timeoutMs: 3000, model: 'fixture-selected-model' } }
+  return {
+    base,
+    requests,
+    configuration: { protocol: 'openai-completions' as const, endpoint: `${base}/v1`, apiKey: fixtureKey, timeoutMs: 3000, model: 'fixture-selected-model' },
+    geminiConfiguration: { protocol: 'google-generative-ai' as const, endpoint: `${base}/v1beta`, apiKey: fixtureKey, timeoutMs: 3000, model: 'gemini-2.5-flash' },
+  }
 }
 
 function json(response: ServerResponse, value: unknown, status = 200) {
@@ -70,7 +75,7 @@ describe('DSH model list', () => {
     const upstream = await fixture((_request, response) => json(response, { data: [{ id: 'provider/model-原名', name: 'Provider name' }] }))
     const configuration = Object.freeze({ ...upstream.configuration, endpoint: `${upstream.base}${prefix}` })
     expect(await listModels(configuration)).toEqual({ models: [{ id: 'provider/model-原名', name: 'Provider name' }] })
-    expect(upstream.requests).toEqual([{ method: 'GET', url: `${prefix.replace(/\/+$/, '')}/models`, authorization: `Bearer ${fixtureKey}`, body: '' }])
+    expect(upstream.requests).toEqual([{ method: 'GET', url: `${prefix.replace(/\/+$/, '')}/models`, authorization: `Bearer ${fixtureKey}`, googleApiKey: undefined, body: '' }])
     expect(configuration.endpoint).toBe(`${upstream.base}${prefix}`)
   })
 
@@ -279,5 +284,84 @@ describe('DSH model request boundaries', () => {
     await pending
     expect(upstream.requests).toHaveLength(1)
     expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('DSH Google Gemini protocol model list and connection test', () => {
+  it('lists Gemini models with x-goog-api-key header, strips models/ prefix, filters generateContent, and parses token limits', async () => {
+    const upstream = await fixture((_request, response) => json(response, {
+      models: [
+        { name: 'models/gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', inputTokenLimit: 1048576, outputTokenLimit: 65536, thinking: true, supportedGenerationMethods: ['generateContent', 'countTokens'] },
+        { name: 'models/text-embedding-004', displayName: 'Embedding', supportedGenerationMethods: ['embedContent'] },
+        { name: 'tunedModels/custom-chat', displayName: 'Custom Tuned', supportedGenerationMethods: ['generateContent'] },
+        { name: 'models/gemini-2.5-flash', displayName: 'Duplicate ignored', supportedGenerationMethods: ['generateContent'] },
+        { name: `models/reflected-${fixtureKey}`, displayName: 'Unsafe', supportedGenerationMethods: ['generateContent'] },
+      ],
+    }))
+    const result = await listModels(upstream.geminiConfiguration)
+    expect(result).toEqual({
+      models: [
+        { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', capabilities: { imageInput: null, toolCalling: null, reasoning: true, inputModalities: null, outputModalities: null, contextWindow: 1048576, maxOutputTokens: 65536 } },
+        { id: 'tunedModels/custom-chat', name: 'Custom Tuned' },
+      ],
+    })
+    expect(upstream.requests).toEqual([
+      { method: 'GET', url: '/v1beta/models?pageSize=1000', authorization: undefined, googleApiKey: fixtureKey, body: '' },
+    ])
+  })
+
+  it('requires a non-empty API key before calling Gemini list or test endpoints', async () => {
+    const upstream = await fixture((_request, response) => json(response, { models: [{ name: 'models/gemini-2.5-flash' }] }))
+    await failure(listModels({ ...upstream.geminiConfiguration, apiKey: '' }), 'NOT_CONFIGURED', 'not-sent')
+    await failure(testModelConnection({ ...upstream.geminiConfiguration, apiKey: '   ' }), 'NOT_CONFIGURED', 'not-sent')
+    expect(upstream.requests).toHaveLength(0)
+  })
+
+  it('sends one minimal generateContent request with x-goog-api-key and validates Gemini candidate shapes', async () => {
+    const upstream = await fixture((_request, response) => json(response, {
+      candidates: [{ content: { role: 'model', parts: [{ text: 'Pong' }] }, finishReason: 'MAX_TOKENS' }],
+    }))
+    const result = await testModelConnection({ ...upstream.geminiConfiguration, endpoint: `${upstream.base}/proxy/v1beta/` })
+    expect(result).toEqual({ ok: true, model: 'gemini-2.5-flash', latencyMs: expect.any(Number) })
+    expect(upstream.requests).toHaveLength(1)
+    expect(upstream.requests[0]).toMatchObject({ method: 'POST', url: '/proxy/v1beta/models/gemini-2.5-flash:generateContent', authorization: undefined, googleApiKey: fixtureKey })
+    expect(JSON.parse(upstream.requests[0]!.body)).toEqual({ contents: [{ role: 'user', parts: [{ text: 'Ping.' }] }], generationConfig: { maxOutputTokens: 1 } })
+  })
+
+  it.each([
+    { candidates: [{ content: { role: 'model' }, finishReason: 'MAX_TOKENS' }] },
+    { candidates: [{ finishReason: 'MAX_TOKENS' }] },
+    { candidates: [{ content: { role: 'model', parts: [{ text: 'thought', thought: true }] }, finishReason: 'STOP' }] },
+    { candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: 'ping', args: {} } }] } }] },
+  ])('accepts valid Gemini generateContent response variants: %j', async payload => {
+    const upstream = await fixture((_request, response) => json(response, payload))
+    expect(await testModelConnection(upstream.geminiConfiguration)).toMatchObject({ ok: true, model: 'gemini-2.5-flash' })
+  })
+
+  it.each([
+    {},
+    { choices: [{ message: { role: 'assistant', content: 'openai-shape-must-fail' } }] },
+    { candidates: [] },
+    { candidates: [{}] },
+    { candidates: [{ content: { role: 'user', parts: [{ text: 'wrong-role' }] }, finishReason: 'STOP' }] },
+    { candidates: [{ content: { role: 'model', parts: [{ invalid: true }] }, finishReason: 'STOP' }] },
+  ])('rejects non-Gemini HTTP-200 payloads: %j', async payload => {
+    const upstream = await fixture((_request, response) => json(response, payload))
+    await failure(testModelConnection(upstream.geminiConfiguration), 'MODEL_RESPONSE_INVALID')
+  })
+
+  it.each([
+    ['UNAUTHENTICATED', 'MODEL_AUTH_FAILED'],
+    ['PERMISSION_DENIED', 'MODEL_AUTH_FAILED'],
+    ['RESOURCE_EXHAUSTED', 'MODEL_RATE_LIMITED'],
+  ] as const)('classifies Gemini HTTP-200 error status %s', async (status, expected) => {
+    const upstream = await fixture((_request, response) => json(response, { error: { code: 403, status, message: fixtureKey } }))
+    await failure(testModelConnection(upstream.geminiConfiguration), expected)
+  })
+
+  it.each(['../secret', 'gemini?key=x', 'gemini#frag', 'a/b/c'])('rejects unsafe Gemini model path %s before sending', async badModel => {
+    const upstream = await fixture((_request, response) => json(response, { candidates: [{ finishReason: 'STOP' }] }))
+    await failure(testModelConnection({ ...upstream.geminiConfiguration, model: badModel }), 'INVALID_CONFIGURATION', 'not-sent')
+    expect(upstream.requests).toHaveLength(0)
   })
 })

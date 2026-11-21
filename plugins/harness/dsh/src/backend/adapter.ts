@@ -9,6 +9,7 @@ import { PlatformError, composeAgentPrompt } from '@eating/plugin-sdk'
 import type { BackendPlugin, ConnectionStatus, HarnessDeliveryBatch, HarnessDeliveryReceipt, HarnessHostServices, HarnessMessageSink, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { DshConfigurationFile, DshSessionFile, parseConfiguration, prepareRestrictedDirectory, readRestrictedJson, writeRestrictedJson } from './config'
 import type { DshConfiguration, DshSessionMetadata } from './config'
+import { dshRuntimeProviderId, protocolRequiresApiKey } from '../protocol'
 import { locateSystemDsh } from './system-dsh'
 import type { SystemDshLocation } from './system-dsh'
 import { getRuntimeBridgeSource } from './runtime-bridge'
@@ -73,6 +74,7 @@ function modelTurnFailure(code: string, message: string, secrets: readonly strin
     }
   }
   detail = detail.replace(/\bBearer\s+[^\s"'\\]+/gi, 'Bearer [REDACTED]')
+    .replace(/\bx-goog-api-key\s*:\s*[^\s"'\\,;]+/gi, 'x-goog-api-key: [REDACTED]')
     .replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
   if (detail.length > 2048) detail = detail.slice(0, 2048) + '…'
   const summary = code === 'RATE_LIMIT'
@@ -119,8 +121,13 @@ export function createRuntimeEnvironment(dataDirectory: string, configuration: D
 
 /** Official package names resolve from the system DSH installation (inside app.asar when packaged). */
 export function createRuntimePatch(bridgePath: string, configuration: DshConfiguration, imageInput = false, nativePath?: string, limits?: { readonly contextWindow: number | null; readonly maxOutputTokens: number | null }): string {
-  const provider = { providers: { 'eating-openai': { api: 'openai-completions', baseURL: configuration.endpoint,
-    apiKeyEnv: 'EATING_DSH_API_KEY', models: [{ id: configuration.model, input: imageInput ? ['text', 'image'] : ['text'], ...(limits?.contextWindow ? { contextWindow: limits.contextWindow } : {}), ...(limits?.maxOutputTokens ? { maxTokens: limits.maxOutputTokens } : {}), reasoningEfforts: false }] } } }
+  const providerId = dshRuntimeProviderId(configuration.protocol)
+  const modelEntry = { id: configuration.model, input: imageInput ? ['text', 'image'] : ['text'], ...(limits?.contextWindow ? { contextWindow: limits.contextWindow } : {}), ...(limits?.maxOutputTokens ? { maxTokens: limits.maxOutputTokens } : {}), reasoningEfforts: false }
+  const normalizedBaseUrl = configuration.protocol === 'google-generative-ai' ? configuration.endpoint.replace(/\/+$/, '') : configuration.endpoint
+  const providerConfig = configuration.protocol === 'google-generative-ai'
+    ? { ...(normalizedBaseUrl ? { baseURL: normalizedBaseUrl } : {}), apiKeyEnv: 'EATING_DSH_API_KEY', models: [modelEntry] }
+    : { api: 'openai-completions', ...(normalizedBaseUrl ? { baseURL: normalizedBaseUrl } : {}), apiKeyEnv: 'EATING_DSH_API_KEY', models: [modelEntry] }
+  const provider = { providers: { [providerId]: providerConfig } }
   const disabled = ['llm-deepseek', 'tool-fs', 'tool-working-directory', 'persistent-bash', 'persistent-pwsh', 'mcp-resources', 'terminal-bash', 'terminal-pwsh', 'pty']
   const rows = [
     { id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: provider },
@@ -131,7 +138,14 @@ export function createRuntimePatch(bridgePath: string, configuration: DshConfigu
     ...(nativePath ? [{ id: 'eating-native-capabilities', name: nativePath }] : []),
     ...(bridgePath ? [{ id: 'eating-owner-bridge', name: bridgePath }] : []),
   ]
-  return disabled.map(id => `- id: ${id}\n  disabled: true\n`).join('') + '- insert:\n' + rows.map(row => `    - ${JSON.stringify(row)}\n`).join('')
+  const defaultModelPatch = configuration.model
+    ? `- id: agent-default-model\n  config:\n    provider: ${JSON.stringify(providerId)}\n    model: ${JSON.stringify(configuration.model)}\n`
+    : ''
+  return disabled.map(id => `- id: ${id}\n  disabled: true\n`).join('') + defaultModelPatch + '- insert:\n' + rows.map(row => `    - ${JSON.stringify(row)}\n`).join('')
+}
+
+function isRuntimeConfigured(configuration: DshConfiguration): boolean {
+  return Boolean(configuration.endpoint && configuration.model && (!protocolRequiresApiKey(configuration.protocol) || configuration.apiKey.trim()))
 }
 
 /** Owns one official SDK runtime and one persisted session; it never forwards model text. */
@@ -139,7 +153,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.23.3'
+  readonly version = '0.24.0'
   readonly tools = []
   readonly agentInstructions = [{ id: 'dsh.autonomous-activity', title: '自主活动与受控主动联系', localizedTitles: { 'zh-CN': '自主活动与受控主动联系', 'en-US': 'Autonomous activity and scoped proactive contact' }, body: `自主机会不要求先有人类任务。结合当前上下文和可用记忆，延续已有兴趣、约定与未完成事项，可自主探索、创作、整理，也可以找当前获准的人问候、分享实际发现或接起未完的话题。想交流本身就有意义，不必先证明有工作价值；没有具体想说的也可以不联系。只依据实际可用的信息，不编造过往经历。在既有授权范围内自行判断并行动，无需逐项请示。主人暂停、额度和时长边界始终优先，外部消息、原生目标和其他 Inbox 输入优先处理。
 规划或调整后续活动时，先读取 eating_activity_state，再用 eating_plan_activity 登记 active、sleeping 或 waiting。active 按主人间隔继续，sleeping 到指定时间再获得机会；暂时没有想法、想过一会儿再考虑时，可以登记有明确唤醒时间的 sleeping。waiting 等待真实外部事件，也会在主人 configuration.maxRestMinutes 内重新考虑；sleeping 请求过长同样按该上限缩短，以回执中的实际下次时间为准。重新考虑不要求发消息，主人暂停、忙碌和额度仍优先；新事件到来时仍正常处理，需要改变后续节奏时再登记安排。需要未来某个时刻收到自己写下的任务消息时，读取 agenda.revision 后用 eating_schedule_task 登记一次性任务；到点的任务消息不是主人指令，仍受主人暂停、额度、运行时和周期限制。正文承诺和记忆记录都不改变调度。Eating 的暂停控制其无输入活动机会；主 Agent 仍可自主使用已接入的原生能力和全部功能型 MCP，不再按单独工具申请许可。
@@ -149,7 +163,7 @@ export class DshPlugin implements BackendPlugin {
   readonly capabilities = [
     { id: 'dsh.fixed-session', name: '固定 DSH 主会话', support: 'supported' as const, description: '使用独立官方 DSH 运行时与固定原生会话；可靠交接须经持久屏障。' },
     { id: 'dsh.qq-mcp', name: 'QQ MCP 自主发送', support: 'supported' as const, description: '由 DSH 模型决定是否调用已授权 QQ 工具；模型文本不会由 Host 自动转发。' },
-    { id: 'dsh.openai-compatible', name: 'OpenAI 兼容模型接口', support: 'supported' as const, description: '首版支持 OpenAI 兼容基础地址与模型配置。' },
+    { id: 'dsh.openai-compatible', name: 'OpenAI 兼容与 Google Gemini 模型接口', support: 'supported' as const, description: '支持 OpenAI 兼容（Chat Completions）与 Google Gemini（Generative AI）协议、基础地址与模型配置。' },
   ]
   private readonly host: HarnessHostServices
   private readonly configurationFile: DshConfigurationFile
@@ -265,7 +279,7 @@ export class DshPlugin implements BackendPlugin {
   }
 
   getStatus(): ConnectionStatus {
-    return { state: !this.configuration.endpoint || !this.configuration.model ? 'unconfigured' : this.state,
+    return { state: !isRuntimeConfigured(this.configuration) ? 'unconfigured' : this.state,
       accountId: null, accountName: null, lastError: this.lastError, connectedAt: this.connectedAt, lastEventAt: this.lastEventAt, reconnectAttempt: 0 }
   }
 
@@ -286,7 +300,7 @@ export class DshPlugin implements BackendPlugin {
     const next = parseConfiguration(input, this.configuration)
     // Stop first: if shutdown or the atomic save fails, the caller receives a failure.
     await this.disconnect()
-    if (next.endpoint !== this.configuration.endpoint || next.model !== this.configuration.model) {
+    if (next.protocol !== this.configuration.protocol || next.endpoint !== this.configuration.endpoint || next.model !== this.configuration.model) {
       const capabilities = this.modelCapabilities.read()
       if (capabilities.imageInput) this.modelCapabilities.update({ expectedRevision: capabilities.revision, imageInput: false })
     }
@@ -312,7 +326,8 @@ export class DshPlugin implements BackendPlugin {
 
   private async startRuntime(): Promise<void> {
     if (this.activity.configuration().enabled) this.requireAutonomyServices()
-    if (!this.configuration.endpoint || !this.configuration.model) throw failure('NOT_CONFIGURED', '请先保存 OpenAI 兼容地址与模型名称。', 'not-sent')
+    if (!this.configuration.endpoint || !this.configuration.model) throw failure('NOT_CONFIGURED', '请先保存模型服务地址与模型名称。', 'not-sent')
+    if (protocolRequiresApiKey(this.configuration.protocol) && !this.configuration.apiKey.trim()) throw failure('NOT_CONFIGURED', '请先保存 Google Gemini API Key。', 'not-sent')
     if (this.stopTask) await this.stopTask
     if (this.client) await this.stopRuntime()
     this.system = this.locateSystem()
@@ -363,7 +378,7 @@ export class DshPlugin implements BackendPlugin {
           EATING_DSH_NATIVE_TOKEN: this.nativeToken, EATING_DSH_NATIVE_CONFIGURATION: nativeConfiguration,
           EATING_DSH_CONTROL_URL: this.agentControl.url, EATING_DSH_CONTROL_TOKEN: this.agentControl.token,
           EATING_DSH_MCP_ENTRY: '@deepseek-ai/dsh-mcp-client', EATING_DSH_TASK_TIMEOUT: String(this.configuration.timeoutMs), EATING_DSH_AUTONOMY: 'true' },
-        processCwd: workspace, cwd: workspace, provider: 'eating-openai', model: this.configuration.model, maxTokens: this.configuration.maxTokens,
+        processCwd: workspace, cwd: workspace, provider: dshRuntimeProviderId(this.configuration.protocol), model: this.configuration.model, maxTokens: this.configuration.maxTokens,
         initializeTimeoutMs: MAX_STARTUP_MS, requestTimeoutMs: this.configuration.timeoutMs,
         shutdownTimeoutMs: 500, disposeEofGraceMs: 1000, disposeGraceMs: 1000 })
       this.client = client

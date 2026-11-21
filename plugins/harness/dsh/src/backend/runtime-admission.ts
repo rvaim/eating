@@ -17,7 +17,10 @@ export function getDeliveryAdmissionSource(): string {
       sending = true;
       requested = false;
       try {
-        await control('delivery-state', { agentId: sessionId, sequence: ++deliveryAdmissionSequence, phase: phase() }, AbortSignal.any([initialization.signal, AbortSignal.timeout(2000)]));
+        // Retire durably completed batches even when the Host is too full to send a new turn.
+        const state = phase();
+        if (state === 'idle') void retireCompletedContexts(agent);
+        await control('delivery-state', { agentId: sessionId, sequence: ++deliveryAdmissionSequence, phase: state }, AbortSignal.any([initialization.signal, AbortSignal.timeout(2000)]));
       } catch {
         requested = true;
       } finally {

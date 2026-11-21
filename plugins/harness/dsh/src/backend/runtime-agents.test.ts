@@ -58,7 +58,7 @@ function fixture(unavailable = false, execution = false) {
   const opaque = (value: unknown) => typeof value === 'string' && value.length > 0
   const bridgeError = (code: string) => Object.assign(new Error(code), { code })
   const dependencies = { ctx, releases: [], sessionId, nonce: 'fixture-nonce', isAbsolute, opaque, record, bridgeError, createHash, initialization: new AbortController(), disposed: false, failed: false, HEX: /^[a-f0-9]{64}$/, readJson: () => undefined, atomicJson: vi.fn(), recoveredTaskNotices: new Set(), acknowledgedBatches: new Set(), restoredDeliveries: new Map(), fail: vi.fn(), failureCode: () => 'DURABILITY_FAILED', readExpected: () => expected, readValidatedOwnerPolicy: () => policy, identifyCurrentDelivery: () => true }
-  const instantiate = new Function('dependencies', 'const {' + Object.keys(dependencies).join(',') + '} = dependencies;\n' + getRuntimeAgentSource() + '\nreturn { acceptContext, handleConversation, delegate, runDelegation, mainSystemPrompt, startExecution, retireCompletedContexts };')
+  const instantiate = new Function('dependencies', 'const {' + Object.keys(dependencies).join(',') + '} = dependencies;\n' + getRuntimeAgentSource() + '\nreturn { acceptContext, handleConversation, delegate, runDelegation, mainSystemPrompt, startExecution, observeMainTurn, retireCompletedContexts };')
   const runtime = instantiate(dependencies) as {
     acceptContext(message: unknown, expected: unknown): void
     handleConversation(args: unknown, exec: unknown): Promise<unknown>
@@ -66,9 +66,12 @@ function fixture(unavailable = false, execution = false) {
     runDelegation(context: unknown, typeId: string, task: string, taskId: string, exec: unknown, configuration: unknown, coordination?: unknown): Promise<unknown>
     mainSystemPrompt(): string
     startExecution(args: unknown, exec: unknown): Promise<unknown>
-    retireCompletedContexts(): Promise<void>
+    observeMainTurn(event: unknown): void
+    retireCompletedContexts(agent: unknown): Promise<void>
   }
-  runtime.acceptContext({ content: [{ text: JSON.stringify(payload) }] }, expected)
+  runtime.acceptContext({ id: 'fixture-message', content: [{ text: JSON.stringify(payload) }] }, expected)
+  runtime.observeMainTurn({ type: 'turn/start', data: { turn: 1 } })
+  runtime.observeMainTurn({ type: 'user/message', data: { id: 'fixture-message', source: { kind: 'eating-external', batchId } } })
   const exec = (callId: string) => ({ agent: main, signal: new AbortController().signal, callId })
   return { runtime, ctx, conversations, bindings, policy, payload, expected, requests, activation, deferred, completed, configuration, exec, childId, resident }
 }
@@ -83,7 +86,8 @@ describe('runtime per-conversation routing and child serialization', () => {
     await vi.advanceTimersByTimeAsync(16 * 60 * 1000)
     expect(f.activation.dispose).not.toHaveBeenCalled()
     expect(f.requests.some(request => request.operation === 'finish-task')).toBe(false)
-    await f.runtime.retireCompletedContexts()
+    f.runtime.observeMainTurn({ type: 'turn/end', data: { turn: 1 } })
+    await f.runtime.retireCompletedContexts(f.exec('phone-task').agent)
     expect(f.requests).toContainEqual(expect.objectContaining({ operation: 'retire-deliveries', body: expect.objectContaining({ batchIds: ['a'.repeat(64)] }) }))
     vi.useRealTimers(); f.deferred.resolve(f.completed)
     await vi.waitFor(() => expect(f.requests).toContainEqual(expect.objectContaining({ operation: 'finish-task', body: expect.objectContaining({ status: 'completed' }) })))

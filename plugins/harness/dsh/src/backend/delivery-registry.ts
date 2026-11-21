@@ -57,8 +57,9 @@ export class DshDeliveryRegistry {
   }
   restore(nonce: string, sessionId: string): void { for (const frame of this.frames) { const { accepted: _accepted, finished: _finished, ...expected } = frame; this.publish(expected, nonce, sessionId) } }
   accept(batchId: string): void {
-    if (!this.get(batchId)) return
-    this.save(this.frames.map(frame => frame.batchId === batchId ? { ...frame, accepted: true } : frame))
+    const frame = this.get(batchId)
+    if (!frame) return
+    if (!frame.accepted) this.save(this.frames.map(entry => entry.batchId === batchId ? { ...entry, accepted: true } : entry))
     this.retire([])
   }
   withdraw(batchId: string): void {
@@ -70,9 +71,9 @@ export class DshDeliveryRegistry {
     if (stat) { if (!stat.isFile() || stat.isSymbolicLink()) invalid(); unlinkSync(path) }
   }
   retire(batchIds: readonly string[]): void {
-    const finished = this.frames.map(frame => batchIds.includes(frame.batchId) ? { ...frame, finished: true } : frame)
+    const finished = this.frames.map(frame => !frame.finished && batchIds.includes(frame.batchId) ? { ...frame, finished: true } : frame)
     const removed = finished.filter(frame => frame.finished && frame.accepted)
-    if (!removed.length && !batchIds.length) return
+    if (!removed.length && finished.every((frame, index) => frame === this.frames[index])) return
     this.save(finished.filter(frame => !frame.finished || !frame.accepted))
     for (const frame of removed) for (const name of [`expected-${frame.batchId}.json`, `ack-${frame.batchId}.json`]) {
       const path = join(this.directory, name), stat = lstatSync(path, { throwIfNoEntry: false })

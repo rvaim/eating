@@ -55,7 +55,7 @@ function owner(): HarnessOwnerConfiguration {
     { id: 'agent:qq.group', scope: 'agent', source: 'plugin', pluginId: 'qq', agentTypeId: 'qq.group', title: 'Batch group', body: 'ISOLATED-BATCH-GROUP: only the verified group account and target.', revision: 1, updatedAt: null },
   ], agentTypes: [{ id: 'qq.group', title: 'Synthetic group', description: 'No communication connection.', conversationKind: 'group', pluginId: 'qq', pluginName: 'Synthetic QQ', enabled: true, availableTools: [], defaultTools: [], enabledTools: [], defaultPrompt: 'Synthetic group scope.', identity: { owners: [], administrators: [] } }] }
 }
-async function fixture(handleConversations = false, captureMemory = false, taskControl?: 'message' | 'interrupt') {
+async function fixture(handleConversations = false, captureMemory = false, taskControl?: 'message' | 'interrupt' | 'hold') {
   const parent = realpathSync(tmpdir()), home = realpathSync(mkdtempSync(join(parent, 'eating-batch-delivery-')))
   vi.stubEnv('EATING_HOME', home)
   stops.push(() => {
@@ -121,7 +121,7 @@ async function fixture(handleConversations = false, captureMemory = false, taskC
             for (const message of messages.filter(message => message.role === 'user')) {
               try { const result = object(JSON.parse(text(message.content))).eating_task_result; if (isJsonObject(result)) taskNotices.set(String(result.taskId), result) } catch { /* ordinary native input */ }
             }
-            if (!rootPlans.has(ref)) {
+            if (!rootPlans.has(ref) && (taskControl !== 'hold' || !rootPlans.size)) {
               rootPlans.add(ref)
               const previous = results.find(result => typeof result.taskId === 'string' && result.status === 'running')
               const call = previous ? { name: 'eating_task_control', arguments: { action: taskControl, task_id: previous.taskId, ...(taskControl === 'message' ? { context_ref: conversations[0]!.contextRef, message: '结合刚补充的新消息继续任务。' } : {}) } }
@@ -180,7 +180,7 @@ async function fixture(handleConversations = false, captureMemory = false, taskC
   const memory = { begin: vi.fn(async (_input: MemoryBeginInput) => ({ text: '', items: [] })), append: vi.fn(async () => ({ text: '', items: [] })), finish: vi.fn(async () => {}), flush: vi.fn(async () => {}), end: vi.fn() }
   const wake = vi.fn(() => gateway.notify())
   const forbidden = (name: string) => vi.fn(() => { throw new Error(`Forbidden isolated fixture action: ${name}`) })
-  const start = async (configure = false) => {
+  const start = async (configure = false, beforeConnect?: () => void) => {
     store = new HostStore(databasePath)
     running = true
     if (configure) {
@@ -188,6 +188,7 @@ async function fixture(handleConversations = false, captureMemory = false, taskC
       store.updateDeliverySettings({ ...snapshot.values, storageMode: 'persistent', aggregationWindowMs: 0, retryIntervalMs: 100 }, snapshot.revision)
     }
     gateway = new HarnessGateway(store)
+    beforeConnect?.()
     const context: HostPluginContext = { imageLimits: () => DEFAULT_IMAGE_LIMITS,
       dataDirectory, getSetting: key => store.getSetting(key), setSetting: (key, value) => store.setSetting(key, value),
       recordEvent: forbidden('recordEvent'), listMessages: () => [], executeIdempotent: forbidden('executeIdempotent'),
@@ -236,8 +237,8 @@ async function fixture(handleConversations = false, captureMemory = false, taskC
   }
   return { home, dataDirectory, requests, modelErrors, scopes, childInputs, memory, wake, first, record, runtime, rootId, assertBatch, releaseNative, releaseChild, taskNotices, controlReceipts, extendedScopes,
     get plugin() { return plugin }, get gateway() { return gateway }, get store() { return store },
-    async restart(beforeStart?: () => void) { await stop(); beforeStart?.(); return start() },
-    retainUnclaimedRootPrefix() {
+    async restart(beforeConnect?: () => void) { await stop(); return start(false, beforeConnect) },
+    retainRootPrefix(interruptAfterClaim: boolean) {
       const root = rootId()
       const entries = readdirSync(dataDirectory, { recursive: true, withFileTypes: true }).filter(entry => entry.isFile())
       const candidates = entries.filter(entry => join(entry.parentPath, entry.name).includes(root) && /\.(?:jsonl|log)$/.test(entry.name))
@@ -260,8 +261,12 @@ async function fixture(handleConversations = false, captureMemory = false, taskC
         messageId = message.id; return true
       })
       expect(insertion).toBeGreaterThan(0); expect(messageId).toBeTruthy()
-      expect(records.slice(insertion + 1).some(record => { const event = nativeEvent(record); return event.type === 'agent/inbox/spliced' && isJsonObject(event.data) && event.data.target === 'next-turn' && event.data.start === 0 && event.data.removedCount === 1 })).toBe(true)
-      const prefix = lines.slice(0, insertion + 1).join('\n') + '\n'
+      const claim = records.findIndex((record, index) => {
+        const event = nativeEvent(record)
+        return index > insertion && event.type === 'agent/inbox/spliced' && isJsonObject(event.data) && event.data.target === 'next-turn' && event.data.start === 0 && event.data.removedCount === 1
+      })
+      expect(claim).toBeGreaterThan(insertion)
+      const prefix = lines.slice(0, (interruptAfterClaim ? claim : insertion) + 1).join('\n') + '\n'
       expect(original.startsWith(prefix)).toBe(true)
       writeFileSync(path, prefix)
       const insertionData = object(nativeEvent(records[insertion]!).data)
@@ -269,7 +274,6 @@ async function fixture(handleConversations = false, captureMemory = false, taskC
       const eating = object(payload.eating), policy = object(JSON.parse(readFileSync(join(dataDirectory, 'bridge/owner-policy.json'), 'utf8')))
       const frame = { batchId: eating.batchId, digest: eating.digest, ownerRevision: policy.revision, bindings: policy.bindings }
       writeFileSync(join(dataDirectory, 'bridge/deliveries.json'), JSON.stringify({ schemaVersion: 1, revision: 1, deliveries: [{ ...frame, accepted: true, finished: false }] }))
-      return { messageId, prefixRecords: insertion + 1 }
     },
     receipts() {
       const database = new DatabaseSync(databasePath)
@@ -315,6 +319,7 @@ describe.runIf(enabled)('isolated system DSH cross-conversation Gateway delivery
       expect(current.scopes).toHaveLength(1)
     }
     const result = [...current.taskNotices.values()][0]!
+    await vi.waitFor(() => expect(readRestrictedJson(join(current.dataDirectory, 'bridge', 'deliveries.json'))?.deliveries).toEqual([]), { timeout: 5000 })
     const rootId = current.rootId(), web = await connectNativeWeb(await current.plugin.manage('open-native-web', {}), rootId)
     const events = await web.events(rootId)
     const insertions = events.filter(event => event.type === 'agent/inbox/spliced').flatMap(event => isJsonObject(event.data) && Array.isArray(event.data.inserted) ? event.data.inserted.filter(isJsonObject) : [])
@@ -331,7 +336,7 @@ describe.runIf(enabled)('isolated system DSH cross-conversation Gateway delivery
     expect(current.home).not.toContain('.eating')
   }, 45000)
 
-  it('cold-resumes an ACKed unclaimed native inbox without another Host message and recalls its verified batch before accepting a fresh batch', async () => {
+  it.each(['unclaimed', 'claimed before the first step'] as const)('cold-resumes an ACKed batch that was %s without asking the Host to deliver it again', async phase => {
     const current = await fixture(false, true), rootId = current.rootId()
     const events = [current.record('100'), current.record('101')]
     await vi.waitFor(() => {
@@ -346,7 +351,7 @@ describe.runIf(enabled)('isolated system DSH cross-conversation Gateway delivery
     const metadataPath = join(current.dataDirectory, 'session.json')
     const metadata = readFileSync(metadataPath, 'utf8'), policy = readFileSync(policyPath, 'utf8'), bindings = readFileSync(bindingPath, 'utf8')
     const recovered = await current.restart(() => {
-      current.retainUnclaimedRootPrefix()
+      current.retainRootPrefix(phase === 'claimed before the first step')
       expect(readFileSync(metadataPath, 'utf8')).toBe(metadata)
       expect(readFileSync(policyPath, 'utf8')).toBe(policy)
       expect(readFileSync(bindingPath, 'utf8')).toBe(bindings)
@@ -381,6 +386,75 @@ describe.runIf(enabled)('isolated system DSH cross-conversation Gateway delivery
     expect(current.requests.flatMap(request => (request.messages as JsonObject[]).filter(message => message.role === 'tool'))).toEqual([])
     expect(current.modelErrors).toEqual([])
   }, 60000)
+
+  it('releases a completed batch while an unrelated earlier child still runs', async () => {
+    const current = await fixture(true, false, 'hold')
+    const registry = () => readRestrictedJson(join(current.dataDirectory, 'bridge', 'deliveries.json'))?.deliveries
+    const first = current.record('100')
+    await vi.waitFor(() => {
+      expect(current.childInputs).toHaveLength(1)
+      expect(current.store.harnessSummary()).toMatchObject({ accepted: 1, pending: 0 })
+    }, { timeout: 10000 })
+    const second = current.record('101')
+    await vi.waitFor(() => {
+      expect(current.store.harnessSummary()).toMatchObject({ accepted: 2, pending: 0 })
+      expect(current.requests.some(request => {
+        try { return object(envelope(request).eating).batchId === orderedBatchId([second]) } catch { return false }
+      })).toBe(true)
+      expect(registry()).toEqual([expect.objectContaining({ batchId: orderedBatchId([first]), accepted: true, finished: false })])
+    }, { timeout: 10000 })
+    expect(current.taskNotices.size).toBe(0)
+    current.releaseChild()
+    await vi.waitFor(() => expect(registry()).toEqual([]), { timeout: 10000 })
+    expect(current.taskNotices.size).toBe(1)
+    expect(current.modelErrors).toEqual([])
+  }, 45000)
+
+  it('recovers 32 completed registrations at startup and drains 111 waiting messages in order without replay', async () => {
+    const current = await fixture()
+    const rootId = current.rootId(), web = await connectNativeWeb(await current.plugin.manage('open-native-web', {}), rootId)
+    await web.rpc('session/prompt', { request: { sessionId: rootId, requestId: randomUUID(), mode: 'steer', content: [{ type: 'text', text: 'NATIVE-OWNER-BUSY-INPUT' }] } })
+    await vi.waitFor(() => expect(current.requests).toHaveLength(1))
+    const original: HarnessEvent[] = []
+    for (let index = 0; index < 32; index++) {
+      original.push(current.record(index % 2 === 0 ? '100' : '101'))
+      await vi.waitFor(() => expect(current.store.harnessSummary()).toMatchObject({ accepted: index + 1, pending: 0 }), { timeout: 10000 })
+    }
+    const registryPath = join(current.dataDirectory, 'bridge', 'deliveries.json')
+    const sessionPath = join(current.dataDirectory, 'session.json')
+    const retainedRegistry = readFileSync(registryPath, 'utf8'), retainedSession = readFileSync(sessionPath, 'utf8')
+    expect(JSON.parse(retainedRegistry).deliveries).toHaveLength(32)
+    expect(current.plugin.isReady()).toBe(false)
+    current.releaseNative()
+    await vi.waitFor(() => {
+      expect(current.runtime().busy).toBe(false)
+      expect(readRestrictedJson(registryPath)?.deliveries).toEqual([])
+    }, { timeout: 15000 })
+    const receipts = current.receipts(), previousRequests = current.requests.length
+    const backlog: HarnessEvent[] = []
+    const recovered = await current.restart(() => {
+      // Recreate the registration state left behind when all native turns ended but retirement never committed.
+      writeFileSync(registryPath, retainedRegistry)
+      writeFileSync(sessionPath, retainedSession)
+      for (let index = 0; index < 111; index++) backlog.push(current.record(index % 2 === 0 ? '100' : '101'))
+      expect(current.store.getQueuedHarnessEvents().map(item => item.event)).toEqual(backlog)
+    })
+    await vi.waitFor(() => {
+      expect(current.store.harnessSummary()).toMatchObject({ accepted: 143, pending: 0, uncertain: 0, discarded: 0 })
+      expect(readRestrictedJson(registryPath)?.deliveries).toEqual([])
+      expect(current.requests).toHaveLength(previousRequests + 1)
+    }, { timeout: 15000 })
+    expect(current.rootId()).toBe(rootId)
+    expect(current.receipts()).toEqual(expect.arrayContaining(receipts))
+    expect(recovered.deliver).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ events: backlog }), expect.any(AbortSignal))
+    expect(recovered.ack).toHaveBeenCalledExactlyOnceWith(backlog.map(event => event.eventId), expect.any(String))
+    const projection = (await (await connectNativeWeb(await current.plugin.manage('open-native-web', {}), rootId)).events(rootId)).flatMap(event => {
+      if (event.type !== 'user/message' || !isJsonObject(event.data) || !isJsonObject(event.data.source) || event.data.source.kind !== 'eating-external') return []
+      return object(JSON.parse(text(event.data.content))).events as JsonObject[]
+    })
+    expect(projection.map(event => event.eventId)).toEqual([...original, ...backlog].map(event => event.eventId))
+    expect(current.modelErrors).toEqual([])
+  }, 90000)
 
   it('hands each conversation ref to its own autonomous child with isolated events, resources and systems', async () => {
     const current = await fixture(true)

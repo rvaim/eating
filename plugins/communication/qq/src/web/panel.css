@@ -21,7 +21,7 @@
 .qq-tabs { margin-bottom: 16px; }
 .qq-panel > .qq-tabs { max-width: none; }
 .qq-panel [role="tabpanel"] :is(input, select, textarea, button, summary, [tabindex]) { scroll-margin-block-start: calc(var(--panel-tab-rail-block-size) + 20px); }
-.qq-fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+:where(.qq-fieldset) { min-width: 0; margin: 0; padding: 0; border: 0; }
 .qq-fieldset:disabled { opacity: .78; }
 .qq-panel .section-heading p, .qq-capability-heading p { max-width: 72ch; }
 .qq-panel :where(.field > textarea) { width: 100%; min-width: 0; max-width: 670px; min-height: 126px; resize: vertical; padding: 10px 12px; border: 1px solid var(--color-line-input); border-radius: var(--radius); color: var(--color-ink); background: var(--color-surface); font-size: 13px; line-height: 1.6; }

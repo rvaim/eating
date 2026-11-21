@@ -165,16 +165,40 @@ export function apply(ctx) {
     return identifyMessage(message, expected, false) || (restoredDeliveries.get(expected.batchId)?.messageId === message.id ? identifyMessage(message, expected, true) : undefined);
   }
   async function restorePendingDelivery(agent) {
-    let pending = false;
+    const pending = new Set([...agent.inbox.nextTurn, ...agent.inbox.nextStep].map(message => message.id));
+    const hasPendingInput = pending.size > 0 || taskOutbox().results.length > 0 || [...restoredDeliveries.values()].some(delivery => !delivery.admitted && !delivery.discarded);
+    const claimed = [];
     for (const [batchId, recovered] of restoredDeliveries) {
       const expected = readExpected(batchId);
+      if (!expected) throw bridgeError('SESSION_RECOVERY_FAILED');
+      const settled = recovered.admitted || recovered.discarded;
+      if (pending.has(recovered.messageId) && settled) throw bridgeError('SESSION_RECOVERY_FAILED');
+      if (!hasPendingInput) {
+        rememberActiveBatch(batchId, recovered.messageId).finished = true;
+        continue;
+      }
       const restored = await control('restore-delivery', { agentId: sessionId, payload: recovered.payload }, AbortSignal.any([initialization.signal, AbortSignal.timeout(10000)]));
-      if (!expected || !Array.isArray(restored.bindings)) throw bridgeError('SESSION_RECOVERY_FAILED');
+      if (!Array.isArray(restored.bindings)) throw bridgeError('SESSION_RECOVERY_FAILED');
       acceptContext(recovered.message, expected);
-      pending ||= [...agent.inbox.nextTurn, ...agent.inbox.nextStep].some(message => message.id === recovered.messageId);
+      activeContext.batches.get(batchId).finished = settled;
+      if (!settled && !pending.has(recovered.messageId)) {
+        if (recovered.claimTurn === undefined) throw bridgeError('SESSION_RECOVERY_FAILED');
+        claimed.push(recovered);
+      }
+    }
+    // DSH persists a claim before logging the user message. Recover only that
+    // gap, with the original ID and before the still unclaimed native input.
+    if (claimed.length) {
+      if (typeof agent.inbox.prepend !== 'function') throw bridgeError('NATIVE_AGENT_API_UNAVAILABLE');
+      claimed.sort((left, right) => right.eventSeq - left.eventSeq);
+      for (const recovered of claimed) agent.inbox.prepend('next-step', recovered.message);
+      if (await ctx.sessions.flush(agent.session) !== true) throw bridgeError('DURABILITY_FAILED');
     }
     await restoreTaskOutbox(agent);
-    if (!pending && !agent.inbox.nextTurn.length && !agent.inbox.nextStep.length) return;
+    if (!agent.inbox.nextTurn.length && !agent.inbox.nextStep.length) {
+      await retireCompletedContexts(agent);
+      return;
+    }
     if (typeof agent.send !== 'function' || typeof agent.inbox.remove !== 'function') throw bridgeError('NATIVE_AGENT_API_UNAVAILABLE');
     if (disposed || failed || initialization.signal.aborted || ctx.agents.get(sessionId) !== agent) throw bridgeError('SESSION_RECOVERY_FAILED');
     const Llm = await loadModule('@deepseek-ai/dsh-llm');
@@ -185,6 +209,7 @@ export function apply(ctx) {
   async function classifyDelivery({ agent }, next) {
     const decision = await next();
     if (disposed || failed || agent.id !== sessionId || decision.kind !== 'enter') return decision;
+    if (deliveryRetirement) await deliveryRetirement;
     // The SDK transport always enqueues kind=user. Attribute only the verified
     // external batch at the public admission boundary, preserving its receipt ID.
     return { ...decision, messages: decision.messages.map(message => {
@@ -226,6 +251,7 @@ export function apply(ctx) {
     let expected;
     let found;
     try {
+      observeMainTurn(event);
       if (event.type !== 'agent/inbox/spliced' || !Array.isArray(event.data?.inserted)) return;
       for (const message of event.data.inserted) {
         expected = expectedForMessage(message);
@@ -254,13 +280,16 @@ export function apply(ctx) {
     let handle;
     try { handle = await ctx.sessionPersistence.open(sessionId, 'read', { signal: initialization.signal }); }
     catch (error) {
-      if (error && error.name === 'SessionPersistenceNotFoundError' && error.sessionId === sessionId) return { recovery: 'absent' };
+      if (!frames.length && error && error.name === 'SessionPersistenceNotFoundError' && error.sessionId === sessionId) return { recovery: 'absent' };
       throw bridgeError('SESSION_RECOVERY_FAILED');
     }
     try {
       if (!handle || !record(handle.header) || handle.header.id !== sessionId || typeof handle.read !== 'function' || typeof handle.close !== 'function') throw bridgeError('SESSION_RECOVERY_FAILED');
       const recovered = new Map();
+      const byMessageId = new Map();
+      const inbox = { 'next-turn': [], 'next-step': [] };
       const pendingNotices = new Set(taskOutbox().results.map(result => 'eating-task-' + result.taskId));
+      let turn;
       let offset = 0;
       for (;;) {
         if (disposed || failed) return { recovery: 'absent' };
@@ -270,12 +299,41 @@ export function apply(ctx) {
           if (!Number.isSafeInteger(event.seq) || event.seq !== offset) throw bridgeError('SESSION_RECOVERY_FAILED');
           offset += 1;
           restoreConversationContext(event);
-          if (event.type === 'agent/inbox/spliced' && Array.isArray(event.data?.inserted)) for (const message of event.data.inserted) if (message.source?.kind === 'plugin:eating-task-result' && pendingNotices.has(message.id)) recoveredTaskNotices.add(message.id);
-          for (const frame of frames) if (!recovered.has(frame.batchId)) {
-            const found = matchEvent(event, frame, true);
-            if (found) {
-              const message = event.data.inserted.find(message => message.id === found.messageId);
-              recovered.set(frame.batchId, { ...found, message, payload: JSON.parse(message.content.map(block => block.text).join('')) });
+          if (event.type === 'turn/start') turn = event.data.turn;
+          else if (event.type === 'turn/end') {
+            if (event.data.reason.kind === 'blocked') for (const delivery of recovered.values()) if (delivery.claimTurn === event.data.turn && !delivery.admitted) delivery.discarded = true;
+            turn = undefined;
+          } else if (event.type === 'user/message') {
+            const message = event.data, delivery = byMessageId.get(message.id);
+            if (delivery && message.source?.kind === 'eating-external' && message.source.batchId === delivery.expected.batchId
+              && identifyMessage({ ...message, source: { kind: 'user' } }, delivery.expected, true)) delivery.admitted = true;
+          } else if (event.type === 'agent/inbox/spliced' && Array.isArray(event.data?.inserted)) {
+            const { inserted, target, start, removedCount = 0, outcome } = event.data;
+            for (const message of inserted) if (message.source?.kind === 'plugin:eating-task-result' && pendingNotices.has(message.id)) recoveredTaskNotices.add(message.id);
+            if (!frames.length) continue;
+            const queue = inbox[target];
+            if (!Array.isArray(queue) || !Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(removedCount) || removedCount < 0 || start + removedCount > queue.length) throw bridgeError('SESSION_RECOVERY_FAILED');
+            for (const id of queue.splice(start, removedCount, ...inserted.map(message => message.id))) {
+              const delivery = byMessageId.get(id);
+              if (delivery) {
+                delivery.discarded = outcome === 'canceled';
+                delivery.claimTurn = delivery.discarded ? undefined : turn;
+              }
+            }
+            for (const frame of frames) {
+              const found = matchEvent(event, frame, true);
+              if (!found) continue;
+              const delivery = recovered.get(frame.batchId);
+              if (delivery) {
+                if (delivery.messageId !== found.messageId || delivery.admitted) throw bridgeError('SESSION_RECOVERY_FAILED');
+                delivery.discarded = false;
+                delivery.claimTurn = undefined;
+                continue;
+              }
+              const message = inserted.find(message => message.id === found.messageId);
+              const first = { ...found, expected: frame, message, payload: JSON.parse(message.content.map(block => block.text).join('')), admitted: false, discarded: false };
+              recovered.set(frame.batchId, first);
+              byMessageId.set(found.messageId, first);
             }
           }
         }

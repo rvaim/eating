@@ -253,7 +253,7 @@ describe.runIf(Boolean(systemDshBin))('真实DSH SDK → 原生主子会话 → 
     const diagnostics = () => ({ runtime: runtime(), queue: host.harness.getStatus(), modelRequests: model.settledRequests.length, fixtureErrors: model.errors })
 
     emit(91001, 'UNTRUSTED-CONTENT-MUST-NOT-ENTER-SYSTEM。请自主决定是否回复。')
-    await until(() => accepted(1), '首次主委派、子工具回复、主摘要及持久回执', diagnostics)
+    await until(() => accepted(1) && model.settledRequests.length >= 4, '首次主委派、子工具回复、主摘要及持久回执', diagnostics)
     expect(model.settledRequests).toHaveLength(4)
     const privateContext = assertDelegation(model.settledRequests, '91001', 'private', sessionId, agentTools['qq.private'])
     expect(sends()).toHaveLength(1)
@@ -294,7 +294,7 @@ describe.runIf(Boolean(systemDshBin))('真实DSH SDK → 原生主子会话 → 
     const currentMain = host.authoring.getSnapshot().prompts.find(prompt => prompt.id === 'main')!
     host.authoring.updatePrompt('main', 'OWNER-MARKER-B。保持同一身份，人格{{人格名称}}。自主选择子代理。', currentMain.revision)
     emit(91003, '群聊仍由主模型选择是否委派回复。', true)
-    await until(() => accepted(3), '更新主人策略后的群子代理', diagnostics)
+    await until(() => accepted(3) && model.settledRequests.length >= 9, '更新主人策略后的群子代理', diagnostics)
     expect(model.settledRequests).toHaveLength(9)
     const groupContext = assertDelegation(model.settledRequests.slice(5), '91003', 'group', sessionId, agentTools['qq.group'], 1002)
     expect(groupContext).not.toBe(privateContext)

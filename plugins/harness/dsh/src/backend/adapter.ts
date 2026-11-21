@@ -153,7 +153,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.25.0'
+  readonly version = '0.25.1'
   readonly tools = []
   readonly agentInstructions = [{ id: 'dsh.autonomous-activity', title: '自主活动与受控主动联系', localizedTitles: { 'zh-CN': '自主活动与受控主动联系', 'en-US': 'Autonomous activity and scoped proactive contact' }, body: `自主机会不要求先有人类任务。结合当前上下文和可用记忆，延续已有兴趣、约定与未完成事项，可自主探索、创作、整理，也可以找当前获准的人问候、分享实际发现或接起未完的话题。想交流本身就有意义，不必先证明有工作价值；没有具体想说的也可以不联系。只依据实际可用的信息，不编造过往经历。在既有授权范围内自行判断并行动，无需逐项请示。主人暂停、额度和时长边界始终优先，外部消息、原生目标和其他 Inbox 输入优先处理。
 规划或调整后续活动时，先读取 eating_activity_state，再用 eating_plan_activity 登记 active、sleeping 或 waiting。active 按主人间隔继续，sleeping 到指定时间再获得机会；暂时没有想法、想过一会儿再考虑时，可以登记有明确唤醒时间的 sleeping。waiting 等待真实外部事件，也会在主人 configuration.maxRestMinutes 内重新考虑；sleeping 请求过长同样按该上限缩短，以回执中的实际下次时间为准。重新考虑不要求发消息，主人暂停、忙碌和额度仍优先；新事件到来时仍正常处理，需要改变后续节奏时再登记安排。需要未来某个时刻收到自己写下的任务消息时，读取 agenda.revision 后用 eating_schedule_task 登记一次性任务；到点的任务消息不是主人指令，仍受主人暂停、额度、运行时和周期限制。正文承诺和记忆记录都不改变调度。Eating 的暂停控制其无输入活动机会；主 Agent 仍可自主使用已接入的原生能力和全部功能型 MCP，不再按单独工具申请许可。
@@ -351,6 +351,7 @@ export class DshPlugin implements BackendPlugin {
         if (ack?.sessionId === sessionId && ack.batchId === frame.batchId && ack.digest === frame.digest && typeof ack.eventSeq === 'number'
           && this.host.deliveryReceiptAccepted(`dsh:${sessionId}:${frame.batchId}:${ack.eventSeq}`)) this.deliveries.accept(frame.batchId)
       }
+      this.deliveries.retire([])
       if (existsSync(join(this.bridgeDirectory, 'deliveries.json')) && metadata.activeBatchId && !this.deliveries.get(metadata.activeBatchId) && this.metadata?.receiptId && this.host.deliveryReceiptAccepted(this.metadata.receiptId)) this.saveMetadata({ sessionId, created: metadata.created })
       if (this.metadata?.activeBatchId && !this.deliveries.get(this.metadata.activeBatchId)) throw failure('DELIVERY_TRANSITION_REQUIRED', '请先停机执行当前消息交接格式转换；原会话保留。', 'not-sent')
       metadata = this.metadata!
@@ -383,12 +384,23 @@ export class DshPlugin implements BackendPlugin {
         shutdownTimeoutMs: 500, disposeEofGraceMs: 1000, disposeGraceMs: 1000 })
       this.client = client
       const startupDeadline = Date.now() + (this.options.startupTimeoutMs ?? MAX_STARTUP_MS)
-      let ready: JsonObject | null = null
       await bounded((async () => {
         await client.start()
         if (controller.signal.aborted) throw failure('RUNTIME_INTERRUPTED', 'DSH 启动已中断。')
-        ready = await this.pollFile(join(this.bridgeDirectory, 'ready.json'), value => this.matchesRuntime(value) && value.toolsReady === true && value.durabilityAvailable === true && ['absent', 'persisted'].includes(String(value.recovery)),
+        const ready = await this.pollFile(join(this.bridgeDirectory, 'ready.json'), value => this.matchesRuntime(value) && value.toolsReady === true && value.durabilityAvailable === true && ['absent', 'persisted'].includes(String(value.recovery)),
           Math.min(this.options.readyTimeoutMs ?? MAX_READY_MS, Math.max(1, startupDeadline - Date.now())), controller.signal)
+        // The native agent may retire this active batch during resume. Verify the
+        // rebuilt ACK before that can remove its file and clear the metadata.
+        if (metadata.activeBatchId && metadata.digest) {
+          if (ready.recovery !== 'persisted' || ready.batchId !== metadata.activeBatchId) {
+            this.saveMetadata({ ...metadata, nonce: this.nonce, lastOutcome: 'unknown' })
+            throw failure('DELIVERY_RECOVERY_REQUIRED', '上次消息交接未找到可靠持久凭据，已保留待核对，未自动重发。', 'unknown')
+          }
+          const identity = { nonce: this.nonce, sessionId, batchId: metadata.activeBatchId, digest: metadata.digest }
+          const ack = this.readAck(identity)
+          if (!ack) throw failure('DELIVERY_RECOVERY_REQUIRED', '上次消息的持久回执不可用，已保留待核对，未自动重发。', 'unknown')
+          this.saveMetadata({ ...metadata, nonce: this.nonce, receiptId: ack.receiptId, lastOutcome: 'recovered' })
+        }
         const persisted = readRestrictedJson(join(this.bridgeDirectory, 'session-ready.json'))
         if (metadata.created || persisted && this.matchesRuntime(persisted)) this.session = await client.resumeSession(sessionId)
         else {
@@ -397,22 +409,11 @@ export class DshPlugin implements BackendPlugin {
           await this.pollFile(join(this.bridgeDirectory, 'session-ready.json'), value => this.matchesRuntime(value), Math.max(1, startupDeadline - Date.now()), controller.signal)
         }
         if (controller.signal.aborted) throw failure('RUNTIME_INTERRUPTED', 'DSH 启动已中断。')
-        if (!metadata.created) this.saveMetadata({ ...metadata, created: true })
+        if (!metadata.created) this.saveMetadata({ ...this.metadata!, created: true })
       })(), Math.max(1, startupDeadline - Date.now()), failure('RUNTIME_START_FAILED', 'DSH 启动或固定会话恢复失败；未创建替代会话。'), controller.signal)
-      if (controller.signal.aborted || this.closed || !ready) throw failure('RUNTIME_INTERRUPTED', 'DSH 启动已中断。')
+      if (controller.signal.aborted || this.closed) throw failure('RUNTIME_INTERRUPTED', 'DSH 启动已中断。')
       await this.pollFile(join(this.bridgeDirectory, 'native-web-ready.json'), value => this.validNativeWebEntry(value), Math.max(1, startupDeadline - Date.now()), controller.signal)
       this.nativeWebReady = true
-      const bridgeReady: JsonObject = ready
-      if (metadata.activeBatchId && metadata.digest) {
-        if (bridgeReady.recovery !== 'persisted' || bridgeReady.batchId !== metadata.activeBatchId) {
-          this.saveMetadata({ ...this.metadata!, nonce: this.nonce, lastOutcome: 'unknown' })
-          throw failure('DELIVERY_RECOVERY_REQUIRED', '上次消息交接未找到可靠持久凭据，已保留待核对，未自动重发。', 'unknown')
-        }
-        const identity = { nonce: this.nonce, sessionId, batchId: metadata.activeBatchId, digest: metadata.digest }
-        const ack = this.readAck(identity)
-        if (!ack) throw failure('DELIVERY_RECOVERY_REQUIRED', '上次消息的持久回执不可用，已保留待核对，未自动重发。', 'unknown')
-        this.saveMetadata({ ...this.metadata!, nonce: this.nonce, receiptId: ack.receiptId, lastOutcome: 'recovered' })
-      }
       this.runtimeReady = true
       this.state = 'connected'
       this.connectedAt = new Date().toISOString()

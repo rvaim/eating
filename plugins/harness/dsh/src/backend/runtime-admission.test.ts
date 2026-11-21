@@ -21,13 +21,14 @@ async function fixture(controlImplementation?: (operation: string, input: Snapsh
     },
   }
   const control = vi.fn(controlImplementation ?? (async () => {}))
-  const create = new Function('ctx', 'sessionId', 'releases', 'initialization', 'control', `let disposed = false; let failed = false; ${getDeliveryAdmissionSource()}; return mountDeliveryAdmission;`)
-  const mount = create(ctx, root.id, releases, initialization, control) as (agent: typeof root) => Promise<void>
+  const retire = vi.fn(async () => {})
+  const create = new Function('ctx', 'sessionId', 'releases', 'initialization', 'control', 'retireCompletedContexts', `let disposed = false; let failed = false; ${getDeliveryAdmissionSource()}; return mountDeliveryAdmission;`)
+  const mount = create(ctx, root.id, releases, initialization, control, retire) as (agent: typeof root) => Promise<void>
   await mount(root)
   const emit = (name: string, ...args: unknown[]) => { for (const listener of [...listeners.get(name) ?? []]) listener(...args) }
   const settle = () => vi.advanceTimersByTimeAsync(0)
   const stop = () => { initialization.abort(); for (const release of releases.splice(0).reverse()) release() }
-  return { root, ctx, control, mount, emit, settle, stop, setCurrent: (agent: typeof root | undefined) => { current = agent } }
+  return { root, ctx, control, retire, mount, emit, settle, stop, setCurrent: (agent: typeof root | undefined) => { current = agent } }
 }
 
 afterEach(() => { vi.useRealTimers() })
@@ -37,6 +38,7 @@ describe('native main delivery admission', () => {
     const f = await fixture()
     try {
       expect(f.control.mock.lastCall?.[1]).toMatchObject({ phase: 'idle', sequence: 1 })
+      expect(f.retire).toHaveBeenCalledOnce()
       f.root.status = 'running'
       f.emit('session/event', f.root.session, { type: 'turn/end' })
       await f.settle()
@@ -50,10 +52,12 @@ describe('native main delivery admission', () => {
       f.root.inbox.nextStep.push({})
       await vi.advanceTimersByTimeAsync(500)
       expect(f.control.mock.lastCall?.[1].phase).toBe('busy')
+      expect(f.retire).toHaveBeenCalledOnce()
       f.root.inbox.nextStep.length = 0
       f.emit('agent/status', { agent: f.root, status: 'idle' })
       await f.settle()
       expect(f.control.mock.lastCall?.[1].phase).toBe('idle')
+      expect(f.retire).toHaveBeenCalledTimes(2)
     } finally { f.stop() }
   })
 

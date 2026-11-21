@@ -96,6 +96,11 @@ export function getRuntimeAgentSource(): string {
   function unavailableConversation(code, message) {
     return Object.assign(new Error('[' + code + '] ' + message + ' (outcome=not-sent)'), { name: 'RuntimeRoutingError', code, outcome: 'not-sent' });
   }
+  function rememberActiveBatch(batchId, messageId) {
+    if (!activeContext) activeContext = { contexts: new Map(), batches: new Map() };
+    if (!activeContext.batches.has(batchId)) activeContext.batches.set(batchId, { messageId, finished: false });
+    return activeContext.batches.get(batchId);
+  }
   function acceptContext(message, expected) {
     if (!identifyCurrentDelivery(message, expected)) return;
     const payload = JSON.parse(message.content.map(block => block.text).join(''));
@@ -120,9 +125,8 @@ export function getRuntimeAgentSource(): string {
       contexts.set(conversation.contextRef, { contextRef: conversation.contextRef, binding, payload: { eating: payload.eating, context: conversation, events } });
     }
     if (assigned.size !== payload.events.length) throw bridgeError('OWNER_POLICY_INVALID');
-    if (!activeContext) activeContext = { contexts: new Map(), batches: new Map() };
+    rememberActiveBatch(expected.batchId, message.id);
     for (const [ref, context] of contexts) { activeContext.contexts.set(ref, context); rememberConversationContext(context); }
-    activeContext.batches.set(expected.batchId, { digest: expected.digest });
   }
   function lastText(blocks) { return Array.isArray(blocks) ? blocks.filter(block => record(block) && block.type === 'text' && typeof block.text === 'string').map(block => block.text).join('').slice(0, 32768) : ''; }
   function waitForTask(promise, signal) {
@@ -185,7 +189,7 @@ export function getRuntimeAgentSource(): string {
   function currentConversation(contextRef) {
     const context = activeContext?.contexts.get(contextRef);
     const batchId = context?.payload.eating.batchId;
-    const expected = batchId ? readExpected(batchId) : undefined;
+    const expected = batchId && !activeContext.batches.get(batchId)?.closed ? readExpected(batchId) : undefined;
     const binding = expected?.bindings?.find(entry => entry.contextRef === contextRef);
     if (!context || !expected || expected.digest !== context.payload.eating.digest || !binding || JSON.stringify(binding) !== JSON.stringify(context.binding)) throw new Error('Only a conversation from a verified active external batch may be handled');
     if (context.binding.routingError) throw unavailableConversation(context.binding.routingError.code, context.binding.routingError.message);

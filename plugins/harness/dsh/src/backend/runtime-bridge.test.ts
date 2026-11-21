@@ -144,7 +144,10 @@ async function conversationFixture(kind: 'private' | 'group' = 'private', scopes
   f.write('expected.json', f.expected)
   f.emit('session/event', f.session, f.event())
   await turn()
-  await f.admit([f.delivery()])
+  f.emit('session/event', f.session, { type: 'turn/start', data: { turn: 1 } })
+  const decision = await f.admit([f.delivery()])
+  if (decision.kind !== 'enter') throw new Error('Fixture batch was rejected')
+  f.emit('session/event', f.session, { type: 'user/message', data: decision.messages[0] })
   const requests: Array<{ operation: string; body: Json }> = []
   const actions = [{ tool: kind === 'private' ? 'qq_send_private_message' : 'qq_send_group_message', targetId: '200', outcome: 'succeeded', requestId: 'real-host-receipt' }]
   vi.mocked(fetch).mockImplementation(async (url, input) => {
@@ -422,6 +425,29 @@ describe('self-contained published-API DSH runtime bridge', () => {
     await f.admit([f.delivery()])
     for (const context of f.conversations) await expect(f.execute('eating_handle_conversation', { context_ref: context.contextRef, mode: 'reply' }, `admitted-${context.contextRef}`)).resolves.toMatchObject({ status: 'running' })
     expect(f.ctx.subagents.startActivation).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries only retirement after a lost response and keeps the old context closed', async () => {
+    const f = await conversationFixture()
+    const control = vi.mocked(fetch).getMockImplementation()!
+    const retirements: string[] = []
+    vi.mocked(fetch).mockImplementation(async (url, input) => {
+      if (String(url).endsWith('/retire-deliveries')) {
+        retirements.push(String(input?.body))
+        if (retirements.length === 1) throw new Error('Lost fixture response')
+      }
+      return control(url, input)
+    })
+    f.emit('session/event', f.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await turn()
+    expect(retirements).toHaveLength(1)
+    expect(f.read(`ack-${rootBatchId}.json`)).toMatchObject({ batchId: rootBatchId })
+    await expect(f.execute('eating_handle_conversation', { context_ref: rootBatchId, mode: 'reply' })).rejects.toThrow('Only a conversation from a verified active external batch')
+    await vi.waitFor(() => expect(retirements).toHaveLength(2), { timeout: 2000 })
+    expect(retirements[0]).toBe(retirements[1])
+    expect(f.ctx.subagents.startActivation).not.toHaveBeenCalled()
+    expect(existsSync(f.path('ready.json'))).toBe(true)
+    expect(existsSync(f.path('error.json'))).toBe(false)
   })
 
   it('resumes the persisted bound conversation without replacing its native history', async () => {

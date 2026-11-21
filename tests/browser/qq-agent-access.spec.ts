@@ -36,6 +36,13 @@ test.describe('QQ multi-owner and per-role access', () => {
   }
   const identityField = (page: Page, label: string) => page.locator('.field').filter({ has: page.getByLabel(label, { exact: true }) })
   const identityChips = (page: Page, label: string) => identityField(page, label).locator('.eating-chip > span')
+  async function expectCardInset(page: Page, ownerLabel: string, padding: number) {
+    const card = page.locator('fieldset.form-fields').filter({ has: page.getByLabel(ownerLabel, { exact: true }) })
+    const edge = (await card.boundingBox())!.x
+    for (const content of [card.locator('.field > label').first(), card.locator('legend').first(), card.getByRole('searchbox').first()]) {
+      expect((await content.boundingBox())!.x - edge).toBeCloseTo(padding + 1, 0)
+    }
+  }
 
   async function open(page: Page, connect = false) {
     await page.goto(url + '/#robots/qq')
@@ -52,6 +59,8 @@ test.describe('QQ multi-owner and per-role access', () => {
 
   test('多主人与管理员及角色工具可保存，真实来源核对且不重连', async ({ page }, info) => {
     await open(page, true)
+    await expectCardInset(page, '主人 QQ', 24)
+    await page.screenshot({ path: info.outputPath('qq-agent-access-zh-desktop.png'), fullPage: true })
     const connections = onebot.connections.length
     await page.getByLabel('主人 QQ', { exact: true }).fill('987654321, 222222222\n987654321')
     await page.getByLabel('管理员 QQ', { exact: true }).fill('987654321，111111111')
@@ -95,7 +104,6 @@ test.describe('QQ multi-owner and per-role access', () => {
       expect(events.map(event => event.source.senderRole)).toEqual(['owner', 'administrator', 'user'])
       expect(events.every(event => event.source.trust === 'external')).toBe(true)
     } finally { database.close() }
-    await page.screenshot({ path: info.outputPath('qq-agent-access-zh-desktop.png'), fullPage: true })
   })
 
   test('权限并发冲突保留草稿，明确放弃后读取新版本再保存', async ({ page }) => {
@@ -127,9 +135,11 @@ test.describe('QQ multi-owner and per-role access', () => {
     await expect(identityChips(page, 'Owner QQ numbers')).toHaveText(['987654321', '222222222'])
     await expect(page.getByRole('group', { name: 'QQ private chat', exact: true })).toBeVisible()
     await expect(page.getByRole('group', { name: 'QQ group chat', exact: true })).toBeVisible()
+    await expectCardInset(page, 'Owner QQ numbers', 16)
     await expect(page.getByRole('checkbox', { name: /Read QQ Cookies|Restart OneBot/ })).toHaveCount(0)
     expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false)
     expect(writes).toBe(0)
+    await page.getByLabel('Owner QQ numbers', { exact: true }).scrollIntoViewIfNeeded()
     await page.screenshot({ path: info.outputPath('qq-agent-access-en-mobile.png'), fullPage: true })
     await page.locator('#display-language').selectOption('zh-CN')
     await expect(identityChips(page, '主人 QQ')).toHaveText(['987654321', '222222222'])

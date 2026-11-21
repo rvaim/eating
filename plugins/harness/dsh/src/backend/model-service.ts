@@ -24,7 +24,9 @@ function invalidResponse(protocol: DshApiProtocol): PlatformError {
     'MODEL_RESPONSE_INVALID',
     protocol === 'google-generative-ai'
       ? '模型服务返回的内容不符合 Google Gemini 接口格式。'
-      : '模型服务返回的内容不符合 OpenAI 兼容接口格式。',
+      : protocol === 'openai-responses'
+        ? '模型服务返回的内容不符合 OpenAI Responses 接口格式。'
+        : '模型服务返回的内容不符合 OpenAI 兼容接口格式。',
     502,
     'failed',
   )
@@ -217,6 +219,28 @@ function validGeminiCandidate(candidate: unknown): boolean {
   return Array.isArray(candidate.content.parts) && candidate.content.parts.every(validGeminiPart) && (candidate.content.parts.length > 0 || hasFinishReason)
 }
 
+function validResponsesOutputItem(item: unknown): boolean {
+  if (!object(item) || typeof item.type !== 'string' || !item.type) return false
+  if (item.type === 'message') {
+    if (item.role !== undefined && item.role !== 'assistant') return false
+    if (!Array.isArray(item.content)) return false
+    return item.content.every(part =>
+      object(part) && (part.type === 'output_text' && typeof part.text === 'string' || part.type === 'refusal' && typeof part.refusal === 'string'),
+    )
+  }
+  if (item.type === 'function_call') {
+    return typeof item.name === 'string' && item.name.length > 0
+  }
+  return true
+}
+
+function validResponsesResult(value: unknown): boolean {
+  if (!object(value) || !Array.isArray(value.output)) return false
+  if (value.object !== undefined && value.object !== 'response') return false
+  if (value.status !== undefined && !['completed', 'incomplete'].includes(String(value.status))) return false
+  return value.output.every(validResponsesOutputItem) && (value.output.length > 0 || typeof value.output_text === 'string')
+}
+
 /** A real, minimal provider request; success does not imply the DSH runtime can start. */
 export async function testModelConnection(configuration: ModelConfiguration & Pick<DshConfiguration, 'model'>, signal?: AbortSignal): Promise<{ ok: true; model: string; latencyMs: number }> {
   if (!configuration.model.trim()) throw new PlatformError('NOT_CONFIGURED', '请先保存要测试的模型名称。', 409, 'not-sent')
@@ -229,6 +253,17 @@ export async function testModelConnection(configuration: ModelConfiguration & Pi
       generationConfig: { maxOutputTokens: 1 },
     })
     if (!object(value) || !Array.isArray(value.candidates) || !value.candidates.length || !value.candidates.every(validGeminiCandidate)) throw invalidResponse('google-generative-ai')
+    return { ok: true, model: configuration.model, latencyMs: Math.max(0, Math.round(performance.now() - started)) }
+  }
+  if (configuration.protocol === 'openai-responses') {
+    // OpenAI Responses API requires max_output_tokens >= 16.
+    const value = await request(configuration, 'test', 'responses', undefined, signal, {
+      model: configuration.model,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Ping.' }] }],
+      max_output_tokens: 16,
+      stream: false,
+    })
+    if (!validResponsesResult(value)) throw invalidResponse('openai-responses')
     return { ok: true, model: configuration.model, latencyMs: Math.max(0, Math.round(performance.now() - started)) }
   }
   const value = await request(configuration, 'test', 'chat/completions', undefined, signal, { model: configuration.model, messages: [{ role: 'user', content: 'Ping.' }], max_tokens: 1, stream: false })

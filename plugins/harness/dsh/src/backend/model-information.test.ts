@@ -25,6 +25,7 @@ describe('provider model capability metadata', () => {
     const file = fixture(), capabilities = reportedModelCapabilities({ modalities: { input: ['text', 'image'] } })!
     file.save(identity, [{ id: identity.model, capabilities }])
     expect(file.selected(identity).model?.capabilities?.imageInput).toBe(true)
+    expect(file.selected({ ...identity, protocol: 'openai-responses' }).model).toBeNull()
     expect(file.selected({ ...identity, protocol: 'google-generative-ai' }).model).toBeNull()
     expect(file.selected({ ...identity, model: 'other-model' }).model).toBeNull()
     expect(file.selected({ ...identity, apiKey: 'other-private-key' }).model).toBeNull()

@@ -36,6 +36,7 @@ async function fixture(handler: Handler) {
     base,
     requests,
     configuration: { protocol: 'openai-completions' as const, endpoint: `${base}/v1`, apiKey: fixtureKey, timeoutMs: 3000, model: 'fixture-selected-model' },
+    responsesConfiguration: { protocol: 'openai-responses' as const, endpoint: `${base}/v1`, apiKey: fixtureKey, timeoutMs: 3000, model: 'gpt-5' },
     geminiConfiguration: { protocol: 'google-generative-ai' as const, endpoint: `${base}/v1beta`, apiKey: fixtureKey, timeoutMs: 3000, model: 'gemini-2.5-flash' },
   }
 }
@@ -363,5 +364,58 @@ describe('DSH Google Gemini protocol model list and connection test', () => {
     const upstream = await fixture((_request, response) => json(response, { candidates: [{ finishReason: 'STOP' }] }))
     await failure(testModelConnection({ ...upstream.geminiConfiguration, model: badModel }), 'INVALID_CONFIGURATION', 'not-sent')
     expect(upstream.requests).toHaveLength(0)
+  })
+})
+
+describe('DSH OpenAI Responses protocol model list and connection test', () => {
+  it('lists OpenAI models via GET /models with Bearer authorization', async () => {
+    const upstream = await fixture((_request, response) => json(response, {
+      data: [{ id: 'gpt-5', name: 'GPT-5', context_window: 400000, max_output_tokens: 128000 }],
+    }))
+    expect(await listModels(upstream.responsesConfiguration)).toEqual({
+      models: [{ id: 'gpt-5', name: 'GPT-5', capabilities: { imageInput: null, toolCalling: null, reasoning: null, inputModalities: null, outputModalities: null, contextWindow: 400000, maxOutputTokens: 128000 } }],
+    })
+    expect(upstream.requests).toEqual([
+      { method: 'GET', url: '/v1/models', authorization: `Bearer ${fixtureKey}`, googleApiKey: undefined, body: '' },
+    ])
+  })
+
+  it('sends one minimal /responses request with max_output_tokens 16 and validates response shape', async () => {
+    const upstream = await fixture((_request, response) => json(response, {
+      id: 'resp_fixture',
+      object: 'response',
+      status: 'completed',
+      output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Pong' }] }],
+    }))
+    expect(await testModelConnection(upstream.responsesConfiguration)).toEqual({ ok: true, model: 'gpt-5', latencyMs: expect.any(Number) })
+    expect(upstream.requests).toHaveLength(1)
+    expect(upstream.requests[0]).toMatchObject({ method: 'POST', url: '/v1/responses', authorization: `Bearer ${fixtureKey}`, googleApiKey: undefined })
+    expect(JSON.parse(upstream.requests[0]!.body)).toEqual({
+      model: 'gpt-5',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Ping.' }] }],
+      max_output_tokens: 16,
+      stream: false,
+    })
+  })
+
+  it.each([
+    { status: 'incomplete', output: [{ type: 'reasoning', id: 'rs_1', summary: [] }] },
+    { status: 'completed', output: [{ type: 'function_call', name: 'ping', call_id: 'call_1', arguments: '{}' }] },
+    { object: 'response', status: 'completed', output: [], output_text: 'Pong' },
+  ])('accepts valid OpenAI Responses payload variants: %j', async payload => {
+    const upstream = await fixture((_request, response) => json(response, payload))
+    expect(await testModelConnection(upstream.responsesConfiguration)).toMatchObject({ ok: true, model: 'gpt-5' })
+  })
+
+  it.each([
+    {},
+    { choices: [{ message: { role: 'assistant', content: 'chat-completions-must-fail' } }] },
+    { status: 'failed', output: [] },
+    { object: 'list', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'bad' }] }] },
+    { status: 'completed', output: [] },
+    { status: 'completed', output: [{ type: 'message', role: 'user', content: [{ type: 'output_text', text: 'wrong-role' }] }] },
+  ])('rejects non-Responses HTTP-200 payloads: %j', async payload => {
+    const upstream = await fixture((_request, response) => json(response, payload))
+    await failure(testModelConnection(upstream.responsesConfiguration), 'MODEL_RESPONSE_INVALID')
   })
 })

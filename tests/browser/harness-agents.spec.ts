@@ -51,6 +51,11 @@ test.describe('Harness 模型连接（本地夹具）', () => {
             : { candidates: [{ content: { role: 'model', parts: [{ text: 'fixture-output-never-displayed' }] }, finishReason: 'MAX_TOKENS' }] }))
           return
         }
+        const isResponses = (request.url ?? '').endsWith('/responses')
+        if (isResponses) {
+          response.end(JSON.stringify({ id: 'resp_fixture', object: 'response', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'fixture-output-never-displayed' }] }] }))
+          return
+        }
         response.end(JSON.stringify(request.method === 'GET' ? { data: [{ id: 'fixture-alpha', name: 'Alpha' }, { id: 'fixture-beta' }] } : { choices: [{ message: { role: 'assistant', content: 'fixture-output-never-displayed' } }] }))
       })
     })
@@ -187,5 +192,29 @@ test.describe('Harness 模型连接（本地夹具）', () => {
     expect(modelRequests[0]).toMatchObject({ path: '/custom/api/models?pageSize=1000', authorization: undefined })
     expect(modelRequests[1]).toMatchObject({ path: '/custom/api/models/gemini-2.5-flash:generateContent', authorization: undefined })
     expect(JSON.parse(modelRequests[1]!.body)).toEqual({ contents: [{ role: 'user', parts: [{ text: 'Ping.' }] }], generationConfig: { maxOutputTokens: 1 } })
+  })
+
+  test('OpenAI Responses 协议拉取模型列表并完成真实 /responses 连接测试', async ({ page }) => {
+    await open(page)
+    await page.getByRole('radio', { name: /OpenAI Responses/ }).click()
+    await page.getByLabel('API 基础地址', { exact: true }).fill(modelUrl)
+    await page.getByLabel('API Key', { exact: true }).fill('fixture-only-responses-key')
+    await page.getByRole('button', { name: '保存配置', exact: true }).click()
+    await expect(page.getByText('配置已保存，运行已停止。需要时请重新启动 Harness。', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '获取模型列表', exact: true }).click()
+    await page.getByLabel('从模型列表选择', { exact: true }).selectOption('fixture-beta')
+    await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('fixture-beta')
+    await page.getByRole('button', { name: '保存配置', exact: true }).click()
+    await page.getByRole('button', { name: '测试模型连接', exact: true }).click()
+    await expect(page.getByText(/模型 fixture-beta 请求成功/)).toBeVisible()
+    expect(modelRequests).toHaveLength(2)
+    expect(modelRequests[0]).toMatchObject({ path: '/custom/api/models', authorization: 'Bearer fixture-only-responses-key' })
+    expect(modelRequests[1]).toMatchObject({ path: '/custom/api/responses', authorization: 'Bearer fixture-only-responses-key' })
+    expect(JSON.parse(modelRequests[1]!.body)).toEqual({
+      model: 'fixture-beta',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Ping.' }] }],
+      max_output_tokens: 16,
+      stream: false,
+    })
   })
 })

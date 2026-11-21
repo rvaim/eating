@@ -621,4 +621,137 @@ describe.runIf(enabled)('system DSH official native Web and SDK integration', ()
     expect(modelErrors).toEqual([])
     await plugin.disconnect()
   }, 120000)
+
+  it('runs OpenAI Responses native protocol end-to-end through real system DSH (list, test, SSE streaming + tool call)', async () => {
+    const parent = realpathSync(tmpdir()), home = realpathSync(mkdtempSync(join(parent, 'eating-system-native-web-')))
+    stops.push(() => { if (realpathSync(home) !== home || dirname(home) !== parent || !basename(home).startsWith('eating-system-native-web-')) throw new Error('Unsafe native Web fixture cleanup'); rmSync(home, { recursive: true }) })
+    const fixtureKey = 'responses-loopback-fixture-key'
+    const responsesRequests: { method: string; url: string; authorization: string | undefined; body: JsonObject | null }[] = []
+    const modelErrors: string[] = []
+    let turn = 0
+    const server = createServer((request, response) => {
+      void (async () => {
+        const chunks: Buffer[] = []
+        for await (const chunk of request) chunks.push(Buffer.from(chunk))
+        const rawBody = Buffer.concat(chunks).toString('utf8')
+        const body = rawBody ? object(JSON.parse(rawBody)) : null
+        responsesRequests.push({ method: request.method ?? '', url: request.url ?? '', authorization: request.headers.authorization, body })
+        if (request.headers.authorization !== `Bearer ${fixtureKey}`) {
+          response.writeHead(401, { 'Content-Type': 'application/json' })
+          response.end(JSON.stringify({ error: { code: 'invalid_api_key', message: 'bad fixture key' } }))
+          return
+        }
+        if (request.method === 'GET' && request.url === '/v1/models') {
+          response.writeHead(200, { 'Content-Type': 'application/json' })
+          response.end(JSON.stringify({
+            data: [{ id: 'gpt-5', name: 'GPT-5', context_window: 400000, max_output_tokens: 128000 }],
+          }))
+          return
+        }
+        if (request.method === 'POST' && request.url === '/v1/responses') {
+          if (body?.stream !== true) {
+            response.writeHead(200, { 'Content-Type': 'application/json' })
+            response.end(JSON.stringify({
+              id: 'resp_test',
+              object: 'response',
+              status: 'completed',
+              output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Pong' }] }],
+            }))
+            return
+          }
+          turn++
+          response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache' })
+          const sse = (event: string, data: JsonObject) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+          if (turn === 1) {
+            const resp = { id: 'resp_1', object: 'response', status: 'in_progress', output: [] }
+            const itemAdded = { id: 'fc_1', type: 'function_call', call_id: 'call_1', name: 'eating_list_agent_types', arguments: '', status: 'in_progress' }
+            const itemDone = { id: 'fc_1', type: 'function_call', call_id: 'call_1', name: 'eating_list_agent_types', arguments: '{}', status: 'completed' }
+            sse('response.created', { type: 'response.created', response: resp })
+            sse('response.output_item.added', { type: 'response.output_item.added', output_index: 0, item: itemAdded })
+            sse('response.function_call_arguments.delta', { type: 'response.function_call_arguments.delta', output_index: 0, item_id: 'fc_1', delta: '{}' })
+            sse('response.function_call_arguments.done', { type: 'response.function_call_arguments.done', output_index: 0, item_id: 'fc_1', arguments: '{}' })
+            sse('response.output_item.done', { type: 'response.output_item.done', output_index: 0, item: itemDone })
+            sse('response.completed', { type: 'response.completed', response: { id: 'resp_1', object: 'response', status: 'completed', output: [itemDone], usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } } })
+          } else {
+            const resp = { id: 'resp_2', object: 'response', status: 'in_progress', output: [] }
+            const msgAdded = { id: 'msg_1', type: 'message', role: 'assistant', status: 'in_progress', content: [] }
+            const msgDone = { id: 'msg_1', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'RESPONSES-NATIVE-SDK-SSE-REPLY', annotations: [] }] }
+            sse('response.created', { type: 'response.created', response: resp })
+            sse('response.output_item.added', { type: 'response.output_item.added', output_index: 0, item: msgAdded })
+            sse('response.output_text.delta', { type: 'response.output_text.delta', output_index: 0, content_index: 0, item_id: 'msg_1', delta: 'RESPONSES-NATIVE-SDK-SSE-REPLY' })
+            sse('response.output_item.done', { type: 'response.output_item.done', output_index: 0, item: msgDone })
+            sse('response.completed', { type: 'response.completed', response: { id: 'resp_2', object: 'response', status: 'completed', output: [msgDone], usage: { input_tokens: 14, output_tokens: 6, total_tokens: 20 } } })
+          }
+          response.end()
+          return
+        }
+        throw new Error(`Unexpected Responses fixture request: ${request.method} ${request.url}`)
+      })().catch(error => { modelErrors.push(String(error)); if (!response.headersSent) response.writeHead(500); response.end() })
+    })
+    await new Promise<void>((accept, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', accept) })
+    stops.push(async () => { const closed = new Promise<void>((accept, reject) => server.close(error => error ? reject(error) : accept())); server.closeAllConnections(); await closed })
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing loopback Responses port')
+    const owner: HarnessOwnerConfiguration = {
+      revision: 1, activePersona: null, pluginInstructions: [], bindings: { 主人: '', 管理员: '' },
+      prompts: [
+        { id: 'common', scope: 'common', source: 'owner', title: 'Fixture common', body: 'Isolated Responses fixture.', revision: 1, updatedAt: null },
+        { id: 'main', scope: 'main', source: 'owner', title: 'Fixture main', body: 'Check agent types then reply.', revision: 1, updatedAt: null },
+        { id: 'subagent', scope: 'subagent', source: 'owner', title: 'Fixture subagent', body: 'Unused.', revision: 1, updatedAt: null },
+        { id: 'agent:qq.group', scope: 'agent', source: 'plugin', pluginId: 'qq', agentTypeId: 'qq.group', title: 'Fixture group', body: 'Unused.', revision: 1, updatedAt: null },
+      ],
+      agentTypes: [{ id: 'qq.group', title: 'Fixture group', description: 'Synthetic.', conversationKind: 'group', pluginId: 'qq', pluginName: 'Fixture QQ', enabled: true, availableTools: [], defaultTools: [], enabledTools: [], defaultPrompt: 'Unused.', identity: { owners: [], administrators: [] } }],
+    }
+    const finish = vi.fn(async () => {})
+    const host: HostPluginContext = {
+      imageLimits: () => DEFAULT_IMAGE_LIMITS, dataDirectory: home, getSetting: () => null, setSetting: vi.fn(), recordEvent: vi.fn(), listMessages: () => [], executeIdempotent: vi.fn(),
+      harness: withTaskReceipts({
+        registerSink: () => () => {}, wake: vi.fn(), readOwnerConfiguration: () => structuredClone(owner), readDeliverySettings: () => ({ ...DEFAULT_DELIVERY_SETTINGS, aggregationWindowMs: 0 }),
+        deliveryReceiptAccepted: () => false, extendAgentScope: vi.fn(), readAgentActions: () => [], revokeAgentAccess: vi.fn(), getCapabilityMcpConnections: () => [], getMcpConnection: vi.fn(),
+        hasPendingMessages: () => false, readProactiveChannels: () => [], prepareProactiveScope: vi.fn(),
+        memory: { begin: vi.fn(async () => ({ text: '', items: [] })), append: vi.fn(async () => ({ text: '', items: [] })), finish, flush: vi.fn(async () => {}), end: vi.fn() },
+      }),
+    }
+    const launches: DeepSeekHarnessOptions[] = []
+    const plugin = new DshPlugin(host, {
+      locateSystemDsh: () => ({ bin: systemBin!, version: 'system', source: 'override' }),
+      createHarness: options => {
+        launches.push(options)
+        const sdk = new DeepSeekHarness(options)
+        return { start: () => sdk.start(), session: id => sdk.session(id), resumeSession: id => sdk.resumeSession(id), close: () => sdk.close() }
+      },
+    })
+    stops.push(() => plugin.dispose())
+    await plugin.updateConfiguration({
+      protocol: 'openai-responses',
+      endpoint: `http://127.0.0.1:${address.port}/v1`,
+      model: 'gpt-5',
+      apiKey: fixtureKey,
+      timeoutMs: 30000,
+      maxTokens: 256,
+      autoConnect: false,
+    })
+    const listed = object(await plugin.manage('list-models', {}))
+    expect(listed.models).toEqual([
+      { id: 'gpt-5', name: 'GPT-5', capabilities: { imageInput: null, toolCalling: null, reasoning: null, inputModalities: null, outputModalities: null, contextWindow: 400000, maxOutputTokens: 128000 } },
+    ])
+    expect(await plugin.manage('test-connection', {})).toMatchObject({ ok: true, model: 'gpt-5' })
+    await plugin.connect()
+    expect(launches[0]).toMatchObject({ provider: 'eating-openai', model: 'gpt-5' })
+    const now = new Date().toISOString()
+    const batch: HarnessDeliveryBatch = {
+      protocolVersion: 1, batchId: createHash('sha256').update(randomUUID()).digest('hex'), conversationId: 'qq:100:group:200', createdAt: now, reason: 'aggregation-window',
+      events: [{ protocolVersion: 1, eventId: randomUUID(), pluginId: 'qq', platform: 'qq', instanceId: 'synthetic-responses-instance', accountId: '100', conversationId: 'qq:100:group:200', senderId: '300', targetId: '200', messageId: 'synthetic-responses-message', resourceIds: [], source: { trust: 'external', kind: 'group', senderRole: 'user' }, receivedAt: now, content: 'RESPONSES-LOOPBACK-INPUT', text: 'RESPONSES-LOOPBACK-INPUT' }],
+    }
+    const receipt = await plugin.deliverBatch(batch, new AbortController().signal)
+    expect(receipt).toMatchObject({ accepted: true, durable: true })
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce(), { timeout: 20000 })
+    const streamCalls = responsesRequests.filter(item => item.method === 'POST' && item.url === '/v1/responses' && item.body?.stream === true)
+    expect(streamCalls).toHaveLength(2)
+    expect(JSON.stringify(streamCalls[0]!.body)).toContain('RESPONSES-LOOPBACK-INPUT')
+    expect(JSON.stringify(streamCalls[1]!.body)).toContain('function_call_output')
+    expect(finish).toHaveBeenCalledWith(expect.objectContaining({ assistantText: 'RESPONSES-NATIVE-SDK-SSE-REPLY', outcome: 'completed', actions: [{ tool: 'eating_list_agent_types', outcome: 'returned' }] }))
+    expect(plugin.getStatus().lastError).toBeNull()
+    expect(modelErrors).toEqual([])
+    await plugin.disconnect()
+  }, 120000)
 })

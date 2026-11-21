@@ -34,7 +34,7 @@ export function parseConfiguration(input: unknown, previous: DshConfiguration = 
     if (input[name] !== undefined && typeof input[name] !== 'string') throw new PlatformError('INVALID_CONFIGURATION', '显示名称、地址、模型和密钥需为字符串。')
   }
   if (input.protocol !== undefined && !isDshApiProtocol(input.protocol)) {
-    throw new PlatformError('INVALID_CONFIGURATION', '模型 API 协议仅支持 OpenAI 兼容或 Google Gemini。')
+    throw new PlatformError('INVALID_CONFIGURATION', '模型 API 协议仅支持 OpenAI 兼容（Chat Completions / Responses）或 Google Gemini。')
   }
   for (const name of ['autoConnect', 'clearApiKey']) {
     if (input[name] !== undefined && typeof input[name] !== 'boolean') throw new PlatformError('INVALID_CONFIGURATION', '自动连接与清除密钥选项需为布尔值。')

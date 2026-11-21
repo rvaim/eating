@@ -35,6 +35,10 @@ describe('DSH configuration validation', () => {
     const geminiWithNewKey = parseConfiguration({ protocol: 'google-generative-ai', endpoint: 'https://generativelanguage.googleapis.com/v1beta', model: 'gemini-2.5-flash', apiKey: 'fixture-gemini-key' }, previous)
     expect(geminiWithNewKey.apiKey).toBe('fixture-gemini-key')
     expect(parseConfiguration({ model: 'gemini-2.5-pro' }, geminiWithNewKey).apiKey).toBe('fixture-gemini-key')
+    const responsesWithoutKey = parseConfiguration({ protocol: 'openai-responses', endpoint: 'https://api.openai.com/v1', model: 'gpt-5' }, geminiWithNewKey)
+    expect(responsesWithoutKey).toMatchObject({ protocol: 'openai-responses', endpoint: 'https://api.openai.com/v1', model: 'gpt-5', apiKey: '' })
+    const responsesWithKey = parseConfiguration({ apiKey: 'fixture-responses-key' }, responsesWithoutKey)
+    expect(responsesWithKey.apiKey).toBe('fixture-responses-key')
   })
 
   it.each(['file:///tmp/model', 'https://name:pass@example.test/v1', 'https://example.test/v1?key=fixture', 'https://example.test/v1#fixture', 'https://example.test/v1?', 'https://example.test/v1#'])('rejects an unsafe endpoint without echoing it: %s', endpoint => {

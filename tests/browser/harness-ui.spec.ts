@@ -128,15 +128,24 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await expect(page.getByText('尚未连接', { exact: true })).toBeVisible()
   })
 
-  test('支持切换 Google Gemini 协议，自动填入默认地址、分协议暂存草稿并强制密钥隔离', async ({ page }, testInfo) => {
+  test('支持切换 OpenAI Responses 与 Google Gemini 协议，自动填入默认地址、分协议暂存草稿并强制密钥隔离', async ({ page }, testInfo) => {
     await open(page)
     const openaiRadio = page.getByRole('radio', { name: /OpenAI 兼容/ })
+    const responsesRadio = page.getByRole('radio', { name: /OpenAI Responses/ })
     const geminiRadio = page.getByRole('radio', { name: /Google Gemini/ })
     await expect(openaiRadio).toBeChecked()
     await page.getByLabel('API 基础地址', { exact: true }).fill('https://openai.example.test/v1')
     await page.getByLabel('API Key', { exact: true }).fill('openai-fixture-key')
     await page.getByLabel('模型名称', { exact: true }).fill('gpt-4o-mini')
     await save(page)
+
+    await responsesRadio.click()
+    await expect(responsesRadio).toBeChecked()
+    await expect(page.getByLabel('API 基础地址', { exact: true })).toHaveValue('')
+    await expect(page.getByText('已保存密钥（不回显）', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('已切换协议，原密钥不会跨协议复用；请填写新协议对应的 API Key 后保存。', { exact: true })).toBeVisible()
+    await page.getByLabel('API 基础地址', { exact: true }).fill('https://responses.example.test/v1')
+    await page.getByLabel('模型名称', { exact: true }).fill('gpt-5')
 
     await geminiRadio.click()
     await expect(geminiRadio).toBeChecked()
@@ -150,10 +159,13 @@ test.describe('Harness 独立面板与泛型目录', () => {
     await expect(page.getByLabel('API 基础地址', { exact: true })).toHaveValue('https://generativelanguage.googleapis.com/v1beta')
     await page.getByLabel('模型名称', { exact: true }).fill('gemini-2.5-flash')
 
-    // Switch back to OpenAI and verify both drafts are preserved in memory
+    // Switch back across all three protocols and verify drafts are preserved independently
     await openaiRadio.click()
     await expect(page.getByLabel('API 基础地址', { exact: true })).toHaveValue('https://openai.example.test/v1')
     await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('gpt-4o-mini')
+    await responsesRadio.click()
+    await expect(page.getByLabel('API 基础地址', { exact: true })).toHaveValue('https://responses.example.test/v1')
+    await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('gpt-5')
     await geminiRadio.click()
     await expect(page.getByLabel('API 基础地址', { exact: true })).toHaveValue('https://generativelanguage.googleapis.com/v1beta')
     await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('gemini-2.5-flash')

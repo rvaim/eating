@@ -82,9 +82,38 @@ const outcomeKeys: Readonly<Record<string, DshTranslationKey>> = {
   pending: 'outcome.pending', durable: 'outcome.durable', unknown: 'outcome.unknown',
   failed: 'outcome.failed', completed: 'outcome.completed', recovered: 'outcome.recovered',
 }
-const protocolCopy: Record<DshApiProtocol, { readonly label: DshTranslationKey; readonly caption: DshTranslationKey }> = {
-  'openai-completions': { label: 'protocol.openai.label', caption: 'protocol.openai.caption' },
-  'google-generative-ai': { label: 'protocol.gemini.label', caption: 'protocol.gemini.caption' },
+const protocolCopy: Record<DshApiProtocol, {
+  readonly label: DshTranslationKey
+  readonly caption: DshTranslationKey
+  readonly endpointHint: DshTranslationKey
+  readonly endpointPlaceholder: DshTranslationKey
+  readonly modelPlaceholder: DshTranslationKey
+  readonly emptyApiKeyHint: DshTranslationKey
+}> = {
+  'openai-completions': {
+    label: 'protocol.openai.label',
+    caption: 'protocol.openai.caption',
+    endpointHint: 'field.endpoint.hint.openai',
+    endpointPlaceholder: 'field.endpoint.placeholder.openai',
+    modelPlaceholder: 'field.model.placeholder.openai',
+    emptyApiKeyHint: 'field.apiKey.hint.empty.openai',
+  },
+  'openai-responses': {
+    label: 'protocol.responses.label',
+    caption: 'protocol.responses.caption',
+    endpointHint: 'field.endpoint.hint.responses',
+    endpointPlaceholder: 'field.endpoint.placeholder.responses',
+    modelPlaceholder: 'field.model.placeholder.responses',
+    emptyApiKeyHint: 'field.apiKey.hint.empty.openai',
+  },
+  'google-generative-ai': {
+    label: 'protocol.gemini.label',
+    caption: 'protocol.gemini.caption',
+    endpointHint: 'field.endpoint.hint.gemini',
+    endpointPlaceholder: 'field.endpoint.placeholder.gemini',
+    modelPlaceholder: 'field.model.placeholder.gemini',
+    emptyApiKeyHint: 'field.apiKey.hint.empty.gemini',
+  },
 }
 const panelTabs = ['connection', 'native', 'history'] as const
 const integerIn = (value: string, min: number, max: number) => value.trim() !== '' && Number.isSafeInteger(Number(value)) && Number(value) >= min && Number(value) <= max
@@ -513,14 +542,13 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
   const statusDotClass = active && runtime?.ready ? 'is-live' : starting ? 'is-starting' : state === 'error' || systemRuntimeError ? 'is-error' : ''
   const draftHasEffectiveKey = Boolean(draft && (draft.apiKey.trim().length > 0 || (saved?.apiKeyConfigured === true && !protocolChanged && !draft.clearApiKey)))
   const canSaveAndStart = Boolean(draft && dirty && draft.endpoint.trim() && draft.model.trim() && (!protocolRequiresApiKey(draft.protocol) || draftHasEffectiveKey) && systemFound && !active)
+  const activeProtocolMeta = protocolCopy[draft?.protocol ?? 'openai-completions']
   const isGemini = draft?.protocol === 'google-generative-ai'
   const apiKeyHintKey: DshTranslationKey = protocolChanged && saved?.apiKeyConfigured
     ? 'field.apiKey.hint.protocolSwitched'
     : saved?.apiKeyConfigured && !protocolChanged
       ? 'field.apiKey.hint.saved'
-      : isGemini
-        ? 'field.apiKey.hint.empty.gemini'
-        : 'field.apiKey.hint.empty.openai'
+      : activeProtocolMeta.emptyApiKeyHint
   const modelActionHelpKey: DshTranslationKey = endpointOrKeyDirty
     ? 'models.saveEndpointFirst'
     : needsSavedKey
@@ -643,7 +671,7 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
               id={id('endpoint')}
               label={t('field.endpoint.label')}
               hint={<>
-                <span>{t(isGemini ? 'field.endpoint.hint.gemini' : 'field.endpoint.hint.openai')}</span>
+                <span>{t(activeProtocolMeta.endpointHint)}</span>
                 {isGemini && draft.endpoint.trim() !== GOOGLE_GEMINI_DEFAULT_ENDPOINT && (
                   <button type="button" className="text-button dsh-inline-action" onClick={() => updateDraft('endpoint', GOOGLE_GEMINI_DEFAULT_ENDPOINT)}>
                     {t('field.endpoint.fillGeminiDefault')}
@@ -656,7 +684,7 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
                 id={id('endpoint')}
                 type="url"
                 value={draft.endpoint}
-                placeholder={t(isGemini ? 'field.endpoint.placeholder.gemini' : 'field.endpoint.placeholder.openai')}
+                placeholder={t(activeProtocolMeta.endpointPlaceholder)}
                 autoComplete="off"
                 spellCheck={false}
                 aria-describedby={describedBy('endpoint')}
@@ -692,7 +720,7 @@ export function DSHPanel({ onFeedback, onRefresh, onDirtyChange }: PluginPanelPr
                 <input
                   id={id('model')}
                   value={draft.model}
-                  placeholder={t(isGemini ? 'field.model.placeholder.gemini' : 'field.model.placeholder.openai')}
+                  placeholder={t(activeProtocolMeta.modelPlaceholder)}
                   list={models && models.length > 0 ? id('model-datalist') : undefined}
                   maxLength={160}
                   autoComplete="off"

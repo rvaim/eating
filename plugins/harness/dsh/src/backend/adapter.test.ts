@@ -258,6 +258,14 @@ describe('DSH isolated runtime lifecycle', () => {
     expect(patch).not.toContain('"api":"openai-completions"')
     expect(patch).toContain('id: agent-default-model\n  config:\n    provider: "google"\n    model: "gemini-2.5-flash"')
     expect(patch).not.toContain('fixture-only-gemini-key')
+    await setup.plugin.disconnect()
+    await setup.plugin.updateConfiguration({ protocol: 'openai-responses', endpoint: 'https://api.openai.com/v1', model: 'gpt-5', apiKey: 'fixture-only-responses-key' })
+    await setup.plugin.connect()
+    const responsesClient = setup.clients[1]!
+    expect(responsesClient.launch).toMatchObject({ provider: 'eating-openai', model: 'gpt-5' })
+    const responsesPatch = readFileSync(responsesClient.launch.patches![0]!, 'utf8')
+    expect(responsesPatch).toContain('"eating-openai":{"api":"openai-responses","baseURL":"https://api.openai.com/v1","apiKeyEnv":"EATING_DSH_API_KEY"')
+    expect(responsesPatch).toContain('id: agent-default-model\n  config:\n    provider: "eating-openai"\n    model: "gpt-5"')
   })
 
   it('returns the current official Web entry on demand without exposing credentials in public status', async () => {

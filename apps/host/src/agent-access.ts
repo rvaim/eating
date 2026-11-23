@@ -59,6 +59,9 @@ export function collectAgentContributions(plugins: Iterable<BackendPlugin>, enab
 
 interface Actor {
   readonly harnessId: string
+  issuedScope: AgentInvocationScope
+  readonly inheritedMessageIds: readonly string[]
+  readonly inheritedResourceIds: readonly string[]
   baseScope: AgentInvocationScope
   scope: AgentInvocationScope
   returnedMessageIds: readonly string[]
@@ -210,11 +213,18 @@ export class AgentAccessRegistry {
     if (previous && ['pluginId', 'instanceId', 'accountId', 'conversationId', 'agentTypeId', 'kind', 'targetId'].some(field => previous.scope[field as keyof AgentInvocationScope] !== scope[field as keyof AgentInvocationScope])) forbidden()
     if (!previous && this.actors.size >= maximumAgents) throw new PlatformError('TOO_MANY_SCOPED_AGENTS', '当前代理数量达到上限，请先停止不再使用的代理。', 429, 'not-sent')
     const clonedScope = clonePersistentScope(scope)
-    const baseScope = { ...clonedScope, ...(policy?.readOnly === true ? { readOnly: true } : {}),
-      messageIds: [...new Set([...(previous && !policy ? boundedReferences(previous.scope.messageIds) : []), ...clonedScope.messageIds])],
-      resourceIds: [...new Set([...(previous && !policy ? boundedReferences(previous.scope.resourceIds) : []), ...clonedScope.resourceIds])] }
+    const issuedScope: AgentInvocationScope = { ...clonedScope, ...(policy?.readOnly === true ? { readOnly: true } : {}) }
+    const inheritedMessageIds = previous && !policy ? boundedReferences(previous.baseScope.messageIds) : []
+    const inheritedResourceIds = previous && !policy ? boundedReferences(previous.baseScope.resourceIds) : []
+    const inheritedReturned = previous && !policy ? boundedReferences(previous.returnedMessageIds) : []
+    const baseScope: AgentInvocationScope = { ...issuedScope,
+      messageIds: [...new Set([...inheritedMessageIds, ...issuedScope.messageIds])],
+      resourceIds: [...new Set([...inheritedResourceIds, ...issuedScope.resourceIds])] }
+    const effectiveScope: AgentInvocationScope = inheritedReturned.length > 0
+      ? { ...baseScope, messageIds: [...new Set([...baseScope.messageIds, ...inheritedReturned])] }
+      : baseScope
     const seenInboundSequence = this.inbound?.latestSequence(baseScope) ?? 0
-    const actor: Actor = { harnessId, baseScope, scope: baseScope, returnedMessageIds: [], receipts: new Map(), seenInboundSequence }
+    const actor: Actor = { harnessId, issuedScope, inheritedMessageIds, inheritedResourceIds, baseScope, scope: effectiveScope, returnedMessageIds: [...inheritedReturned], receipts: new Map(), seenInboundSequence }
     const currentTools = this.typeTools(actor, plugin)
     if (policy && policy.toolNames.some(name => !currentTools.some(tool => tool.name === name))) forbidden()
     const scopedPolicy = policy ? { toolNames: [...policy.toolNames], active: policy.active, ...(policy.readOnly !== undefined ? { readOnly: policy.readOnly } : {}) } : undefined
@@ -268,13 +278,18 @@ export class AgentAccessRegistry {
   extendScope(harnessId: string, scope: AgentInvocationScope, validateOnly = false): void {
     const actor = this.actors.get(this.actorKey(harnessId, scope.agentId))
     if (!actor || !actor.tokenHash || !this.leases.has(actor.tokenHash)
-      || ['agentTypeId', 'pluginId', 'instanceId', 'accountId', 'conversationId', 'kind', 'targetId', 'readOnly'].some(key => actor.baseScope[key as keyof AgentInvocationScope] !== scope[key as keyof AgentInvocationScope])
+      || ['agentTypeId', 'pluginId', 'instanceId', 'accountId', 'conversationId', 'kind', 'targetId', 'readOnly'].some(key => actor.issuedScope[key as keyof AgentInvocationScope] !== scope[key as keyof AgentInvocationScope])
       || !validReferences(scope.messageIds, scope.resourceIds)
-      || actor.baseScope.messageIds.some(id => !scope.messageIds.includes(id)) || actor.baseScope.resourceIds.some(id => !scope.resourceIds.includes(id))) forbidden()
+      || actor.issuedScope.messageIds.some(id => !scope.messageIds.includes(id)) || actor.issuedScope.resourceIds.some(id => !scope.resourceIds.includes(id))) forbidden()
     if (validateOnly) return
-    const baseScope = clonePersistentScope(scope)
-    actor.baseScope = baseScope
-    actor.scope = { ...baseScope, messageIds: [...new Set([...baseScope.messageIds, ...actor.returnedMessageIds])] }
+    const nextIssued = clonePersistentScope(scope)
+    actor.issuedScope = nextIssued
+    actor.baseScope = {
+      ...nextIssued,
+      messageIds: [...new Set([...actor.inheritedMessageIds, ...nextIssued.messageIds])],
+      resourceIds: [...new Set([...actor.inheritedResourceIds, ...nextIssued.resourceIds])],
+    }
+    actor.scope = { ...actor.baseScope, messageIds: [...new Set([...actor.baseScope.messageIds, ...actor.returnedMessageIds])] }
   }
   updateSeenInboundSequence(harnessId: string, agentId: string, seenSequence: number, reset = false): void {
     if (!Number.isSafeInteger(seenSequence) || seenSequence < 0) return

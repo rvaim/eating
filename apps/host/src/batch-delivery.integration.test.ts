@@ -388,12 +388,14 @@ describe.runIf(enabled)('isolated system DSH cross-conversation Gateway delivery
   it('fast-tracks same-conversation reply updates directly to the active child, preempts pure LLM streaming without waking main, and survives restart', async () => {
     const current = await fixture(true, false, 'fast-track')
     const first = current.record('100')
+    const mainRequestCount = () => current.requests.filter(request => ((request.tools as JsonObject[] | undefined) ?? []).some(tool => object(tool.function).name === 'eating_handle_conversation')).length
     await vi.waitFor(() => {
       expect(current.childInputs).toHaveLength(1)
+      expect(mainRequestCount()).toBe(2)
       expect(current.store.harnessSummary()).toMatchObject({ accepted: 1, pending: 0 })
       expect(current.runtime().busy).toBe(true)
     }, { timeout: 15000 })
-    const mainRequestsBeforeFastTrack = current.requests.filter(request => ((request.tools as JsonObject[] | undefined) ?? []).some(tool => object(tool.function).name === 'eating_handle_conversation')).length
+    const mainRequestsBeforeFastTrack = mainRequestCount()
 
     // Second message for the exact same conversation arrives while child is mid-LLM-stream (blocked on childGate).
     // Do NOT call releaseChild(): safe preemption must abort the stale stream and complete Turn 2 on the same child.

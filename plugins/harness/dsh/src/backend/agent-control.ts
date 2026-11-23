@@ -827,7 +827,17 @@ export class DshAgentControl {
         } else if (request.url === '/actions') {
           if (!exactRecord(body, ['agentId', 'contextRef', 'taskId']) || binding.task?.nonce !== this.nonce || binding.task.contextRef !== body.contextRef || binding.task.taskId !== body.taskId || binding.task.state !== 'pending') fail('CONTROL_REQUEST_INVALID', '当前任务回执引用无效。')
           const receipts = this.host.readTaskActions(binding.scope.agentId, String(body.taskId))
-          const sentMessageIds = receipts.actions.flatMap(action => isJsonObject(action.result) && (typeof action.result.message_id === 'string' || typeof action.result.message_id === 'number') ? [String(action.result.message_id)] : [])
+          const sentMessageIds = receipts.actions.flatMap(action => {
+            if (!isJsonObject(action.result)) return []
+            const ids: string[] = []
+            if (typeof action.result.message_id === 'string' || typeof action.result.message_id === 'number') ids.push(String(action.result.message_id))
+            if (Array.isArray(action.result.message_ids)) {
+              for (const item of action.result.message_ids) {
+                if (typeof item === 'string' || typeof item === 'number') ids.push(String(item))
+              }
+            }
+            return ids
+          })
           if (binding.task?.taskId === body.taskId && sentMessageIds.length) this.replace({ ...binding, scope: { ...binding.scope, messageIds: [...new Set([...binding.scope.messageIds, ...sentMessageIds])].slice(-256) } })
           result = receipts as unknown as JsonObject
         } else if (request.url === '/finish-task') {

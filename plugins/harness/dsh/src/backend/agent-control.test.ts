@@ -1145,4 +1145,20 @@ describe('trusted native Agent control boundary', () => {
     const incomplete: unknown = { ...f.host, [name]: undefined }
     expect(() => new DshAgentControl(f.directory, incomplete as HarnessHostServices)).toThrow(expect.objectContaining({ code: 'HARNESS_SERVICES_INVALID' }))
   })
+
+  it('records all split message_ids returned by task actions into binding scope', async () => {
+    const f = fixture(); await f.control.start('fixture-runtime-nonce')
+    const binding = f.control.bind(f.batch, parentId)
+    const taskId = 'a'.repeat(64)
+    expect((await f.post('/prepare-task', { agentId: binding.scope.agentId, agentTypeId: 'qq.private', mode: 'reply', contextRef: f.batch.batchId, taskId })).status).toBe(200)
+    vi.mocked(f.host.readTaskActions).mockReturnValue({
+      available: true,
+      closed: false,
+      actions: [{ requestId: 'req-split-1', tool: 'qq_send_private_message', outcome: 'succeeded', result: { message_id: 241960038, message_ids: [241960038, 1174905866] } }],
+    })
+    expect((await f.post('/actions', { agentId: binding.scope.agentId, contextRef: f.batch.batchId, taskId })).status).toBe(200)
+    const updated = f.control.list().find(item => item.scope.agentId === binding.scope.agentId)!
+    expect(updated.scope.messageIds).toContain('241960038')
+    expect(updated.scope.messageIds).toContain('1174905866')
+  })
 })

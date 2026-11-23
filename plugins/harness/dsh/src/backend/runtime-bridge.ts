@@ -276,7 +276,9 @@ export function apply(ctx) {
   async function inspectStoredSession() {
     const expected = readExpected();
     const registry = readJson('deliveries.json', true, 1024 * 1024);
-    const frames = registry?.deliveries?.map(frame => readExpected(frame.batchId)) || [];
+    const registryEntries = Array.isArray(registry?.deliveries) ? registry.deliveries : [];
+    const frames = registryEntries.map(frame => readExpected(frame.batchId));
+    if (frames.some(frame => !frame)) throw bridgeError('SESSION_RECOVERY_FAILED');
     let handle;
     try { handle = await ctx.sessionPersistence.open(sessionId, 'read', { signal: initialization.signal }); }
     catch (error) {
@@ -360,9 +362,14 @@ export function apply(ctx) {
       }
       if (!disposed && !failed) {
         atomicJson('session-ready.json', { schemaVersion: 1, nonce, sessionId });
-        for (const frame of frames) {
+        for (let index = 0; index < frames.length; index++) {
+          const frame = frames[index];
+          const entry = registryEntries[index];
           const found = recovered.get(frame.batchId);
-          if (!found) throw bridgeError('SESSION_RECOVERY_FAILED');
+          if (!found) {
+            if (entry && entry.accepted === false && expected && frame.batchId === expected.batchId) continue;
+            throw bridgeError('SESSION_RECOVERY_FAILED');
+          }
           restoredDeliveries.set(frame.batchId, found); writeAck(frame, found);
         }
         if (expected && recovered.has(expected.batchId)) return { recovery: 'persisted', batchId: expected.batchId };

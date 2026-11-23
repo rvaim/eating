@@ -669,4 +669,48 @@ describe('self-contained published-API DSH runtime bridge', () => {
     expect(existsSync(f.path('ready.json'))).toBe(false)
     expect(f.read('error.json')).toMatchObject({ code: 'BRIDGE_FILE_FAILED' })
   })
+
+  it('reports recovery absent instead of SESSION_RECOVERY_FAILED when an unaccepted expected batch never reached the session log', async () => {
+    const unacceptedBatchId = 'b'.repeat(64)
+    const unacceptedDigest = 'c'.repeat(64)
+    const writeDeliveriesState = (f: Awaited<ReturnType<typeof fixture>>) => {
+      const bindings = [{ contextRef: f.expected.batchId, agentId: 'child-1', agentTypeId: 'qq.private', label: 'private' }]
+      const unacceptedBindings = [{ contextRef: unacceptedBatchId, agentId: 'child-1', agentTypeId: 'qq.private', label: 'private' }]
+      writeFileSync(f.path(`expected-${f.expected.batchId}.json`), JSON.stringify({ ...f.expected, ownerRevision: 1, bindings }))
+      writeFileSync(f.path(`expected-${unacceptedBatchId}.json`), JSON.stringify({ schemaVersion: 1, nonce: f.nonce, sessionId: f.sessionId, batchId: unacceptedBatchId, digest: unacceptedDigest, ownerRevision: 1, bindings: unacceptedBindings }))
+      writeFileSync(f.path('expected.json'), JSON.stringify({ schemaVersion: 1, nonce: f.nonce, sessionId: f.sessionId, batchId: unacceptedBatchId, digest: unacceptedDigest }))
+      writeFileSync(f.path('deliveries.json'), JSON.stringify({
+        schemaVersion: 1,
+        revision: 2,
+        deliveries: [
+          { batchId: f.expected.batchId, digest: f.expected.digest, ownerRevision: 1, bindings, accepted: true, finished: false },
+          { batchId: unacceptedBatchId, digest: unacceptedDigest, ownerRevision: 1, bindings: unacceptedBindings, accepted: false, finished: false },
+        ],
+      }))
+    }
+
+    // Case 1: accepted: true batch is missing from stored=[] -> must still fail with SESSION_RECOVERY_FAILED
+    const f1 = await fixture()
+    await turn()
+    f1.emit('dispose')
+    f1.setStored([])
+    writeDeliveriesState(f1)
+    f1.bridge.apply(f1.ctx)
+    await turn()
+    expect(f1.read('error.json')).toMatchObject({ code: 'SESSION_RECOVERY_FAILED' })
+
+    // Case 2: accepted: true batch IS persisted and only accepted: false expected batch is absent -> recovery: 'absent'
+    const f2 = await fixture()
+    await turn()
+    const persisted = f2.event(f2.delivery({ nonce: 'old-runtime-nonce' }))
+    f2.emit('dispose')
+    f2.setStored([persisted])
+    writeDeliveriesState(f2)
+    f2.bridge.apply(f2.ctx)
+    await turn()
+    expect(existsSync(f2.path('error.json'))).toBe(false)
+    expect(f2.read('ready.json')).toMatchObject({ toolsReady: true, durabilityAvailable: true, recovery: 'absent' })
+    expect(existsSync(f2.path(`ack-${f2.expected.batchId}.json`))).toBe(true)
+    expect(existsSync(f2.path(`ack-${unacceptedBatchId}.json`))).toBe(false)
+  })
 })

@@ -336,17 +336,17 @@ export function getAsyncTasksRuntimeSource(): string {
       if (task.controls.size >= 32 || task.controls.has(targetBinding.contextRef)) return undefined;
       const liveChild = ctx.agents.get(task.childId);
       if (!liveChild || liveChild.status !== 'running') return undefined;
-      acceptContext(message, expected);
-      const context = currentConversation(targetBinding.contextRef);
       let addition;
       try {
-        addition = await control('append-task', { agentId: sessionId, taskId: task.taskId, contextRef: context.contextRef }, signal);
+        addition = await control('append-task', { agentId: sessionId, taskId: task.taskId, contextRef: targetBinding.contextRef }, signal);
       } catch (error) {
-        if (error?.code === 'AGENT_TASK_CONTEXT_MISMATCH' || error?.code === 'AGENT_TASK_UNAVAILABLE') return undefined;
+        if (error?.outcome === 'not-sent' || error?.code === 'AGENT_TASK_CONTEXT_MISMATCH' || error?.code === 'AGENT_TASK_UNAVAILABLE') return undefined;
         throw error;
       }
       const currentChild = ctx.agents.get(task.childId);
       if (taskFlights.get(task.childId) !== task || task.status !== 'running' || !currentChild || currentChild.status !== 'running' || task.signal.aborted) return undefined;
+      acceptContext(message, expected);
+      const context = currentConversation(targetBinding.contextRef);
       const [Llm, SessionMod] = await Promise.all([loadModule('@deepseek-ai/dsh-llm'), loadModule('@deepseek-ai/dsh-session')]);
       const inboundSeq = Number.isSafeInteger(addition.inboundSequence) && addition.inboundSequence >= 0 ? addition.inboundSequence : 0;
       const prompt = [{ type: 'text', text: JSON.stringify({

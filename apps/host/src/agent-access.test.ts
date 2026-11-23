@@ -441,4 +441,44 @@ describe('Host scoped agent MCP and plugin prompt registry', () => {
     expect(allowed).toMatchObject({ isError: false })
     expect(f.onebot.requests.filter(r => r.action === 'send_private_msg').map(r => r.params.message)).toEqual(['原来是在公园拍的呀！'])
   })
+
+  it('allows extendAgentScope on a subsequent task even when a prior task returned split message_ids not in the new issued scope', async () => {
+    const f = await setup(), initial = f.scope()
+    const firstTaskId = 'e'.repeat(64), secondTaskId = 'f'.repeat(64)
+    await f.api('/plugins/qq/manage', {
+      operation: 'save-message-split',
+      input: {
+        expectedRevision: 0,
+        enabled: true,
+        maxSegments: 8,
+        delayMs: 0,
+        trimSegments: true,
+        rules: [
+          { id: 'blank', name: '空行', enabled: true, pattern: '\\r?\\n(?:[ \\t]*\\r?\\n)+', flags: '', delimiterMode: 'drop' },
+        ],
+      },
+    })
+    const { mcp: firstMcp } = await f.client(initial, undefined, firstTaskId)
+
+    // Task 1 sends a regex-split message returning message_id=1001 and message_ids=[1001, 1002] into actor.returnedMessageIds.
+    expect(await firstMcp.callTool({
+      name: 'qq_send_private_message',
+      arguments: { user_id: initial.targetId, message: '第一句\n\n第二句', request_id: 'split-prior-task-001' },
+    })).toMatchObject({ isError: false })
+    f.services.finishTaskActions(initial.agentId, firstTaskId)
+    f.services.revokeAgentAccess(initial.agentId)
+
+    // Task 2 starts with only inbound + single message_id (omitting split message_ids[1] = 1002).
+    const secondScope = { ...initial, messageIds: [...initial.messageIds, '1001'] }
+    const { mcp: secondMcp } = await f.client(secondScope, undefined, secondTaskId)
+
+    // Extending Task 2 scope via append-task / fast-track must succeed without AGENT_SCOPE_VIOLATION.
+    const extendedScope = { ...secondScope, messageIds: [...secondScope.messageIds, '4001'] }
+    expect(() => f.services.extendAgentScope(extendedScope)).not.toThrow()
+    // Dropping an ID from Task 2's own issued scope must still be rejected.
+    expect(() => f.services.extendAgentScope({ ...secondScope, messageIds: ['4001'] })).toThrow(expect.objectContaining({ code: 'AGENT_SCOPE_VIOLATION' }))
+    // Agent retains access to inherited split message_id (1002) as well as newly appended 4001.
+    expect(await secondMcp.callTool({ name: 'qq_get_message', arguments: { message_id: '1002' } })).toMatchObject({ isError: false })
+    expect(await secondMcp.callTool({ name: 'qq_get_message', arguments: { message_id: '4001' } })).toMatchObject({ isError: false })
+  })
 })

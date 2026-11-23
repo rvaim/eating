@@ -713,4 +713,25 @@ describe('self-contained published-API DSH runtime bridge', () => {
     expect(existsSync(f2.path(`ack-${f2.expected.batchId}.json`))).toBe(true)
     expect(existsSync(f2.path(`ack-${unacceptedBatchId}.json`))).toBe(false)
   })
+
+  it('mounts eating:owner-system dynamically on non-root interactive sessions created directly in DSH Web', async () => {
+    const f = await fixture()
+    await turn()
+    let registered: { name: string; complete?: boolean; text: () => string } | undefined
+    const directWebAgent = {
+      id: randomUUID(),
+      ctx: {
+        systemPrompt: { section: (value: { name: string; complete?: boolean; text: () => string }) => { registered = value; return () => {} } },
+        tools: { guard: vi.fn(), schemas: () => [] },
+        on: vi.fn(() => () => {}),
+        plugin: vi.fn(async () => {}),
+      },
+    }
+    for (const listener of f.listeners.get('agent/created') ?? []) await listener({ agent: directWebAgent })
+    expect(registered).toMatchObject({ name: 'eating:owner-system', complete: true })
+    expect(registered!.text()).toContain('主人策略')
+    f.write('owner-policy.json', { schemaVersion: 1, revision: 9, agentTypes: [], systemPrompt: '切换后的新人格策略' })
+    expect(registered!.text()).toContain('切换后的新人格策略')
+    expect(registered!.text()).not.toContain('主人策略')
+  })
 })

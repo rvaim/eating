@@ -177,6 +177,25 @@ export type ConversationSequenceScope = Pick<
   'pluginId' | 'instanceId' | 'accountId' | 'conversationId' | 'kind' | 'targetId'
 >
 
+export interface HarnessQueueSummary {
+  readonly pending: number
+  readonly delivering: number
+  readonly uncertain: number
+  readonly queuedMessages: number
+}
+
+export interface HarnessResetCoordinationOptions {
+  readonly clearQueue: boolean
+  readonly restartIfRunning: boolean
+  readonly reset: () => Promise<void>
+}
+
+export interface HarnessResetCoordinationResult {
+  readonly wasRunning: boolean
+  readonly clearedQueueCount: number
+  readonly restarted: boolean
+}
+
 export interface HarnessHostServices {
   readonly memory?: import('./memory.js').HarnessMemoryServices
   registerSink(sink: HarnessMessageSink): () => void
@@ -191,6 +210,8 @@ export interface HarnessHostServices {
   prepareProactiveScope?(pluginId: string, request: import('./autonomy.js').ProactiveScopeRequest): import('./agents.js').AgentInvocationScope
   readProactiveContacts?(pluginId: string, request: import('./autonomy.js').ProactiveContactChannel): Promise<readonly import('./autonomy.js').ProactiveContact[]>
   hasPendingMessages?(): boolean
+  readQueueSummary?(): HarnessQueueSummary
+  coordinateReset?(options: HarnessResetCoordinationOptions): Promise<HarnessResetCoordinationResult>
   latestConversationSequence?(scope: ConversationSequenceScope): number
   maxEventSequence?(eventIds: readonly string[]): number
   updateAgentSeenInboundSequence?(agentId: string, seenSequence: number, reset?: boolean): void
@@ -247,6 +268,7 @@ export interface BackendPlugin {
   readonly autonomy?: import('./autonomy.js').HarnessAutonomy
   readonly proactive?: import('./autonomy.js').CommunicationProactive
   manage?(operation: string, input: unknown): Promise<JsonValue>
+  onOwnerConfigurationChanged?(): void
   readonly logs?: PluginLogSource
   readonly id: string
   readonly name: string

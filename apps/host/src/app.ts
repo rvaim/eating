@@ -287,12 +287,21 @@ export class EatingHost {
     return { personaId, hasImages: this.personaAppearances.list(personaId).images.length > 0 }
   }
 
+  private notifyOwnerConfigurationChanged(): void {
+    if (this.closed) return
+    for (const plugin of this.plugins.values()) {
+      if (plugin.kind === 'harness' && this.enabled.has(plugin.id)) {
+        try { plugin.onOwnerConfigurationChanged?.() } catch { /* Best-effort live sync; next start or delivery also reads current owner configuration. */ }
+      }
+    }
+  }
+
   private async syncPersonaAppearanceTopology(previous: { readonly personaId: string | null; readonly hasImages: boolean }): Promise<void> {
     const next = this.activePersonaAppearanceState()
     if (!previous.hasImages && !next.hasImages) return
     if (previous.hasImages !== next.hasImages || previous.personaId !== next.personaId) {
       this.capabilityAccess.revokeSource('host.persona-appearance')
-      if (previous.hasImages !== next.hasImages) await this.changeCapabilityTopology(async () => {})
+      await this.changeCapabilityTopology(async () => {})
     }
   }
 
@@ -669,7 +678,9 @@ export class EatingHost {
             || !reset && typeof input.body !== 'string') throw new PlatformError('INVALID_AUTHORING_REQUEST', reset ? '请提供有效的提示词版本。' : '请提供提示词正文与有效版本。')
           let promptId: string
           try { promptId = decodeURIComponent(promptMatch[1]!) } catch { throw new PlatformError('INVALID_AUTHORING_REQUEST', '提示词标识无效。', 400, 'not-sent') }
-          json(response, 200, reset ? this.authoring.resetPrompt(promptId, input.expectedRevision) : this.authoring.updatePrompt(promptId, input.body as string, input.expectedRevision)); return
+          const result = reset ? this.authoring.resetPrompt(promptId, input.expectedRevision) : this.authoring.updatePrompt(promptId, input.body as string, input.expectedRevision)
+          this.notifyOwnerConfigurationChanged()
+          json(response, 200, result); return
         }
         const appearanceContentMatch = /^\/api\/personas\/([a-zA-Z0-9-]{1,80})\/appearances\/([a-zA-Z0-9-]{1,80})\/content$/.exec(pathname)
         if (appearanceContentMatch) {
@@ -699,6 +710,7 @@ export class EatingHost {
             const input = await readJson(request, this.imageLimits.snapshot().uploadBytes)
             const result = this.personaAppearances.add(personaId!, input)
             await this.syncPersonaAppearanceTopology(previous)
+            this.notifyOwnerConfigurationChanged()
             json(response, 201, result); return
           }
           const input = await readJson(request)
@@ -709,13 +721,17 @@ export class EatingHost {
             if (!Array.isArray(input.imageIds) || Object.keys(input).some(key => !['imageIds', 'expectedRevision'].includes(key))) {
               throw new PlatformError('INVALID_AUTHORING_REQUEST', '外貌参考图排序参数无效。', 400, 'not-sent')
             }
-            json(response, 200, this.personaAppearances.reorder(personaId!, input.imageIds as string[], input.expectedRevision)); return
+            const result = this.personaAppearances.reorder(personaId!, input.imageIds as string[], input.expectedRevision)
+            this.notifyOwnerConfigurationChanged()
+            json(response, 200, result); return
           }
           if (imageOp === 'label') {
             if (typeof input.label !== 'string' || Object.keys(input).some(key => !['label', 'expectedRevision'].includes(key))) {
               throw new PlatformError('INVALID_AUTHORING_REQUEST', '外貌参考图说明参数无效。', 400, 'not-sent')
             }
-            json(response, 200, this.personaAppearances.updateLabel(personaId!, imageId!, input.label, input.expectedRevision)); return
+            const result = this.personaAppearances.updateLabel(personaId!, imageId!, input.label, input.expectedRevision)
+            this.notifyOwnerConfigurationChanged()
+            json(response, 200, result); return
           }
           if (Object.keys(input).some(key => !['confirmed', 'expectedRevision'].includes(key))) {
             throw new PlatformError('INVALID_AUTHORING_REQUEST', '外貌参考图删除参数无效。', 400, 'not-sent')
@@ -724,6 +740,7 @@ export class EatingHost {
           const previous = this.activePersonaAppearanceState()
           const result = this.personaAppearances.remove(personaId!, imageId!, input.expectedRevision)
           await this.syncPersonaAppearanceTopology(previous)
+          this.notifyOwnerConfigurationChanged()
           json(response, 200, result); return
         }
         const personaMatch = /^\/api\/personas(?:\/([a-zA-Z0-9-]{1,80})(?:\/(activate|delete))?)?$/.exec(pathname)
@@ -743,6 +760,7 @@ export class EatingHost {
             const previous = this.activePersonaAppearanceState()
             const snapshot = this.authoring.setPersonaEnabled(id, input.enabled, input.expectedRevision)
             await this.syncPersonaAppearanceTopology(previous)
+            this.notifyOwnerConfigurationChanged()
             json(response, 200, snapshot); return
           }
           if (operation === 'delete') {
@@ -753,7 +771,9 @@ export class EatingHost {
             json(response, 200, snapshot); return
           }
           if (typeof input.name !== 'string' || typeof input.body !== 'string' || Object.keys(input).some(key => !['name', 'body', 'expectedRevision'].includes(key))) throw new PlatformError('INVALID_AUTHORING_REQUEST', '请提供人格名称和设定。')
-          json(response, 200, this.authoring.updatePersona(id, input.name, input.body, input.expectedRevision)); return
+          const result = this.authoring.updatePersona(id, input.name, input.body, input.expectedRevision)
+          this.notifyOwnerConfigurationChanged()
+          json(response, 200, result); return
         }
         if (pathname === '/api/autonomy') {
           if (request.method === 'GET') {
@@ -853,11 +873,15 @@ export class EatingHost {
             note: '这是供主人手动使用的插件 MCP 连接参数，请妥善保管。' }); return
         }
         await this.mutatePlugin(id, operation, async () => {
-          if (operation === 'configuration') json(response, 200, await plugin.updateConfiguration(body))
+          if (operation === 'configuration') {
+            const updated = await plugin.updateConfiguration(body)
+            if (plugin.kind !== 'harness') this.notifyOwnerConfigurationChanged()
+            json(response, 200, updated)
+          }
           else if (operation === 'connect') { await plugin.connect(); json(response, 200, plugin.getStatus()) }
           else if (operation === 'disconnect') { this.revokeHarnessSinks(id); await plugin.disconnect(); json(response, 200, plugin.getStatus()) }
-          else if (operation === 'enable') { await this.setEnabled(id, true); json(response, 200, { ok: true }) }
-          else if (operation === 'disable') { await this.setEnabled(id, false); json(response, 200, { ok: true }) }
+          else if (operation === 'enable') { await this.setEnabled(id, true); if (plugin.kind !== 'harness') this.notifyOwnerConfigurationChanged(); json(response, 200, { ok: true }) }
+          else if (operation === 'disable') { await this.setEnabled(id, false); if (plugin.kind !== 'harness') this.notifyOwnerConfigurationChanged(); json(response, 200, { ok: true }) }
           else if (operation === 'manage') {
             const managedOperation = (body as JsonObject).operation as string
             let result = await plugin.manage!(managedOperation, (body as JsonObject).input)
@@ -960,6 +984,48 @@ export class EatingHost {
         return contacts.map(contact => ({ ...contact }))
       },
       hasPendingMessages: () => { this.requireHarnessAccess(id); return this.store.hasPendingHarnessMessages() },
+      readQueueSummary: () => {
+        this.requireHarnessAccess(id)
+        const { pending, delivering, uncertain, queuedMessages } = this.store.getDeliverySettingsSnapshot().queue
+        return { pending, delivering, uncertain, queuedMessages }
+      },
+      coordinateReset: async ({ clearQueue, restartIfRunning, reset }: import('@eating/plugin-sdk').HarnessResetCoordinationOptions) => {
+        this.requireHarnessAccess(id)
+        if (this.mutations.get(id) !== 'manage') throw new PlatformError('PLUGIN_BUSY', '仅可在 Harness 管理操作中协调重置。', 409, 'not-sent')
+        const plugin = this.requirePlugin(id, true)
+        const statusState = plugin.getStatus().state
+        const runtimeReady = Boolean((plugin.getPublicConfiguration().runtimeStatus as JsonObject | undefined)?.ready)
+        const wasRunning = ['connected', 'connecting', 'reconnecting'].includes(statusState) || runtimeReady
+        const needsStop = wasRunning || statusState === 'error' || Boolean(this.sinkRegistrations.get(id)?.size)
+        if (needsStop) {
+          this.harnessGenerations.set(id, (this.harnessGenerations.get(id) ?? 0) + 1)
+          this.revokeHarnessSinks(id)
+          await this.harness.drain()
+          await plugin.disconnect()
+        }
+        await reset()
+        let clearedQueueCount = 0
+        if (clearQueue) {
+          await this.harness.drain()
+          clearedQueueCount = this.store.getDeliverySettingsSnapshot().queue.queuedMessages
+          this.store.clearDeliveryQueue()
+          this.harness.reconfigure()
+        }
+        let restarted = false
+        if (wasRunning && restartIfRunning && !this.closed && this.enabled.has(id)) {
+          this.mutations.set(id, 'connect')
+          try {
+            await plugin.connect()
+            restarted = plugin.getStatus().state === 'connected'
+          } catch {
+            this.revokeHarnessSinks(id)
+            restarted = false
+          } finally {
+            if (this.mutations.get(id) === 'connect') this.mutations.set(id, 'manage')
+          }
+        }
+        return { wasRunning, clearedQueueCount, restarted }
+      },
       latestConversationSequence: (scope: import('@eating/plugin-sdk').ConversationSequenceScope) => { this.requireHarnessAccess(id); return this.store.latestConversationSequence(scope) },
       maxEventSequence: (eventIds: readonly string[]) => { this.requireHarnessAccess(id); return this.store.maxEventSequence(eventIds) },
       updateAgentSeenInboundSequence: (agentId: string, seenSequence: number, reset?: boolean) => { this.requireHarnessAccess(id); this.agentAccess.updateSeenInboundSequence(id, agentId, seenSequence, reset) },

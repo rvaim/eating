@@ -656,8 +656,8 @@ describe('DSH reliable single-batch handoff', () => {
     setup.clients[0]!.run.resolve(result(setup.clients[0]!))
     await vi.waitFor(() => expect(setup.plugin.isReady()).toBe(true))
     await setup.plugin.disconnect()
-    const preview = await setup.plugin.manage('preview-session-history', {}) as { previewId: string }
-    await setup.plugin.manage('clear-session-history', { previewId: preview.previewId, requestId: '00000000-0000-4000-8000-000000000099', confirmed: true })
+    const preview = await setup.plugin.manage('preview-dsh-reset', {}) as { previewId: string }
+    await setup.plugin.manage('reset-dsh', { previewId: preview.previewId, requestId: '00000000-0000-4000-8000-000000000099', confirmed: true })
     expect(existsSync(join(setup.directory, 'bridge', 'deliveries.json'))).toBe(false)
     expect(existsSync(join(setup.directory, 'bridge', `expected-${'a'.repeat(64)}.json`))).toBe(false)
     await setup.plugin.connect()
@@ -738,65 +738,79 @@ describe('DSH reliable single-batch handoff', () => {
     expect(setup.clients[1]!.resumeCalls).toBe(1)
   })
 
-  it('clears residual bridge metadata even when sessionCount is zero and queue has pending messages, and deletes sessions online or with auto-restart', async () => {
+  it('resets DSH while stopped or running (auto-restarting only when previously running) and requires a queue decision when messages are queued', async () => {
     const rootId = '10000000-0000-4000-8000-000000000001'
-    const childId = '10000000-0000-4000-8000-000000000002'
-    const nativeCalls: Array<{ op: string; input: Record<string, unknown> }> = []
-    let pendingQueue = true
-    const setup = fixture({
-      adapter: {
-        nativeRequest: async (op, input): Promise<JsonObject> => {
-          nativeCalls.push({ op, input })
-          if (op === 'session-live-status') return { liveAgentIds: [rootId], liveSessionIds: [rootId], archivedSessionIds: [], pinnedSessionIds: [] }
-          if (op === 'detach-sessions') return { detachedIds: Array.isArray(input.sessionIds) ? input.sessionIds : [] }
-          return {}
-        },
-      },
+    let pendingCount = 2
+    let uncertainCount = 1
+    const setup = fixture()
+    Object.assign(setup.context.harness!, {
+      hasPendingMessages: () => pendingCount + uncertainCount > 0,
+      readQueueSummary: () => ({ pending: pendingCount, delivering: 0, uncertain: uncertainCount, queuedMessages: pendingCount + uncertainCount }),
     })
-    Object.assign(setup.context.harness!, { hasPendingMessages: () => pendingQueue })
     await configure(setup.plugin)
-    // Case 1: sessionCount === 0 with stale bridge/session metadata and pending queue -> residual cleanup succeeds
     writeRestrictedJson(join(setup.directory, 'session.json'), { schemaVersion: 1, sessionId: rootId, created: false })
-    writeRestrictedJson(join(setup.directory, 'bridge', 'deliveries.json'), { schemaVersion: 1, batches: [] })
-    writeRestrictedJson(join(setup.directory, 'bridge', 'error.json'), { code: 'SESSION_RECOVERY_FAILED' })
-    const residualPreview = await setup.plugin.manage('preview-session-history', {}) as { previewId: string; sessionCount: number; residualStateCount: number; hasPendingQueue: boolean }
-    expect(residualPreview).toMatchObject({ sessionCount: 0, residualStateCount: 3, hasPendingQueue: true })
-    const residualClear = await setup.plugin.manage('clear-session-history', { previewId: residualPreview.previewId, requestId: '20000000-0000-4000-8000-000000000001', confirmed: true })
-    expect(residualClear).toMatchObject({ status: 'completed', deletedCount: 0, mode: 'residual', clearedResidualCount: 3 })
+    writeRestrictedJson(join(setup.directory, 'bridge', 'deliveries.json'), { schemaVersion: 1, deliveries: [] })
+    mkdirSync(join(setup.directory, 'workspace'), { recursive: true })
+    writeFileSync(join(setup.directory, 'workspace', 'temp.txt'), 'clear me')
+    mkdirSync(join(setup.directory, 'dsh-home', 'profiles', 'sdk-minimal'), { recursive: true })
+    writeFileSync(join(setup.directory, 'dsh-home', 'profiles', 'sdk-minimal', 'custom-plugin.json'), '{"kept":true}')
+
+    const stoppedPreview = await setup.plugin.manage('preview-dsh-reset', {}) as { previewId: string; runtimeRunning: boolean; hasPendingQueue: boolean; pendingQueueCount: number; uncertainQueueCount: number; workspaceEntryCount: number; hasResettableData: boolean }
+    expect(stoppedPreview).toMatchObject({ runtimeRunning: false, hasPendingQueue: true, pendingQueueCount: 2, uncertainQueueCount: 1, workspaceEntryCount: 1, hasResettableData: true })
+
+    await expect(setup.plugin.manage('reset-dsh', { previewId: stoppedPreview.previewId, requestId: '20000000-0000-4000-8000-000000000001', confirmed: true }))
+      .rejects.toMatchObject({ code: 'DSH_RESET_QUEUE_DECISION_REQUIRED', outcome: 'not-sent' })
+
+    const stoppedReset = await setup.plugin.manage('reset-dsh', { previewId: stoppedPreview.previewId, requestId: '20000000-0000-4000-8000-000000000002', confirmed: true, queueAction: 'keep' })
+    expect(stoppedReset).toMatchObject({ status: 'completed', clearedWorkspaceEntries: 1, queueAction: 'keep', wasRunning: false, restarted: false })
     expect(existsSync(join(setup.directory, 'session.json'))).toBe(false)
+    expect(existsSync(join(setup.directory, 'workspace', 'temp.txt'))).toBe(false)
+    expect(existsSync(join(setup.directory, 'dsh-home', 'profiles', 'sdk-minimal', 'custom-plugin.json'))).toBe(true)
+    expect(setup.plugin.getStatus().state).toBe('disconnected')
 
-    // Case 2: Running DSH -> seed root + idle child logs, verify hot online delete does NOT close running DSH client
-    pendingQueue = false
+    // Running DSH automatically stops, resets, and restarts with a fresh session.
+    pendingCount = 0; uncertainCount = 0
     await setup.plugin.connect()
-    const liveRootId = setup.plugin.getPublicConfiguration().runtimeStatus && (setup.plugin.getPublicConfiguration().runtimeStatus as { sessionId: string }).sessionId
+    const liveRootId = (setup.plugin.getPublicConfiguration().runtimeStatus as { sessionId: string }).sessionId
     expect(liveRootId).toBeTruthy()
-    const childFolder = join(setup.directory, 'dsh-home', 'sessions', '--proj--', childId)
-    const rootFolder = join(setup.directory, 'dsh-home', 'sessions', '--proj--', String(liveRootId))
-    mkdirSync(childFolder, { recursive: true })
+    const rootFolder = join(setup.directory, 'dsh-home', 'sessions', '--proj--', liveRootId)
     mkdirSync(rootFolder, { recursive: true })
-    writeFileSync(join(childFolder, 'session.v4.jsonl'), JSON.stringify({ type: 'session', version: 4, id: childId, createdAt: 1_793_770_000_000, isSeeded: false, delegationDepth: 1, parentSession: String(liveRootId) }) + '\n')
-    writeFileSync(join(rootFolder, 'session.v4.jsonl'), JSON.stringify({ type: 'session', version: 4, id: String(liveRootId), createdAt: 1_793_770_000_000, isSeeded: false, delegationDepth: 0 }) + '\n')
+    writeFileSync(join(rootFolder, 'session.v4.jsonl'), JSON.stringify({ type: 'session', version: 4, id: liveRootId, createdAt: 1_793_770_000_000, isSeeded: false, delegationDepth: 0 }) + '\n')
+    writeFileSync(join(rootFolder, 'session.lock'), '')
 
-    const onlinePreview = await setup.plugin.manage('preview-session-history', {}) as { previewId: string; runtimeRunning: boolean; sessions: Array<{ id: string; requiresRestart: boolean }> }
-    expect(onlinePreview.runtimeRunning).toBe(true)
-    expect(onlinePreview.sessions.find(s => s.id === childId)?.requiresRestart).toBe(false)
-    expect(onlinePreview.sessions.find(s => s.id === liveRootId)?.requiresRestart).toBe(true)
-
-    const onlineDelete = await setup.plugin.manage('delete-session-history', { previewId: onlinePreview.previewId, requestId: '20000000-0000-4000-8000-000000000002', sessionIds: [childId], confirmed: true })
-    expect(onlineDelete).toMatchObject({ status: 'completed', deletedCount: 1, mode: 'selected-online', restarted: false })
-    expect(setup.clients[0]!.closeCalls).toBe(0)
-    expect(nativeCalls.some(c => c.op === 'detach-sessions')).toBe(true)
-    expect(existsSync(join(childFolder, 'session.v4.jsonl'))).toBe(false)
-    expect(existsSync(join(rootFolder, 'session.v4.jsonl'))).toBe(true)
-
-    // Case 3: Deleting active root requires allowRestart and automatically restarts DSH
-    const previewForRoot = await setup.plugin.manage('preview-session-history', {}) as { previewId: string }
-    await expect(setup.plugin.manage('delete-session-history', { previewId: previewForRoot.previewId, requestId: '20000000-0000-4000-8000-000000000003', sessionIds: [String(liveRootId)], confirmed: true })).rejects.toMatchObject({ code: 'SESSION_HISTORY_RESTART_REQUIRED' })
-    const restartDelete = await setup.plugin.manage('delete-session-history', { previewId: previewForRoot.previewId, requestId: '20000000-0000-4000-8000-000000000004', sessionIds: [String(liveRootId)], confirmed: true, allowRestart: true })
-    expect(restartDelete).toMatchObject({ status: 'completed', deletedCount: 1, mode: 'selected-offline', restarted: true })
+    const runningPreview = await setup.plugin.manage('preview-dsh-reset', {}) as { previewId: string; runtimeRunning: boolean; sessionCount: number }
+    expect(runningPreview).toMatchObject({ runtimeRunning: true, sessionCount: 1 })
+    const runningReset = await setup.plugin.manage('reset-dsh', { previewId: runningPreview.previewId, requestId: '20000000-0000-4000-8000-000000000003', confirmed: true })
+    expect(runningReset).toMatchObject({ status: 'completed', deletedSessions: 1, wasRunning: true, restarted: true })
     expect(setup.clients[0]!.closeCalls).toBe(1)
     expect(setup.clients).toHaveLength(2)
     expect(setup.plugin.getStatus().state).toBe('connected')
+    expect((setup.plugin.getPublicConfiguration().runtimeStatus as { sessionId: string }).sessionId).not.toBe(liveRootId)
+    expect(existsSync(join(setup.directory, 'dsh-home', 'profiles', 'sdk-minimal', 'custom-plugin.json'))).toBe(true)
+  })
+
+  it('republishes bridge/owner-policy.json immediately on onOwnerConfigurationChanged while running and skips when stopped', async () => {
+    const setup = fixture()
+    let personaBody = 'PERSONA-ALPHA'
+    const baseRead = setup.context.harness!.readOwnerConfiguration
+    Object.assign(setup.context.harness!, {
+      readOwnerConfiguration: () => {
+        const base = baseRead()
+        return { ...base, revision: base.revision + 1, activePersona: { id: '00000000-0000-4000-8000-000000000010', name: 'LivePersona', body: personaBody, revision: 1, createdAt: '2026-11-23T00:00:00.000Z', updatedAt: '2026-11-23T00:00:00.000Z' } }
+      },
+    })
+    await configure(setup.plugin)
+    setup.plugin.onOwnerConfigurationChanged()
+    expect(existsSync(join(setup.directory, 'bridge', 'owner-policy.json'))).toBe(false)
+
+    await setup.plugin.connect()
+    expect(String(readRestrictedJson(join(setup.directory, 'bridge', 'owner-policy.json'))!.systemPrompt)).toContain('PERSONA-ALPHA')
+
+    personaBody = 'PERSONA-BETA-LIVE-UPDATE'
+    setup.plugin.onOwnerConfigurationChanged()
+    const updatedPolicy = String(readRestrictedJson(join(setup.directory, 'bridge', 'owner-policy.json'))!.systemPrompt)
+    expect(updatedPolicy).toContain('PERSONA-BETA-LIVE-UPDATE')
+    expect(updatedPolicy).not.toContain('PERSONA-ALPHA')
   })
 
   it('provides a non-empty placeholder EATING_DSH_API_KEY only for keyless OpenAI-compatible local endpoints while keeping apiKeyConfigured false', async () => {

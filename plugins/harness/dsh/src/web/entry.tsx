@@ -8,7 +8,7 @@ import { DSHPanel, validateConfiguration } from './panel'
 const plugin: HarnessPlugin = {
   id: 'dsh', kind: 'harness', name: 'DeepSeek Harness',
   get description() { return translate('dsh', 'plugin.description') },
-  version: '0.28.1', apiVersion: 4, order: 10,
+  version: '0.29.0', apiVersion: 4, order: 10,
   icon: BrainCircuit, brandColor: '#3876b6', defaultRegistered: true,
   initialValues: { displayName: 'DeepSeek Harness', protocol: DEFAULT_DSH_API_PROTOCOL, endpoint: '', model: '', autoConnect: false, timeoutMs: '60000', maxTokens: '4096' },
   validate: validateConfiguration,

@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DshSessionHistory } from './session-history'
+import { DshResetEngine } from './session-history'
 
 vi.mock('node:fs', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs')>()
@@ -14,21 +14,18 @@ const roots: string[] = []
 const ROOT = '00000000-0000-4000-8000-000000000001'
 const SECOND = '00000000-0000-4000-8000-000000000002'
 const CHILD = '00000000-0000-4000-8000-000000000003'
-const UNRELATED = '00000000-0000-4000-8000-000000000004'
 const PROJECT = '--fixture-project--'
-const receiptName = 'session-history-receipt.json'
-const workspaceName = 'dsh-home/storages/workspace.json'
-const legacyName = 'dsh-home/storages/session_projcache.json'
-const cacheDirectory = 'dsh-home/storages/session_projcache/sessions'
+const receiptName = 'dsh-reset-receipt.json'
 const secret = 'fixture-private-body-and-credential-do-not-expose'
 
 function fixture(): string {
   const parent = realpathSync(tmpdir())
-  const root = realpathSync(mkdtempSync(join(parent, 'eating-session-history-')))
-  if (!isAbsolute(root) || dirname(root) !== parent || !basename(root).startsWith('eating-session-history-')) throw new Error('Invalid fixture root')
+  const root = realpathSync(mkdtempSync(join(parent, 'eating-dsh-reset-')))
+  if (!isAbsolute(root) || dirname(root) !== parent || !basename(root).startsWith('eating-dsh-reset-')) throw new Error('Invalid fixture root')
   roots.push(root)
   return root
 }
+
 function write(root: string, name: string, value: unknown, raw = false): string {
   const path = resolve(root, name)
   if (!path.startsWith(root + '/') || !roots.includes(root)) throw new Error('Invalid fixture file')
@@ -36,68 +33,110 @@ function write(root: string, name: string, value: unknown, raw = false): string 
   writeFileSync(path, raw ? String(value) : JSON.stringify(value) + '\n')
   return path
 }
-function json(root: string, name: string): Record<string, any> { return JSON.parse(readFileSync(join(root, name), 'utf8')) as Record<string, any> }
-function logName(id: string): string { return `dsh-home/sessions/${PROJECT}/${id}/session.v4.jsonl` }
-function log(root: string, id: string, parentSession?: string, folder = id): string {
-  const header = { type: 'session', version: 4, id, createdAt: 1_793_770_000_000, isSeeded: false, delegationDepth: 0, cwd: '/fixture/project', ...(parentSession ? { parentSession, origin: 'fork' } : {}) }
-  return write(root, `dsh-home/sessions/${PROJECT}/${folder}/session.v4.jsonl`, JSON.stringify(header) + '\n' + JSON.stringify({ type: 'event', seq: 1, event: { type: 'goal/change', goal: { objective: secret, status: 'active' } } }) + '\n', true)
+
+function json(root: string, name: string): Record<string, any> {
+  return JSON.parse(readFileSync(join(root, name), 'utf8')) as Record<string, any>
 }
-function record() {
-  return { identity: { formatVersion: 4, createdAt: 1_793_770_000_000, cwd: '/fixture/project', isSeeded: false, inheritedEventCount: 0 }, rows: { goal: { ver: 1, seq: 1, val: { objective: secret, status: 'active' } }, watermark: { ver: 0, seq: -1, val: null } } }
-}
-function workspaceValue() {
-  return {
-    unit: { name: 'workspace', version: 2 },
-    global: { initialized: true, defaultWorkspaceId: 'workspace-fixture', workspaceIds: ['workspace-fixture'], archivedSessionIds: [ROOT, UNRELATED], pinnedSessionIds: [CHILD, UNRELATED] },
-    tables: { workspaces: { 'workspace-fixture': { path: '/fixture/project', title: 'Keep workspace title', sessionIds: [ROOT, SECOND, CHILD, UNRELATED], createdAt: '2026-11-04T00:00:00.000Z', updatedAt: '2026-11-04T01:00:00.000Z', customField: 'retained-workspace-field' } } },
+
+function writeSessionLog(root: string, id: string, parentSession?: string): string {
+  const header = {
+    type: 'session',
+    version: 4,
+    id,
+    createdAt: 1_793_770_000_000,
+    isSeeded: false,
+    delegationDepth: parentSession ? 1 : 0,
+    cwd: '/fixture/project',
+    ...(parentSession ? { parentSession, origin: 'subagent' } : {}),
   }
+  return write(
+    root,
+    `dsh-home/sessions/${PROJECT}/${id}/session.v4.jsonl`,
+    JSON.stringify(header) + '\n' + JSON.stringify({ type: 'event', seq: 1, event: { type: 'goal/change', goal: { objective: secret } } }) + '\n',
+    true,
+  )
 }
+
 function seed(root: string) {
-  log(root, ROOT)
-  log(root, SECOND)
-  log(root, CHILD, ROOT)
+  writeSessionLog(root, ROOT)
+  writeSessionLog(root, SECOND)
+  writeSessionLog(root, CHILD, ROOT)
   const removed = [
-    ...[ROOT, SECOND, CHILD].map(logName),
-    `dsh-home/sessions/${PROJECT}/${ROOT}/session.jsonl`,
-    `dsh-home/sessions/${PROJECT}/${ROOT}/session.v1.jsonl`,
-    `dsh-home/sessions/${PROJECT}/${ROOT}/session.v2.jsonl`,
-    `dsh-home/sessions/${PROJECT}/${ROOT}/session.v3.jsonl`,
-    'session.json', 'agent-bindings.json', 'proactive-bindings.json',
-    'bridge/owner-policy.json', 'bridge/expected.json', 'bridge/deliveries.json', 'bridge/async-outbox.json', 'bridge/ready.json', 'bridge/session-ready.json', 'bridge/native-web-ready.json', 'bridge/error.json', `bridge/ack-${'a'.repeat(64)}.json`, `bridge/expected-${'a'.repeat(64)}.json`, 'bridge/.bridge-00000000-0000-4000-8000-000000000005.tmp',
-    'dsh-home/attachments/v1/objects/nested/object', 'dsh-home/attachments/v1/file-objects/source', 'dsh-home/attachments/v1/files/file', 'dsh-home/attachments/v1/tmp/upload', 'dsh-home/cache/attachments/request-images/image',
-    `${cacheDirectory}/${ROOT}.json`, `${cacheDirectory}/${ROOT}.json.bak.202611041030`, `${cacheDirectory}/${CHILD}.json`,
+    `dsh-home/sessions/${PROJECT}/${ROOT}/session.v4.jsonl`,
+    `dsh-home/sessions/${PROJECT}/${ROOT}/session.lock`,
+    `dsh-home/sessions/${PROJECT}/${SECOND}/session.v4.jsonl`,
+    `dsh-home/sessions/${PROJECT}/${CHILD}/session.v4.jsonl`,
+    'dsh-home/storages/workspace.json',
+    'dsh-home/storages/schedule.json',
+    `dsh-home/storages/session_projcache/sessions/${ROOT}.json`,
+    'dsh-home/attachments/v1/objects/nested/object',
+    'dsh-home/cache/attachments/request-images/image',
+    'workspace/scratch.txt',
+    'workspace/nested/project.md',
+    'agents-home/cache.json',
+    'runtime-home/.config/state.json',
+    'native-management/runtime.patch.yaml',
+    'bridge/owner-policy.json',
+    'bridge/deliveries.json',
+    'bridge/session-ready.json',
+    'bridge/runtime-bridge.mjs',
+    'session.json',
+    'agent-bindings.json',
+    'proactive-bindings.json',
+    'execution-bindings.json',
+    'session-history-receipt.json',
+    'session-history-lock.json',
   ]
-  for (const name of removed.slice(3)) write(root, name, { fixture: secret })
-  for (const name of removed.filter(name => name.startsWith(cacheDirectory))) write(root, name, { version: 7, record: record() })
+  write(root, `dsh-home/sessions/${PROJECT}/${ROOT}/session.lock`, '', true)
+  write(root, 'dsh-home/storages/workspace.json', { unit: { name: 'workspace', version: 2 }, global: { initialized: true, workspaceIds: [], archivedSessionIds: [], pinnedSessionIds: [] }, tables: { workspaces: {} } })
+  write(root, 'dsh-home/storages/schedule.json', { unit: { name: 'schedule', version: 1 }, global: null, tables: { tasks: { t1: { sessionId: ROOT, record: { prompt: secret }, status: 'active' } } } })
+  write(root, `dsh-home/storages/session_projcache/sessions/${ROOT}.json`, { version: 7, record: { identity: { createdAt: 1 }, rows: {} } })
+  write(root, 'dsh-home/attachments/v1/objects/nested/object', secret, true)
+  write(root, 'dsh-home/cache/attachments/request-images/image', secret, true)
+  write(root, 'workspace/scratch.txt', 'workspace file 1', true)
+  write(root, 'workspace/nested/project.md', 'workspace file 2', true)
+  write(root, 'agents-home/cache.json', { ok: true })
+  write(root, 'runtime-home/.config/state.json', { ok: true })
+  write(root, 'native-management/runtime.patch.yaml', '[]', true)
+  write(root, 'bridge/owner-policy.json', { schemaVersion: 1, revision: 1, systemPrompt: secret, agentTypes: [] })
+  write(root, 'bridge/deliveries.json', { schemaVersion: 1, revision: 1, deliveries: [] })
+  write(root, 'bridge/session-ready.json', { schemaVersion: 1, nonce: 'n', sessionId: ROOT })
+  write(root, 'bridge/runtime-bridge.mjs', 'export default {}', true)
   write(root, 'session.json', { schemaVersion: 1, sessionId: ROOT, created: true })
   write(root, 'agent-bindings.json', { schemaVersion: 2, bindings: [] })
   write(root, 'proactive-bindings.json', { schemaVersion: 1, bindings: [] })
-  write(root, workspaceName, workspaceValue())
-  write(root, legacyName, { unit: { name: 'session_projcache', version: 7 }, global: null, tables: { sessions: { [ROOT]: record(), [CHILD]: record(), [UNRELATED]: record() } } })
-  write(root, `${cacheDirectory}/${UNRELATED}.json`, { version: 7, record: record() })
+  write(root, 'execution-bindings.json', { schemaVersion: 1, bindings: [] })
+  write(root, 'session-history-receipt.json', { schemaVersion: 1, entries: [] })
+  write(root, 'session-history-lock.json', { schemaVersion: 1, pid: 999999, requestId: ROOT })
+
   const protectedNames = [
-    'config.json', 'persona.json', 'native-capabilities.json', 'profiles/model-key.json', 'runtime-home/native-config.yaml', 'dsh-home/profiles/default/config.json', 'dsh-home/actions/receipts.json',
-    'bridge/runtime-bridge.mjs', 'bridge/new-native.yaml', 'bridge/new-native.json', 'bridge/.unknown.tmp', 'bridge/ack-NOT-A-DIGEST.json',
-    'capabilities/stickers/images/business.png', 'scopefiles/scope.json', `dsh-home/sessions/${PROJECT}/${ROOT}/scope.json`,
+    'config.json',
+    'model-capabilities.json',
+    'model-information.json',
+    'native-capabilities.json',
+    'autonomy.json',
+    'autonomy-agenda.json',
+    'proactive-contact-policy.json',
+    'dsh-home/profiles/sdk-minimal/package.json',
+    'dsh-home/profiles/sdk-minimal/cordis.patch.yml',
+    'dsh-home/profiles/sdk-minimal/node_modules/user-plugin/index.js',
   ]
   for (const name of protectedNames) write(root, name, { retained: secret })
   return { removed, protectedFiles: new Map(protectedNames.map(name => [name, readFileSync(join(root, name))])) }
 }
+
 function hashes(root: string): Map<string, string> {
   const result = new Map<string, string>()
   const walk = (directory: string) => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name)
+      if (entry.isSymbolicLink()) continue
       if (entry.isDirectory()) walk(path)
       else result.set(path, createHash('sha256').update(readFileSync(path)).digest('hex'))
     }
   }
   walk(root)
   return result
-}
-async function confirmed(engine: DshSessionHistory) {
-  const preview = await engine.preview()
-  return { previewId: preview.previewId, requestId: randomUUID(), confirmed: true as const }
 }
 
 const originalUnlink = vi.mocked(unlinkSync).getMockImplementation()!
@@ -107,30 +146,34 @@ afterEach(() => {
   vi.mocked(renameSync).mockReset().mockImplementation(originalRename)
   vi.restoreAllMocks()
   for (const root of roots.splice(0).reverse()) {
-    if (resolve(root) !== root || realpathSync(root) !== root || lstatSync(root).isSymbolicLink() || dirname(root) !== realpathSync(tmpdir()) || !basename(root).startsWith('eating-session-history-')) throw new Error('Invalid fixture cleanup path')
+    if (resolve(root) !== root || realpathSync(root) !== root || lstatSync(root).isSymbolicLink() || dirname(root) !== realpathSync(tmpdir()) || !basename(root).startsWith('eating-dsh-reset-')) throw new Error('Invalid fixture cleanup path')
     rmSync(root, { recursive: true })
   }
 })
 
-describe('offline DSH session history', () => {
-  it('counts roots and fork children from current native headers and previews without writes', async () => {
+describe('DshResetEngine', () => {
+  it('previews sessions, schedules, workspace items, and queue counts without writing any files', async () => {
     const root = fixture()
     seed(root)
     const before = hashes(root)
-    const preview = await new DshSessionHistory(root).preview()
+    const preview = await new DshResetEngine(root).preview({
+      runtimeRunning: true,
+      queue: { pending: 2, delivering: 1, uncertain: 1, queuedMessages: 4 },
+    })
     expect(preview).toMatchObject({
       previewId: expect.any(String),
       expiresAt: expect.any(String),
+      runtimeRunning: true,
       sessionCount: 3,
       rootCount: 2,
       childCount: 1,
-      residualStateCount: expect.any(Number),
-      runtimeRunning: false,
-      hasPendingQueue: false,
+      scheduledCount: 1,
+      workspaceEntryCount: 2,
+      hasResettableData: true,
+      hasPendingQueue: true,
+      pendingQueueCount: 3,
+      uncertainQueueCount: 1,
     })
-    expect(preview.sessions).toHaveLength(3)
-    expect(preview.sessions.find(item => item.id === ROOT)).toMatchObject({ isRoot: true, isCurrentRoot: true, archived: true, deletable: true })
-    expect(preview.sessions.find(item => item.id === CHILD)).toMatchObject({ parentId: ROOT, isRoot: false, pinned: true, deletable: true })
     expect(Date.parse(preview.expiresAt) - Date.now()).toBeGreaterThan(299_000)
     expect(JSON.stringify(preview)).not.toContain(root)
     expect(JSON.stringify(preview)).not.toContain(secret)
@@ -138,450 +181,163 @@ describe('offline DSH session history', () => {
     expect(existsSync(join(root, receiptName))).toBe(false)
   })
 
-  it('clears confirmed native generations, shared attachments, caches and own metadata while preserving configuration and scopes', async () => {
+  it('clears all DSH sessions, storages, workspace, bridge and bindings while strictly preserving Eating configs and dsh-home/profiles', async () => {
     const root = fixture()
     const { removed, protectedFiles } = seed(root)
-    const engine = new DshSessionHistory(root)
-    const input = await confirmed(engine)
-    const result = await engine.clear(input)
+    const engine = new DshResetEngine(root)
+    const preview = await engine.preview()
+    const requestId = randomUUID()
+    const inspected = engine.inspectResetRequest({ previewId: preview.previewId, requestId, confirmed: true })
+    expect(inspected.prepared).toBeDefined()
+
+    const result = engine.executeReset(inspected.prepared!)
     expect(result).toEqual({
-      requestId: input.requestId,
+      requestId,
       status: 'completed',
-      deletedCount: 3,
-      mode: 'clear',
+      deletedSessions: 3,
+      clearedWorkspaceEntries: 2,
+      clearedScheduledCount: 1,
+      clearedQueueCount: 0,
+      queueAction: 'none',
+      wasRunning: false,
       restarted: false,
-      clearedResidualCount: expect.any(Number),
     })
+
     for (const name of removed) expect(existsSync(join(root, name)), name).toBe(false)
     for (const [name, bytes] of protectedFiles) expect(readFileSync(join(root, name)).equals(bytes), name).toBe(true)
-    expect(existsSync(join(root, `${cacheDirectory}/${UNRELATED}.json`))).toBe(true)
-    const expectedWorkspace = workspaceValue()
-    expectedWorkspace.global.archivedSessionIds = [UNRELATED]
-    expectedWorkspace.global.pinnedSessionIds = [UNRELATED]
-    expectedWorkspace.tables.workspaces['workspace-fixture'].sessionIds = [UNRELATED]
-    expect(json(root, workspaceName)).toEqual(expectedWorkspace)
-    expect(Object.keys(json(root, legacyName).tables.sessions)).toEqual([UNRELATED])
-    expect(json(root, legacyName).tables.sessions[UNRELATED]).toEqual(record())
+    expect(existsSync(join(root, 'workspace'))).toBe(true)
+    expect(readdirSync(join(root, 'workspace'))).toEqual([])
+    expect(existsSync(join(root, 'bridge'))).toBe(true)
+    expect(readdirSync(join(root, 'bridge'))).toEqual([])
+    expect(existsSync(join(root, 'agents-home'))).toBe(false)
+    expect(existsSync(join(root, 'runtime-home'))).toBe(false)
+    expect(existsSync(join(root, 'native-management'))).toBe(false)
+
     const receipt = json(root, receiptName)
     expect(receipt.schemaVersion).toBe(1)
     expect(receipt.entries).toHaveLength(1)
-    expect(receipt.entries[0]).toMatchObject({ requestId: input.requestId, previewId: input.previewId, state: 'completed', result })
+    expect(receipt.entries[0]).toMatchObject({ requestId, previewId: preview.previewId, state: 'completed', result })
     expect(JSON.stringify(receipt)).not.toContain(secret)
     expect(JSON.stringify(receipt)).not.toContain(root)
-    expect(JSON.stringify(receipt)).not.toContain(ROOT)
-    expect(readdirSync(root).filter(name => name.includes('.tmp') || name.includes('lock'))).toEqual([])
-    expect(await new DshSessionHistory(root).preview()).toMatchObject({ sessionCount: 0, rootCount: 0, childCount: 0 })
+
+    const afterPreview = await new DshResetEngine(root).preview()
+    expect(afterPreview).toMatchObject({
+      sessionCount: 0,
+      rootCount: 0,
+      childCount: 0,
+      scheduledCount: 0,
+      workspaceEntryCount: 0,
+      hasResettableData: false,
+    })
   })
 
-  it('returns a durable completed result after reopening without executing or checking runtime again', async () => {
+  it('replays completed receipts idempotently and rejects conflicts or unknown outcomes', async () => {
     const root = fixture()
     seed(root)
-    const engine = new DshSessionHistory(root)
-    const input = await confirmed(engine)
-    const result = await engine.clear(input)
-    const before = hashes(root)
-    const guard = vi.fn(() => { throw new Error(secret) })
-    expect(await new DshSessionHistory(root).clear(input, guard)).toEqual(result)
-    expect(guard).not.toHaveBeenCalled()
-    expect(hashes(root)).toEqual(before)
-    await expect(engine.clear({ ...input, previewId: randomUUID() })).rejects.toMatchObject({ code: 'SESSION_HISTORY_REQUEST_CONFLICT', outcome: 'not-sent' })
+    const engine = new DshResetEngine(root)
+    const preview = await engine.preview()
+    const requestId = randomUUID()
+    const input = { previewId: preview.previewId, requestId, confirmed: true as const }
+    const prepared = engine.inspectResetRequest(input).prepared!
+    const initial = engine.executeReset(prepared)
+    const finalized = engine.finalizeReceipt({ ...initial, wasRunning: true, restarted: true, clearedQueueCount: 2 })
+    const beforeReplay = hashes(root)
+
+    const replayed = new DshResetEngine(root).inspectResetRequest(input)
+    expect(replayed.replay).toEqual(finalized)
+    expect(hashes(root)).toEqual(beforeReplay)
+
+    expect(() => engine.inspectResetRequest({ ...input, previewId: randomUUID() })).toThrowError(expect.objectContaining({ code: 'DSH_RESET_REQUEST_CONFLICT', outcome: 'not-sent' }))
+    expect(() => engine.inspectResetRequest({ ...input, queueAction: 'clear' })).toThrowError(expect.objectContaining({ code: 'DSH_RESET_REQUEST_CONFLICT', outcome: 'not-sent' }))
   })
 
-  it('supports an empty state without creating session data or inventing sessions', async () => {
-    const root = fixture()
-    const engine = new DshSessionHistory(root)
-    expect(await engine.preview()).toMatchObject({ sessionCount: 0, rootCount: 0, childCount: 0 })
-    const input = await confirmed(engine)
-    expect(await engine.clear(input)).toMatchObject({ deletedCount: 0, status: 'completed' })
-    expect(readdirSync(root)).toEqual([receiptName])
-  })
-
-  it.each([
-    { confirmed: false }, { confirmed: true }, { confirmed: 'true' },
-    { confirmed: true, path: '/fixture/arbitrary' }, { confirmed: true, paths: [] }, { confirmed: true, sessionIds: [ROOT] }, { confirmed: true, extra: null },
-  ])('requires explicit confirmation and rejects extra or missing input: %j', async input => {
+  it('requires explicit queueAction when delivery queue is non-empty and rejects invalid or expired previews', async () => {
     const root = fixture()
     seed(root)
-    const engine = new DshSessionHistory(root)
-    const prepared = await confirmed(engine)
-    const value = Object.keys(input).length === 1 && input.confirmed === true ? input : { ...prepared, ...input }
-    const before = hashes(root)
-    await expect(engine.clear(value)).rejects.toMatchObject({ code: 'SESSION_HISTORY_INVALID_INPUT', outcome: 'not-sent' })
-    expect(hashes(root)).toEqual(before)
-  })
+    const engine = new DshResetEngine(root)
+    const preview = await engine.preview({ queue: { pending: 1, delivering: 0, uncertain: 1, queuedMessages: 2 } })
+    const requestId = randomUUID()
 
-  it('calls the final runtime guard before any lock, receipt or destructive operation', async () => {
-    const root = fixture()
-    seed(root)
-    const engine = new DshSessionHistory(root)
-    const input = await confirmed(engine)
-    const before = hashes(root)
-    const stop = new Error(secret + root)
-    await expect(engine.clear(input, () => { throw stop })).rejects.toMatchObject({ code: 'SESSION_HISTORY_IO_FAILED', outcome: 'not-sent' })
-    expect(hashes(root)).toEqual(before)
-    expect(await engine.clear(input)).toMatchObject({ deletedCount: 3 })
-  })
+    expect(() => engine.inspectResetRequest({ previewId: preview.previewId, requestId, confirmed: true }, { pending: 1, delivering: 0, uncertain: 1, queuedMessages: 2 }))
+      .toThrowError(expect.objectContaining({ code: 'DSH_RESET_QUEUE_DECISION_REQUIRED', outcome: 'not-sent' }))
 
-  it.each(['same-size-content', 'new-file', 'metadata', 'schedule'] as const)('rejects stale previews before accepting a request: %s', async change => {
-    const root = fixture()
-    seed(root)
-    const path = join(root, logName(ROOT))
-    const fixed = new Date('2026-11-04T00:00:00Z')
-    utimesSync(path, fixed, fixed)
-    const engine = new DshSessionHistory(root)
-    const input = await confirmed(engine)
-    const beforeStat = statSync(path, { bigint: true })
-    if (change === 'same-size-content') { writeFileSync(path, readFileSync(path, 'utf8').replace(secret, secret.toUpperCase())); utimesSync(path, fixed, fixed); expect(statSync(path, { bigint: true }).mtimeNs).toBe(beforeStat.mtimeNs); expect(statSync(path).size).toBe(Number(beforeStat.size)) }
-    if (change === 'new-file') write(root, `dsh-home/sessions/${PROJECT}/${ROOT}/new-entry.json`, {})
-    if (change === 'metadata') write(root, 'agent-bindings.json', { schemaVersion: 2, bindings: [], changed: true })
-    if (change === 'schedule') write(root, 'dsh-home/storages/schedule.json', { fixture: secret })
-    await expect(engine.clear(input)).rejects.toMatchObject({ code: 'SESSION_HISTORY_PREVIEW_STALE', outcome: 'not-sent' })
-    expect(existsSync(path)).toBe(true)
-    expect(existsSync(join(root, receiptName))).toBe(false)
-  })
+    expect(engine.inspectResetRequest({ previewId: preview.previewId, requestId, confirmed: true, queueAction: 'keep' }, { pending: 1, delivering: 0, uncertain: 1, queuedMessages: 2 }).prepared?.queueAction).toBe('keep')
+    expect(engine.inspectResetRequest({ previewId: preview.previewId, requestId, confirmed: true, queueAction: 'clear' }, { pending: 1, delivering: 0, uncertain: 1, queuedMessages: 2 }).prepared?.queueAction).toBe('clear')
 
-  it('expires previews at five minutes and keeps only the latest preview', async () => {
-    const root = fixture()
-    seed(root)
-    const engine = new DshSessionHistory(root)
-    const original = await confirmed(engine)
-    const latest = await confirmed(engine)
-    await expect(engine.clear(original)).rejects.toMatchObject({ code: 'SESSION_HISTORY_PREVIEW_STALE' })
+    for (const invalid of [
+      { previewId: preview.previewId, requestId, confirmed: false },
+      { previewId: preview.previewId, requestId, confirmed: true, queueAction: 'drop' },
+      { previewId: preview.previewId, requestId, confirmed: true, path: root },
+    ]) {
+      expect(() => engine.inspectResetRequest(invalid)).toThrowError(expect.objectContaining({ code: 'DSH_RESET_INVALID_INPUT', outcome: 'not-sent' }))
+    }
+
     const now = Date.now()
     vi.spyOn(Date, 'now').mockReturnValue(now + 300_000)
-    await expect(engine.clear(latest)).rejects.toMatchObject({ code: 'SESSION_HISTORY_PREVIEW_STALE', outcome: 'not-sent' })
-    expect(existsSync(join(root, logName(ROOT)))).toBe(true)
-    expect(existsSync(join(root, receiptName))).toBe(false)
+    expect(() => engine.inspectResetRequest({ previewId: preview.previewId, requestId, confirmed: true, queueAction: 'keep' }))
+      .toThrowError(expect.objectContaining({ code: 'DSH_RESET_PREVIEW_STALE', outcome: 'not-sent' }))
   })
 
-  it.each(['active', 'inactive'])('marks scheduled sessions non-deletable in preview and blocks clear/delete even when status is %s', async status => {
+  it('recovers cleanly even when DSH session or storage files are corrupted/legacy', async () => {
     const root = fixture()
-    seed(root)
-    write(root, 'dsh-home/storages/schedule.json', { unit: { name: 'schedule', version: 1 }, global: null, tables: { tasks: { task: { sessionId: ROOT, record: { prompt: secret }, status, deliveryHistory: [{ prompt: secret }] } } } })
-    const before = hashes(root)
-    const engine = new DshSessionHistory(root)
+    write(root, `dsh-home/sessions/${PROJECT}/broken/session.v3.jsonl`, 'not valid json', true)
+    write(root, 'dsh-home/storages/workspace.json', '{ broken', true)
+    write(root, 'dsh-home/profiles/sdk-minimal/package.json', { kept: true })
+
+    const engine = new DshResetEngine(root)
     const preview = await engine.preview()
-    expect(preview.sessions.find(item => item.id === ROOT)).toMatchObject({ scheduled: true, deletable: false, blockReason: 'scheduled' })
-    await expect(engine.clear({ previewId: preview.previewId, requestId: randomUUID(), confirmed: true })).rejects.toMatchObject({ code: 'SESSION_HISTORY_SCHEDULED', outcome: 'not-sent' })
-    await expect(engine.deleteSelected({ previewId: preview.previewId, requestId: randomUUID(), sessionIds: [ROOT], confirmed: true }, { online: false })).rejects.toMatchObject({ code: 'SESSION_HISTORY_SCHEDULED', outcome: 'not-sent' })
-    const deletedUnscheduled = await engine.deleteSelected({ previewId: preview.previewId, requestId: randomUUID(), sessionIds: [SECOND], confirmed: true }, { online: false })
-    expect(deletedUnscheduled).toMatchObject({ status: 'completed', deletedCount: 1, mode: 'selected-offline' })
-    expect(existsSync(join(root, `dsh-home/sessions/${PROJECT}/${ROOT}/session.v4.jsonl`))).toBe(true)
-    expect(existsSync(join(root, `dsh-home/sessions/${PROJECT}/${SECOND}/session.v4.jsonl`))).toBe(false)
-    expect(hashes(root).get(`dsh-home/sessions/${PROJECT}/${ROOT}/session.v4.jsonl`)).toBe(before.get(`dsh-home/sessions/${PROJECT}/${ROOT}/session.v4.jsonl`))
+    expect(preview.hasResettableData).toBe(true)
+    const prepared = engine.inspectResetRequest({ previewId: preview.previewId, requestId: randomUUID(), confirmed: true }).prepared!
+    const result = engine.executeReset(prepared)
+    expect(result.status).toBe('completed')
+    expect(existsSync(join(root, 'dsh-home/sessions'))).toBe(false)
+    expect(existsSync(join(root, 'dsh-home/storages'))).toBe(false)
+    expect(json(root, 'dsh-home/profiles/sdk-minimal/package.json')).toEqual({ kept: true })
   })
 
-  it('preserves an unrelated native schedule and its delivery history', async () => {
-    const root = fixture()
-    seed(root)
-    const path = write(root, 'dsh-home/storages/schedule.json', { unit: { name: 'schedule', version: 1 }, global: null, tables: { tasks: { task: { sessionId: UNRELATED, record: { prompt: secret }, status: 'active', lastDelivery: { prompt: secret }, deliveryHistory: [{ prompt: secret }] } } } })
-    const bytes = readFileSync(path)
-    const engine = new DshSessionHistory(root)
-    await engine.clear(await confirmed(engine))
-    expect(readFileSync(path).equals(bytes)).toBe(true)
-  })
-
-  it.each(['legacy-cache', 'workspace', 'pending-workspace', 'schedule'] as const)('refuses unknown or complex native storage without rewriting it: %s', async mode => {
-    const root = fixture()
-    seed(root)
-    if (mode === 'legacy-cache') write(root, legacyName, { sessions: { [ROOT]: { body: secret } } })
-    if (mode === 'workspace') write(root, workspaceName, { unit: { name: 'workspace', version: 1 }, global: {}, tables: {} })
-    if (mode === 'pending-workspace') { const value = workspaceValue(); write(root, workspaceName, { ...value, global: { ...value.global, pendingMutation: { operation: 'attach', sessionId: ROOT } } }) }
-    if (mode === 'schedule') write(root, 'dsh-home/storages/schedule.json', { unit: { name: 'schedule', version: 1 }, global: null, tables: { tasks: { malformed: { prompt: secret } } } })
-    const before = hashes(root)
-    await expect(new DshSessionHistory(root).preview()).rejects.toMatchObject({ code: 'SESSION_HISTORY_UNSUPPORTED', outcome: 'not-sent' })
-    expect(hashes(root)).toEqual(before)
-  })
-
-  it('does not treat old-only logs as a supported current session or migrate them', async () => {
-    const root = fixture()
-    write(root, `dsh-home/sessions/${PROJECT}/${ROOT}/session.v3.jsonl`, JSON.stringify({ type: 'session', version: 3, id: ROOT }) + '\n', true)
-    const before = hashes(root)
-    await expect(new DshSessionHistory(root).preview()).rejects.toMatchObject({ code: 'SESSION_HISTORY_UNSUPPORTED' })
-    expect(hashes(root)).toEqual(before)
-  })
-
-  it.each(['missing-required', 'wrong-version', 'mismatched-folder'])('requires an authentic current header: %s', async mode => {
-    const root = fixture()
-    log(root, ROOT)
-    const header = { type: 'session', version: mode === 'wrong-version' ? 3 : 4, id: mode === 'mismatched-folder' ? SECOND : ROOT, createdAt: 100, ...(mode === 'missing-required' ? {} : { isSeeded: false }), delegationDepth: 0 }
-    write(root, logName(ROOT), JSON.stringify(header) + '\n', true)
-    await expect(new DshSessionHistory(root).preview()).rejects.toMatchObject({ code: 'SESSION_HISTORY_UNSUPPORTED' })
-    expect(existsSync(join(root, logName(ROOT)))).toBe(true)
-  })
-
-  it('uses the official UTF-16 segment encoding for non-UUID native identities', async () => {
-    const root = fixture()
-    log(root, 'root中😀/~', undefined, 'root~4E2D~D83D~DE00~002F~007E')
-    const engine = new DshSessionHistory(root)
-    expect(await engine.preview()).toMatchObject({ sessionCount: 1, rootCount: 1 })
-    expect(await engine.clear(await confirmed(engine))).toMatchObject({ deletedCount: 1 })
-  })
-
-  it('preserves the persistent native POSIX lock inode while clearing a stopped session', async () => {
-    const root = fixture()
-    log(root, ROOT)
-    const lock = write(root, `dsh-home/sessions/${PROJECT}/${ROOT}/session.lock`, '', true)
-    const original = statSync(lock, { bigint: true })
-    const engine = new DshSessionHistory(root)
-    expect(await engine.clear(await confirmed(engine))).toMatchObject({ status: 'completed', deletedCount: 1 })
-    expect(statSync(lock, { bigint: true }).ino).toBe(original.ino)
-    expect(readFileSync(lock, 'utf8')).toBe('')
-  })
-
-  it.skipIf(process.platform === 'win32')('rejects symlink ancestors, intermediate directories and final deletion targets without touching outside data', async () => {
+  it.skipIf(process.platform === 'win32')('blocks symlink escape in root/dsh-home/session metadata while safely unlinking workspace symlinks without touching outside data', async () => {
     const root = fixture()
     const outside = fixture()
     const outsideData = write(outside, 'plugin/outside.txt', secret, true)
+
     symlinkSync(outside, join(root, 'alias'))
-    expect(() => new DshSessionHistory(join(root, 'alias', 'plugin'))).toThrowError(expect.objectContaining({ code: 'SESSION_HISTORY_PATH_UNSAFE' }))
-    const engine = new DshSessionHistory(root)
-    log(root, ROOT)
-    mkdirSync(join(root, 'dsh-home', 'attachments', 'v1'), { recursive: true })
-    symlinkSync(join(outside, 'plugin'), join(root, 'dsh-home', 'attachments', 'v1', 'objects'))
-    await expect(engine.preview()).rejects.toMatchObject({ code: 'SESSION_HISTORY_PATH_UNSAFE', outcome: 'not-sent' })
+    expect(() => new DshResetEngine(join(root, 'alias', 'plugin'))).toThrowError(expect.objectContaining({ code: 'DSH_RESET_PATH_UNSAFE' }))
+
+    const badHome = fixture()
+    mkdirSync(join(badHome, 'dsh-home', 'attachments', 'v1'), { recursive: true })
+    symlinkSync(join(outside, 'plugin'), join(badHome, 'dsh-home', 'attachments', 'v1', 'objects'))
+    await expect(new DshResetEngine(badHome).preview()).rejects.toMatchObject({ code: 'DSH_RESET_PATH_UNSAFE', outcome: 'not-sent' })
     expect(readFileSync(outsideData, 'utf8')).toBe(secret)
-    const secondRoot = fixture()
-    log(secondRoot, ROOT)
-    symlinkSync(outsideData, join(secondRoot, 'session.json'))
-    await expect(new DshSessionHistory(secondRoot).preview()).rejects.toMatchObject({ code: 'SESSION_HISTORY_PATH_UNSAFE' })
+
+    const badMeta = fixture()
+    symlinkSync(outsideData, join(badMeta, 'session.json'))
+    await expect(new DshResetEngine(badMeta).preview()).rejects.toMatchObject({ code: 'DSH_RESET_PATH_UNSAFE', outcome: 'not-sent' })
+    expect(readFileSync(outsideData, 'utf8')).toBe(secret)
+
+    // Workspace symlinks (e.g., node_modules/.bin or python venv) are unlinked directly without touching outside targets.
+    const workspaceRoot = fixture()
+    mkdirSync(join(workspaceRoot, 'workspace'), { recursive: true })
+    symlinkSync(join(outside, 'plugin'), join(workspaceRoot, 'workspace', 'external-link'))
+    const wsEngine = new DshResetEngine(workspaceRoot)
+    const wsPreview = await wsEngine.preview()
+    expect(wsPreview.workspaceEntryCount).toBe(1)
+    const wsPrepared = wsEngine.inspectResetRequest({ previewId: wsPreview.previewId, requestId: randomUUID(), confirmed: true }).prepared!
+    const wsResult = wsEngine.executeReset(wsPrepared)
+    expect(wsResult.clearedWorkspaceEntries).toBe(1)
+    expect(readdirSync(join(workspaceRoot, 'workspace'))).toEqual([])
     expect(readFileSync(outsideData, 'utf8')).toBe(secret)
   })
 
-  it.skipIf(process.platform === 'win32')('rejects a target replaced with a symlink after preview before accepting a receipt', async () => {
-    const root = fixture()
-    const outside = fixture()
-    seed(root)
-    const target = write(outside, 'protected.txt', secret, true)
-    const engine = new DshSessionHistory(root)
-    const input = await confirmed(engine)
-    const metadata = join(root, 'session.json')
-    if (realpathSync(metadata) !== metadata || dirname(metadata) !== root) throw new Error('Invalid fixture unlink path')
-    unlinkSync(metadata)
-    symlinkSync(target, metadata)
-    await expect(engine.clear(input)).rejects.toMatchObject({ code: 'SESSION_HISTORY_PREVIEW_STALE', outcome: 'not-sent' })
-    expect(readFileSync(target, 'utf8')).toBe(secret)
-    expect(existsSync(join(root, receiptName))).toBe(false)
-  })
-
-  it('records a partial failure as unknown, never replays it, and requires a fresh preview for a new confirmed intent', async () => {
+  it('marks receipt unknown and blocks automatic replay when filesystem deletion fails mid-flight', async () => {
     const root = fixture()
     seed(root)
-    const engine = new DshSessionHistory(root)
-    const input = await confirmed(engine)
-    let failed = false
-    vi.mocked(unlinkSync).mockImplementation(path => {
-      if (!failed && String(path).endsWith('session.v4.jsonl')) { failed = true; throw new Error(secret + root) }
-      originalUnlink(path)
-    })
-    await expect(engine.clear(input)).rejects.toMatchObject({ code: 'SESSION_HISTORY_CLEAR_UNKNOWN', outcome: 'unknown' })
-    expect(json(root, receiptName).entries[0]).toMatchObject({ requestId: input.requestId, state: 'unknown' })
-    const before = hashes(root)
-    const reopened = new DshSessionHistory(root)
-    await expect(reopened.clear(input)).rejects.toMatchObject({ code: 'SESSION_HISTORY_REQUEST_UNKNOWN', outcome: 'unknown' })
-    await expect(engine.clear({ ...input, requestId: randomUUID() })).rejects.toMatchObject({ code: 'SESSION_HISTORY_PREVIEW_STALE', outcome: 'not-sent' })
-    expect(hashes(root)).toEqual(before)
-    const renewed = await confirmed(reopened)
-    expect(await reopened.clear(renewed)).toMatchObject({ deletedCount: 3, status: 'completed' })
-    expect(json(root, receiptName).entries.map((entry: any) => entry.state)).toEqual(['unknown', 'completed'])
-  })
-
-  it('treats a persisted pending receipt after restart as unknown and exposes no private error details', async () => {
-    const root = fixture()
-    seed(root)
-    const engine = new DshSessionHistory(root)
-    const input = await confirmed(engine)
-    await engine.clear(input)
-    const value = json(root, receiptName)
-    value.entries[0].state = 'pending'
-    delete value.entries[0].result
-    write(root, receiptName, value)
-    const before = hashes(root)
-    await expect(new DshSessionHistory(root).clear(input)).rejects.toMatchObject({ code: 'SESSION_HISTORY_REQUEST_UNKNOWN', outcome: 'unknown' })
-    expect(hashes(root)).toEqual(before)
-    write(root, receiptName, secret + root, true)
-    try { await new DshSessionHistory(root).preview(); throw new Error('Expected receipt rejection') }
-    catch (error) { expect(error).toMatchObject({ code: 'SESSION_HISTORY_RECEIPT_INVALID' }); expect(String(error)).not.toContain(secret); expect(String(error)).not.toContain(root) }
-  })
-
-  it('fails before acceptance if the pending receipt cannot be persisted and leaves history intact', async () => {
-    const root = fixture()
-    seed(root)
-    const engine = new DshSessionHistory(root)
-    const input = await confirmed(engine)
-    const before = hashes(root)
-    vi.mocked(renameSync).mockImplementation((source, target) => {
-      if (String(target) === join(root, receiptName)) throw new Error(secret + root)
-      originalRename(source, target)
-    })
-    await expect(engine.clear(input)).rejects.toMatchObject({ code: 'SESSION_HISTORY_IO_FAILED', outcome: 'not-sent' })
-    expect(hashes(root)).toEqual(before)
-  })
-
-  it('records a completion-receipt failure as unknown without replaying deleted history', async () => {
-    const root = fixture()
-    seed(root)
-    const engine = new DshSessionHistory(root)
-    const input = await confirmed(engine)
-    let receiptWrites = 0
-    vi.mocked(renameSync).mockImplementation((source, target) => {
-      if (String(target) === join(root, receiptName) && ++receiptWrites === 2) throw new Error(secret + root)
-      originalRename(source, target)
-    })
-    await expect(engine.clear(input)).rejects.toMatchObject({ code: 'SESSION_HISTORY_CLEAR_UNKNOWN', outcome: 'unknown' })
-    expect(json(root, receiptName).entries[0].state).toBe('unknown')
-    expect(existsSync(join(root, logName(ROOT)))).toBe(false)
-    await expect(new DshSessionHistory(root).clear(input)).rejects.toMatchObject({ code: 'SESSION_HISTORY_REQUEST_UNKNOWN', outcome: 'unknown' })
-    expect(await new DshSessionHistory(root).preview()).toMatchObject({ sessionCount: 0 })
-  })
-
-  it('rechecks ancestor inode identity after accepting a receipt and before rewriting native indexes', async () => {
-    const root = fixture()
-    seed(root)
-    const engine = new DshSessionHistory(root)
-    const input = await confirmed(engine)
-    const sourceDirectory = join(root, 'dsh-home', 'storages')
-    const retainedDirectory = join(root, 'retained-original-storages')
-    let replaced = false
-    vi.mocked(renameSync).mockImplementation((source, target) => {
-      originalRename(source, target)
-      if (!replaced && String(target) === join(root, receiptName)) {
-        replaced = true
-        if (realpathSync(sourceDirectory) !== sourceDirectory || resolve(retainedDirectory) !== retainedDirectory || dirname(retainedDirectory) !== root || existsSync(retainedDirectory)) throw new Error('Invalid fixture move path')
-        originalRename(sourceDirectory, retainedDirectory)
-        write(root, workspaceName, { fixture: 'replacement-must-remain' })
-      }
-    })
-    await expect(engine.clear(input)).rejects.toMatchObject({ code: 'SESSION_HISTORY_CLEAR_UNKNOWN', outcome: 'unknown' })
-    expect(json(root, workspaceName)).toEqual({ fixture: 'replacement-must-remain' })
-    expect(existsSync(join(root, logName(ROOT)))).toBe(true)
-    expect(json(root, receiptName).entries[0].state).toBe('unknown')
-  })
-
-  it('rechecks filesystem changes made during the final runtime callback before accepting', async () => {
-    const root = fixture()
-    seed(root)
-    const engine = new DshSessionHistory(root)
-    const input = await confirmed(engine)
-    await expect(engine.clear(input, () => { write(root, 'session.json', { fixture: 'changed-during-admission' }) })).rejects.toMatchObject({ code: 'SESSION_HISTORY_PREVIEW_STALE', outcome: 'not-sent' })
-    expect(existsSync(join(root, receiptName))).toBe(false)
-    expect(existsSync(join(root, logName(ROOT)))).toBe(true)
-    expect(readdirSync(root).filter(name => name.includes('lock'))).toEqual([])
-  })
-
-  it('requires a fresh read of a stale maintenance lock and recovers it without replaying its request', async () => {
-    const root = fixture()
-    log(root, ROOT)
-    const abandonedId = randomUUID()
-    const lock = write(root, 'session-history-lock.json', { schemaVersion: 1, pid: 123456789, requestId: abandonedId })
-    vi.spyOn(process, 'kill').mockImplementation(() => { throw Object.assign(new Error('Fixture process exited'), { code: 'ESRCH' }) })
-    const engine = new DshSessionHistory(root)
-    const input = await confirmed(engine)
-    expect(existsSync(lock)).toBe(true)
-    expect(await engine.clear(input)).toMatchObject({ status: 'completed', deletedCount: 1 })
-    expect(existsSync(lock)).toBe(false)
-    expect(json(root, receiptName).entries.map((entry: any) => entry.requestId)).toEqual([input.requestId])
-  })
-
-  it('never accepts an unsupported receipt schema or silently forgets idempotency records', async () => {
-    const root = fixture()
-    log(root, ROOT)
-    write(root, receiptName, { schemaVersion: 0, entries: [] })
-    const before = hashes(root)
-    await expect(new DshSessionHistory(root).preview()).rejects.toMatchObject({ code: 'SESSION_HISTORY_RECEIPT_INVALID', outcome: 'not-sent' })
-    expect(hashes(root)).toEqual(before)
-  })
-
-  it('detects and clears residual bridge/session metadata when sessionCount is zero', async () => {
-    const root = fixture()
-    write(root, 'session.json', { schemaVersion: 1, sessionId: ROOT, created: false })
-    write(root, 'bridge/deliveries.json', { schemaVersion: 1, batches: [] })
-    write(root, 'bridge/error.json', { code: 'SESSION_RECOVERY_FAILED' })
-    write(root, `bridge/expected-${'a'.repeat(64)}.json`, { batchId: 'b1' })
-    write(root, 'config.json', { keep: true })
-    const engine = new DshSessionHistory(root)
+    const engine = new DshResetEngine(root)
     const preview = await engine.preview()
-    expect(preview).toMatchObject({ sessionCount: 0, residualStateCount: 4, runtimeRunning: false, sessions: [] })
-    const res = await engine.clear({ previewId: preview.previewId, requestId: randomUUID(), confirmed: true })
-    expect(res).toMatchObject({ status: 'completed', deletedCount: 0, mode: 'residual', clearedResidualCount: 4 })
-    expect(existsSync(join(root, 'session.json'))).toBe(false)
-    expect(existsSync(join(root, 'bridge/deliveries.json'))).toBe(false)
-    expect(existsSync(join(root, 'bridge/error.json'))).toBe(false)
-    expect(existsSync(join(root, 'config.json'))).toBe(true)
-    expect(await engine.preview()).toMatchObject({ sessionCount: 0, residualStateCount: 0 })
-  })
-
-  it('deletes only selected non-root sessions offline while keeping current root and unrelated data intact', async () => {
-    const root = fixture()
-    seed(root)
-    const engine = new DshSessionHistory(root)
-    const preview = await engine.preview()
-    const result = await engine.deleteSelected({ previewId: preview.previewId, requestId: randomUUID(), sessionIds: [CHILD], confirmed: true }, { online: false })
-    expect(result).toEqual({ requestId: result.requestId, status: 'completed', deletedCount: 1, mode: 'selected-offline', restarted: false, clearedResidualCount: 0 })
-    expect(existsSync(join(root, `dsh-home/sessions/${PROJECT}/${ROOT}/session.v4.jsonl`))).toBe(true)
-    expect(existsSync(join(root, `dsh-home/sessions/${PROJECT}/${SECOND}/session.v4.jsonl`))).toBe(true)
-    expect(existsSync(join(root, `dsh-home/sessions/${PROJECT}/${CHILD}/session.v4.jsonl`))).toBe(false)
-    expect(existsSync(join(root, `${cacheDirectory}/${CHILD}.json`))).toBe(false)
-    expect(existsSync(join(root, `${cacheDirectory}/${ROOT}.json`))).toBe(true)
-    expect(existsSync(join(root, 'session.json'))).toBe(true)
-    expect(existsSync(join(root, 'capabilities/stickers/images/business.png'))).toBe(true)
-    const ws = json(root, workspaceName)
-    expect(ws.global.pinnedSessionIds).toEqual([UNRELATED])
-    expect(ws.tables.workspaces['workspace-fixture'].sessionIds).toEqual([ROOT, SECOND, UNRELATED])
-  })
-
-  it('deletes idle child sessions online while root log appends concurrently, with idempotent receipt replay', async () => {
-    const root = fixture()
-    seed(root)
-    const detached: string[][] = []
-    const removedBindings: string[] = []
-    const engine = new DshSessionHistory(root)
-    const wsBefore = readFileSync(join(root, workspaceName), 'utf8')
-    const preview = await engine.preview({ runtimeRunning: true, liveSessionIds: new Set([ROOT]), currentRootId: ROOT })
-    expect(preview.runtimeRunning).toBe(true)
-    expect(preview.sessions.find(s => s.id === ROOT)).toMatchObject({ live: true, requiresRestart: true })
-    expect(preview.sessions.find(s => s.id === CHILD)).toMatchObject({ live: false, requiresRestart: false, deletable: true })
-    // Simulate active root session appending new events while running
-    write(root, `dsh-home/sessions/${PROJECT}/${ROOT}/session.v4.jsonl`, JSON.stringify({ type: 'session', version: 4, id: ROOT, createdAt: 1_793_770_000_000, isSeeded: false, delegationDepth: 0 }) + '\n{"type":"event","seq":1}\n')
     const requestId = randomUUID()
-    await expect(engine.deleteSelected({ previewId: preview.previewId, requestId: randomUUID(), sessionIds: [ROOT], confirmed: true }, { online: true })).rejects.toMatchObject({ code: 'SESSION_HISTORY_SESSION_ACTIVE' })
-    const result = await engine.deleteSelected(
-      { previewId: preview.previewId, requestId, sessionIds: [CHILD], confirmed: true },
-      {
-        online: true,
-        detachNativeSessions: async ids => { detached.push([...ids]) },
-        removeBindings: ids => { removedBindings.push(...ids); return ids.size },
-      },
-    )
-    expect(result).toEqual({ requestId, status: 'completed', deletedCount: 1, mode: 'selected-online', restarted: false, clearedResidualCount: 0 })
-    expect(detached).toEqual([[CHILD]])
-    expect(removedBindings).toEqual([CHILD])
-    expect(existsSync(join(root, `dsh-home/sessions/${PROJECT}/${CHILD}/session.v4.jsonl`))).toBe(false)
-    expect(existsSync(join(root, `${cacheDirectory}/${CHILD}.json`))).toBe(false)
-    expect(existsSync(join(root, `dsh-home/sessions/${PROJECT}/${ROOT}/session.v4.jsonl`))).toBe(true)
-    expect(readFileSync(join(root, workspaceName), 'utf8')).toBe(wsBefore)
-    // Idempotent replay succeeds with identical result
-    expect(await engine.deleteSelected({ previewId: preview.previewId, requestId, sessionIds: [CHILD], confirmed: true }, { online: true })).toEqual(result)
-  })
-
-  it('remains backward-compatible with legacy persisted clear entries in session-history-receipt.json', async () => {
-    const root = fixture()
-    log(root, ROOT)
-    const legacyPreview = randomUUID()
-    const legacyReq = randomUUID()
-    const legacyHash = createHash('sha256').update(JSON.stringify({ previewId: legacyPreview, requestId: legacyReq, confirmed: true })).digest('hex')
-    write(root, receiptName, {
-      schemaVersion: 1,
-      entries: [{
-        requestId: legacyReq,
-        previewId: legacyPreview,
-        parametersSha256: legacyHash,
-        acceptedAt: '2026-11-18T10:00:00.000Z',
-        state: 'completed',
-        result: { requestId: legacyReq, status: 'completed', deletedCount: 2 },
-      }],
-    })
-    const engine = new DshSessionHistory(root)
-    expect(await engine.clear({ previewId: legacyPreview, requestId: legacyReq, confirmed: true })).toEqual({ requestId: legacyReq, status: 'completed', deletedCount: 2 })
+    const prepared = engine.inspectResetRequest({ previewId: preview.previewId, requestId, confirmed: true }).prepared!
+    vi.mocked(unlinkSync).mockImplementationOnce(() => { throw new Error('EIO simulated') })
+    expect(() => engine.executeReset(prepared)).toThrowError(expect.objectContaining({ code: 'DSH_RESET_FAILED', outcome: 'unknown' }))
+    expect(() => new DshResetEngine(root).inspectResetRequest({ previewId: preview.previewId, requestId, confirmed: true }))
+      .toThrowError(expect.objectContaining({ code: 'DSH_RESET_REQUEST_UNKNOWN', outcome: 'unknown' }))
   })
 })

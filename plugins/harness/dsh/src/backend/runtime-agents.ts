@@ -316,6 +316,7 @@ export function getRuntimeAgentSource(): string {
     if (agent.id !== sessionId) {
       if (taskConfigurations.has(agent.id)) await mountChild(agent);
       else {
+        agent.ctx.systemPrompt.section({ name: 'eating:owner-system', order: 0, complete: true, interpolate: false, text: mainSystemPrompt });
         native.restrict(agent, 'main');
         const nativeNames = await native.mount(agent, 'main');
         const connections = await control('capabilities', { agentId: agent.id, agentTypeId: 'main' }, initialization.signal);

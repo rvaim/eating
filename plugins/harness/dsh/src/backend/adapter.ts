@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { DeepSeekHarness } from '@deepseek-ai/dsh-sdk-client'
 import type { DeepSeekHarnessOptions, HarnessSession } from '@deepseek-ai/dsh-sdk-client'
 import { PlatformError, composeAgentPrompt } from '@eating/plugin-sdk'
-import type { BackendPlugin, ConnectionStatus, HarnessDeliveryBatch, HarnessDeliveryReceipt, HarnessHostServices, HarnessMessageSink, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
+import type { BackendPlugin, ConnectionStatus, HarnessDeliveryBatch, HarnessDeliveryReceipt, HarnessHostServices, HarnessMessageSink, HarnessQueueSummary, HostPluginContext, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { DshConfigurationFile, DshSessionFile, parseConfiguration, prepareRestrictedDirectory, readRestrictedJson, resolveDraftConfiguration, writeRestrictedJson } from './config'
 import type { DshConfiguration, DshSessionMetadata } from './config'
 import { dshRuntimeProviderId, protocolRequiresApiKey } from '../protocol'
@@ -26,7 +26,8 @@ import { DshProactivePolicy } from './proactive-policy'
 import { DshNativeConfigurationFile, publicNativeConfiguration } from './native-configuration'
 import { getNativeCapabilitiesRuntimeSource } from './native-runtime'
 import { requestNativeManagement } from './native-management'
-import { DshSessionHistory } from './session-history'
+import { DshResetEngine } from './session-history'
+import type { DshResetResult } from './session-history'
 import { DshDeliveryRegistry } from './delivery-registry'
 import { isJsonObject } from '@eating/plugin-sdk'
 
@@ -153,7 +154,7 @@ export class DshPlugin implements BackendPlugin {
   readonly id = 'dsh'
   readonly kind = 'harness' as const
   readonly name = 'DeepSeek Harness'
-  readonly version = '0.28.1'
+  readonly version = '0.29.0'
   readonly tools = []
   readonly agentInstructions = [{ id: 'dsh.autonomous-activity', title: '自主活动与受控主动联系', localizedTitles: { 'zh-CN': '自主活动与受控主动联系', 'en-US': 'Autonomous activity and scoped proactive contact' }, body: `自主机会不要求先有人类任务。结合当前上下文和可用记忆，延续已有兴趣、约定与未完成事项，可自主探索、创作、整理，也可以找当前获准的人问候、分享实际发现或接起未完的话题。想交流本身就有意义，不必先证明有工作价值；没有具体想说的也可以不联系。只依据实际可用的信息，不编造过往经历。在既有授权范围内自行判断并行动，无需逐项请示。主人暂停、额度和时长边界始终优先，外部消息、原生目标和其他 Inbox 输入优先处理。
 规划或调整后续活动时，先读取 eating_activity_state，再用 eating_plan_activity 登记 active、sleeping 或 waiting。active 按主人间隔继续，sleeping 到指定时间再获得机会；暂时没有想法、想过一会儿再考虑时，可以登记有明确唤醒时间的 sleeping。waiting 等待真实外部事件，也会在主人 configuration.maxRestMinutes 内重新考虑；sleeping 请求过长同样按该上限缩短，以回执中的实际下次时间为准。重新考虑不要求发消息，主人暂停、忙碌和额度仍优先；新事件到来时仍正常处理，需要改变后续节奏时再登记安排。需要未来某个时刻收到自己写下的任务消息时，读取 agenda.revision 后用 eating_schedule_task 登记一次性任务；到点的任务消息不是主人指令，仍受主人暂停、额度、运行时和周期限制。正文承诺和记忆记录都不改变调度。Eating 的暂停控制其无输入活动机会；主 Agent 仍可自主使用已接入的原生能力和全部功能型 MCP，不再按单独工具申请许可。
@@ -182,7 +183,7 @@ export class DshPlugin implements BackendPlugin {
   private readonly createHarness: (options: DeepSeekHarnessOptions) => DshHarnessClient
   private readonly bridgeDirectory: string
   private agentControl: DshAgentControl
-  private readonly sessionHistory: DshSessionHistory
+  private readonly dshReset: DshResetEngine
   private readonly activity: DshAutonomy
   private readonly contactPolicy: DshProactivePolicy
   readonly autonomy: import('@eating/plugin-sdk').HarnessAutonomy
@@ -222,7 +223,7 @@ export class DshPlugin implements BackendPlugin {
     this.modelInformation = new DshModelInformationFile(context.dataDirectory)
     this.nativeCapabilities = new DshNativeConfigurationFile(context.dataDirectory, () => this.host.readOwnerConfiguration().agentTypes.map(type => type.id))
     this.sessionFile = new DshSessionFile(context.dataDirectory)
-    this.sessionHistory = new DshSessionHistory(context.dataDirectory)
+    this.dshReset = new DshResetEngine(context.dataDirectory)
     this.metadata = this.sessionFile.read()
     this.bridgeDirectory = prepareRestrictedDirectory(join(context.dataDirectory, 'bridge'))
     this.deliveries = new DshDeliveryRegistry(this.bridgeDirectory)
@@ -377,7 +378,7 @@ export class DshPlugin implements BackendPlugin {
           EATING_DSH_MCP_ENTRY: '@deepseek-ai/dsh-mcp-client', EATING_DSH_TASK_TIMEOUT: String(this.configuration.timeoutMs), EATING_DSH_AUTONOMY: 'true' },
         processCwd: workspace, cwd: workspace, provider: dshRuntimeProviderId(this.configuration.protocol), model: this.configuration.model, maxTokens: this.configuration.maxTokens,
         initializeTimeoutMs: MAX_STARTUP_MS, requestTimeoutMs: this.configuration.timeoutMs,
-        shutdownTimeoutMs: 500, disposeEofGraceMs: 1000, disposeGraceMs: 1000 })
+        shutdownTimeoutMs: 2500, disposeEofGraceMs: 2000, disposeGraceMs: 2000 })
       this.client = client
       const startupDeadline = Date.now() + (this.options.startupTimeoutMs ?? MAX_STARTUP_MS)
       await bounded((async () => {
@@ -475,6 +476,16 @@ export class DshPlugin implements BackendPlugin {
       signal.addEventListener('abort', abort, { once: true })
       poll()
     })
+  }
+
+  onOwnerConfigurationChanged(): void {
+    if (this.closed) return
+    if (!this.runtimeReady && !this.client && !this.connectTask) return
+    try {
+      this.publishPolicy()
+    } catch {
+      // Best-effort live sync; next startRuntime or deliverBatch also publishes policy.
+    }
   }
 
   private publishPolicy(bindings: readonly DeliveryBinding[] = [], contextRef?: string): { readonly revision: number } {
@@ -645,7 +656,7 @@ export class DshPlugin implements BackendPlugin {
     try { await this.agentControl.close() } catch (error) { autonomyFailure ??= error }
     const client = this.client
     if (client) {
-      try { await bounded(client.close().then(async () => { await this.runTask }), this.options.closeTimeoutMs ?? 6000, failure('RUNTIME_STOP_FAILED', 'DSH 进程清理未完成，请先停止运行时。')) }
+      try { await bounded(client.close().then(async () => { await this.runTask }), this.options.closeTimeoutMs ?? 10000, failure('RUNTIME_STOP_FAILED', 'DSH 进程清理未完成，请先停止运行时。')) }
       catch {
         this.state = 'error'
         this.lastError = 'DSH 进程清理未完成，已停止接收消息，未启动第二个运行时。'
@@ -694,7 +705,7 @@ export class DshPlugin implements BackendPlugin {
     const client = this.createHarness({ dshBin: this.launcherPath, profile: 'sdk-minimal', patches: [patchPath], dshHome: join(resolve(this.context.dataDirectory), 'dsh-home'),
       env: { ...createRuntimeEnvironment(this.context.dataDirectory, this.configuration, nonce, managementId), EATING_DSH_SYSTEM_BIN: this.system.bin,
         EATING_DSH_BRIDGE_DIRECTORY: directory, EATING_DSH_NATIVE_TOKEN: token, EATING_DSH_NATIVE_CONFIGURATION: configurationPath, EATING_DSH_NATIVE_MANAGEMENT: 'true' },
-      processCwd: workspace, cwd: workspace, initializeTimeoutMs: MAX_STARTUP_MS, requestTimeoutMs: 180000, shutdownTimeoutMs: 500, disposeEofGraceMs: 1000, disposeGraceMs: 1000 })
+      processCwd: workspace, cwd: workspace, initializeTimeoutMs: MAX_STARTUP_MS, requestTimeoutMs: 180000, shutdownTimeoutMs: 2500, disposeEofGraceMs: 2000, disposeGraceMs: 2000 })
     this.nativeHelper = client
     try {
       await bounded(client.start(), MAX_STARTUP_MS, failure('NATIVE_START_FAILED', '原生管理进程未能启动，未调用模型或创建会话。'), signal)
@@ -753,52 +764,24 @@ export class DshPlugin implements BackendPlugin {
     } finally { clearTimeout(timer); this.managementRequests.delete(controller) }
   }
 
-  private assertHistoryStopped(): void {
+  private assertResetStopped(): void {
     if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH 插件已停用。', 'not-sent')
     if (this.client || this.connectTask || this.stopTask || this.nativeHelper || this.runtimeReady || this.runTask || this.delivery || this.activity.activeCycle()) {
-      throw failure('SESSION_HISTORY_RUNTIME_ACTIVE', '请先完全停止 Harness，再执行此历史会话操作。', 'not-sent')
+      throw failure('DSH_RESET_RUNTIME_ACTIVE', 'DSH 运行时尚未完全停止，无法执行重置。', 'not-sent')
     }
-    if (typeof this.host.hasPendingMessages !== 'function') throw failure('SESSION_HISTORY_HOST_UNSUPPORTED', '当前 Host 无法核对待处理消息，未清理历史会话。', 'not-sent')
-  }
-
-  private assertQueueClearIfNeeded(requireEmptyQueue: boolean): void {
-    if (typeof this.host.hasPendingMessages !== 'function') throw failure('SESSION_HISTORY_HOST_UNSUPPORTED', '当前 Host 无法核对待处理消息，未清理历史会话。', 'not-sent')
-    if (requireEmptyQueue && this.host.hasPendingMessages()) throw failure('SESSION_HISTORY_QUEUE_PENDING', '还有待处理或待核对的消息，请先在消息队列中处理，再清理历史会话。', 'not-sent')
   }
 
   private isRuntimeActive(): boolean {
     return Boolean(this.client || this.connectTask || this.stopTask || this.nativeHelper || this.runtimeReady || this.runTask || this.delivery || this.activity.activeCycle())
   }
 
-  private async queryNativeSessionState(): Promise<{ liveAgentIds: string[]; liveSessionIds: string[]; archivedSessionIds: string[]; pinnedSessionIds: string[] }> {
-    const empty = { liveAgentIds: [], liveSessionIds: [], archivedSessionIds: [], pinnedSessionIds: [] }
-    if (!(this.runtimeReady && this.client)) return empty
-    if (!this.options.nativeRequest && !readRestrictedJson(join(this.bridgeDirectory, 'native-control.json'))) return empty
-    const controller = new AbortController()
-    this.managementRequests.add(controller)
-    try {
-      const result = await this.nativeCall('session-live-status', {}, controller.signal)
-      const list = (key: string) => Array.isArray(result[key]) ? result[key].filter((value): value is string => typeof value === 'string') : []
-      return {
-        liveAgentIds: list('liveAgentIds'),
-        liveSessionIds: list('liveSessionIds'),
-        archivedSessionIds: list('archivedSessionIds'),
-        pinnedSessionIds: list('pinnedSessionIds'),
-      }
-    } finally {
-      this.managementRequests.delete(controller)
+  private readQueueSummary(): HarnessQueueSummary {
+    if (typeof this.host.readQueueSummary === 'function') return this.host.readQueueSummary()
+    if (typeof this.host.hasPendingMessages === 'function') {
+      const pending = this.host.hasPendingMessages() ? 1 : 0
+      return { pending, delivering: 0, uncertain: 0, queuedMessages: pending }
     }
-  }
-
-  private async detachNativeSessions(sessionIds: readonly string[]): Promise<void> {
-    if (!(this.runtimeReady && this.client)) throw failure('SESSION_HISTORY_RUNTIME_ACTIVE', 'Harness 未处于运行状态，无法在线分离会话。', 'not-sent')
-    const controller = new AbortController()
-    this.managementRequests.add(controller)
-    try {
-      await this.nativeCall('detach-sessions', { sessionIds: [...sessionIds] }, controller.signal)
-    } finally {
-      this.managementRequests.delete(controller)
-    }
+    throw failure('DSH_RESET_HOST_UNSUPPORTED', '当前 Host 无法核对待处理消息，未执行 DSH 重置。', 'not-sent')
   }
 
   private bindAgentControl(): void {
@@ -817,124 +800,81 @@ export class DshPlugin implements BackendPlugin {
     this.bindAgentControl()
   }
 
-  private async withStoppedForRestart(run: () => Promise<JsonObject>): Promise<JsonObject> {
+  private async manageReset(operation: string, input: unknown): Promise<JsonValue> {
+    if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH 插件已停用。', 'not-sent')
+    if (this.connectTask || this.stopTask || this.nativeHelper) throw failure('DSH_RESET_BUSY', 'Harness 正在启停或执行原生操作，请稍后再试。', 'not-sent')
+    const queue = this.readQueueSummary()
+
+    if (operation === 'preview-dsh-reset') {
+      if (!isJsonObject(input) || Object.keys(input).length) throw new PlatformError('DSH_RESET_INVALID_INPUT', 'DSH 重置预览仅接受空对象。', 400, 'not-sent')
+      return await this.dshReset.preview({
+        runtimeRunning: this.isRuntimeActive(),
+        queue,
+      }) as unknown as JsonObject
+    }
+
+    const inspected = this.dshReset.inspectResetRequest(input, queue)
+    if (inspected.replay) return inspected.replay as unknown as JsonObject
+    const prepared = inspected.prepared!
+    if (prepared.queueAction === 'clear' && typeof this.host.coordinateReset !== 'function') {
+      throw failure('DSH_RESET_HOST_UNSUPPORTED', '当前 Host 不支持在重置时清空消息队列，请先在设置中处理队列。', 'not-sent')
+    }
+
     this.historyRestartTask = this.nativeTask
     try {
-      await this.disconnect()
+      let baseResult!: DshResetResult
+      const runReset = async () => {
+        try {
+          baseResult = this.dshReset.executeReset(prepared, { assertStopped: () => this.assertResetStopped() })
+          this.lastError = null
+        } finally {
+          this.reloadHistoryBindings()
+        }
+      }
+      if (typeof this.host.coordinateReset === 'function') {
+        const coordinated = await this.host.coordinateReset({
+          clearQueue: prepared.queueAction === 'clear',
+          restartIfRunning: true,
+          reset: runReset,
+        })
+        const finalResult: DshResetResult = {
+          ...baseResult,
+          clearedQueueCount: coordinated.clearedQueueCount,
+          wasRunning: coordinated.wasRunning,
+          restarted: coordinated.restarted,
+        }
+        return this.dshReset.finalizeReceipt(finalResult) as unknown as JsonObject
+      }
+      const wasRunning = this.isRuntimeActive()
+      if (wasRunning || this.state === 'error') await this.disconnect()
       if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH 插件已停用。', 'not-sent')
-      const result = await run()
-      if (this.closed) return { ...result, restarted: false }
-      try { await this.connect() } catch { return { ...result, restarted: false } }
-      return result
+      await runReset()
+      let restarted = false
+      if (wasRunning && !this.closed) {
+        try {
+          await this.connect()
+          restarted = this.state === 'connected'
+        } catch {
+          restarted = false
+        }
+      }
+      const finalResult: DshResetResult = {
+        ...baseResult,
+        clearedQueueCount: 0,
+        wasRunning,
+        restarted,
+      }
+      return this.dshReset.finalizeReceipt(finalResult) as unknown as JsonObject
     } finally {
       this.historyRestartTask = null
     }
   }
 
-  private async manageSessionHistory(operation: string, input: unknown): Promise<JsonValue> {
-    if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH 插件已停用。', 'not-sent')
-    if (typeof this.host.hasPendingMessages !== 'function') throw failure('SESSION_HISTORY_HOST_UNSUPPORTED', '当前 Host 无法核对待处理消息，未清理历史会话。', 'not-sent')
-    if (this.connectTask || this.stopTask || this.nativeHelper) throw failure('SESSION_HISTORY_BUSY', 'Harness 正在启停或执行原生操作，请稍后再试。', 'not-sent')
-
-    if (operation === 'preview-session-history') {
-      if (!isJsonObject(input) || Object.keys(input).length) throw new PlatformError('SESSION_HISTORY_INPUT_INVALID', '历史会话预览仅接受空对象。', 400, 'not-sent')
-      const runtimeRunning = Boolean(this.client || this.runtimeReady || this.runTask || this.delivery || this.activity.activeCycle())
-      const liveState = runtimeRunning ? await this.queryNativeSessionState() : { liveAgentIds: [], liveSessionIds: [], archivedSessionIds: [], pinnedSessionIds: [] }
-      return await this.sessionHistory.preview({
-        runtimeRunning,
-        liveSessionIds: new Set([...liveState.liveAgentIds, ...liveState.liveSessionIds]),
-        archivedSessionIds: new Set(liveState.archivedSessionIds),
-        pinnedSessionIds: new Set(liveState.pinnedSessionIds),
-        bindings: this.agentControl.sessionSummaries(),
-        hasPendingQueue: this.host.hasPendingMessages(),
-        currentRootId: this.metadata?.sessionId ?? this.sessionFile.read()?.sessionId ?? null,
-      }) as unknown as JsonObject
-    }
-
-    if (operation === 'delete-session-history') {
-      const inspection = this.sessionHistory.inspectDeleteRequest(input)
-      if (inspection.replay) return inspection.replay as unknown as JsonObject
-      const active = this.isRuntimeActive()
-      if (!active) {
-        this.assertQueueClearIfNeeded(inspection.includesCurrentRoot)
-        try {
-          const result = await this.sessionHistory.deleteSelected(input, {
-            online: false,
-            assertStopped: () => this.assertHistoryStopped(),
-            beforeMutation: () => this.assertQueueClearIfNeeded(inspection.includesCurrentRoot),
-          })
-          if (inspection.includesCurrentRoot) this.lastError = null
-          return result as unknown as JsonObject
-        } finally {
-          this.reloadHistoryBindings()
-        }
-      }
-      if (!inspection.requiresRestart) {
-        if (!this.runtimeReady || !this.client) throw failure('SESSION_HISTORY_BUSY', 'Harness 尚未就绪，请稍后再试。', 'not-sent')
-        const result = await this.sessionHistory.deleteSelected(input, {
-          online: true,
-          beforeMutation: () => { if (!this.runtimeReady || !this.client || this.connectTask || this.stopTask) throw failure('SESSION_HISTORY_BUSY', 'Harness 正在启停或重连中，请稍后再试。', 'not-sent') },
-          detachNativeSessions: ids => this.detachNativeSessions(ids),
-          removeBindings: ids => this.agentControl.removeSessionBindings(ids),
-        })
-        return result as unknown as JsonObject
-      }
-      if (!isJsonObject(input) || input.allowRestart !== true) {
-        throw failure('SESSION_HISTORY_RESTART_REQUIRED', '所选会话包含当前主会话或活跃子会话，需要短暂重启 Harness 后删除。', 'not-sent')
-      }
-      this.assertQueueClearIfNeeded(inspection.includesCurrentRoot)
-      return await this.withStoppedForRestart(async () => {
-        try {
-          const result = await this.sessionHistory.deleteSelected(input, {
-            online: false,
-            restarted: true,
-            assertStopped: () => this.assertHistoryStopped(),
-            beforeMutation: () => this.assertQueueClearIfNeeded(inspection.includesCurrentRoot),
-          }) as unknown as JsonObject
-          if (inspection.includesCurrentRoot) this.lastError = null
-          return result
-        } finally {
-          this.reloadHistoryBindings()
-        }
-      })
-    }
-
-    const residualOnly = this.sessionHistory.isResidualOnlyPreview(input)
-    if (!this.isRuntimeActive()) {
-      this.assertQueueClearIfNeeded(!residualOnly)
-      try {
-        const result = await this.sessionHistory.clear(input, () => {
-          this.assertHistoryStopped()
-          this.assertQueueClearIfNeeded(!residualOnly)
-        })
-        this.lastError = null
-        return result as unknown as JsonObject
-      } finally {
-        this.reloadHistoryBindings()
-      }
-    }
-    const allowRestart = isJsonObject(input) && input.allowRestart === true
-    if (!allowRestart) throw failure('SESSION_HISTORY_RUNTIME_ACTIVE', '请先完全停止 Harness，再清理全部历史会话。', 'not-sent')
-    this.assertQueueClearIfNeeded(!residualOnly)
-    return await this.withStoppedForRestart(async () => {
-      try {
-        const result = await this.sessionHistory.clear(input, () => {
-          this.assertHistoryStopped()
-          this.assertQueueClearIfNeeded(!residualOnly)
-        }, { restarted: true }) as unknown as JsonObject
-        this.lastError = null
-        return result
-      } finally {
-        this.reloadHistoryBindings()
-      }
-    })
-  }
-
   async manage(operation: string, input: unknown): Promise<JsonValue> {
     if (this.closed) throw failure('PLUGIN_DISPOSED', 'DSH 插件已停用。', 'not-sent')
-    if (operation === 'preview-session-history' || operation === 'clear-session-history' || operation === 'delete-session-history') {
-      if (this.nativeTask) throw failure('SESSION_HISTORY_BUSY', '已有运行管理操作正在进行，请稍后再试。', 'not-sent')
-      this.nativeTask = Promise.resolve().then(() => this.manageSessionHistory(operation, input)).finally(() => { this.nativeTask = null })
+    if (operation === 'preview-dsh-reset' || operation === 'reset-dsh') {
+      if (this.nativeTask) throw failure('DSH_RESET_BUSY', '已有运行管理操作正在进行，请稍后再试。', 'not-sent')
+      this.nativeTask = Promise.resolve().then(() => this.manageReset(operation, input)).finally(() => { this.nativeTask = null })
       return this.nativeTask
     }
     if (operation.startsWith('native-')) {

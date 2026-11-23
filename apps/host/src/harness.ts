@@ -294,6 +294,12 @@ export class HarnessGateway {
     return
   }
 
+  /** Wait for an already-aborted in-flight flush to settle its queue rows before queue clear or reset. */
+  async drain(): Promise<void> {
+    await this.flushing
+    this.settleDetachedFinalization()
+  }
+
   async close(): Promise<void> {
     this.closed = true
     this.registration = null

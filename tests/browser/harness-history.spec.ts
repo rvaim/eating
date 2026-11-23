@@ -9,25 +9,39 @@ import type { EatingHost } from '../../apps/host/src/app'
 import { createInstalledHost } from '../../apps/host/src/installed-host'
 import { installPluginPackage } from '../../apps/host/src/plugin-installation'
 import { defaultNativeCapabilities } from '../../plugins/harness/dsh/src/native-capabilities'
-import type { SessionHistoryPreview } from '../../plugins/harness/dsh/src/web/history-data'
+import type { DshResetPreview } from '../../plugins/harness/dsh/src/web/history-data'
 
 interface ManagementCall { readonly operation: string; readonly input: Record<string, unknown> }
 type Handler = (call: ManagementCall, route: Route) => Promise<boolean>
 const staticDirectory = fileURLToPath(new URL('../../dist/', import.meta.url))
 const json = (route: Route, value: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) })
-const previewFixture = (rootCount = 2, childCount = 4, extra?: Partial<SessionHistoryPreview>): SessionHistoryPreview => ({
-  previewId: randomUUID(),
-  expiresAt: new Date(Date.now() + 120000).toISOString(),
-  sessionCount: rootCount + childCount,
-  rootCount,
-  childCount,
-  residualStateCount: 0,
-  runtimeRunning: false,
-  hasPendingQueue: false,
-  sessions: [],
-  ...extra,
-})
+
+const previewFixture = (rootCount = 2, childCount = 4, extra?: Partial<DshResetPreview>): DshResetPreview => {
+  const pendingQueueCount = extra?.pendingQueueCount ?? 0
+  const uncertainQueueCount = extra?.uncertainQueueCount ?? 0
+  const workspaceEntryCount = extra?.workspaceEntryCount ?? 3
+  const scheduledCount = extra?.scheduledCount ?? 0
+  const residualStateCount = extra?.residualStateCount ?? (rootCount + childCount > 0 ? 4 : 0)
+  return {
+    previewId: randomUUID(),
+    expiresAt: new Date(Date.now() + 120000).toISOString(),
+    runtimeRunning: false,
+    sessionCount: rootCount + childCount,
+    rootCount,
+    childCount,
+    scheduledCount,
+    workspaceEntryCount,
+    residualStateCount,
+    hasResettableData: rootCount + childCount + workspaceEntryCount + scheduledCount + residualStateCount > 0,
+    hasPendingQueue: pendingQueueCount + uncertainQueueCount > 0,
+    pendingQueueCount,
+    uncertainQueueCount,
+    ...extra,
+  }
+}
+
 const nextFrames = (page: Page) => page.evaluate(() => new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done()))))
+
 async function workspaceFixture(route: Route, running = false) {
   const response = await route.fetch()
   const value = await response.json()
@@ -50,338 +64,256 @@ async function mockManagement(page: Page, handler?: Handler) {
     const call = route.request().postDataJSON() as ManagementCall
     calls.push(call)
     if (await handler?.(call, route)) return
-    if (call.operation === 'preview-session-history') { await json(route, current); return }
-    if (call.operation === 'clear-session-history') { await json(route, { requestId: call.input.requestId, status: 'completed', deletedCount: current.sessionCount }); return }
+    if (call.operation === 'preview-dsh-reset') { await json(route, current); return }
+    if (call.operation === 'reset-dsh') {
+      await json(route, {
+        requestId: call.input.requestId,
+        status: 'completed',
+        deletedSessions: current.sessionCount,
+        clearedWorkspaceEntries: current.workspaceEntryCount,
+        clearedScheduledCount: current.scheduledCount,
+        clearedQueueCount: call.input.queueAction === 'clear' ? current.pendingQueueCount + current.uncertainQueueCount : 0,
+        queueAction: call.input.queueAction ?? 'none',
+        wasRunning: current.runtimeRunning,
+        restarted: current.runtimeRunning,
+      })
+      return
+    }
     if (call.operation === 'get-model-capabilities') { await json(route, { schemaVersion: 1, revision: 0, imageInput: false }); return }
     if (call.operation === 'native-list') {
-      await json(route, { configuration: defaultNativeCapabilities([]), agentTypes: [{ id: 'main', title: 'main', enabled: true }], catalog: { schemaVersion: 1, features: [], tools: [], plugins: [], bundles: [], runtime: { running: false, appliedRevision: null, errorCode: null, mounted: [], agents: [] } } }); return
+      await json(route, { configuration: defaultNativeCapabilities([]), agentTypes: [{ id: 'main', title: 'main', enabled: true }], catalog: { schemaVersion: 1, features: [], tools: [], plugins: [], bundles: [], runtime: { running: false, appliedRevision: null, errorCode: null, mounted: [], agents: [] } } })
+      return
     }
-    throw new Error(`Unexpected history fixture operation: ${call.operation}`)
+    throw new Error(`Unexpected reset fixture operation: ${call.operation}`)
   })
-  return { calls, historyCalls: () => calls.filter(call => call.operation.endsWith('session-history')), current }
-}
-async function scan(page: Page) {
-  await page.getByRole('button', { name: '扫描历史会话', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '本次扫描结果', exact: true })).toBeVisible()
-}
-async function confirm(page: Page) {
-  await page.getByRole('button', { name: '清理历史会话', exact: true }).click()
-  await page.getByRole('checkbox', { name: '我已核对数量，确认永久删除上述主、子会话的对话历史。', exact: true }).check()
+  return { calls, resetCalls: () => calls.filter(call => call.operation === 'preview-dsh-reset' || call.operation === 'reset-dsh'), current }
 }
 
-test.describe('DSH 历史会话清理', () => {
+async function scan(page: Page) {
+  await page.getByRole('button', { name: '检查当前状态', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '当前 DSH 状态概览', exact: true })).toBeVisible()
+}
+
+async function openConfirm(page: Page) {
+  await page.getByRole('button', { name: '重置 DSH', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '确认重置 DSH', exact: true })).toBeVisible()
+}
+
+test.describe('DSH 重置功能', () => {
   test.setTimeout(60000)
   let home: string, host: EatingHost, url: string
   let errors: string[]
+
   test.beforeEach(async ({ page }) => {
     errors = []; page.on('pageerror', error => errors.push(error.message))
-    home = await realpath(await mkdtemp(join(tmpdir(), 'Eating_history_ui_')))
+    home = await realpath(await mkdtemp(join(tmpdir(), 'Eating_reset_ui_')))
     await installPluginPackage(home, fileURLToPath(new URL('../../plugins/harness/dsh/dist/', import.meta.url)))
     host = await createInstalledHost({ dataDirectory: home, port: 0, allowedUiOrigins: [], staticDirectory, autoConnectOnStartup: false })
     url = await host.listen()
   })
+
   test.afterEach(async () => {
     await host?.close()
     if (home) {
       const target = await realpath(home)
-      if (target !== resolve(home) || dirname(target) !== await realpath(tmpdir()) || !basename(target).startsWith('Eating_history_ui_')) throw new Error('Unsafe history UI fixture cleanup')
+      if (target !== resolve(home) || dirname(target) !== await realpath(tmpdir()) || !basename(target).startsWith('Eating_reset_ui_')) throw new Error('Unsafe reset UI fixture cleanup')
       await rm(target, { recursive: true })
     }
     expect(errors).toEqual([])
   })
-  const open = async (page: Page) => { await page.goto(url + '/#harness/dsh'); await page.getByRole('tab', { name: '历史会话', exact: true }).click() }
 
-  test('中文桌面按真实数量预览，取消无副作用，勾选确认才发送并显示成功', async ({ page }, info) => {
+  const open = async (page: Page) => {
+    await page.goto(url + '/#harness/dsh')
+    await page.getByRole('tab', { name: '重置 DSH', exact: true }).click()
+  }
+
+  test('中文桌面检查状态、取消无副作用，勾选确认后重置停机 DSH', async ({ page }, info) => {
     const fixture = await mockManagement(page)
     await page.setViewportSize({ width: 1440, height: 1000 }); await page.emulateMedia({ colorScheme: 'light' }); await open(page)
-    expect(fixture.historyCalls()).toHaveLength(0)
-    await expect(page.getByText('尚未扫描历史会话。扫描只读取会话清单与数量，确认删除前不会删除任何会话。', { exact: true })).toBeVisible()
+    expect(fixture.resetCalls()).toHaveLength(0)
+    await expect(page.getByText('尚未检查当前状态。检查仅读取当前会话、工作区与消息队列概况，确认前不会修改或删除任何内容。', { exact: true })).toBeVisible()
+
     await scan(page)
     const counts = page.locator('.dsh-history-counts')
     await expect(counts.locator('div').filter({ hasText: '主会话' }).locator('dd')).toHaveText('2')
     await expect(counts.locator('div').filter({ hasText: '子会话' }).locator('dd')).toHaveText('4')
     await expect(counts.locator('div').filter({ hasText: '全部会话' }).locator('dd')).toHaveText('6')
-    expect(fixture.historyCalls()).toEqual([{ operation: 'preview-session-history', input: {} }])
-    await page.getByRole('button', { name: '清理历史会话', exact: true }).click()
+    await expect(counts.locator('div').filter({ hasText: '工作区项目' }).locator('dd')).toHaveText('3')
+    expect(fixture.resetCalls()).toEqual([{ operation: 'preview-dsh-reset', input: {} }])
+
+    await openConfirm(page)
     const cancel = page.getByRole('button', { name: '取消', exact: true })
     await expect(cancel).toBeFocused()
-    await expect(page.getByRole('button', { name: '确认清理 6 个会话', exact: true })).toBeDisabled()
+    await expect(page.getByRole('button', { name: '确认重置 DSH', exact: true })).toBeDisabled()
     await page.locator('.dsh-history-confirm').scrollIntoViewIfNeeded()
-    await page.screenshot({ path: info.outputPath('history-confirm-zh-desktop.png'), animations: 'disabled' })
+    await page.screenshot({ path: info.outputPath('reset-confirm-zh-desktop.png'), animations: 'disabled' })
+
     await cancel.click()
-    await expect(page.getByRole('button', { name: '清理历史会话', exact: true })).toBeFocused()
-    expect(fixture.historyCalls()).toHaveLength(1)
-    await page.getByRole('button', { name: '清理历史会话', exact: true }).click(); await page.keyboard.press('Escape')
-    await expect(page.locator('.dsh-history-confirm')).toHaveCount(0); expect(fixture.historyCalls()).toHaveLength(1)
-    await confirm(page)
-    await page.getByRole('button', { name: '确认清理 6 个会话', exact: true }).click()
-    await expect(page.getByText('已清理 6 个历史会话。再次启动 Harness 后将创建新会话。', { exact: true })).toBeVisible()
-    const clears = fixture.calls.filter(call => call.operation === 'clear-session-history')
-    expect(clears).toHaveLength(1)
-    expect(clears[0]!.input).toEqual({ previewId: fixture.current.previewId, requestId: expect.stringMatching(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/), confirmed: true })
+    await expect(page.getByRole('button', { name: '重置 DSH', exact: true })).toBeFocused()
+    expect(fixture.resetCalls()).toHaveLength(1)
+
+    await openConfirm(page)
+    await page.keyboard.press('Escape')
+    await expect(page.locator('.dsh-history-confirm')).toHaveCount(0)
+    expect(fixture.resetCalls()).toHaveLength(1)
+
+    await openConfirm(page)
+    await page.getByRole('checkbox', { name: '我已核对重置范围与保留项，确认重置 DSH。', exact: true }).check()
+    await page.getByRole('button', { name: '确认重置 DSH', exact: true }).click()
+    await expect(page.getByText('DSH 已重置（已清空 6 个会话与 3 项工作区内容）。需要时可在“连接配置”中启动 Harness。', { exact: true })).toBeVisible()
+    const resets = fixture.calls.filter(call => call.operation === 'reset-dsh')
+    expect(resets).toHaveLength(1)
+    expect(resets[0]!.input).toEqual({
+      previewId: fixture.current.previewId,
+      requestId: expect.stringMatching(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/),
+      confirmed: true,
+    })
     await expect(page.locator('.dsh-history-preview')).toHaveCount(0)
   })
 
-  test('英文390暗色保留确认草稿，unknown不自动重发，重新扫描后才可发起新操作', async ({ page }, info) => {
-    let scans = 0
-    const requestIds: unknown[] = []
+  test('存在待处理消息队列时弹窗内明确询问保留或清空队列，用户选择后才允许重置', async ({ page }, info) => {
+    const queuedPreview = previewFixture(1, 2, { runtimeRunning: true, workspaceEntryCount: 4, scheduledCount: 1, pendingQueueCount: 2, uncertainQueueCount: 1 })
     const fixture = await mockManagement(page, async (call, route) => {
-      if (call.operation === 'preview-session-history') { scans++; await json(route, scans === 1 ? previewFixture() : previewFixture(1, 1)); return true }
-      if (call.operation !== 'clear-session-history') return false
-      requestIds.push(call.input.requestId)
-      if (requestIds.length === 1) await json(route, { error: { code: 'SESSION_HISTORY_CLEAR_UNKNOWN', message: 'fixture unknown', outcome: 'unknown' } }, 504)
-      else await json(route, { requestId: call.input.requestId, status: 'completed', deletedCount: 2 })
-      return true
-    })
-    await page.setViewportSize({ width: 390, height: 844 }); await page.emulateMedia({ colorScheme: 'dark' }); await open(page); await scan(page); await confirm(page)
-    const before = fixture.calls.length
-    await page.getByRole('combobox', { name: '界面语言', exact: true }).selectOption('en-US')
-    const acknowledgement = page.getByRole('checkbox', { name: 'I have reviewed the counts and confirm permanently deleting the conversation history of these main and child sessions.', exact: true })
-    await expect(acknowledgement).toBeChecked()
-    await expect(page.getByRole('button', { name: 'Confirm clearing 6 sessions', exact: true })).toBeEnabled()
-    expect(fixture.calls).toHaveLength(before)
-    const selectedTab = await page.getByRole('tab', { name: 'Session history', exact: true }).boundingBox(), rail = await page.locator('.dsh-tabs').boundingBox()
-    expect(selectedTab!.x).toBeGreaterThanOrEqual(rail!.x); expect(selectedTab!.x + selectedTab!.width).toBeLessThanOrEqual(rail!.x + rail!.width)
-    await page.locator('.dsh-history-confirm').scrollIntoViewIfNeeded()
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-    await page.screenshot({ path: info.outputPath('history-confirm-en-dark-mobile.png'), animations: 'disabled' })
-    await page.getByRole('button', { name: 'Confirm clearing 6 sessions', exact: true }).click()
-    await expect(page.getByRole('alert').filter({ hasText: 'The clearing outcome is unconfirmed' })).toBeVisible()
-    await nextFrames(page); expect(requestIds).toHaveLength(1)
-    await expect(page.locator('.dsh-history-confirm')).toHaveCount(0); await expect(page.locator('.dsh-history-preview')).toHaveCount(0)
-    await page.screenshot({ path: info.outputPath('history-unknown-en-dark-mobile.png'), animations: 'disabled' })
-    await page.getByRole('button', { name: 'Scan session history', exact: true }).click()
-    await expect(page.locator('.dsh-history-counts div').filter({ hasText: 'All sessions' }).locator('dd')).toHaveText('2')
-    expect(requestIds).toHaveLength(1)
-    await page.getByRole('button', { name: 'Clear session history', exact: true }).click()
-    await expect(acknowledgement).not.toBeChecked(); await acknowledgement.check()
-    await page.getByRole('button', { name: 'Confirm clearing 2 sessions', exact: true }).click()
-    await expect(page.getByText('Cleared 2 historical sessions. Starting Harness again will create new sessions.', { exact: true })).toBeVisible()
-    expect(requestIds).toHaveLength(2); expect(requestIds[0]).not.toBe(requestIds[1])
-  })
-
-  test('运行中可在线扫描并多选删除空闲会话（不中断 Harness），含主会话则自动重启', async ({ page }, info) => {
-    const rootId = randomUUID()
-    const idleA = randomUUID()
-    const idleB = randomUUID()
-    const scheduledId = randomUUID()
-    const sessions = [
-      { id: rootId, parentId: null, isRoot: true, isCurrentRoot: true, role: 'root' as const, label: '', agentTypeId: null, live: true, archived: false, pinned: false, scheduled: false, deletable: true, requiresRestart: true, blockReason: null, sizeBytes: 4096, createdAt: '2026-11-20T10:00:00.000Z', updatedAt: '2026-11-21T10:00:00.000Z' },
-      { id: idleA, parentId: rootId, isRoot: false, isCurrentRoot: false, role: 'conversation' as const, label: 'qq-10001-私聊-20002', agentTypeId: 'qq.private', live: false, archived: false, pinned: false, scheduled: false, deletable: true, requiresRestart: false, blockReason: null, sizeBytes: 2048, createdAt: '2026-11-20T11:00:00.000Z', updatedAt: '2026-11-21T09:00:00.000Z' },
-      { id: idleB, parentId: rootId, isRoot: false, isCurrentRoot: false, role: 'execution' as const, label: '玩手机', agentTypeId: 'android-control', live: false, archived: true, pinned: false, scheduled: false, deletable: true, requiresRestart: false, blockReason: null, sizeBytes: 1024, createdAt: '2026-11-20T12:00:00.000Z', updatedAt: '2026-11-21T08:00:00.000Z' },
-      { id: scheduledId, parentId: rootId, isRoot: false, isCurrentRoot: false, role: 'proactive' as const, label: '定时任务会话', agentTypeId: 'qq.private', live: false, archived: false, pinned: false, scheduled: true, deletable: false, requiresRestart: false, blockReason: 'scheduled' as const, sizeBytes: 512, createdAt: '2026-11-20T13:00:00.000Z', updatedAt: '2026-11-21T07:00:00.000Z' },
-    ]
-    const onlinePreview = previewFixture(1, 3, { runtimeRunning: true, sessions })
-    const fixture = await mockManagement(page, async (call, route) => {
-      if (call.operation === 'preview-session-history') { await json(route, onlinePreview); return true }
-      if (call.operation === 'delete-session-history') {
-        const ids = call.input.sessionIds as string[]
-        await json(route, { requestId: call.input.requestId, status: 'completed', deletedCount: ids.length, mode: call.input.allowRestart ? 'selected-offline' : 'selected-online', restarted: Boolean(call.input.allowRestart), clearedResidualCount: 0 })
+      if (call.operation === 'preview-dsh-reset') { await json(route, queuedPreview); return true }
+      if (call.operation === 'reset-dsh') {
+        const action = call.input.queueAction as 'keep' | 'clear'
+        await json(route, {
+          requestId: call.input.requestId,
+          status: 'completed',
+          deletedSessions: 3,
+          clearedWorkspaceEntries: 4,
+          clearedScheduledCount: 1,
+          clearedQueueCount: action === 'clear' ? 3 : 0,
+          queueAction: action,
+          wasRunning: true,
+          restarted: true,
+        })
         return true
       }
       return false
     })
-    let mutations = 0
-    await page.route('**/api/plugins/dsh/disconnect', async route => { mutations++; await json(route, {}) })
     await page.route('**/api/workspace', route => workspaceFixture(route, true))
     await page.setViewportSize({ width: 1440, height: 1000 })
     await open(page)
-    await expect(page.getByRole('button', { name: '扫描历史会话', exact: true })).toBeEnabled()
     await scan(page)
-    await expect(page.getByText('已选 2 个会话')).toHaveCount(0)
-    await expect(page.getByRole('checkbox', { name: new RegExp(`定时任务会话 \\(${scheduledId.slice(0, 8)}\\)`) })).toBeDisabled()
+    await expect(page.getByText('检测到 1 个 DSH 原生定时任务；重置 DSH 时将一并清空。', { exact: true })).toBeVisible()
+    await expect(page.getByText('当前消息队列中仍有 3 条未完成消息（待投递 2 条，结果待核对 1 条）。确认重置时可选择保留队列、清空队列或先取消处理。', { exact: true })).toBeVisible()
 
-    await page.getByRole('button', { name: '选择空闲子会话', exact: true }).click()
-    await expect(page.getByText('已选 2 个会话：将在不中断运行的情况下直接在线删除。', { exact: true })).toBeVisible()
-    await page.screenshot({ path: info.outputPath('history-online-multiselect-zh-desktop.png'), animations: 'disabled' })
-    await page.getByRole('button', { name: '删除所选 (2)', exact: true }).click()
-    await expect(page.getByText('将在线永久删除所选 2 个非活跃会话，不影响当前正在运行的 Harness 主会话。', { exact: true })).toBeVisible()
-    await page.getByRole('checkbox', { name: '我已核对所选会话，确认永久删除其对话历史。', exact: true }).check()
-    await page.getByRole('button', { name: '确认删除 2 个会话', exact: true }).click()
-    await expect(page.getByText('已在线删除 2 个会话，Harness 保持正常运行。', { exact: true })).toBeVisible()
-    const onlineDel = fixture.calls.find(c => c.operation === 'delete-session-history')
-    expect(onlineDel?.input.allowRestart).toBeUndefined()
-    expect((onlineDel?.input.sessionIds as string[]).sort()).toEqual([idleA, idleB].sort())
-    expect(mutations).toBe(0)
+    // Flow 1: Choose keep queue
+    await openConfirm(page)
+    await page.getByRole('checkbox', { name: '我已核对重置范围与保留项，确认重置 DSH。', exact: true }).check()
+    // Still disabled until user chooses keep or clear!
+    await expect(page.getByRole('button', { name: '确认重置 DSH', exact: true })).toBeDisabled()
+    await page.locator('.dsh-history-confirm').scrollIntoViewIfNeeded()
+    await page.screenshot({ path: info.outputPath('reset-queue-prompt-zh-desktop.png'), animations: 'disabled' })
+    await page.getByRole('radio', { name: /保留队列消息并重置 DSH/ }).check()
+    await expect(page.getByRole('button', { name: '确认重置 DSH', exact: true })).toBeEnabled()
+    await page.getByRole('button', { name: '确认重置 DSH', exact: true }).click()
+    await expect(page.getByText('DSH 已重置并自动重启，已创建全新会话（已清空 3 个会话与 4 项工作区内容）。 原消息队列已保留。', { exact: true })).toBeVisible()
+    expect(fixture.calls.filter(c => c.operation === 'reset-dsh')[0]!.input.queueAction).toBe('keep')
 
+    // Flow 2: Choose clear queue on mobile dark mode
     await page.setViewportSize({ width: 390, height: 844 })
     await page.emulateMedia({ colorScheme: 'dark' })
     await scan(page)
-    await page.getByRole('checkbox', { name: new RegExp(`当前主会话 \\(${rootId.slice(0, 8)}\\)`) }).check()
-    await expect(page.getByText('已选 1 个会话：包含当前主会话或活跃会话，删除时将自动短暂重启 Harness。', { exact: true })).toBeVisible()
+    await openConfirm(page)
+    await page.getByRole('radio', { name: /清空队列消息并重置 DSH/ }).check()
+    await page.getByRole('checkbox', { name: '我已核对重置范围与保留项，确认重置 DSH。', exact: true }).check()
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-    await page.screenshot({ path: info.outputPath('history-online-multiselect-zh-mobile-dark.png'), animations: 'disabled' })
-    await page.getByRole('button', { name: '删除所选 (1)', exact: true }).click()
-    await expect(page.getByText('所选 1 个会话包含当前主会话或活跃子会话。删除将自动停止并重启 Harness。', { exact: true })).toBeVisible()
-    await page.getByRole('checkbox', { name: '我已核对所选会话，确认永久删除其对话历史。', exact: true }).check()
-    await page.getByRole('button', { name: '确认删除 1 个会话', exact: true }).click()
-    await expect(page.getByText('已删除 1 个所选会话。', { exact: true })).toBeVisible()
-    const restartDel = fixture.calls.filter(c => c.operation === 'delete-session-history')[1]
-    expect(restartDel?.input.allowRestart).toBe(true)
-    expect(restartDel?.input.sessionIds).toEqual([rootId])
+    await page.screenshot({ path: info.outputPath('reset-queue-clear-zh-mobile-dark.png'), animations: 'disabled' })
+    await page.getByRole('button', { name: '确认重置 DSH', exact: true }).click()
+    await expect(page.getByText('DSH 已重置并自动重启，已创建全新会话（已清空 3 个会话与 4 项工作区内容）。 同时已清空 3 条队列消息。', { exact: true })).toBeVisible()
+    expect(fixture.calls.filter(c => c.operation === 'reset-dsh')[1]!.input.queueAction).toBe('clear')
   })
 
-  test('零会话但存在残留状态时支持清理残留恢复启动', async ({ page }) => {
-    let cleared = false
+  test('英文390暗色保留确认草稿，unknown不自动重发，重新检查后才可发起新操作', async ({ page }, info) => {
+    let scans = 0
+    const requestIds: unknown[] = []
     const fixture = await mockManagement(page, async (call, route) => {
-      if (call.operation === 'preview-session-history') {
-        await json(route, previewFixture(0, 0, { residualStateCount: cleared ? 0 : 4 }))
-        return true
-      }
-      if (call.operation === 'clear-session-history') {
-        cleared = true
-        await json(route, { requestId: call.input.requestId, status: 'completed', deletedCount: 0, mode: 'residual', restarted: false, clearedResidualCount: 4 })
-        return true
-      }
+      if (call.operation === 'preview-dsh-reset') { scans++; await json(route, scans === 1 ? previewFixture() : previewFixture(1, 1, { workspaceEntryCount: 2 })); return true }
+      if (call.operation !== 'reset-dsh') return false
+      requestIds.push(call.input.requestId)
+      if (requestIds.length === 1) await json(route, { error: { code: 'DSH_RESET_FAILED', message: 'fixture unknown', outcome: 'unknown' } }, 504)
+      else await json(route, { requestId: call.input.requestId, status: 'completed', deletedSessions: 2, clearedWorkspaceEntries: 2, clearedScheduledCount: 0, clearedQueueCount: 0, queueAction: 'none', wasRunning: false, restarted: false })
+      return true
+    })
+    await page.setViewportSize({ width: 390, height: 844 }); await page.emulateMedia({ colorScheme: 'dark' }); await open(page); await scan(page); await openConfirm(page)
+    await page.getByRole('checkbox', { name: '我已核对重置范围与保留项，确认重置 DSH。', exact: true }).check()
+
+    const before = fixture.calls.length
+    await page.getByRole('combobox', { name: '界面语言', exact: true }).selectOption('en-US')
+    const acknowledgement = page.getByRole('checkbox', { name: 'I have reviewed what will be cleared and preserved, and confirm resetting DSH.', exact: true })
+    await expect(acknowledgement).toBeChecked()
+    await expect(page.getByRole('button', { name: 'Confirm reset DSH', exact: true })).toBeEnabled()
+    expect(fixture.calls).toHaveLength(before)
+
+    const selectedTab = await page.getByRole('tab', { name: 'Reset DSH', exact: true }).boundingBox(), rail = await page.locator('.dsh-tabs').boundingBox()
+    expect(selectedTab!.x).toBeGreaterThanOrEqual(rail!.x); expect(selectedTab!.x + selectedTab!.width).toBeLessThanOrEqual(rail!.x + rail!.width)
+    await page.locator('.dsh-history-confirm').scrollIntoViewIfNeeded()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.screenshot({ path: info.outputPath('reset-confirm-en-dark-mobile.png'), animations: 'disabled' })
+
+    await page.getByRole('button', { name: 'Confirm reset DSH', exact: true }).click()
+    await expect(page.getByRole('alert').filter({ hasText: 'The reset outcome is unconfirmed' })).toBeVisible()
+    await nextFrames(page); expect(requestIds).toHaveLength(1)
+    await expect(page.locator('.dsh-history-confirm')).toHaveCount(0); await expect(page.locator('.dsh-history-preview')).toHaveCount(0)
+
+    await page.getByRole('button', { name: 'Check current status', exact: true }).click()
+    await expect(page.locator('.dsh-history-counts div').filter({ hasText: 'All sessions' }).locator('dd')).toHaveText('2')
+    expect(requestIds).toHaveLength(1)
+    await page.getByRole('button', { name: 'Reset DSH', exact: true }).click()
+    await expect(acknowledgement).not.toBeChecked(); await acknowledgement.check()
+    await page.getByRole('button', { name: 'Confirm reset DSH', exact: true }).click()
+    await expect(page.getByText('DSH has been reset (cleared 2 sessions and 2 workspace items). Start Harness from Connection whenever ready.', { exact: true })).toBeVisible()
+    expect(requestIds).toHaveLength(2); expect(requestIds[0]).not.toBe(requestIds[1])
+  })
+
+  test('三页签键盘循环完整，连接草稿跨页保留，空态不可重置，过期/隐藏/错误处理正确', async ({ page }) => {
+    let mode: 'normal' | 'empty' | 'error' = 'normal'
+    const fixture = await mockManagement(page, async (call, route) => {
+      if (call.operation !== 'preview-dsh-reset') return false
+      if (mode === 'empty') { await json(route, previewFixture(0, 0, { workspaceEntryCount: 0, residualStateCount: 0 })); return true }
+      if (mode === 'error') { await json(route, { error: { code: 'DSH_RESET_PATH_UNSAFE', message: '/private/fixture-do-not-render', outcome: 'not-sent' } }, 409); return true }
       return false
     })
-    await open(page)
-    await scan(page)
-    await expect(page.getByText('当前未发现历史会话日志，但检测到 4 项残留运行或桥接状态。清理这些残留文件后即可正常启动 Harness。', { exact: true })).toBeVisible()
-    await page.getByRole('button', { name: '清理残留状态', exact: true }).click()
-    await page.getByRole('checkbox', { name: '我确认清理这些无效残留状态文件，以便重新启动 Harness。', exact: true }).check()
-    await page.getByRole('button', { name: '确认清理残留状态', exact: true }).click()
-    await expect(page.getByText('已清理 4 项残留运行状态，可重新启动 Harness。', { exact: true })).toBeVisible()
-    expect(fixture.historyCalls().some(c => c.operation === 'clear-session-history')).toBe(true)
-  })
-
-  test('三页签键盘循环完整，语言切换不请求且连接草稿跨历史页保留', async ({ page }) => {
-    const fixture = await mockManagement(page)
     await page.goto(url + '/#harness/dsh')
     const displayName = page.getByRole('textbox', { name: '显示名称', exact: true })
     await displayName.fill('保留此连接草稿')
-    const connection = page.getByRole('tab', { name: '连接配置', exact: true }), history = page.getByRole('tab', { name: '历史会话', exact: true }), native = page.getByRole('tab', { name: '原生能力与插件', exact: true })
-    await connection.focus(); await page.keyboard.press('ArrowLeft'); await expect(history).toBeFocused(); await expect(history).toHaveAttribute('aria-selected', 'true')
+    const connection = page.getByRole('tab', { name: '连接配置', exact: true }), resetTab = page.getByRole('tab', { name: '重置 DSH', exact: true }), native = page.getByRole('tab', { name: '原生能力与插件', exact: true })
+    await connection.focus(); await page.keyboard.press('ArrowLeft'); await expect(resetTab).toBeFocused(); await expect(resetTab).toHaveAttribute('aria-selected', 'true')
     await page.keyboard.press('ArrowRight'); await expect(connection).toBeFocused()
     await page.keyboard.press('ArrowRight'); await expect(native).toBeFocused()
-    await expect(page.getByRole('button', { name: '读取当前目录', exact: true })).toBeEnabled()
-    await page.keyboard.press('ArrowRight'); await expect(history).toBeFocused()
-    await page.keyboard.press('Home'); await expect(connection).toBeFocused(); await page.keyboard.press('End'); await expect(history).toBeFocused()
-    expect(fixture.historyCalls()).toHaveLength(0)
-    await scan(page); await confirm(page)
-    const before = fixture.calls.length
-    await page.getByRole('combobox', { name: '界面语言', exact: true }).selectOption('en-US'); await nextFrames(page)
-    expect(fixture.calls).toHaveLength(before)
-    await expect(page.getByRole('checkbox', { name: 'I have reviewed the counts and confirm permanently deleting the conversation history of these main and child sessions.', exact: true })).toBeChecked()
-    await page.getByRole('tab', { name: 'Connection', exact: true }).click()
-    await expect(page.getByRole('textbox', { name: 'Display name', exact: true })).toHaveValue('保留此连接草稿')
-    await page.getByRole('tab', { name: 'Session history', exact: true }).click()
-    await expect(page.locator('.dsh-history-preview')).toHaveCount(0); await expect(page.locator('.dsh-history-confirm')).toHaveCount(0)
-    expect(fixture.historyCalls()).toHaveLength(1)
-  })
+    await page.keyboard.press('ArrowRight'); await expect(resetTab).toBeFocused()
+    await page.keyboard.press('Home'); await expect(connection).toBeFocused(); await page.keyboard.press('End'); await expect(resetTab).toBeFocused()
+    await connection.click()
+    await expect(displayName).toHaveValue('保留此连接草稿')
 
-  test('过期冲突废弃旧确认，空态不可清理，错误代码以双语恢复提示显示', async ({ page }) => {
-    let scans = 0
-    const fixture = await mockManagement(page, async (call, route) => {
-      if (call.operation === 'preview-session-history') { scans++; await json(route, scans === 1 ? previewFixture() : previewFixture(0, 0)); return true }
-      if (call.operation !== 'clear-session-history') return false
-      await json(route, { error: { code: 'SESSION_HISTORY_PREVIEW_STALE', message: 'fixture stale', outcome: 'failed' } }, 409); return true
-    })
-    await open(page); await scan(page); await confirm(page); await page.getByRole('button', { name: '确认清理 6 个会话', exact: true }).click()
-    await expect(page.getByRole('alert')).toContainText('本次扫描已过期或会话已变化。')
-    await expect(page.getByRole('alert')).toContainText('SESSION_HISTORY_PREVIEW_STALE')
-    await expect(page.locator('.dsh-history-preview')).toHaveCount(0); await expect(page.locator('.dsh-history-confirm')).toHaveCount(0)
+    await resetTab.click()
+    mode = 'empty'
     await scan(page)
-    await expect(page.getByText('未发现历史会话，无需清理。下次启动 Harness 后将创建新会话。', { exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: '清理历史会话', exact: true })).toHaveCount(0)
-    expect(fixture.historyCalls().filter(call => call.operation === 'clear-session-history')).toHaveLength(1)
+    await expect(page.getByText('未发现需要重置的 DSH 会话、工作区内容或运行残留，当前已为干净初始状态。', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '重置 DSH', exact: true })).toHaveCount(0)
+
+    mode = 'error'
+    await page.getByRole('button', { name: '检查当前状态', exact: true }).click()
+    await expect(page.getByRole('alert')).toContainText('DSH 数据路径未通过安全核验')
+    await expect(page.getByRole('alert')).toContainText('DSH_RESET_PATH_UNSAFE')
+    await expect(page.locator('.dsh-history-settings')).not.toContainText('/private/fixture-do-not-render')
+    expect(fixture.resetCalls()).toHaveLength(2)
   })
 
-  test('隐藏中止请求并清除确认，迟到扫描结果不会恢复旧预览', async ({ page }) => {
-    let releaseScan: (() => void) | undefined
-    let scanStarted = false
-    const gate = new Promise<void>(done => { releaseScan = done })
-    const fixture = await mockManagement(page, async (call, route) => {
-      if (call.operation !== 'preview-session-history') return false
-      scanStarted = true; await gate; await json(route, previewFixture(99, 99)); return true
-    })
-    await page.addInitScript(() => {
-      const nativeFetch = window.fetch
-      window.fetch = (input, options) => nativeFetch(input, typeof input === 'string' && input.endsWith('/api/plugins/dsh/manage') ? { ...options, signal: undefined } : options)
-    })
-    await open(page); await page.getByRole('button', { name: '扫描历史会话', exact: true }).click(); await expect.poll(() => scanStarted).toBe(true)
-    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')) })
-    releaseScan!(); await nextFrames(page)
-    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')) })
-    await expect(page.getByRole('button', { name: '扫描历史会话', exact: true })).toBeEnabled(); await nextFrames(page)
-    await expect(page.locator('.dsh-history-preview')).toHaveCount(0); await expect(page.locator('.dsh-history-confirm')).toHaveCount(0)
-    expect(fixture.historyCalls()).toHaveLength(1)
-  })
-
-  test('扫描到期自动撤销确认，只能显式重新扫描', async ({ page }) => {
+  test('扫描到期自动撤销确认且隐藏中止请求', async ({ page }) => {
     await page.clock.install()
     const fixture = await mockManagement(page)
-    await open(page); await scan(page); await confirm(page)
+    await open(page); await scan(page); await openConfirm(page)
     const timer = page.getByRole('timer')
     await expect(timer).toContainText('剩余有效期')
     await expect(timer).not.toHaveClass(/is-urgent/)
     await page.clock.fastForward(95000)
     await expect(timer).toHaveClass(/is-urgent/)
     await page.clock.fastForward(26000)
-    await expect(page.getByRole('alert')).toContainText('本次扫描已过期或会话已变化。')
+    await expect(page.getByRole('alert')).toContainText('本次检查已过期')
     await expect(page.locator('.dsh-history-preview')).toHaveCount(0); await expect(page.locator('.dsh-history-confirm')).toHaveCount(0)
-    expect(fixture.historyCalls()).toHaveLength(1)
-    await expect(page.getByRole('button', { name: '扫描历史会话', exact: true })).toBeEnabled()
-  })
-
-  test('管理错误显示翻译与代码，未识别错误使用通用提示且不回显私有消息', async ({ page }) => {
-    const failures = [
-      { code: 'SESSION_HISTORY_RUNTIME_ACTIVE', message: 'Harness 尚未完全停止。', english: 'Harness has not fully stopped.' },
-      { code: 'SESSION_HISTORY_QUEUE_PENDING', message: '还有待处理的消息，当前不能清理。', english: 'Messages are still pending' },
-      { code: 'SESSION_HISTORY_BUSY', message: '另一个管理操作正在进行。', english: 'Another management operation is in progress.' },
-      { code: 'SESSION_HISTORY_SCHEDULED', message: '请先在官方 DSH Web 中删除相关任务，再停止 Harness 并重新扫描。', english: 'Delete the related tasks in official DSH Web, then stop Harness and scan again.' },
-      { code: 'SESSION_HISTORY_UNSUPPORTED', message: '当前会话资料暂不支持清理。', english: 'This session data cannot currently be cleared.' },
-      { code: 'SESSION_HISTORY_PATH_UNSAFE', message: '会话资料未通过安全检查。', english: 'The session data did not pass the safety checks.' },
-      { code: 'FIXTURE_UNRECOGNIZED', message: '无法扫描历史会话。', english: 'Could not scan session history.' },
-    ]
-    let attempts = 0
-    const fixture = await mockManagement(page, async (call, route) => {
-      if (call.operation !== 'preview-session-history') return false
-      const failure = failures[attempts++]!
-      await json(route, { error: { code: failure.code, message: '/private/fixture-do-not-render', outcome: 'failed' } }, 409); return true
-    })
-    await open(page)
-    for (const failure of failures) {
-      await page.getByRole('button', { name: '扫描历史会话', exact: true }).click()
-      await expect(page.getByRole('alert')).toContainText(failure.message)
-      await expect(page.getByRole('alert')).toContainText(failure.code)
-      await expect(page.locator('.dsh-history-settings')).not.toContainText('/private/fixture-do-not-render')
-      await expect(page.locator('.dsh-history-preview')).toHaveCount(0)
-      const before = fixture.calls.length
-      await page.getByRole('combobox', { name: '界面语言', exact: true }).selectOption('en-US')
-      await expect(page.getByRole('alert')).toContainText(failure.english)
-      if (failure.code === 'SESSION_HISTORY_SCHEDULED') { await expect(page.getByRole('alert')).toContainText('including disabled tasks'); await expect(page.getByRole('alert')).not.toContainText('cancel') }
-      expect(fixture.calls).toHaveLength(before)
-      await page.getByRole('combobox', { name: 'Display language', exact: true }).selectOption('zh-CN')
-    }
-    expect(fixture.historyCalls()).toHaveLength(failures.length)
-    const before = fixture.calls.length
-    await page.getByRole('combobox', { name: '界面语言', exact: true }).selectOption('en-US')
-    await expect(page.getByRole('alert')).toContainText('Could not scan session history.')
-    expect(fixture.calls).toHaveLength(before)
-  })
-
-  test('清理途中隐藏后保持unknown，忽略迟到成功且不自动重发', async ({ page }) => {
-    let releaseClear: (() => void) | undefined
-    let clearStarted = false
-    const gate = new Promise<void>(done => { releaseClear = done })
-    const fixture = await mockManagement(page, async (call, route) => {
-      if (call.operation !== 'clear-session-history') return false
-      clearStarted = true; await gate
-      await json(route, { requestId: call.input.requestId, status: 'completed', deletedCount: 6 }); return true
-    })
-    await page.addInitScript(() => {
-      const nativeFetch = window.fetch
-      window.fetch = (input, options) => nativeFetch(input, typeof input === 'string' && input.endsWith('/api/plugins/dsh/manage') ? { ...options, signal: undefined } : options)
-    })
-    await open(page); await scan(page); await confirm(page)
-    await page.getByRole('button', { name: '确认清理 6 个会话', exact: true }).click(); await expect.poll(() => clearStarted).toBe(true)
-    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange')) })
-    releaseClear!(); await nextFrames(page)
-    await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange')) })
-    await expect(page.getByRole('alert')).toContainText('清理结果尚未确认，系统不会自动重试。')
-    await expect(page.getByText('已清理 6 个历史会话。再次启动 Harness 后将创建新会话。', { exact: true })).toHaveCount(0)
-    await expect(page.locator('.dsh-history-preview')).toHaveCount(0); await expect(page.locator('.dsh-history-confirm')).toHaveCount(0)
-    await nextFrames(page); expect(fixture.historyCalls().filter(call => call.operation === 'clear-session-history')).toHaveLength(1)
+    expect(fixture.resetCalls()).toHaveLength(1)
   })
 })

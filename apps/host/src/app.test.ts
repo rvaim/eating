@@ -249,7 +249,7 @@ describe('generic Host Harness services and management boundary', () => {
     expect(Object.isFrozen(configuration.activePersona)).toBe(true)
     expect(Reflect.set(configuration.prompts[0]!, 'body', 'override')).toBe(false)
     expect(Reflect.set(configuration.activePersona!, 'body', 'override')).toBe(false)
-    expect(Object.keys(services).sort()).toEqual(['deliveryReceiptAccepted', 'extendAgentScope', 'finishTaskActions', 'flushConversationNow', 'getCapabilityMcpConnections', 'getMcpConnection', 'hasPendingMessages', 'latestConversationSequence', 'maxEventSequence', 'memory', 'prepareProactiveScope', 'readAgentActions', 'readDeliverySettings', 'readOwnerConfiguration', 'readProactiveChannels', 'readProactiveContacts', 'readTaskActions', 'registerSink', 'revokeAgentAccess', 'updateAgentSeenInboundSequence', 'wake'])
+    expect(Object.keys(services).sort()).toEqual(['coordinateReset', 'deliveryReceiptAccepted', 'extendAgentScope', 'finishTaskActions', 'flushConversationNow', 'getCapabilityMcpConnections', 'getMcpConnection', 'hasPendingMessages', 'latestConversationSequence', 'maxEventSequence', 'memory', 'prepareProactiveScope', 'readAgentActions', 'readDeliverySettings', 'readOwnerConfiguration', 'readProactiveChannels', 'readProactiveContacts', 'readQueueSummary', 'readTaskActions', 'registerSink', 'revokeAgentAccess', 'updateAgentSeenInboundSequence', 'wake'])
     expect(Object.keys(services.memory!).sort()).toEqual(['append', 'begin', 'end', 'finish', 'flush'])
     expect(Object.isFrozen(services.memory)).toBe(true)
     const updated = context.host.authoring.updatePersona(persona.id, persona.name, '主人新设定', persona.revision)
@@ -963,5 +963,61 @@ describe('real Eating Host → QQ OneBot → SQLite → authenticated MCP', () =
     expect(blockedPlain.status).toBe(409)
     expect(blockedPlain.body).toMatchObject({ error: { code: 'PLUGIN_DISABLED' } })
     expect(plainManage).not.toHaveBeenCalled()
+  })
+
+  it('notifies enabled harness plugins via onOwnerConfigurationChanged on prompt, persona, appearance, and communication config mutations and remounts on dual-appearance switch', async () => {
+    const notifications: string[] = []
+    let state: 'disconnected' | 'connected' = 'disconnected'
+    let connects = 0
+    let disconnects = 0
+    let harnessContext!: HostPluginContext
+    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+    const dshEntry = testEntry('dsh', 'harness', value => { harnessContext = value }, {
+      getStatus: () => ({ state, accountId: null, accountName: null, lastError: null, connectedAt: null, lastEventAt: null, reconnectAttempt: 0 }),
+      connect: async () => { connects += 1; state = 'connected'; harnessContext.harness!.registerSink(testSink('dsh')) },
+      disconnect: async () => { disconnects += 1; state = 'disconnected' },
+      onOwnerConfigurationChanged: () => {
+        const cfg = harnessContext.harness!.readOwnerConfiguration()
+        notifications.push(`${cfg.activePersona?.name ?? 'none'}:${cfg.revision}:${cfg.activePersonaAppearances?.map(img => img.label).join(',') ?? ''}`)
+      },
+    })
+    const commEntry = testEntry('comm', 'communication', () => {}, { updateConfiguration: async () => ({ ok: true }) })
+    const context = await createHost('', [dshEntry, commEntry])
+    await context.api('/api/plugins/dsh/connect', { method: 'POST', body: {} })
+    expect(connects).toBe(1)
+
+    const p1 = (await context.api('/api/personas', { method: 'POST', body: { name: '人格一', body: '主体一' } })).body as { persona: { id: string; revision: number }; snapshot: { revision: number } }
+    const p2 = (await context.api('/api/personas', { method: 'POST', body: { name: '人格二', body: '主体二' } })).body as { persona: { id: string; revision: number }; snapshot: { revision: number } }
+    const act1 = await context.api(`/api/personas/${p1.persona.id}/activate`, { method: 'POST', body: { enabled: true, expectedRevision: p2.snapshot.revision } })
+    expect(act1.status).toBe(200)
+    expect(notifications.at(-1)).toMatch(/^人格一:/)
+
+    const upd1 = await context.api(`/api/personas/${p1.persona.id}`, { method: 'POST', body: { name: '人格一改', body: '新主体一', expectedRevision: p1.persona.revision } })
+    expect(upd1.status).toBe(200)
+    expect(notifications.at(-1)).toMatch(/^人格一改:/)
+
+    const promptSave = await context.api('/api/prompts/main', { method: 'POST', body: { body: '自定义主提示词', expectedRevision: 0 } })
+    expect(promptSave.status).toBe(200)
+    expect(notifications.length).toBeGreaterThanOrEqual(3)
+
+    // Both personas get appearance images -> switching between them MUST remount connected DSH!
+    const img1 = (await context.api(`/api/personas/${p1.persona.id}/appearances`, { method: 'POST', body: { label: '图一', mimeType: 'image/png', data: pngBase64 } })).body as { revision: number; images: Array<{ id: string }> }
+    expect(connects).toBe(2)
+    expect(disconnects).toBe(1)
+    await context.api(`/api/personas/${p1.persona.id}/appearances/${img1.images[0]!.id}/label`, { method: 'POST', body: { label: '图一改', expectedRevision: img1.revision } })
+    expect(notifications.at(-1)).toContain('图一改')
+
+    await context.api(`/api/personas/${p2.persona.id}/appearances`, { method: 'POST', body: { label: '图二', mimeType: 'image/png', data: pngBase64 } })
+    const latestSnap = (await context.api('/api/authoring')).body as { revision: number }
+    const act2 = await context.api(`/api/personas/${p2.persona.id}/activate`, { method: 'POST', body: { enabled: true, expectedRevision: latestSnap.revision } })
+    expect(act2.status).toBe(200)
+    expect(disconnects).toBe(2)
+    expect(connects).toBe(3)
+    expect(notifications.at(-1)).toContain('人格二')
+    expect(notifications.at(-1)).toContain('图二')
+
+    const beforeComm = notifications.length
+    await context.api('/api/plugins/comm/configuration', { method: 'POST', body: {} })
+    expect(notifications.length).toBe(beforeComm + 1)
   })
 })

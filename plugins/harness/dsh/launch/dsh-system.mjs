@@ -21,14 +21,18 @@ const child = spawn(javascript ? process.execPath : launcher, javascript ? [laun
   shell: windowsScript,
 })
 
+let exited = false
 child.on('error', error => {
+  exited = true
   console.error(`Eating: 无法启动系统 DSH：${error.message}`)
   process.exit(78)
 })
 child.on('exit', (code, signal) => {
+  exited = true
   process.exit(code ?? (signal ? 1 : 0))
 })
 
 for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
-  process.on(signal, () => { try { child.kill(signal) } catch { /* 子进程可能已退出 */ } })
+  process.on(signal, () => { try { if (!exited) child.kill(signal) } catch { /* 子进程可能已退出 */ } })
 }
+process.on('exit', () => { try { if (!exited) child.kill('SIGKILL') } catch { /* 子进程可能已退出 */ } })

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { isJsonObject, PlatformError } from '@eating/plugin-sdk'
-import type { AgentActionReceipt, AgentInvocationScope, AgentMcpConnection, BackendPlugin, JsonObject, JsonValue, RegisteredAgentInstructions, RegisteredAgentType } from '@eating/plugin-sdk'
+import type { AgentActionReceipt, AgentInvocationScope, AgentMcpConnection, BackendPlugin, ConversationSequenceScope, JsonObject, JsonValue, RegisteredAgentInstructions, RegisteredAgentType } from '@eating/plugin-sdk'
 import { createPluginMcpHandler } from './mcp'
 import { secret } from './security'
 import { TaskActionJournal } from './task-actions'
@@ -63,7 +63,17 @@ interface Actor {
   scope: AgentInvocationScope
   returnedMessageIds: readonly string[]
   receipts: Map<string, AgentActionReceipt>
+  seenInboundSequence: number
   tokenHash?: string
+}
+interface InboundSequenceObserver {
+  readonly latestSequence: (scope: ConversationSequenceScope) => number
+  readonly subscribe: (scope: ConversationSequenceScope, listener: () => void) => () => void
+  readonly isAppendEnabled?: () => boolean
+}
+function clonePersistentScope(scope: AgentInvocationScope): AgentInvocationScope {
+  const { signal: _signal, hasNewerInboundMessage: _hasNewer, onNewerInboundMessage: _onNewer, ...persistent } = scope
+  return structuredClone(persistent)
 }
 interface Lease {
   readonly taskId?: string
@@ -81,7 +91,25 @@ export class AgentAccessRegistry {
   private readonly leases = new Map<string, Lease>()
   private readonly closing = new Set<Promise<void>>()
   private closed = false
-  constructor(private readonly plugin: (id: string) => BackendPlugin, private readonly enabled: (id: string) => boolean, private readonly taskActions: TaskActionJournal) {}
+  constructor(
+    private readonly plugin: (id: string) => BackendPlugin,
+    private readonly enabled: (id: string) => boolean,
+    private readonly taskActions: TaskActionJournal,
+    private readonly inbound?: InboundSequenceObserver,
+  ) {}
+
+  private hasNewerInbound(actor: Actor): boolean {
+    if (!this.inbound) return false
+    if (this.inbound.isAppendEnabled && !this.inbound.isAppendEnabled()) return false
+    return this.inbound.latestSequence(actor.baseScope) > actor.seenInboundSequence
+  }
+
+  private subscribeNewerInbound(actor: Actor, listener: () => void): () => void {
+    if (!this.inbound) return () => {}
+    return this.inbound.subscribe(actor.baseScope, () => {
+      if (this.hasNewerInbound(actor)) listener()
+    })
+  }
 
   private actorKey(harnessId: string, agentId: string) { return `${harnessId}\0${agentId}` }
   private requireLive(lease: Lease): Actor {
@@ -133,7 +161,14 @@ export class AgentAccessRegistry {
     if (!tool.readOnly && lease.taskId) this.taskActions.begin(actor.harnessId, actor.scope.agentId, lease.taskId, lease.plugin.id,
       { pluginId: lease.plugin.id, scopeKey: `${actor.scope.instanceId}:${actor.scope.accountId}`, requestId: scopedRequestId }, { requestId, tool: name, outcome: 'unknown' })
     try {
-      const result = await lease.plugin.invokeScoped!(name, args, scopedRequestId, { ...actor.scope, signal: lease.abort.signal })
+      const invocationScope: AgentInvocationScope = { ...actor.scope, signal: lease.abort.signal }
+      if (!tool.readOnly) {
+        Object.defineProperties(invocationScope, {
+          hasNewerInboundMessage: { value: () => this.hasNewerInbound(actor), enumerable: false, configurable: true },
+          onNewerInboundMessage: { value: (listener: () => void) => this.subscribeNewerInbound(actor, listener), enumerable: false, configurable: true },
+        })
+      }
+      const result = await lease.plugin.invokeScoped!(name, args, scopedRequestId, invocationScope)
       if (!tool.readOnly) {
         const metadata = this.responseMetadata(result)
         const receipt: AgentActionReceipt = { requestId, tool: name, outcome: 'succeeded', ...(metadata !== undefined ? { result: metadata } : {}) }
@@ -174,10 +209,12 @@ export class AgentAccessRegistry {
     const previous = this.actors.get(key)
     if (previous && ['pluginId', 'instanceId', 'accountId', 'conversationId', 'agentTypeId', 'kind', 'targetId'].some(field => previous.scope[field as keyof AgentInvocationScope] !== scope[field as keyof AgentInvocationScope])) forbidden()
     if (!previous && this.actors.size >= maximumAgents) throw new PlatformError('TOO_MANY_SCOPED_AGENTS', '当前代理数量达到上限，请先停止不再使用的代理。', 429, 'not-sent')
-    const baseScope = { ...structuredClone(scope), ...(policy?.readOnly === true ? { readOnly: true } : {}),
-      messageIds: [...new Set([...(previous && !policy ? boundedReferences(previous.scope.messageIds) : []), ...scope.messageIds])],
-      resourceIds: [...new Set([...(previous && !policy ? boundedReferences(previous.scope.resourceIds) : []), ...scope.resourceIds])] }
-    const actor: Actor = { harnessId, baseScope, scope: baseScope, returnedMessageIds: [], receipts: new Map() }
+    const clonedScope = clonePersistentScope(scope)
+    const baseScope = { ...clonedScope, ...(policy?.readOnly === true ? { readOnly: true } : {}),
+      messageIds: [...new Set([...(previous && !policy ? boundedReferences(previous.scope.messageIds) : []), ...clonedScope.messageIds])],
+      resourceIds: [...new Set([...(previous && !policy ? boundedReferences(previous.scope.resourceIds) : []), ...clonedScope.resourceIds])] }
+    const seenInboundSequence = this.inbound?.latestSequence(baseScope) ?? 0
+    const actor: Actor = { harnessId, baseScope, scope: baseScope, returnedMessageIds: [], receipts: new Map(), seenInboundSequence }
     const currentTools = this.typeTools(actor, plugin)
     if (policy && policy.toolNames.some(name => !currentTools.some(tool => tool.name === name))) forbidden()
     const scopedPolicy = policy ? { toolNames: [...policy.toolNames], active: policy.active, ...(policy.readOnly !== undefined ? { readOnly: policy.readOnly } : {}) } : undefined
@@ -235,9 +272,15 @@ export class AgentAccessRegistry {
       || !validReferences(scope.messageIds, scope.resourceIds)
       || actor.baseScope.messageIds.some(id => !scope.messageIds.includes(id)) || actor.baseScope.resourceIds.some(id => !scope.resourceIds.includes(id))) forbidden()
     if (validateOnly) return
-    const baseScope = { ...structuredClone(scope) }
+    const baseScope = clonePersistentScope(scope)
     actor.baseScope = baseScope
     actor.scope = { ...baseScope, messageIds: [...new Set([...baseScope.messageIds, ...actor.returnedMessageIds])] }
+  }
+  updateSeenInboundSequence(harnessId: string, agentId: string, seenSequence: number, reset = false): void {
+    if (!Number.isSafeInteger(seenSequence) || seenSequence < 0) return
+    const actor = this.actors.get(this.actorKey(harnessId, agentId))
+    if (!actor || !reset && seenSequence <= actor.seenInboundSequence) return
+    actor.seenInboundSequence = seenSequence
   }
   revokeAgent(harnessId: string, agentId: string) {
     const actor = this.actors.get(this.actorKey(harnessId, agentId))

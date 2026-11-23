@@ -100,6 +100,7 @@ export class DshAgentControl {
   private nonce = ''
   private readonly activeContext = new Map<string, string>()
   private readonly contextScopes = new Map<string, AgentInvocationScope>()
+  private readonly contextInboundSequences = new Map<string, number>()
   private readonly batches = new Map<string, HarnessDeliveryBatch>()
   private readonly taskScopes = new Map<string, AgentInvocationScope>()
   private readonly taskModes = new Map<string, 'reply' | 'verify'>()
@@ -267,12 +268,14 @@ export class DshAgentControl {
     if (scope.agentId !== agentId || conversationIdentity(rootId!, scope) !== conversationIdentity(rootId!, identity)) fail('AGENT_SCOPE_INVALID', '主动联系范围与真实账号、类型或目标不匹配。')
     const readOnly = body.mode === 'verify'
     const invocationScope: AgentInvocationScope = readOnly ? { ...scope, readOnly: true } : scope
+    const inboundSequence = this.host.latestConversationSequence?.(invocationScope) ?? 0
     const contextRef = createHash('sha256').update('eating-contact\0' + body.cycleId).digest('hex')
     const deadline = Date.now() + Math.max(1000, Math.min(AGENT_TASK_LIFETIME_MS, this.contactTimeoutMs()))
     const task: ProactiveTask = { taskId: body.taskId, cycleId: body.cycleId, contextRef, nonce: this.nonce, state: 'pending' }
     let mcp, capabilities
     try {
       mcp = this.host.getMcpConnection(target.pluginId, invocationScope, { toolNames: target.toolNames, ...(readOnly ? { readOnly: true } : {}), active: () => task.state === 'pending' && task.nonce === this.nonce && !this.stopping && this.runtimeReady() && (!turn.autonomyCycleId || activity.validCycle(this.nonce, turn.autonomyCycleId)) && Date.now() < deadline && this.contactPolicySummary?.().revision === policyRevision && activity.contactTargetStillAllowed(target) }, task.taskId)
+      this.host.updateAgentSeenInboundSequence?.(agentId, inboundSequence, true)
       capabilities = this.host.getCapabilityMcpConnections({ agentId, agentTypeId: type.id, source: invocationScope, ...(readOnly ? { readOnly: true } : {}) }, task.taskId)
       signal.throwIfAborted()
       const retained = [...(previous?.taskRefs ?? [])]
@@ -301,7 +304,7 @@ export class DshAgentControl {
       timer.unref(); this.contactTimers.set(agentId, timer)
     } catch (error) { this.host.revokeAgentAccess(agentId); this.host.finishTaskActions(agentId, task.taskId); throw error }
     const preview = composeAgentPrompt(owner, type.id, { 当前时间: new Date().toISOString(), 人格名称: owner.activePersona?.name ?? '', 平台: scope.pluginId, 机器人账号: scope.accountId, 会话编号: scope.conversationId, 会话类型: scope.kind, 目标编号: scope.targetId })
-    return { agentId, agentTypeId: type.id, mode: body.mode, autonomyCycleId: turn.autonomyCycleId, systemPrompt: preview.systemPrompt, revision: preview.revision, contextRef, label: target.label, scope: { pluginId: scope.pluginId, accountId: scope.accountId, targetId: scope.targetId, conversationId: scope.conversationId, kind: scope.kind }, tools: [...mcp.toolNames], mcp: { url: mcp.url, headers: { ...mcp.headers } }, capabilities: capabilities.map(connection => ({ ...connection, tools: [...connection.tools], headers: { ...connection.headers } })) }
+    return { agentId, agentTypeId: type.id, mode: body.mode, inboundSequence, autonomyCycleId: turn.autonomyCycleId, systemPrompt: preview.systemPrompt, revision: preview.revision, contextRef, label: target.label, scope: { pluginId: scope.pluginId, accountId: scope.accountId, targetId: scope.targetId, conversationId: scope.conversationId, kind: scope.kind }, tools: [...mcp.toolNames], mcp: { url: mcp.url, headers: { ...mcp.headers } }, capabilities: capabilities.map(connection => ({ ...connection, tools: [...connection.tools], headers: { ...connection.headers } })) }
   }
 
   list(): readonly AgentBinding[] { return this.bindings }
@@ -394,6 +397,7 @@ export class DshAgentControl {
       if (sessionIds.has(agentId)) {
         this.activeContext.delete(contextRef)
         this.contextScopes.delete(contextRef)
+        this.contextInboundSequences.delete(contextRef)
       }
     }
     for (const taskId of removedTaskIds) {
@@ -448,7 +452,7 @@ export class DshAgentControl {
   private bindGroups(batch: HarnessDeliveryBatch, parentId: string, partial: boolean): readonly DeliveryBinding[] {
     const groups = groupHarnessEvents(batch.events)
     if (!groups.length || groups.length === 1 && batch.conversationId !== groups[0]![0]!.conversationId || groups.length > 1 && batch.conversationId !== null) fail('AGENT_SCOPE_INVALID', '入站批次会话标识与完整消息分组不匹配。')
-    const bindings = [...this.bindings], scopes = new Map<string, AgentInvocationScope>()
+    const bindings = [...this.bindings], scopes = new Map<string, AgentInvocationScope>(), inboundSequences = new Map<string, number>()
     const results = groups.map((events): DeliveryBinding => {
       const first = events[0]!
       const owner = this.host.readOwnerConfiguration()
@@ -473,6 +477,7 @@ export class DshAgentControl {
       if (previous) bindings[bindings.indexOf(previous)] = previous.task?.state === 'pending' ? { ...binding, scope: previous.scope } : binding
       else bindings.push(binding)
       scopes.set(contextRef, scope)
+      inboundSequences.set(contextRef, this.host.maxEventSequence?.(events.map(event => event.eventId)) ?? 0)
       return { contextRef, binding, scope: deliveryScope }
       } catch (error) {
         if (!partial || !(error instanceof PlatformError) || !['AGENT_TYPE_UNAVAILABLE', 'AGENT_SCOPE_INVALID', 'AGENT_CAPACITY_REACHED'].includes(error.code)) throw error
@@ -480,7 +485,11 @@ export class DshAgentControl {
       }
     })
     this.save(bindings)
-    for (const [contextRef, scope] of scopes) { this.activeContext.set(contextRef, scope.agentId); this.contextScopes.set(contextRef, scope) }
+    for (const [contextRef, scope] of scopes) {
+      this.activeContext.set(contextRef, scope.agentId)
+      this.contextScopes.set(contextRef, scope)
+      this.contextInboundSequences.set(contextRef, inboundSequences.get(contextRef) ?? 0)
+    }
     this.memoryBatch = structuredClone(batch)
     this.batches.set(batch.batchId, structuredClone(batch))
     return results
@@ -529,7 +538,9 @@ export class DshAgentControl {
           const scope: AgentInvocationScope = { ...previous, conversationId: first.conversationId,
             messageIds: [...new Set([...(history?.messageIds ?? []), ...group.flatMap(event => event.messageId ? [event.messageId] : [])])],
             resourceIds: [...new Set([...(history?.resourceIds ?? []), ...group.flatMap(event => event.resourceIds ?? [])])] }
-          this.activeContext.set(entry.contextRef, scope.agentId); this.contextScopes.set(entry.contextRef, scope)
+          this.activeContext.set(entry.contextRef, scope.agentId)
+          this.contextScopes.set(entry.contextRef, scope)
+          this.contextInboundSequences.set(entry.contextRef, this.host.maxEventSequence?.(group.map(event => event.eventId)) ?? 0)
         }
         this.memoryBatch = structuredClone(batch)
         this.batches.set(batch.batchId, structuredClone(batch))
@@ -646,7 +657,25 @@ export class DshAgentControl {
           this.host.extendAgentScope(scope)
           if (binding) this.replace({ ...binding, scope })
           this.taskScopes.set(task.taskId, scope)
-          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify({ accepted: true, historyScope: historyScope(scope) })); return
+          const inboundSequence = this.contextInboundSequences.get(body.contextRef) ?? this.host.latestConversationSequence?.(scope) ?? 0
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify({ accepted: true, historyScope: historyScope(scope), inboundSequence })); return
+        }
+        if (request.url === '/ack-inbound' || request.url === '/check-inbound') {
+          if (!exactRecord(body, ['agentId', 'taskId', 'seenSequence']) || typeof body.taskId !== 'string' || !DIGEST.test(body.taskId) || typeof body.seenSequence !== 'number' || !Number.isSafeInteger(body.seenSequence) || body.seenSequence < 0) fail('CONTROL_REQUEST_INVALID', '入站消息进度参数无效。')
+          const ordinary = this.bindings.find(entry => entry.scope.agentId === body.agentId && entry.task?.taskId === body.taskId)
+          const proactiveEntry = this.proactiveBindings.find(entry => entry.agentId === body.agentId && entry.task.taskId === body.taskId)
+          const pendingTask = ordinary?.task ?? proactiveEntry?.task
+          const source = this.taskScopes.get(body.taskId)
+          if (!pendingTask || pendingTask.state !== 'pending' || pendingTask.nonce !== this.nonce || !source || source.agentId !== body.agentId) fail('AGENT_TASK_UNAVAILABLE', '当前子代理任务已结束或无效。')
+          if (request.url === '/ack-inbound') {
+            this.host.updateAgentSeenInboundSequence?.(String(body.agentId), body.seenSequence)
+            response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify({ ok: true })); return
+          }
+          const latestSequence = this.host.latestConversationSequence?.(source) ?? 0
+          const appendEnabled = this.host.readDeliverySettings().appendWhileBusy
+          const hasNewerInbound = appendEnabled && latestSequence > body.seenSequence
+          if (hasNewerInbound) this.host.flushConversationNow?.(source)
+          response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify({ hasNewerInbound, latestSequence })); return
         }
         if (request.url === '/retire-deliveries') {
           if (body.agentId !== this.rootId() || !exactRecord(body, ['agentId', 'batchIds']) || !Array.isArray(body.batchIds) || body.batchIds.length > 32 || body.batchIds.some(id => typeof id !== 'string' || !DIGEST.test(id))) fail('AGENT_SCOPE_INVALID', '批次清理请求无效。')
@@ -654,7 +683,7 @@ export class DshAgentControl {
           const refs = [...this.contextScopes.keys()].filter(ref => ids.some(id => { const batch = this.batches.get(id); return batch && groupHarnessEvents(batch.events).some((events, _, groups) => conversationContextRef(id, events[0]!, groups.length === 1) === ref) }))
           if (this.bindings.some(binding => binding.task?.state === 'pending' && refs.includes(binding.task.contextRef))) fail('AGENT_TASK_PENDING', '批次仍有运行中的任务，未清理。')
           this.retireDeliveries(ids)
-          for (const ref of refs) { this.activeContext.delete(ref); this.contextScopes.delete(ref) }
+          for (const ref of refs) { this.activeContext.delete(ref); this.contextScopes.delete(ref); this.contextInboundSequences.delete(ref) }
           for (const id of ids) this.batches.delete(id)
           response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify({ retired: ids })); return
         }
@@ -783,16 +812,18 @@ export class DshAgentControl {
           const task: AgentTaskReference = { contextRef: String(body.contextRef), nonce: this.nonce, state: 'pending', taskId: body.taskId }
           const readOnly = body.mode === 'verify'
           const invocationScope: AgentInvocationScope = readOnly ? { ...binding.scope, readOnly: true } : binding.scope
+          const inboundSequence = this.contextInboundSequences.get(String(body.contextRef)) ?? this.host.latestConversationSequence?.(invocationScope) ?? 0
           let mcp
           let capabilities
           try {
             mcp = this.host.getMcpConnection(binding.scope.pluginId, invocationScope, undefined, task.taskId)
+            this.host.updateAgentSeenInboundSequence?.(binding.scope.agentId, inboundSequence, true)
             capabilities = this.host.getCapabilityMcpConnections({ agentId: binding.scope.agentId, agentTypeId: type.id, source: invocationScope, ...(readOnly ? { readOnly: true } : {}) }, task.taskId)
             this.replace({ ...binding, configurationRevision: preview.revision, task, taskRefs: [...retained, task] })
             this.taskScopes.set(task.taskId, invocationScope)
             this.taskModes.set(task.taskId, body.mode as 'reply' | 'verify')
           } catch (error) { this.host.revokeAgentAccess(binding.scope.agentId); this.host.finishTaskActions(binding.scope.agentId, task.taskId); throw error }
-          result = { agentId: binding.scope.agentId, agentTypeId: type.id, mode: body.mode, historyScope: historyScope(invocationScope), systemPrompt: preview.systemPrompt, revision: preview.revision, mcp: { url: mcp.url, headers: { ...mcp.headers } }, tools: [...mcp.toolNames], capabilities: capabilities.map(connection => ({ ...connection, headers: { ...connection.headers }, tools: [...connection.tools] })) }
+          result = { agentId: binding.scope.agentId, agentTypeId: type.id, mode: body.mode, inboundSequence, historyScope: historyScope(invocationScope), systemPrompt: preview.systemPrompt, revision: preview.revision, mcp: { url: mcp.url, headers: { ...mcp.headers } }, tools: [...mcp.toolNames], capabilities: capabilities.map(connection => ({ ...connection, headers: { ...connection.headers }, tools: [...connection.tools] })) }
         } else if (request.url === '/actions') {
           if (!exactRecord(body, ['agentId', 'contextRef', 'taskId']) || binding.task?.nonce !== this.nonce || binding.task.contextRef !== body.contextRef || binding.task.taskId !== body.taskId || binding.task.state !== 'pending') fail('CONTROL_REQUEST_INVALID', '当前任务回执引用无效。')
           const receipts = this.host.readTaskActions(binding.scope.agentId, String(body.taskId))
@@ -848,7 +879,7 @@ export class DshAgentControl {
     this.capabilityAgents.clear()
     for (const controller of this.active) controller.abort()
     for (const binding of this.bindings) this.host.revokeAgentAccess(binding.scope.agentId)
-    const server = this.server; this.server = null; this.activeContext.clear(); this.contextScopes.clear(); this.batches.clear(); this.taskScopes.clear(); this.taskModes.clear(); this.autonomousTasks.clear(); this.url = ''; this.secret = ''
+    const server = this.server; this.server = null; this.activeContext.clear(); this.contextScopes.clear(); this.contextInboundSequences.clear(); this.batches.clear(); this.taskScopes.clear(); this.taskModes.clear(); this.autonomousTasks.clear(); this.url = ''; this.secret = ''
     if (server) { const closed = new Promise<void>((accept, reject) => server.close(error => error ? reject(error) : accept())); server.closeAllConnections(); await closed }
     if (persistenceError) throw persistenceError
   }

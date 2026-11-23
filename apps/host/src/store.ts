@@ -4,7 +4,7 @@ import { dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
 import { DEFAULT_DELIVERY_SETTINGS, PlatformError, isJsonValue, isJsonObject, validateDeliverySettings } from '@eating/plugin-sdk'
-import type { DeliveryQueueStats, DeliverySettings, DeliverySettingsSnapshot, HarnessEvent, JsonObject, JsonValue, StoredMessage } from '@eating/plugin-sdk'
+import type { ConversationSequenceScope, DeliveryQueueStats, DeliverySettings, DeliverySettingsSnapshot, HarnessEvent, JsonObject, JsonValue, StoredMessage } from '@eating/plugin-sdk'
 
 type QueueStatus = 'pending' | 'delivering' | 'uncertain'
 interface QueueRow {
@@ -41,6 +41,20 @@ const stateKey = 'host:delivery-queue-state'
 const schemaVersion = 1
 const dedupLifetimeMs = 24 * 60 * 60 * 1000
 const maxDedupIdentifiers = 10000
+const maxTrackedConversations = 4096
+
+export function conversationSequenceKey(scope: ConversationSequenceScope | {
+  readonly pluginId: string
+  readonly instanceId: string
+  readonly accountId: string
+  readonly conversationId: string
+  readonly kind?: 'private' | 'group'
+  readonly source?: { readonly kind: 'private' | 'group' }
+  readonly targetId?: string
+}): string {
+  const kind = 'kind' in scope && scope.kind !== undefined ? scope.kind : scope.source?.kind ?? null
+  return JSON.stringify([scope.pluginId, scope.instanceId, scope.accountId, scope.conversationId, kind, scope.targetId ?? null])
+}
 
 /** Validate before any writable connection, PRAGMA, recovery or configuration update. */
 function requireCurrentSchema(db: DatabaseSync): void {
@@ -105,6 +119,9 @@ export class HostStore {
   private memoryQueue = new Map<string, QueueRow>()
   // A failed SQLite write still yields an observable rejection and bounded, content-free local deduplication.
   private readonly failedWriteDedup = new Map<string, number>()
+  private readonly latestInboundByConversation = new Map<string, number>()
+  private readonly eventSequences = new Map<string, number>()
+  private readonly inboundListeners = new Map<string, Set<() => void>>()
   private deliverySettings: DeliverySettings = { ...DEFAULT_DELIVERY_SETTINGS }
   private deliveryRevision = 0
   private queueState: QueueState = { nextSequence: 1, accepted: 0, rejected: 0, discarded: 0, notForwarded: 0, lastQueueError: null }
@@ -180,7 +197,65 @@ export class HostStore {
         // An interrupted outbound action is never automatically resent.
         this.db.prepare("UPDATE actions SET state = 'unknown', error_code = 'PROCESS_INTERRUPTED', error_message = '上次进程在动作结果确认前退出；请查询真实状态，不要直接重发。' WHERE state = 'running'").run()
       })
+      for (const row of this.currentRows()) {
+        if (row.status === 'uncertain') continue
+        try {
+          this.trackInboundSequence(readEnvelope(row.harness_json), row.sequence, false)
+        } catch { /* Corrupted rows remain surfaced by queue reads without breaking construction. */ }
+      }
     } catch (error) { this.db.close(); throw error }
+  }
+
+  private trackInboundSequence(event: HarnessEvent, sequence: number, notify: boolean): void {
+    const key = conversationSequenceKey(event)
+    const previous = this.latestInboundByConversation.get(key) ?? 0
+    if (sequence > previous) {
+      this.latestInboundByConversation.delete(key)
+      this.latestInboundByConversation.set(key, sequence)
+      while (this.latestInboundByConversation.size > maxTrackedConversations) {
+        this.latestInboundByConversation.delete(this.latestInboundByConversation.keys().next().value!)
+      }
+    }
+    this.eventSequences.delete(event.eventId)
+    this.eventSequences.set(event.eventId, sequence)
+    while (this.eventSequences.size > maxDedupIdentifiers) {
+      this.eventSequences.delete(this.eventSequences.keys().next().value!)
+    }
+    if (notify) {
+      const listeners = this.inboundListeners.get(key)
+      if (listeners) for (const listener of [...listeners]) {
+        try { listener() } catch { /* Listener isolation preserves event ingestion. */ }
+      }
+    }
+  }
+
+  latestConversationSequence(scope: ConversationSequenceScope): number {
+    return this.latestInboundByConversation.get(conversationSequenceKey(scope)) ?? 0
+  }
+
+  maxEventSequence(eventIds: readonly string[]): number {
+    let maximum = 0
+    for (const id of eventIds) {
+      const sequence = this.eventSequences.get(id)
+      if (sequence !== undefined && sequence > maximum) maximum = sequence
+    }
+    return maximum
+  }
+
+  subscribeConversationInbound(scope: ConversationSequenceScope, listener: () => void): () => void {
+    const key = conversationSequenceKey(scope)
+    let listeners = this.inboundListeners.get(key)
+    if (!listeners) {
+      listeners = new Set()
+      this.inboundListeners.set(key, listeners)
+    }
+    listeners.add(listener)
+    return () => {
+      const current = this.inboundListeners.get(key)
+      if (!current) return
+      current.delete(listener)
+      if (!current.size) this.inboundListeners.delete(key)
+    }
   }
 
   private transaction<T>(operation: () => T): T {
@@ -327,6 +402,7 @@ export class HostStore {
       })
       this.queueState = state
       this.memoryQueue = nextMemory
+      if (admission === 'queued' && harness && row) this.trackInboundSequence({ ...harness, eventId }, row.sequence, true)
       if (removals.length) this.reclaimPayloadSpace()
       return { inserted: true, eventId, queued: admission === 'queued', admission }
     } catch {
@@ -525,5 +601,12 @@ export class HostStore {
     return { state: String(row.state), ...(row.result_json !== null ? { result: JSON.parse(String(row.result_json)) as JsonValue } : {}), ...(row.error_code !== null ? { code: String(row.error_code) } : {}) }
   }
 
-  close(): void { this.db.close(); this.memoryQueue.clear(); this.failedWriteDedup.clear() }
+  close(): void {
+    this.db.close()
+    this.memoryQueue.clear()
+    this.failedWriteDedup.clear()
+    this.latestInboundByConversation.clear()
+    this.eventSequences.clear()
+    this.inboundListeners.clear()
+  }
 }

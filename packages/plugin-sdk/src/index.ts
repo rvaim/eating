@@ -94,7 +94,7 @@ export interface DeliverySettings {
 
 export const DEFAULT_DELIVERY_SETTINGS: DeliverySettings = Object.freeze({
   storageMode: 'persistent', maxQueuedMessages: 1000, maxQueuedBytes: 10 * 1024 * 1024,
-  overflowPolicy: 'reject-new', aggregationWindowMs: 10000, appendWhileBusy: true, deliveryTimeoutMs: 15000,
+  overflowPolicy: 'reject-new', aggregationWindowMs: 0, appendWhileBusy: true, deliveryTimeoutMs: 15000,
   retryIntervalMs: 10000, maxDeliveryAttempts: 5,
 })
 
@@ -172,6 +172,11 @@ export interface HarnessOwnerConfiguration {
   readonly bindings: Readonly<Record<string, string>>
 }
 
+export type ConversationSequenceScope = Pick<
+  import('./agents.js').AgentInvocationScope,
+  'pluginId' | 'instanceId' | 'accountId' | 'conversationId' | 'kind' | 'targetId'
+>
+
 export interface HarnessHostServices {
   readonly memory?: import('./memory.js').HarnessMemoryServices
   registerSink(sink: HarnessMessageSink): () => void
@@ -186,6 +191,10 @@ export interface HarnessHostServices {
   prepareProactiveScope?(pluginId: string, request: import('./autonomy.js').ProactiveScopeRequest): import('./agents.js').AgentInvocationScope
   readProactiveContacts?(pluginId: string, request: import('./autonomy.js').ProactiveContactChannel): Promise<readonly import('./autonomy.js').ProactiveContact[]>
   hasPendingMessages?(): boolean
+  latestConversationSequence?(scope: ConversationSequenceScope): number
+  maxEventSequence?(eventIds: readonly string[]): number
+  updateAgentSeenInboundSequence?(agentId: string, seenSequence: number, reset?: boolean): void
+  flushConversationNow?(scope: ConversationSequenceScope): void
   getCapabilityMcpConnections(scope: CapabilityInvocationScope, taskId?: string, retention?: { readonly continuous: true }): readonly HarnessCapabilityConnection[]
   readAgentActions(agentId: string): readonly import('./agents.js').AgentActionReceipt[]
   readTaskActions(agentId: string, taskId: string): import('./agents.js').AgentTaskActions

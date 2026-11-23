@@ -307,6 +307,25 @@ export function apply(ctx) {
             const message = event.data, delivery = byMessageId.get(message.id);
             if (delivery && message.source?.kind === 'eating-external' && message.source.batchId === delivery.expected.batchId
               && identifyMessage({ ...message, source: { kind: 'user' } }, delivery.expected, true)) delivery.admitted = true;
+          } else if (event.type === 'plugin:eating/fast-track-delivery' && record(event.data) && record(event.data.message) && HEX.test(event.data.batchId)) {
+            if (!frames.length) continue;
+            for (const frame of frames) {
+              if (frame.batchId !== event.data.batchId) continue;
+              const found = identifyMessage(event.data.message, frame, true);
+              if (!found) continue;
+              const existing = recovered.get(frame.batchId);
+              if (existing) {
+                if (existing.messageId !== found.messageId) throw bridgeError('SESSION_RECOVERY_FAILED');
+                existing.admitted = true;
+                existing.discarded = false;
+                existing.claimTurn = undefined;
+                continue;
+              }
+              const message = event.data.message;
+              const first = { ...found, eventSeq: event.seq, expected: frame, message, payload: JSON.parse(message.content.map(block => block.text).join('')), admitted: true, discarded: false };
+              recovered.set(frame.batchId, first);
+              byMessageId.set(found.messageId, first);
+            }
           } else if (event.type === 'agent/inbox/spliced' && Array.isArray(event.data?.inserted)) {
             const { inserted, target, start, removedCount = 0, outcome } = event.data;
             for (const message of inserted) if (message.source?.kind === 'plugin:eating-task-result' && pendingNotices.has(message.id)) recoveredTaskNotices.add(message.id);

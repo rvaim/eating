@@ -7,7 +7,7 @@ const plugin: CapabilityPlugin = {
   id: 'android-control',
   get name() { return at('name') },
   get description() { return at('description') },
-  version: '0.3.4',
+  version: '0.3.5',
   kind: 'capability',
   apiVersion: 4,
   order: 60,

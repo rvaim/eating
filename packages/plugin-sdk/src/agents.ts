@@ -43,6 +43,10 @@ export interface RegisteredAgentInstructions extends AgentInstructions {
 export interface AgentInvocationScope {
   /** In-memory invocation lifetime; never persisted or supplied by model arguments. */
   readonly signal?: AbortSignal
+  /** In-memory runtime check for newer inbound messages on this exact conversation. */
+  readonly hasNewerInboundMessage?: () => boolean
+  /** In-memory runtime notification when a newer inbound message arrives for this conversation. */
+  readonly onNewerInboundMessage?: (listener: () => void) => () => void
   readonly readOnly?: boolean
   readonly agentId: string
   readonly agentTypeId: string

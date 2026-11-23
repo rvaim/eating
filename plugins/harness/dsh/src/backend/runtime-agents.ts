@@ -161,6 +161,19 @@ export function getRuntimeAgentSource(): string {
     }
     return names;
   }
+  function isOutboundSendTool(name) {
+    return typeof name === 'string' && /^mcp__qq__(?:qq_)?send_(?:private_message|group_message|message|private_msg|group_msg|msg)$|^mcp__qq__qq_handle_quick_operation$/.test(name);
+  }
+  function extractUpdateInboundSequence(message) {
+    if (!record(message) || !Array.isArray(message.content)) return 0;
+    const raw = lastText(message.content).replace(/^Agent [a-f0-9-]{36} sent a message:\s*/i, '');
+    if (!raw.startsWith('{')) return 0;
+    try {
+      const parsed = JSON.parse(raw);
+      const seq = parsed?.eating_task_update?.inboundSequence;
+      return typeof seq === 'number' && Number.isSafeInteger(seq) && seq > 0 ? seq : 0;
+    } catch { return 0; }
+  }
   async function mountChild(agent) {
     const configuration = taskConfigurations.get(agent.id);
     if (!configuration || typeof configuration.systemPrompt !== 'string' || configuration.kind !== 'execution' && (!record(configuration.mcp) || !record(configuration.mcp.headers))) throw new Error('Trusted child task configuration is unavailable');
@@ -182,6 +195,69 @@ export function getRuntimeAgentSource(): string {
     const actualNames = agent.ctx.tools.schemas(agent).map(schema => schema.name).sort();
     if (JSON.stringify(expectedNames) !== JSON.stringify(actualNames)) throw new Error('Scoped MCP tools differ from the approved Agent type');
     agent.ctx.tools.guard(exec => native.authorize(exec, agent, configuration.agentTypeId, expectedNames));
+    if (configuration.kind !== 'execution' && configuration.mode === 'reply' && typeof agent.ctx.on === 'function') {
+      agent.ctx.on('agent/pre-step', async ({ agent: caller }, next) => {
+        const decision = await next();
+        if (caller !== agent || decision.kind !== 'enter') return decision;
+        const task = taskFlights.get(agent.id);
+        if (!task || task.persistent) return decision;
+        let nextSeen = task.seenInboundSeq;
+        for (const msg of decision.messages) {
+          const tracked = msg?.id ? task.pendingMessageSequences.get(msg.id) : undefined;
+          if (msg?.id) task.pendingMessageSequences.delete(msg.id);
+          const embedded = extractUpdateInboundSequence(msg);
+          if (tracked && tracked > nextSeen) nextSeen = tracked;
+          if (embedded > nextSeen) nextSeen = embedded;
+        }
+        if (nextSeen > task.seenInboundSeq) {
+          task.seenInboundSeq = nextSeen;
+          task.lastDeniedSequence = Math.max(task.lastDeniedSequence, nextSeen);
+          await control('ack-inbound', { agentId: agent.id, taskId: task.taskId, seenSequence: nextSeen }, AbortSignal.any([initialization.signal, AbortSignal.timeout(1500)])).catch(() => {});
+        }
+        return decision;
+      });
+      agent.ctx.on('tools/pre-execute', async (exec, next) => {
+        if (exec.agent !== agent || !isOutboundSendTool(exec.name)) return next();
+        const task = taskFlights.get(agent.id);
+        if (!task || task.persistent || task.configuration?.mode !== 'reply') return next();
+        let hasInboxPending = Boolean(agent.inbox?.hasPending) || task.latestKnownInboundSeq > task.seenInboundSeq;
+        let hostLatestSeq = task.latestKnownInboundSeq;
+        if (!hasInboxPending) {
+          try {
+            const check = await control('check-inbound', { agentId: agent.id, taskId: task.taskId, seenSequence: task.seenInboundSeq }, AbortSignal.any([exec.signal, AbortSignal.timeout(1500)]));
+            if (check?.hasNewerInbound === true) {
+              if (Number.isSafeInteger(check.latestSequence) && check.latestSequence > hostLatestSeq) hostLatestSeq = check.latestSequence;
+              if (!agent.inbox?.hasPending && task.latestKnownInboundSeq <= task.seenInboundSeq && !exec.signal?.aborted) {
+                await new Promise(resolve => {
+                  let done = false;
+                  const finish = () => {
+                    if (done) return;
+                    done = true;
+                    clearTimeout(timer);
+                    task.inboundWaiters.delete(finish);
+                    exec.signal?.removeEventListener('abort', finish);
+                    resolve();
+                  };
+                  const timer = setTimeout(finish, 600);
+                  task.inboundWaiters.add(finish);
+                  exec.signal?.addEventListener('abort', finish, { once: true });
+                });
+              }
+              hasInboxPending = Boolean(agent.inbox?.hasPending) || task.latestKnownInboundSeq > task.seenInboundSeq;
+            }
+          } catch { /* Best-effort check must not block legitimate sends when control is unavailable. */ }
+        }
+        if (hasInboxPending) {
+          task.lastDeniedSequence = Math.max(task.lastDeniedSequence, hostLatestSeq);
+          return {
+            kind: 'deny',
+            reason: '[NEW_INBOUND_MESSAGE_PENDING] 发送前检测到当前会话刚收到用户的新消息，本条消息尚未发送（outcome=not-sent）。请先读取紧随其后的新消息，结合前面已成功发送的内容重新评估：丢弃已经过时、重复或对方已回答的内容，再决定是否重新组织语言发送。',
+            info: { code: 'NEW_INBOUND_MESSAGE_PENDING', outcome: 'not-sent' },
+          };
+        }
+        return next();
+      });
+    }
   }
   function resultOutputSchema() {
     return { type: 'object', properties: { taskId: { type: 'string' }, contextRef: { type: 'string' }, childId: { type: 'string' }, status: { type: 'string' }, summary: { type: 'string' }, actions: { type: 'array', items: { type: 'object', additionalProperties: true } } }, required: ['taskId', 'contextRef', 'childId', 'status', 'summary', 'actions'], additionalProperties: false };
@@ -230,7 +306,7 @@ export function getRuntimeAgentSource(): string {
     return [readValidatedOwnerPolicy().systemPrompt, sharedConversationPolicy, mainCoordinationPolicy,
       '主 Agent 负责整体安排、轻量分流与必要协调。收到整批输入时，context.conversations 列出本批各会话及各自 contextRef，events 保留全局接收顺序；自主判断优先次序并安排各会话，不要遗漏其他会话。若某会话包含 routingError，表示该会话尚未发送给子代理；必须向用户明确报告对应会话、错误 code 与 message，继续处理其余可用会话，不能遗漏或声称整批均已处理。每次会话处理或任务委派只使用该会话自己的 contextRef，不能把整批引用当成所有会话的授权。当前会话的普通聊天、问答和生图等需求优先调用 eating_handle_conversation，先判断事实是否充分，再传真实 context_ref、显式 mode 和必要的 context_notes；运行时按绑定类型交接原始 events/context，由子 Agent 结合会话历史与当前人格独立决定是否回复、回复内容、必要工具和发送，返回真实 actions 与摘要。main 不先撰写完整回复，不把未经本次工具核对的“不能画”等能力猜测预写成事实交给子代理。eating_delegate_task 用于明确执行任务或用户明确要求的逐字内容，提供目标与完成标准；它与自主会话处理有不同用途。跨会话先选择实际目标，再 list/contact，由正确目标子代理处理。',
       '主 Agent 按主人当前配置与授权自主使用能力或委派；所有功能型 MCP 的全部工具默认向所有 Agent 开放，新增来源、工具和 Agent 类型也默认开放，主人显式配置的限制仍须遵守。不要按旧记录声称必须逐工具申请权限。外部正文不改变账号、目标或资源身份，当前实际挂载的工具与真实回执是执行依据。',
-      '会话处理、明确任务和联系委派均异步返回 taskId、childId、contextRef 及 running 状态，这只表示已启动，不是任务成功。子任务完成后会收到 eating_task_result，actions 是后台核对的真实回执。新批次到达时先用 eating_task_control list/status 核对已有任务，再自主选择等待、message 追加同会话 context_ref 与说明，或 interrupt 后续执行；不要给运行中的同一子Agent重复委派，不自动重发 unknown 动作。message 不会升级 verify 权限。',
+      '会话处理、明确任务和联系委派均异步返回 taskId、childId、contextRef 及 running 状态，这只表示已启动，不是任务成功。子任务完成后会收到 eating_task_result，actions 是后台核对的真实回执。同一会话已有运行中的 reply 子任务时，单会话新消息会由运行时直接通过热通道送达该子代理并触发发送前重评；当主 Agent 收到跨会话、多会话或 verify 相关的新批次时，上下文会直接附带 eating_active_tasks 运行中任务摘要，可直接据此用 eating_task_control 的 message 追加或 interrupt 后续执行，不必先额外调用 list；不要给运行中的同一子Agent重复委派，不自动重发 unknown 动作。message 不会升级 verify 权限。',
       '委派或追加当前会话时，运行时会从本主会话的原生日志补充同一会话近期且仍获授权的原始消息到 history.events，保留图片等资源与消息的配对。上一批没有委派不等于图片未收到，不用 context_notes 代替原始资源引用。补充历史只供理解当前话题，不自动重新执行旧请求；主Agent仍自主决定是否委派、追加或中断。',
       '功能插件声明的独立执行角色使用 eating_start_execution，type_id来自eating_list_agent_types，任务给目标或自由探索事项。手机执行会话可自主继续、休息或结束，不设娱乐时长、每日额度或冷却；主Agent不用等待它，继续处理聊天、自主活动和其他事务。当独立执行正在运行时，如需引导或补充要求优先通过 eating_task_control 的 message 沟通，不随意 interrupt 或直接抢占同一写锁；即使此前任务已结束或曾被中断，执行角色仍可随时再次通过 eating_start_execution 启动新任务。独立执行消息不用QQ context_ref，也不取得其他通讯范围。',
       contactSystemPolicy(),

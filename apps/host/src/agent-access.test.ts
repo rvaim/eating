@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInvocationScope, BackendPluginEntry, HarnessHostServices, JsonObject, ScopedAccessPolicy } from '@eating/plugin-sdk'
 import qqEntry from '../../../plugins/communication/qq/src/server'
 import { startOneBotFixture } from '../../../tests/fixtures/onebot'
@@ -402,5 +402,43 @@ describe('Host scoped agent MCP and plugin prompt registry', () => {
       closed: true,
       actions: [{ outcome: 'succeeded', result: { message_id: 1001, message_ids: [1001, 1002, 1003] } }],
     })
+  })
+
+  it('blocks QQ outbound sends when a newer inbound message arrives for the same conversation until seenInboundSequence catches up', async () => {
+    const f = await setup(), binding = f.scope(), taskId = 'd'.repeat(64)
+    const seqBefore = f.services.latestConversationSequence!(binding)
+    const { mcp } = await f.client(binding, undefined, taskId)
+    f.services.updateAgentSeenInboundSequence!(binding.agentId, seqBefore, true)
+
+    // Inject a newer inbound QQ message for the exact same private conversation.
+    f.onebot.emitEvent({
+      post_type: 'message',
+      message_type: 'private',
+      self_id: Number(binding.accountId),
+      user_id: Number(binding.targetId),
+      message_id: 99001,
+      message: '公园的',
+    })
+    let seqAfter = seqBefore
+    await vi.waitFor(() => {
+      seqAfter = f.services.latestConversationSequence!(binding)
+      expect(seqAfter).toBeGreaterThan(seqBefore)
+    })
+
+    const blocked = await mcp.callTool({
+      name: 'qq_send_private_message',
+      arguments: { user_id: binding.targetId, message: '这猫在哪儿遇到的？', request_id: 'inbound-gate-req-001' },
+    })
+    expect(blocked).toMatchObject({ isError: true, structuredContent: { code: 'NEW_INBOUND_MESSAGE_PENDING', outcome: 'not-sent' } })
+    expect(f.onebot.requests.filter(r => r.action === 'send_private_msg')).toHaveLength(0)
+
+    // Once the child acknowledges reading up to seqAfter, sending the reorganized reply succeeds.
+    f.services.updateAgentSeenInboundSequence!(binding.agentId, seqAfter)
+    const allowed = await mcp.callTool({
+      name: 'qq_send_private_message',
+      arguments: { user_id: binding.targetId, message: '原来是在公园拍的呀！', request_id: 'inbound-gate-req-002' },
+    })
+    expect(allowed).toMatchObject({ isError: false })
+    expect(f.onebot.requests.filter(r => r.action === 'send_private_msg').map(r => r.params.message)).toEqual(['原来是在公园拍的呀！'])
   })
 })

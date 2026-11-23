@@ -154,6 +154,28 @@ describe('HostStore outstanding delivery queue', () => {
     expect(reopened.pendingHarnessEvents()).toEqual([])
     expect(reopened.harnessSummary()).toMatchObject({ pending: 0, accepted: 0, uncertain: 1 })
   })
+
+  it('tracks per-conversation inbound sequence watermarks and notifies subscribers on new queued messages', () => {
+    const store = fixture().open()
+    const scopeOne = { pluginId: 'test-platform', instanceId: 'test-instance-one', accountId: 'account-one', conversationId: 'conv-one', kind: 'private' as const, targetId: 'user-1' }
+    const scopeTwo = { pluginId: 'test-platform', instanceId: 'test-instance-one', accountId: 'account-one', conversationId: 'conv-two', kind: 'private' as const, targetId: 'user-2' }
+    const onOne = vi.fn()
+    const unsubscribe = store.subscribeConversationInbound(scopeOne, onOne)
+
+    expect(store.latestConversationSequence(scopeOne)).toBe(0)
+    const first = store.recordEvent('test-platform', 'seq-1', {}, { ...event('conv-one', 'hi'), targetId: 'user-1' })
+    const second = store.recordEvent('test-platform', 'seq-2', {}, { ...event('conv-two', 'other'), targetId: 'user-2' })
+    expect(onOne).toHaveBeenCalledTimes(1)
+    expect(store.latestConversationSequence(scopeOne)).toBe(1)
+    expect(store.latestConversationSequence(scopeTwo)).toBe(2)
+    expect(store.maxEventSequence([first.eventId])).toBe(1)
+    expect(store.maxEventSequence([first.eventId, second.eventId])).toBe(2)
+
+    unsubscribe()
+    store.recordEvent('test-platform', 'seq-3', {}, { ...event('conv-one', 'follow-up'), targetId: 'user-1' })
+    expect(onOne).toHaveBeenCalledTimes(1)
+    expect(store.latestConversationSequence(scopeOne)).toBe(3)
+  })
 })
 
 describe('HostStore durable action idempotency', () => {

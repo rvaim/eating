@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import type { DeliverySettings, HarnessDeliveryBatch, HarnessDeliveryReceipt, HarnessEvent, HarnessMessageSink, JsonObject } from '@eating/plugin-sdk'
-import { HostStore } from './store'
+import type { ConversationSequenceScope, DeliverySettings, HarnessDeliveryBatch, HarnessDeliveryReceipt, HarnessEvent, HarnessMessageSink, JsonObject } from '@eating/plugin-sdk'
+import { conversationSequenceKey, HostStore } from './store'
 import type { QueuedHarnessEvent } from './store'
 
 type Registration = { readonly sink: HarnessMessageSink }
@@ -37,6 +37,7 @@ export class HarnessGateway {
   private lastError: string | null = null
   private pendingFinalization: PendingFinalization | null = null
   private storageRetryAt = 0
+  private readonly urgentConversations = new Set<string>()
 
   constructor(private readonly store: HostStore) {}
 
@@ -81,6 +82,14 @@ export class HarnessGateway {
   /** Settings affect the next selection; an in-flight handoff keeps its timeout. */
   reconfigure(): void {
     this.clearTimer()
+    this.notify()
+  }
+
+  /** Immediately release a waiting aggregation window for one conversation without bypassing rejection cooldowns. */
+  flushConversation(scope: ConversationSequenceScope): void {
+    if (this.closed) return
+    this.urgentConversations.add(conversationSequenceKey(scope))
+    if (this.urgentConversations.size > 512) this.urgentConversations.delete(this.urgentConversations.keys().next().value!)
     this.notify()
   }
 
@@ -183,7 +192,7 @@ export class HarnessGateway {
     }
     if (exhausted.length) this.store.markHarnessDeliveryBatch(exhausted, 'uncertain', 'Harness 明确拒收且已达投递次数上限，保留正文等待主人核对。')
     const selections: BatchSelection[] = []
-    for (const bucket of conversations.values()) {
+    for (const [key, bucket] of conversations.entries()) {
       const first = bucket[0]!
       if (first.nextAttemptAt > now) {
         selections.push({ items: [], reason: 'aggregation-window', readyAt: first.nextAttemptAt })
@@ -195,8 +204,10 @@ export class HarnessGateway {
         if (item.nextAttemptAt > now) break
         items.push(item)
       }
-      selections.push({ items, reason: 'aggregation-window', readyAt: first.enqueuedAt + settings.aggregationWindowMs })
+      const urgent = this.urgentConversations.has(key)
+      selections.push({ items, reason: 'aggregation-window', readyAt: urgent ? now : first.enqueuedAt + settings.aggregationWindowMs })
     }
+    for (const key of [...this.urgentConversations]) if (!conversations.has(key)) this.urgentConversations.delete(key)
     return selections
   }
 
@@ -221,6 +232,7 @@ export class HarnessGateway {
   private async deliverBatch(selection: BatchSelection, registration: Registration, settings: DeliverySettings): Promise<void> {
     const items = selection.items
     const events = items.map(item => item.event)
+    for (const event of events) this.urgentConversations.delete(conversationKey(event))
     const identity = conversationKey(events[0]!)
     const batch: HarnessDeliveryBatch = {
       protocolVersion: 1, batchId: createHash('sha256').update(JSON.stringify(events.map(event => event.eventId))).digest('hex'),
@@ -291,5 +303,6 @@ export class HarnessGateway {
     this.settleDetachedFinalization()
     this.pendingFinalization = null
     this.storageRetryAt = 0
+    this.urgentConversations.clear()
   }
 }

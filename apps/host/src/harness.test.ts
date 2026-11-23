@@ -971,4 +971,52 @@ describe('HarnessGateway bounded aggregation and delivery', () => {
     expect(gateway.getStatus()).toMatchObject({ accepted: 1, pending: 0 })
     expect(vi.getTimerCount()).toBe(0)
   })
+
+  it('flushes a waiting conversation aggregation window immediately via flushConversation without bypassing rejection cooldowns', async () => {
+    const { gateway, store, record } = fixture({ aggregationWindowMs: 10000, retryIntervalMs: 2000 })
+    const harness = batchSink()
+    gateway.register(harness)
+
+    const first = record('waiting-window', 'conv-urgent', 'private')
+    await vi.advanceTimersByTimeAsync(100)
+    expect(harness.deliverBatch).not.toHaveBeenCalled()
+
+    gateway.flushConversation({
+      pluginId: first.pluginId,
+      instanceId: first.instanceId,
+      accountId: first.accountId,
+      conversationId: first.conversationId,
+      kind: first.source.kind,
+      targetId: first.targetId!,
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.deliverBatch).toHaveBeenCalledOnce()
+    expect(store.getQueuedHarnessEvents()).toEqual([])
+
+    // Explicit refusal cooldown must still hold even if flushConversation is called again.
+    harness.deliverBatch.mockResolvedValueOnce({ accepted: false })
+    const second = record('rejected-cooldown', 'conv-urgent', 'private')
+    gateway.flushConversation({
+      pluginId: second.pluginId,
+      instanceId: second.instanceId,
+      accountId: second.accountId,
+      conversationId: second.conversationId,
+      kind: second.source.kind,
+      targetId: second.targetId!,
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.deliverBatch).toHaveBeenCalledTimes(2)
+    gateway.flushConversation({
+      pluginId: second.pluginId,
+      instanceId: second.instanceId,
+      accountId: second.accountId,
+      conversationId: second.conversationId,
+      kind: second.source.kind,
+      targetId: second.targetId!,
+    })
+    await vi.advanceTimersByTimeAsync(500)
+    expect(harness.deliverBatch).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(harness.deliverBatch).toHaveBeenCalledTimes(3)
+  })
 })

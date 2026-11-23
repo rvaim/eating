@@ -20,20 +20,52 @@ import { splitOutgoingQQMessage } from './message-split'
 type Configuration = OneBotConfig
 
 const splitEligibleActions = new Set(['send_private_msg', 'send_group_msg', 'send_msg'])
+const outboundSendActions = new Set(['send_private_msg', 'send_group_msg', 'send_msg', '.handle_quick_operation'])
 
-function sleepWithAbort(delayMs: number, signal?: AbortSignal): Promise<void> {
-  if (delayMs <= 0) return Promise.resolve()
+function newInboundPendingError(): PlatformError {
+  return new PlatformError(
+    'NEW_INBOUND_MESSAGE_PENDING',
+    '发送前检测到当前会话刚收到用户的新消息，本条消息尚未发送。请先读取新消息，结合前面已成功发送的内容重新评估：丢弃已经过时、重复或对方已回答的内容，再决定是否重新组织语言发送。',
+    409,
+    'not-sent',
+  )
+}
+
+function sleepWithAbort(
+  delayMs: number,
+  signal?: AbortSignal,
+  onNewerInbound?: (listener: () => void) => () => void,
+): Promise<'elapsed' | 'new-inbound'> {
+  if (delayMs <= 0) return Promise.resolve('elapsed')
   if (signal?.aborted) return Promise.reject(new PlatformError('AGENT_SCOPE_VIOLATION', '当前调用授权已撤销。', 403, 'unknown'))
   return new Promise((resolve, reject) => {
-    const onAbort = () => {
+    let settled = false
+    let unsubscribeInbound: (() => void) | undefined
+    const cleanup = () => {
       clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      unsubscribeInbound?.()
+    }
+    const onAbort = () => {
+      if (settled) return
+      settled = true
+      cleanup()
       reject(new PlatformError('AGENT_SCOPE_VIOLATION', '当前调用授权已撤销。', 403, 'unknown'))
     }
+    const onInbound = () => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve('new-inbound')
+    }
     const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort)
-      resolve()
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve('elapsed')
     }, delayMs)
     signal?.addEventListener('abort', onAbort, { once: true })
+    if (onNewerInbound) unsubscribeInbound = onNewerInbound(onInbound)
   })
 }
 
@@ -98,7 +130,7 @@ class QQPlugin implements BackendPlugin {
   readonly id = 'qq'
   readonly kind = 'communication' as const
   readonly name = 'QQ'
-  readonly version = '0.21.0'
+  readonly version = '0.22.0'
   readonly logs = new LiveLogChannel()
   readonly tools = [...qqTools, qqViewReceivedImageTool]
   readonly capabilities = [
@@ -244,7 +276,7 @@ class QQPlugin implements BackendPlugin {
         for (let index = 0; index < splitMessages.length; index++) {
           if (index > 0 && splitSettings.delayMs > 0) {
             try {
-              await sleepWithAbort(splitSettings.delayMs, scope?.signal)
+              await sleepWithAbort(splitSettings.delayMs, scope?.signal, scope?.onNewerInboundMessage)
             } catch {
               throw new PlatformError('QQ_SPLIT_SEND_INTERRUPTED', `${formatSentSummary(sentResults.length, splitMessages.length, sentMessageIds)}，等待第 ${index + 1} 条期间任务已中断，已停止后续发送，请勿重发已发消息。`, 409, 'unknown')
             }
@@ -252,6 +284,20 @@ class QQPlugin implements BackendPlugin {
           if (scope?.signal?.aborted) {
             if (sentResults.length === 0) throw new PlatformError('AGENT_SCOPE_VIOLATION', '当前调用授权已撤销，未发送。', 403, 'not-sent')
             throw new PlatformError('QQ_SPLIT_SEND_INTERRUPTED', `${formatSentSummary(sentResults.length, splitMessages.length, sentMessageIds)}，第 ${index + 1} 条发送前授权已撤销，已停止后续发送，请勿重发已发消息。`, 409, 'unknown')
+          }
+          if (scope?.hasNewerInboundMessage?.()) {
+            if (sentResults.length === 0) throw newInboundPendingError()
+            const held = splitMessages.slice(index).filter((part): part is JsonValue => part !== undefined)
+            return {
+              ...(sentMessageIds.length > 0 ? { message_id: sentMessageIds[0]!, message_ids: sentMessageIds } : {}),
+              split: true,
+              parts_sent: sentResults.length,
+              parts_held: held.length,
+              held_messages: held,
+              interrupted_by_new_message: true,
+              note: `${formatSentSummary(sentResults.length, splitMessages.length, sentMessageIds)}；检测到当前会话刚收到用户的新消息，剩余 ${held.length} 条已暂缓未发。请先读取新消息，重新评估剩余内容是否仍需发送或重新组织语言。`,
+              results: sentResults,
+            }
           }
           const currentStatus = this.client.getStatus()
           if (currentStatus.state !== 'connected' || currentStatus.accountId !== account) {
@@ -292,6 +338,7 @@ class QQPlugin implements BackendPlugin {
       const audio = await resolveQQAudioAsset(wire.params, this.context.resources, scope ? { agentId: scope.agentId, agentTypeId: scope.agentTypeId, source: scope } : undefined)
       if (transport && this.mediaTransport.snapshot(this.mediaConnection()).revision !== transport.revision) throw new PlatformError('QQ_MEDIA_CONFIGURATION_CHANGED', '资源读取期间图片传输设置已变化，未发送。', 409, 'not-sent')
       if (scope?.signal?.aborted) throw new PlatformError('AGENT_SCOPE_VIOLATION', '资源读取期间任务已撤销，未发送。', 403, 'not-sent')
+      if (scope && outboundSendActions.has(tool.protocolAction ?? '') && scope.hasNewerInboundMessage?.()) throw newInboundPendingError()
       if (scope) assertQQAgentInvocation(name, params, scope, this.configuration, { instanceId: this.instanceId, accountId: this.client.getStatus().accountId })
       if (this.client.getStatus().accountId !== account) throw new PlatformError('ACCOUNT_CHANGED', '资源读取期间账号已变化，未发送。', 409, 'not-sent')
       audio.lease?.assertCurrent()
@@ -300,6 +347,7 @@ class QQPlugin implements BackendPlugin {
         ...(wire.imageBase64Bytes ? { resolvedImageBase64Bytes: wire.imageBase64Bytes } : {}) })
     }
     if (tool.readOnly) return execute()
+    if (scope && outboundSendActions.has(tool.protocolAction ?? '') && scope.hasNewerInboundMessage?.()) throw newInboundPendingError()
     const accountId = this.client.getStatus().accountId
     if (!accountId || this.client.getStatus().state !== 'connected') throw new PlatformError('NOT_CONNECTED', '账号尚未连接，未发送动作。', 409, 'not-sent')
     return this.context.executeIdempotent(this.id, action, forwarded, typeof params.request_id === 'string' ? params.request_id : requestId, execute, { instanceId: this.instanceId, accountId })

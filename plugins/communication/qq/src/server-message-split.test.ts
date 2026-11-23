@@ -243,4 +243,65 @@ describe('QQ plugin Harness message regex splitting', () => {
     expect(result).toEqual({ message_id: 701 })
     expect(client.call).toHaveBeenCalledWith('send_private_msg', expect.objectContaining({ message: '你好' }), expect.any(Object))
   })
+
+  it('refuses outbound send before the first bubble when a newer inbound message is pending (not-sent, no OneBot call)', async () => {
+    const { plugin, client, executeIdempotent } = fixture()
+    await enableDefaultSplit(plugin, 0)
+
+    await expect(plugin.invokeScoped!('qq_send_private_message', {
+      user_id: '234567',
+      message: '这猫在哪儿遇到的？',
+      request_id: 'pre-send-gate-0001',
+    }, 'pre-send-gate-0001', {
+      ...scopeFor(plugin, 'private'),
+      hasNewerInboundMessage: () => true,
+    })).rejects.toMatchObject({
+      code: 'NEW_INBOUND_MESSAGE_PENDING',
+      outcome: 'not-sent',
+      statusCode: 409,
+    })
+    expect(client.call).not.toHaveBeenCalled()
+    expect(executeIdempotent).not.toHaveBeenCalled()
+  })
+
+  it('wakes immediately during split delay when a newer inbound message arrives and returns deterministic held parts', async () => {
+    const { plugin, client } = fixture()
+    let newerArrived = false
+    const listeners = new Set<() => void>()
+    client.call.mockImplementationOnce(async () => {
+      setTimeout(() => {
+        newerArrived = true
+        for (const listener of [...listeners]) listener()
+      }, 20)
+      return { message_id: 801 }
+    })
+    await enableDefaultSplit(plugin, 5000)
+
+    const started = Date.now()
+    const result = await plugin.invokeScoped!('qq_send_private_message', {
+      user_id: '234567',
+      message: '第一句。第二句！第三句？',
+      request_id: 'split-inbound-hold-0001',
+    }, 'split-inbound-hold-0001', {
+      ...scopeFor(plugin, 'private'),
+      hasNewerInboundMessage: () => newerArrived,
+      onNewerInboundMessage: listener => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
+    })
+
+    expect(Date.now() - started).toBeLessThan(1000)
+    expect(client.call).toHaveBeenCalledTimes(1)
+    expect(result).toMatchObject({
+      message_id: 801,
+      message_ids: [801],
+      split: true,
+      parts_sent: 1,
+      parts_held: 2,
+      held_messages: ['第二句！', '第三句？'],
+      interrupted_by_new_message: true,
+      results: [{ message_id: 801 }],
+    })
+  })
 })

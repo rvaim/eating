@@ -122,7 +122,16 @@ export class EatingHost {
       this.imageLimits = new ImageLimitsService(this.store)
       this.harness = new HarnessGateway(this.store)
       this.taskActions = new TaskActionJournal(this.store)
-      this.agentAccess = new AgentAccessRegistry(id => this.requirePlugin(id, true), id => !this.closed && this.enabled.has(id), this.taskActions)
+      this.agentAccess = new AgentAccessRegistry(
+        id => this.requirePlugin(id, true),
+        id => !this.closed && this.enabled.has(id),
+        this.taskActions,
+        {
+          latestSequence: scope => this.store.latestConversationSequence(scope),
+          subscribe: (scope, listener) => this.store.subscribeConversationInbound(scope, listener),
+          isAppendEnabled: () => this.store.getDeliverySettings().appendWhileBusy,
+        },
+      )
       this.authoring = new AuthoringService(this.store, () => collectAgentContributions(this.plugins.values(), this.enabled))
       this.personaAppearances = new PersonaAppearanceStore(resolve(options.dataDirectory, 'host', 'persona-appearances'), () => this.imageLimits.snapshot())
       const enabledIds = persistedEnabledIds(this.store.getSetting('platforms.enabled'), options.entries.map(entry => entry.id))
@@ -951,6 +960,10 @@ export class EatingHost {
         return contacts.map(contact => ({ ...contact }))
       },
       hasPendingMessages: () => { this.requireHarnessAccess(id); return this.store.hasPendingHarnessMessages() },
+      latestConversationSequence: (scope: import('@eating/plugin-sdk').ConversationSequenceScope) => { this.requireHarnessAccess(id); return this.store.latestConversationSequence(scope) },
+      maxEventSequence: (eventIds: readonly string[]) => { this.requireHarnessAccess(id); return this.store.maxEventSequence(eventIds) },
+      updateAgentSeenInboundSequence: (agentId: string, seenSequence: number, reset?: boolean) => { this.requireHarnessAccess(id); this.agentAccess.updateSeenInboundSequence(id, agentId, seenSequence, reset) },
+      flushConversationNow: (scope: import('@eating/plugin-sdk').ConversationSequenceScope) => { this.requireHarnessAccess(id); this.harness.flushConversation(scope) },
       getCapabilityMcpConnections: (scope: CapabilityInvocationScope, taskId?: string, retention?: { readonly continuous: true }) => { this.requireHarnessAccess(id); if (!this.url) throw new PlatformError('HOST_NOT_LISTENING', 'Host 尚未监听。', 503); return this.capabilityAccess.connections(id, scope, this.url, taskId, retention) },
       readAgentActions: (agentId: string) => { this.requireHarnessAccess(id); return [...this.agentAccess.actions(id, agentId), ...this.capabilityAccess.actions(id, agentId)] },
       // A disabled Harness can still display its own saved receipts; this grants no tool lease.

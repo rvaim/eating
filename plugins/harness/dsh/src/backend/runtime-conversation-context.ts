@@ -28,11 +28,18 @@ export function getConversationContextSource(): string {
     }
   }
   function restoreConversationContext(event) {
-    if (event.type !== 'user/message' || event.data?.source?.kind !== 'eating-external') return;
-    const message = event.data;
-    if (!Array.isArray(message.content) || message.content.some(block => block.type !== 'text' || typeof block.text !== 'string')) throw bridgeError('SESSION_RECOVERY_FAILED');
+    let message;
+    let expectedBatchId;
+    if (event.type === 'user/message' && event.data?.source?.kind === 'eating-external') {
+      message = event.data;
+      expectedBatchId = message.source.batchId;
+    } else if (event.type === 'plugin:eating/fast-track-delivery' && record(event.data) && record(event.data.message) && HEX.test(event.data.batchId)) {
+      message = event.data.message;
+      expectedBatchId = event.data.batchId;
+    } else return;
+    if (!Array.isArray(message.content) || message.content.some(block => !record(block) || block.type !== 'text' || typeof block.text !== 'string')) throw bridgeError('SESSION_RECOVERY_FAILED');
     const payload = JSON.parse(message.content.map(block => block.text).join(''));
-    if (!record(payload.eating) || payload.eating.magic !== 'eating-harness-delivery' || payload.eating.protocolVersion !== 1 || payload.eating.sessionId !== sessionId || payload.eating.batchId !== message.source.batchId || !record(payload.context) || !Array.isArray(payload.context.conversations) || !Array.isArray(payload.events) || createHash('sha256').update(JSON.stringify({ context: payload.context, events: payload.events })).digest('hex') !== payload.eating.digest) throw bridgeError('SESSION_RECOVERY_FAILED');
+    if (!record(payload.eating) || payload.eating.magic !== 'eating-harness-delivery' || payload.eating.protocolVersion !== 1 || payload.eating.sessionId !== sessionId || payload.eating.batchId !== expectedBatchId || !record(payload.context) || !Array.isArray(payload.context.conversations) || !Array.isArray(payload.events) || createHash('sha256').update(JSON.stringify({ context: payload.context, events: payload.events })).digest('hex') !== payload.eating.digest) throw bridgeError('SESSION_RECOVERY_FAILED');
     for (const conversation of payload.context.conversations) {
       const events = payload.events.filter(item => ['pluginId', 'platform', 'instanceId', 'accountId', 'conversationId', 'targetId'].every(key => item[key] === conversation[key]) && item.source?.kind === conversation.kind);
       rememberConversationContext({ binding: conversation, payload: { context: conversation, events } });

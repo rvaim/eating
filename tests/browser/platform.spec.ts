@@ -268,7 +268,7 @@ test.describe('正式 QQ 平台与 OneBot v11', () => {
   test('设置侧栏分类保留草稿，保存后参数与存储方式实际生效', async ({ page }, testInfo) => {
     await page.goto(`${url}/#overview`)
     await page.getByRole('link', { name: '设置', exact: true }).click()
-    await expect(page.getByLabel('聚合窗口', { exact: true })).toHaveValue('10')
+    await expect(page.getByLabel('聚合窗口', { exact: true })).toHaveValue('0')
     await expect(page.getByRole('checkbox', { name: '忙碌时追加消息', exact: true })).toBeChecked()
     await expect(page.getByText('从第一条消息起固定计时，窗口内各会话的消息按接收顺序一起交给主 Agent；新消息不会重置倒计时。', { exact: true })).toBeVisible()
     await page.getByLabel('聚合窗口', { exact: true }).fill('0.8')
@@ -298,7 +298,7 @@ test.describe('正式 QQ 平台与 OneBot v11', () => {
     let reads = 0
     page.on('request', request => { if (request.method() === 'GET' && request.url().endsWith('/api/settings')) reads++ })
     await page.goto(`${url}/#settings/delivery`)
-    await expect(page.getByLabel('聚合窗口', { exact: true })).toHaveValue('10')
+    await expect(page.getByLabel('聚合窗口', { exact: true })).toHaveValue('0')
     await page.getByLabel('聚合窗口', { exact: true }).fill('0.75')
     const bootstrap = await page.request.get(`${url}/api/bootstrap`)
     const { csrfToken } = await bootstrap.json() as { csrfToken: string }

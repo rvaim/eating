@@ -282,13 +282,63 @@ describe('owner controlled autonomous activity state', () => {
     f.activity.claim('runtime')
     await expect(f.control('resume')).rejects.toMatchObject({ code: 'AUTONOMY_CYCLE_RUNNING', message: expect.stringContaining('周期仍在运行') })
   })
-  it('distinguishes failure thresholds and unknown outcomes from chosen rest', async () => {
-    const f = fixture(); await f.configure({ maxConsecutiveFailures: 2 }); f.activity.startRuntime('runtime'); await f.control('resume')
-    for (let i = 0; i < 2; i++) { const cycle = f.activity.claim('runtime').cycle as JsonObject; f.activity.finish('runtime', String(cycle.id), 'failed', 'AUTONOMY_MODEL_FAILED'); f.advance(5000) }
-    expect(state(f.activity)).toMatchObject({ ownerPaused: true, errorCode: 'AUTONOMY_MODEL_FAILED', failures: 2, mode: 'active' })
-    await f.control('resume'); const cycle = f.activity.claim('runtime').cycle as JsonObject
-    f.activity.finish('runtime', String(cycle.id), 'unknown', 'AUTONOMY_CYCLE_TIMEOUT')
-    expect(state(f.activity)).toMatchObject({ ownerPaused: true, lastOutcome: 'unknown', errorCode: 'AUTONOMY_CYCLE_TIMEOUT' })
+  it('backs off transient cycle failures into automatic cooldown while still hard-pausing unknown outcomes', async () => {
+    const f = fixture(); await f.configure({ minIntervalSeconds: 60, maxRestMinutes: 10, maxConsecutiveFailures: 2, autoResume: true }); f.activity.startRuntime('runtime'); await f.control('resume')
+    const first = f.activity.claim('runtime').cycle as JsonObject
+    f.activity.finish('runtime', String(first.id), 'failed', 'AUTONOMY_CYCLE_TIMEOUT')
+    expect(state(f.activity)).toMatchObject({ ownerPaused: false, errorCode: null, failures: 1, lastOutcome: 'failed', reason: 'interval', nextWakeAt: f.now() + 60000 })
+    expect(f.activity.claim('runtime').admitted).toBe(false)
+    f.advance(60000)
+    const second = f.activity.claim('runtime').cycle as JsonObject
+    f.activity.finish('runtime', String(second.id), 'failed', 'AUTONOMY_MODEL_FAILED')
+    const cooldownEnd = f.now() + 10 * 60000
+    expect(state(f.activity)).toMatchObject({ ownerPaused: false, errorCode: 'AUTONOMY_MODEL_FAILED', failures: 2, lastOutcome: 'failed', reason: 'cooldown', nextWakeAt: cooldownEnd })
+    // Scheduled tasks cannot bypass active cooldown backoff.
+    f.activity.scheduleTask('runtime', { expectedRevision: 0, dueAt: f.now() + 5000, message: 'Wait for cooldown' })
+    f.advance(5000)
+    expect(state(f.activity)).toMatchObject({ reason: 'cooldown', nextWakeAt: cooldownEnd })
+    expect(f.activity.claim('runtime').admitted).toBe(false)
+    // Cooldown survives restart when autoResume is enabled.
+    f.activity.stopRuntime()
+    const reopened = new DshAutonomy(f.directory, () => true, () => {}, () => {}, f.now)
+    reopened.startRuntime('restarted')
+    expect(state(reopened)).toMatchObject({ ownerPaused: false, errorCode: 'AUTONOMY_MODEL_FAILED', failures: 2, reason: 'cooldown', nextWakeAt: cooldownEnd })
+    f.advance(10 * 60000 - 5000)
+    const third = reopened.claim('restarted')
+    expect(third.admitted).toBe(true)
+    expect((third.scheduledTasks as JsonObject[]).map(task => task.message)).toEqual(['Wait for cooldown'])
+    expect(state(reopened)).toMatchObject({ errorCode: null, failures: 2, reason: 'running' })
+    // Another consecutive failure doubles cooldown up to the 60-minute cap.
+    reopened.finish('restarted', String((third.cycle as JsonObject).id), 'failed', 'AUTONOMY_CYCLE_TIMEOUT')
+    expect(state(reopened)).toMatchObject({ ownerPaused: false, errorCode: 'AUTONOMY_CYCLE_TIMEOUT', failures: 3, reason: 'cooldown', nextWakeAt: f.now() + 20 * 60000 })
+    // Owner can wake immediately out of cooldown, and a completed round resets failure count.
+    const snap = reopened.snapshot()
+    await reopened.control('wake', { expectedRevision: snap.revision!, expectedActivityRevision: (snap.state as JsonObject).revision! })
+    expect(state(reopened)).toMatchObject({ ownerPaused: false, errorCode: null, failures: 0, reason: 'ready' })
+    const fourth = reopened.claim('restarted').cycle as JsonObject
+    reopened.finish('restarted', String(fourth.id), 'completed', null)
+    expect(state(reopened)).toMatchObject({ ownerPaused: false, errorCode: null, failures: 0, lastOutcome: 'completed' })
+    // True unknown outcomes still hard-pause for owner review.
+    f.advance(60000)
+    const fifth = reopened.claim('restarted').cycle as JsonObject
+    reopened.finish('restarted', String(fifth.id), 'unknown', 'AUTONOMY_DURABILITY_FAILED')
+    expect(state(reopened)).toMatchObject({ ownerPaused: true, lastOutcome: 'unknown', errorCode: 'AUTONOMY_DURABILITY_FAILED', reason: 'error', nextWakeAt: null })
+    expect(reopened.claim('restarted').admitted).toBe(false)
+  })
+  it('clears recoverable cooldown error code when the owner pauses or restarts without autoResume', async () => {
+    const f = fixture(); await f.configure({ minIntervalSeconds: 60, maxRestMinutes: 10, maxConsecutiveFailures: 1, autoResume: false }); f.activity.startRuntime('runtime'); await f.control('resume')
+    const first = f.activity.claim('runtime').cycle as JsonObject
+    f.activity.finish('runtime', String(first.id), 'failed', 'AUTONOMY_CYCLE_TIMEOUT')
+    expect(state(f.activity)).toMatchObject({ ownerPaused: false, reason: 'cooldown', errorCode: 'AUTONOMY_CYCLE_TIMEOUT' })
+    await f.control('pause')
+    expect(state(f.activity)).toMatchObject({ ownerPaused: true, reason: 'owner-paused', errorCode: null, nextWakeAt: null })
+    await f.control('resume')
+    const second = f.activity.claim('runtime').cycle as JsonObject
+    f.activity.finish('runtime', String(second.id), 'failed', 'AUTONOMY_CYCLE_TIMEOUT')
+    f.activity.stopRuntime()
+    const reopened = new DshAutonomy(f.directory, () => true, () => {}, () => {}, f.now)
+    reopened.startRuntime('second')
+    expect(state(reopened)).toMatchObject({ ownerPaused: true, reason: 'owner-paused', errorCode: null, nextWakeAt: null })
   })
   it('recovers an interrupted round as unknown and never silently auto-replays it', async () => {
     const f = fixture(); await f.configure({ autoResume: true }); f.activity.startRuntime('old'); await f.control('resume'); f.activity.claim('old')

@@ -32,8 +32,8 @@ export function getAutonomyRuntimeSource(): string {
     const cancelFlight = async (outcome, code) => {
       const flight = state.flight;
       if (!flight) return;
-      flight.forced = { outcome, code };
-      if (!flight.entered && agent.inbox.remove(flight.messageId)) { await finish(flight, outcome, code); return; }
+      if (!flight.forced || (outcome === 'unknown' && flight.forced.outcome !== 'unknown')) flight.forced = { outcome, code };
+      if (!flight.entered && agent.inbox.remove(flight.messageId)) { await finish(flight, flight.forced.outcome, flight.forced.code); return; }
       for (const task of taskFlights.values()) if (task.autonomyCycleId === flight.cycle.id) task.deadline.abort();
       if (!flight.settling) agent.cancel({ kind: 'user' }, { keepInbox: true });
     };
@@ -121,10 +121,14 @@ export function getAutonomyRuntimeSource(): string {
           return;
         }
         if (state.flight) {
-          if (!(await auto('valid', { cycleId: state.flight.cycle.id })).valid) await cancelFlight(Date.now() >= state.flight.cycle.deadline ? 'unknown' : 'cancelled', Date.now() >= state.flight.cycle.deadline ? state.flight.cycle.budgetLimited ? 'AUTONOMY_RUN_LIMIT' : 'AUTONOMY_CYCLE_TIMEOUT' : 'AUTONOMY_OWNER_PAUSED');
+          if (!(await auto('valid', { cycleId: state.flight.cycle.id })).valid) {
+            const overdue = Date.now() >= state.flight.cycle.deadline;
+            const budgetLimited = Boolean(state.flight.cycle.budgetLimited);
+            await cancelFlight(overdue ? budgetLimited ? 'unknown' : 'failed' : 'cancelled', overdue ? budgetLimited ? 'AUTONOMY_RUN_LIMIT' : 'AUTONOMY_CYCLE_TIMEOUT' : 'AUTONOMY_OWNER_PAUSED');
+          }
           return;
         }
-        if (state.settling || !status.configuration.enabled || status.state.ownerPaused || status.state.errorCode) return;
+        if (state.settling || !status.configuration.enabled || status.state.ownerPaused || (status.state.errorCode && status.state.nextWakeAt == null)) return;
         const goal = ctx.get('goals')?.get(agent);
         const hasBlockingTaskFlight = () => [...taskFlights.values()].some(task => !task.persistent);
         const phase = status.externalPending ? 'external-pending' : goal?.phase === 'active' && goal.activation === 'armed' ? 'native-goal' : hasBlockingTaskFlight() || agent.status !== 'idle' || agent.inbox.nextTurn.length || agent.inbox.nextStep.length ? 'busy' : 'idle';

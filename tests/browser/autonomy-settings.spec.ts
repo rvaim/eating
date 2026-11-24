@@ -97,6 +97,31 @@ test.describe('自主运行设置与信息', () => {
     await expect(page.getByRole('heading', { name: '发生错误，已暂停', exact: true })).toBeVisible()
     expect(writes).toEqual([])
   })
+  test('连续超时进入自动冷却时展示下次重试时间与立即唤醒按钮，双语完整且不误报永久暂停', async ({ page }) => {
+    const writes: string[] = []
+    const nextWakeAt = Date.now() + 10 * 60000
+    page.on('request', request => { if (new URL(request.url()).pathname === '/api/autonomy' && request.method() === 'POST') writes.push(request.postData() ?? '') })
+    await page.route('**/api/autonomy', async route => {
+      const response = await route.fetch(), value = await response.json()
+      const snapshot = value.harnesses[0].snapshot
+      snapshot.configuration.enabled = true
+      Object.assign(snapshot.state, { runtimeReady: true, ownerPaused: false, reason: 'cooldown', errorCode: 'AUTONOMY_CYCLE_TIMEOUT', failures: 3, lastOutcome: 'failed', nextWakeAt })
+      await route.fulfill({ response, json: value })
+    })
+    await page.goto(url + '/#settings/autonomy')
+    await expect(page.getByRole('heading', { name: '连续出错，冷却后自动重试', exact: true })).toBeVisible()
+    await expect(page.locator('.autonomy-status-copy')).toContainText('自动冷却')
+    await expect(page.locator('.autonomy-status-copy')).toContainText('AUTONOMY_CYCLE_TIMEOUT')
+    await expect(page.getByRole('button', { name: '暂停运行', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '立即唤醒', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '核对后恢复', exact: true })).toHaveCount(0)
+    await expect(page.locator('.autonomy-next-wake')).toBeVisible()
+    await page.locator('#display-language').selectOption('en-US')
+    await expect(page.getByRole('heading', { name: 'Cooling down after repeated errors', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Wake now', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Pause activity', exact: true })).toBeVisible()
+    expect(writes).toEqual([])
+  })
   // UI state fixture only: the actual native runtime was validated separately, no model is started here.
   async function showReady(page: Page, calls: string[], failResume = false) {
     await page.route('**/api/autonomy', async route => {

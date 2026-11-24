@@ -72,7 +72,7 @@ export class DshAutonomy {
   readonly agenda: DshAutonomyAgenda
   private document: Document
   private runtimeNonce: string | null = null
-  private runtimeStartedAt = 0
+  private runtimeHeartbeatAt = 0
   private observed: { phase: string; at: number } | null = null
   private targetDirectory: ((explicit: readonly ProactiveTarget[]) => Promise<readonly ProactiveTarget[]>) | null = null
   private resolvedTargets: readonly ProactiveTarget[] | null = null
@@ -120,15 +120,26 @@ export class DshAutonomy {
     const windowStartedAt = reset ? now : state.windowAt
     return { limit, used, remaining: Math.max(0, limit - used), exhausted: used >= limit, windowStartedAt, resetAt: windowStartedAt + 3600000 }
   }
+  private isCooldown(state: AutonomyState = this.document.state): boolean {
+    return !state.ownerPaused && state.errorCode !== null && state.lastOutcome === 'failed'
+  }
+  private cooldownDelayMs(failures: number): number {
+    const c = this.document.configuration
+    const base = Math.max(c.maxRestMinutes * 60000, c.minIntervalSeconds * 1000 * c.maxConsecutiveFailures)
+    const cap = Math.max(base, 60 * 60000)
+    const shift = Math.min(Math.max(0, failures - c.maxConsecutiveFailures), 6)
+    return Math.min(cap, base * (2 ** shift))
+  }
   snapshot(): JsonObject {
     const { configuration, state } = this.document, now = this.clock()
     const reset = state.windowAt === 0 || now - state.windowAt >= 3600000
-    const arrangedAt = Math.min(state.wakeAt ?? now, this.agenda.nextDueAt() ?? Infinity)
+    const cooldown = this.isCooldown(state)
+    const arrangedAt = cooldown ? (state.wakeAt ?? now) : Math.min(state.wakeAt ?? now, this.agenda.nextDueAt() ?? Infinity)
     const quotaAt = !reset && state.cycles >= configuration.maxCyclesPerHour ? state.windowAt + 3600000 : now
-    let reason = !configuration.enabled ? 'disabled' : state.active && state.ownerPaused ? 'pausing' : state.errorCode === 'AUTONOMY_RUN_LIMIT' ? 'run-limit' : state.errorCode ? 'error' : state.ownerPaused ? 'owner-paused' : !this.runtimeReady() ? 'runtime-stopped' : state.active ? 'running' : quotaAt > now ? 'hourly-limit' : arrangedAt > now ? state.mode === 'waiting' ? 'waiting-event' : state.mode === 'sleeping' ? 'sleeping' : 'interval' : 'ready'
-    if (['ready', 'waiting-event', 'sleeping', 'interval', 'hourly-limit'].includes(reason) && this.runtimeNonce && now - (this.observed?.at ?? this.runtimeStartedAt) > 15000) reason = 'status-unavailable'
-    else if (reason === 'ready' && this.observed && now - this.observed.at < 5000 && this.observed.phase !== 'idle') reason = this.observed.phase
-    const nextWakeAt = state.ownerPaused || !configuration.enabled || state.errorCode || !this.runtimeReady() ? null : Math.max(arrangedAt, quotaAt)
+    let reason = !configuration.enabled ? 'disabled' : state.active && state.ownerPaused ? 'pausing' : state.errorCode === 'AUTONOMY_RUN_LIMIT' ? 'run-limit' : state.errorCode && !cooldown ? 'error' : state.ownerPaused ? 'owner-paused' : !this.runtimeReady() ? 'runtime-stopped' : state.active ? 'running' : cooldown ? 'cooldown' : quotaAt > now ? 'hourly-limit' : arrangedAt > now ? state.mode === 'waiting' ? 'waiting-event' : state.mode === 'sleeping' ? 'sleeping' : 'interval' : 'ready'
+    if (['ready', 'waiting-event', 'sleeping', 'interval', 'hourly-limit', 'cooldown'].includes(reason) && this.runtimeNonce && now - Math.max(this.observed?.at ?? 0, this.runtimeHeartbeatAt) > 15000) reason = 'status-unavailable'
+    else if ((reason === 'ready' || reason === 'cooldown' && arrangedAt <= now && quotaAt <= now) && this.observed && now - this.observed.at < 5000 && this.observed.phase !== 'idle') reason = this.observed.phase
+    const nextWakeAt = state.ownerPaused || !configuration.enabled || state.errorCode && !cooldown || !this.runtimeReady() ? null : Math.max(arrangedAt, quotaAt)
     const runUsedMs = state.runUsedMs + (state.active ? this.elapsed(state.active) : 0)
     const runRemainingMs = Math.max(0, configuration.maxRunMinutes * 60000 - runUsedMs)
     return { protocolVersion: 1, revision: this.document.revision, configuration: structuredClone(configuration) as unknown as JsonObject, agenda: this.agenda.snapshot(), state: { ...structuredClone(state), runUsedMs, cycles: reset ? 0 : state.cycles, contacts: reset ? 0 : state.contacts, contactLimit: this.contactLimit(), reason, nextWakeAt, runtimeReady: this.runtimeReady(), observedAt: this.observed?.at ?? null, runRemainingMs } as unknown as JsonObject }
@@ -141,6 +152,7 @@ export class DshAutonomy {
     if (this.document.revision >= Number.MAX_SAFE_INTEGER) fail('AUTONOMY_REVISION_EXHAUSTED', 409)
     this.document.configuration = configuration; this.document.revision++; this.advance()
     if (this.document.state.mode !== 'active') this.document.state.wakeAt = Math.min(this.document.state.wakeAt!, this.clock() + configuration.maxRestMinutes * 60000)
+    if (this.isCooldown(this.document.state)) this.document.state.errorCode = null
     this.document.state.ownerPaused = true
     this.onRevoke(); this.save()
     return this.snapshot()
@@ -153,14 +165,14 @@ export class DshAutonomy {
     if (operation !== 'pause' && !this.document.configuration.enabled) fail('AUTONOMY_DISABLED', 409)
     if (operation !== 'pause' && s.active) fail('AUTONOMY_CYCLE_RUNNING', 409)
     this.advance(); this.onRevoke()
-    if (operation === 'pause') s.ownerPaused = true
+    if (operation === 'pause') { if (this.isCooldown(s)) s.errorCode = null; s.ownerPaused = true }
     else { s.ownerPaused = false; s.errorCode = null; s.failures = 0; s.runUsedMs = 0; if (operation === 'wake' || s.mode === 'active') { s.mode = 'active'; s.wakeAt = this.clock() } }
     this.save(); return this.snapshot()
   }
   private agendaAvailable(): void {
     const s = this.document.state
     if (!this.document.configuration.enabled) fail('AUTONOMY_DISABLED', 409)
-    if (s.ownerPaused || s.errorCode) fail('AUTONOMY_PAUSED', 409)
+    if (s.ownerPaused || (s.errorCode && !this.isCooldown(s))) fail('AUTONOMY_PAUSED', 409)
   }
   scheduleTask(nonce: string, input: unknown): JsonObject { this.requireRuntime(nonce); this.agendaAvailable(); return this.agenda.schedule(input) }
   cancelTask(nonce: string, input: unknown): JsonObject { this.requireRuntime(nonce); this.agendaAvailable(); return this.agenda.cancel(input) }
@@ -168,9 +180,9 @@ export class DshAutonomy {
   startRuntime(nonce: string): void {
     const s = this.document.state
     if (s.active) { s.lastOutcome = 'unknown'; s.lastFinishedAt = this.clock(); s.errorCode = 'AUTONOMY_PREVIOUS_CYCLE_UNKNOWN'; s.active = null; s.ownerPaused = true; this.advance() }
-    if (!this.document.configuration.autoResume) s.ownerPaused = true
+    if (!this.document.configuration.autoResume) { if (this.isCooldown(s)) s.errorCode = null; s.ownerPaused = true }
     // Settled execution time survives a restart; downtime adds no execution time.
-    this.runtimeNonce = nonce; this.runtimeStartedAt = this.clock(); this.observed = null
+    this.runtimeNonce = nonce; this.runtimeHeartbeatAt = this.clock(); this.observed = null
     if (this.document.configuration.enabled || s.errorCode) this.save()
   }
   stopRuntime(): void {
@@ -184,17 +196,20 @@ export class DshAutonomy {
     s.ownerPaused = true; s.errorCode = 'AUTONOMY_CONTROL_FAILED'; this.advance(); this.onRevoke(); this.save()
     return { paused: true }
   }
-  observe(phase: string): void { if (!['idle', 'busy', 'external-pending', 'native-goal'].includes(phase)) fail('INVALID_AUTONOMY_INPUT'); this.observed = { phase, at: this.clock() } }
+  observe(phase: string): void { if (!['idle', 'busy', 'external-pending', 'native-goal'].includes(phase)) fail('INVALID_AUTONOMY_INPUT'); const now = this.clock(); this.observed = { phase, at: now }; this.runtimeHeartbeatAt = now }
   claim(nonce: string): JsonObject {
     this.requireRuntime(nonce)
     const s = this.document.state, c = this.document.configuration, now = this.clock()
+    this.runtimeHeartbeatAt = now
     this.resetWindow()
     const scheduled = this.agenda.due(now)
-    if (!c.enabled || s.ownerPaused || s.errorCode || !this.runtimeReady() || s.active || (!scheduled.length && (s.wakeAt ?? 0) > now) || s.cycles >= c.maxCyclesPerHour) return { admitted: false }
+    const cooldown = this.isCooldown(s)
+    if (!c.enabled || s.ownerPaused || (s.errorCode && !cooldown) || !this.runtimeReady() || s.active || ((cooldown || !scheduled.length) && (s.wakeAt ?? 0) > now) || s.cycles >= c.maxCyclesPerHour) return { admitted: false }
     const runRemainingMs = Math.max(0, c.maxRunMinutes * 60000 - s.runUsedMs)
     if (!runRemainingMs) { s.ownerPaused = true; s.errorCode = 'AUTONOMY_RUN_LIMIT'; this.advance(); this.save(); return { admitted: false } }
     const cycle: Cycle = { id: randomUUID(), nonce, startedAt: now, deadline: now + Math.min(c.cycleTimeoutSeconds * 1000, runRemainingMs), configurationRevision: this.document.revision, activityRevision: s.revision }
     const activity = { mode: s.mode, note: s.note }
+    if (cooldown) s.errorCode = null
     s.active = cycle; s.cycles++; s.lastStartedAt = now; s.mode = 'active'; s.wakeAt = null; this.save()
     // The cycle is durable before its one-shot task messages leave the agenda. A failed
     // agenda write leaves the task pending and the runtime exposes a fault instead of
@@ -202,7 +217,7 @@ export class DshAutonomy {
     if (scheduled.length) this.agenda.consume(scheduled.map(task => task.id))
     return { admitted: true, cycle: { ...cycle, budgetLimited: runRemainingMs <= c.cycleTimeoutSeconds * 1000 }, activity, scheduledTasks: scheduled.map(task => ({ id: task.id, message: task.message, dueAt: task.dueAt })), limits: { minIntervalSeconds: c.minIntervalSeconds, maxRestMinutes: c.maxRestMinutes, maxCyclesPerHour: c.maxCyclesPerHour, maxRunMinutes: c.maxRunMinutes, runRemainingMs } }
   }
-  validCycle(nonce: string, id: string): boolean { const { configuration: c, state: s } = this.document; return nonce === this.runtimeNonce && c.enabled && !s.ownerPaused && !s.errorCode && s.active?.id === id && s.active.nonce === nonce && s.active.configurationRevision === this.document.revision && this.clock() < s.active.deadline }
+  validCycle(nonce: string, id: string): boolean { const { configuration: c, state: s } = this.document; if (nonce === this.runtimeNonce) this.runtimeHeartbeatAt = this.clock(); return nonce === this.runtimeNonce && c.enabled && !s.ownerPaused && !s.errorCode && s.active?.id === id && s.active.nonce === nonce && s.active.configurationRevision === this.document.revision && this.clock() < s.active.deadline }
   activeCycle(): Cycle | null { return this.document.state.active ? { ...this.document.state.active } : null }
   decide(nonce: string, input: unknown): JsonObject {
     this.requireRuntime(nonce)
@@ -215,7 +230,8 @@ export class DshAutonomy {
     if (input.mode === 'sleeping' ? !integer(input.wakeAt, now + 1000, now + 365 * 86400000) : input.wakeAt !== null) fail('INVALID_AUTONOMY_INPUT')
     const s = this.document.state
     const restDeadline = now + this.document.configuration.maxRestMinutes * 60000
-    this.advance(); s.mode = input.mode as AutonomyState['mode']; s.note = input.note; s.wakeAt = input.mode === 'sleeping' ? Math.min(input.wakeAt as number, restDeadline) : input.mode === 'active' ? now + this.document.configuration.minIntervalSeconds * 1000 : restDeadline
+    const nextWakeAt = input.mode === 'sleeping' ? Math.min(input.wakeAt as number, restDeadline) : input.mode === 'active' ? now + this.document.configuration.minIntervalSeconds * 1000 : restDeadline
+    this.advance(); s.mode = input.mode as AutonomyState['mode']; s.note = input.note; s.wakeAt = this.isCooldown(s) ? Math.max(s.wakeAt ?? 0, nextWakeAt) : nextWakeAt
     // The current cycle settles first; a rest boundary starts a new budget after it.
     if (input.mode !== 'active' && !s.active) s.runUsedMs = 0
     this.save(); return this.snapshot()
@@ -230,14 +246,24 @@ export class DshAutonomy {
     if (outcome === 'completed' && (s.ownerPaused || !this.document.configuration.enabled || cycle.configurationRevision !== this.document.revision)) {
       outcome = 'cancelled'; code = s.ownerPaused ? 'AUTONOMY_OWNER_PAUSED' : 'AUTONOMY_CYCLE_REVOKED'
     }
+    const now = this.clock()
+    this.runtimeHeartbeatAt = now
     s.runUsedMs += this.elapsed(cycle)
-    s.active = null; s.lastOutcome = outcome; s.lastFinishedAt = this.clock()
-    s.history.push({ cycleId, startedAt: cycle.startedAt, finishedAt: s.lastFinishedAt, outcome, code }); s.history = s.history.slice(-20)
-    if (outcome === 'completed') s.failures = 0
-    else if (outcome !== 'cancelled' && code !== 'AUTONOMY_RUN_LIMIT') { s.failures++; if (outcome === 'unknown' || s.failures >= this.document.configuration.maxConsecutiveFailures) { s.errorCode = code ?? 'AUTONOMY_CYCLE_FAILED'; s.ownerPaused = true; this.advance() } }
+    s.active = null; s.lastOutcome = outcome; s.lastFinishedAt = now
+    s.history.push({ cycleId, startedAt: cycle.startedAt, finishedAt: now, outcome, code }); s.history = s.history.slice(-20)
+    if (outcome === 'completed') { s.failures = 0; s.errorCode = null }
+    else if (outcome !== 'cancelled' && code !== 'AUTONOMY_RUN_LIMIT') {
+      s.failures++
+      if (outcome === 'unknown') { s.errorCode = code ?? 'AUTONOMY_CYCLE_FAILED'; s.ownerPaused = true; this.advance() }
+      else if (s.failures >= this.document.configuration.maxConsecutiveFailures) {
+        s.errorCode = code ?? 'AUTONOMY_CYCLE_FAILED'
+        s.wakeAt = Math.max(s.wakeAt ?? 0, now + this.cooldownDelayMs(s.failures))
+        this.advance()
+      }
+    }
     if (code === 'AUTONOMY_RUN_LIMIT' || outcome === 'completed' && s.mode === 'active' && s.runUsedMs >= this.document.configuration.maxRunMinutes * 60000) { s.ownerPaused = true; s.errorCode = 'AUTONOMY_RUN_LIMIT'; this.advance() }
     if (s.mode !== 'active') s.runUsedMs = 0
-    if (s.mode === 'active') s.wakeAt = Math.max(s.wakeAt ?? 0, this.clock() + this.document.configuration.minIntervalSeconds * 1000 * Math.max(1, s.failures))
+    if (s.mode === 'active') s.wakeAt = Math.max(s.wakeAt ?? 0, now + this.document.configuration.minIntervalSeconds * 1000 * Math.max(1, Math.min(s.failures, this.document.configuration.maxConsecutiveFailures)))
     this.onRevoke(); this.save(); return { accepted: true }
   }
   contactTarget(id: string): ProactiveTarget {

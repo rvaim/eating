@@ -86,7 +86,49 @@ describe('native autonomous driver publication lifecycle', () => {
       }
       await new Function(...Object.keys(context), getAutonomyRuntimeSource() + '\nreturn mountAutonomy;')(...Object.values(context))(agent)
       await vi.advanceTimersByTimeAsync(2000)
-      expect(settlements).toEqual([expect.objectContaining({ outcome: 'unknown', code: budgetLimited ? 'AUTONOMY_RUN_LIMIT' : 'AUTONOMY_CYCLE_TIMEOUT' })])
+      expect(settlements).toEqual([expect.objectContaining({ outcome: budgetLimited ? 'unknown' : 'failed', code: budgetLimited ? 'AUTONOMY_RUN_LIMIT' : 'AUTONOMY_CYCLE_TIMEOUT' })])
+    } finally { for (const release of releases) release(); initialization.abort(); vi.useRealTimers() }
+  })
+  it('keeps polling and resumes automatically after recoverable cooldown while staying paused on hard errors', async () => {
+    vi.useFakeTimers()
+    const releases: (() => void)[] = [], initialization = new AbortController()
+    try {
+      let phase: 'hard-error' | 'cooldown' | 'ready' = 'hard-error', admitted = 0
+      const observed: string[] = []
+      const agent = { id: 'root', status: 'idle', session: { id: 'root' }, followup: vi.fn(), cancel: () => {}, inbox: { nextTurn: [], nextStep: [], remove: () => true }, ctx: { tools: { register: () => {} } } }
+      const context = { process: { env: { EATING_DSH_AUTONOMY: 'true' } }, sessionId: 'root', taskFlights: new Map(), waitForAutonomyTasks: async () => {}, nonce: 'fixture-runtime', releases, initialization,
+        ctx: { agents: { get: () => agent }, sessions: { flush: async () => true }, on: () => () => {}, get: () => undefined },
+        loadModule: async () => ({ createUserMessage: () => ({ id: 'fixture-cooldown-message' }) }), record: (value: unknown) => value !== null && typeof value === 'object', opaque: () => true,
+        control: async (operation: string, body?: { phase?: string }) => {
+          if (operation === 'autonomy-observe' && body?.phase) observed.push(body.phase)
+          if (operation === 'autonomy-snapshot') {
+            if (phase === 'hard-error') return { ready: true, configuration: { enabled: true }, state: { ownerPaused: false, errorCode: 'AUTONOMY_DURABILITY_FAILED', reason: 'error', nextWakeAt: null, active: null } }
+            return { ready: true, configuration: { enabled: true }, state: { ownerPaused: false, errorCode: phase === 'cooldown' ? 'AUTONOMY_CYCLE_TIMEOUT' : null, reason: phase === 'cooldown' ? 'cooldown' : 'ready', nextWakeAt: Date.now() + 2000, active: null } }
+          }
+          if (operation === 'autonomy-claim') {
+            if (phase !== 'ready') return { admitted: false }
+            admitted++
+            return { admitted: true, cycle: { id: 'fixture-recovered-cycle', deadline: Date.now() + 60000 }, activity: {}, limits: {} }
+          }
+          if (operation === 'autonomy-valid') return { valid: true }
+          return {}
+        },
+      }
+      await new Function(...Object.keys(context), getAutonomyRuntimeSource() + '\nreturn mountAutonomy;')(...Object.values(context))(agent)
+      // Hard errors with null nextWakeAt must not poll observe or claim.
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(observed).toEqual([])
+      expect(admitted).toBe(0)
+      // Recoverable cooldown keeps heartbeats fresh without admitting early.
+      phase = 'cooldown'
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(observed).toEqual(['idle'])
+      expect(admitted).toBe(0)
+      // Once cooldown elapses, the next poll automatically admits a recovery round.
+      phase = 'ready'
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(admitted).toBe(1)
+      expect(agent.followup).toHaveBeenCalledOnce()
     } finally { for (const release of releases) release(); initialization.abort(); vi.useRealTimers() }
   })
   it('publishes Chinese tools and policy while preserving the admitted opportunity context and trusted source', async () => {

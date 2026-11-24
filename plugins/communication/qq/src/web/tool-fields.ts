@@ -1,5 +1,6 @@
 import { isJsonObject } from '@eating/plugin-sdk'
 import type { JsonObject, JsonValue, PluginToolDefinition } from '@eating/plugin-sdk'
+import { toolValidationSchema } from '../tool-constraints'
 import { SchemaValidationError, validateSchemaInput } from '../validation'
 import type { QQMessage } from './i18n'
 
@@ -107,7 +108,7 @@ export function parseToolArguments(tool: PluginToolDefinition | undefined, field
     }
   }
   if (validate && tool && !Object.keys(errors).length) {
-    try { validateSchemaInput(tool.inputSchema, args) }
+    try { validateSchemaInput(toolValidationSchema(tool), args) }
     catch (error) {
       if (error instanceof SchemaValidationError) for (const issue of error.issues) {
         const pathKey = issue.instancePath.split('/')[1]?.replace(/~1/g, '/').replace(/~0/g, '~')

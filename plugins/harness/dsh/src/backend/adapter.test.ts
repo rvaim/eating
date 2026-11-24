@@ -229,6 +229,7 @@ describe('DSH isolated runtime lifecycle', () => {
     expect(setup.context.harness!.getMcpConnection).not.toHaveBeenCalled()
     expect(patch).toContain('id: persistent-bash\n  disabled: true')
     expect(patch).toContain('"timeoutMs":1000,"streamIdleTimeoutMs":1000')
+    expect(patch).not.toContain('supportsStrictMode')
     expect(patch).toContain('id: agent-default-model\n  config:\n    provider: "eating-openai"\n    model: "fixture-model"')
     await setup.plugin.disconnect()
     await setup.plugin.connect()
@@ -259,6 +260,7 @@ describe('DSH isolated runtime lifecycle', () => {
     expect(client.launch.env).not.toHaveProperty('GEMINI_API_KEY')
     const patch = readFileSync(client.launch.patches![0]!, 'utf8')
     expect(patch).toContain('"google":{"baseURL":"https://generativelanguage.googleapis.com/v1beta","apiKeyEnv":"EATING_DSH_API_KEY","timeoutMs":1000,"streamIdleTimeoutMs":1000')
+    expect(patch).not.toContain('supportsStrictMode')
     expect(patch).not.toContain('"api":"openai-completions"')
     expect(patch).toContain('id: agent-default-model\n  config:\n    provider: "google"\n    model: "gemini-2.5-flash"')
     expect(patch).not.toContain('fixture-only-gemini-key')
@@ -268,7 +270,7 @@ describe('DSH isolated runtime lifecycle', () => {
     const responsesClient = setup.clients[1]!
     expect(responsesClient.launch).toMatchObject({ provider: 'eating-openai', model: 'gpt-5' })
     const responsesPatch = readFileSync(responsesClient.launch.patches![0]!, 'utf8')
-    expect(responsesPatch).toContain('"eating-openai":{"api":"openai-responses","baseURL":"https://api.openai.com/v1","apiKeyEnv":"EATING_DSH_API_KEY","timeoutMs":45000,"streamIdleTimeoutMs":45000')
+    expect(responsesPatch).toContain('"eating-openai":{"api":"openai-responses","baseURL":"https://api.openai.com/v1","apiKeyEnv":"EATING_DSH_API_KEY","timeoutMs":45000,"streamIdleTimeoutMs":45000,"compat":{"supportsStrictMode":true}')
     expect(responsesPatch).toContain('id: agent-default-model\n  config:\n    provider: "eating-openai"\n    model: "gpt-5"')
   })
 

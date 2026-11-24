@@ -64,6 +64,31 @@ describe('official OneBot v11 tool contract', () => {
     for (const action of ['send_private_msg', 'send_group_msg', 'send_msg', 'send_like']) expect(tool(action).destructive).toBe(false)
   })
 
+  it('keeps advertised MCP inputSchema free of unsupported combinators while strictly enforcing cross-field validation', () => {
+    const walkKeys = (value: unknown, keys: Set<string>) => {
+      if (!value || typeof value !== 'object') return
+      if (Array.isArray(value)) { for (const item of value) walkKeys(item, keys); return }
+      for (const [key, nested] of Object.entries(value)) { keys.add(key); walkKeys(nested, keys) }
+    }
+    for (const entry of qqTools) {
+      for (const rootCombinator of ['oneOf', 'allOf', 'anyOf', 'not', 'if', 'then', 'else']) {
+        expect(entry.inputSchema, `${entry.name}.${rootCombinator}`).not.toHaveProperty(rootCombinator)
+      }
+      const nestedKeys = new Set<string>()
+      walkKeys(entry.inputSchema, nestedKeys)
+      for (const forbidden of ['not', 'if', 'then', 'else']) {
+        expect(nestedKeys.has(forbidden), `${entry.name} contains ${forbidden}`).toBe(false)
+      }
+    }
+    const imageRef = 'eating-asset://image-generation/fixture-image-1'
+    const audioRef = 'eating-audio://text-to-speech/' + 'a'.repeat(64)
+    invalid('send_private_msg', input('send_private_msg', { user_id: 456 }))
+    invalid('send_private_msg', input('send_private_msg', { user_id: 456, message: 'hi', image_ref: imageRef }))
+    invalid('send_private_msg', input('send_private_msg', { user_id: 456, image_ref: imageRef, auto_escape: true }))
+    invalid('send_group_msg', input('send_group_msg', { group_id: 789, message: 'hi', audio_ref: audioRef }))
+    invalid('send_group_msg', input('send_group_msg', { group_id: 789, audio_ref: audioRef, auto_escape: false }))
+  })
+
   // Handwritten from the fixed official API tables; every public API exercises all its non-alias parameters.
   const cases: Array<{ action: string; params: JsonObject; wire: JsonObject }> = [
     { action: 'send_private_msg', params: { user_id: '456', message: '[CQ:face,id=1]', auto_escape: false }, wire: { user_id: 456, message: '[CQ:face,id=1]', auto_escape: false } },

@@ -1,5 +1,7 @@
 import { fixtureTaskNotices } from '../../../tests/fixtures/async-tasks'
 import { cp, mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -350,5 +352,104 @@ describe.runIf(Boolean(systemDshBin))('真实DSH SDK → 原生主子会话 → 
     expect(model.settledRequests).toHaveLength(9)
     expect(sends()).toHaveLength(2)
     expect(host.store.getDeliverySettingsSnapshot().queue.queuedMessages).toBe(0)
+  }, 120000)
+
+  it('sends explicit strict=false and combinator-free QQ tool schemas over real openai-responses protocol', async () => {
+    vi.stubEnv('EATING_DSH_BIN', testSystemDsh().bin)
+    const home = await realpath(await mkdtemp(join(tmpdir(), 'Eating_dsh_responses_')))
+    stops.push(async () => {
+      const target = await realpath(home)
+      if (target !== home || dirname(target) !== await realpath(tmpdir()) || !basename(target).startsWith('Eating_dsh_responses_')) throw new Error('Unsafe responses cleanup')
+      await rm(target, { recursive: true })
+    })
+    const requests: JsonObject[] = []
+    let responseSeq = 0
+    const sendSse = (res: import('node:http').ServerResponse, events: JsonObject[]) => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'close' })
+      for (const event of events) res.write(`event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`)
+      res.end()
+    }
+    const server = createServer((req, res) => {
+      if (req.method !== 'POST' || !req.url?.endsWith('/responses')) { res.writeHead(404); res.end(); return }
+      const chunks: Buffer[] = []
+      req.on('data', chunk => chunks.push(Buffer.from(chunk)))
+      req.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as JsonObject
+        requests.push(body)
+        const id = `resp_${++responseSeq}`
+        const inputItems = Array.isArray(body.input) ? body.input as JsonObject[] : []
+        const toolList = Array.isArray(body.tools) ? body.tools as JsonObject[] : []
+        const hasToolOutput = inputItems.some(item => item.type === 'function_call_output')
+        const rawInput = JSON.stringify(inputItems)
+        const contextRefMatch = /contextRef\\*":\\*"([0-9a-f]{64})/.exec(rawInput)
+        const contextRef = contextRefMatch?.[1] ?? ''
+        const isRoot = toolList.some(t => t.name === 'eating_handle_conversation')
+        const isChild = toolList.some(t => t.name === 'mcp__qq__qq_send_private_message')
+        let item: JsonObject
+        if (isRoot && !hasToolOutput && contextRef) {
+          item = { id: `fc_${responseSeq}`, type: 'function_call', call_id: `call_${responseSeq}`, name: 'eating_handle_conversation', arguments: JSON.stringify({ context_ref: contextRef, mode: 'reply', context_notes: '' }), status: 'completed' }
+        } else if (isChild && !hasToolOutput) {
+          item = { id: `fc_${responseSeq}`, type: 'function_call', call_id: `call_${responseSeq}`, name: 'mcp__qq__qq_send_private_message', arguments: JSON.stringify({ user_id: 987654321, message: 'Responses 协议回复', request_id: 'responses-e2e-send-1' }), status: 'completed' }
+        } else {
+          item = { id: `msg_${responseSeq}`, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'OK' }] }
+        }
+        sendSse(res, [
+          { type: 'response.created', response: { id, status: 'in_progress' } },
+          { type: 'response.output_item.added', output_index: 0, item: item.type === 'function_call' ? { ...item, arguments: '' } : { ...item, content: [] } },
+          ...(item.type === 'function_call'
+            ? [{ type: 'response.function_call_arguments.done', output_index: 0, arguments: String(item.arguments ?? '{}') }]
+            : [{ type: 'response.output_text.delta', output_index: 0, content_index: 0, delta: 'OK' }]),
+          { type: 'response.output_item.done', output_index: 0, item },
+          { type: 'response.completed', response: { id, status: 'completed', usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } },
+        ])
+      })
+    })
+    await new Promise<void>(resolveListen => server.listen(0, '127.0.0.1', () => resolveListen()))
+    stops.push(() => new Promise<void>(resolveClose => server.close(() => resolveClose())))
+    const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`
+
+    const onebot = await startOneBotFixture(); stops.push(() => onebot.close())
+    const dshEntry: BackendPluginEntry = { id: 'dsh', kind: 'harness', storageDirectory: 'dsh', create: context => new DshPlugin(context, { locateSystemDsh: () => testSystemDsh() }) }
+    const host = new EatingHost({ dataDirectory: home, port: 0, entries: [qqEntry, dshEntry], allowedUiOrigins: [] })
+    stops.push(() => host.close())
+    host.store.updateDeliverySettings({ ...host.store.getDeliverySettings(), aggregationWindowMs: 0 }, host.store.getDeliverySettingsSnapshot().revision)
+    const url = await host.listen()
+    const bootstrap = await fetch(url + '/api/bootstrap'), csrf = String(object(await bootstrap.json()).csrfToken), cookie = bootstrap.headers.get('set-cookie')!.split(';')[0]!
+    const api = async (path: string, body: JsonObject) => {
+      const response = await fetch(url + '/api' + path, { method: 'POST', headers: { Cookie: cookie, 'X-Eating-Csrf': csrf, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const value = object(await response.json()); if (!response.ok) throw new Error(`Responses E2E API failed ${path}: ${JSON.stringify(value)}`)
+      return value
+    }
+    await api('/plugins/qq/configuration', { endpoint: onebot.endpoint, autoConnect: false, forwardToHarness: true, receiveGroups: true, timeoutMs: 1000 })
+    await api('/plugins/qq/connect', {})
+    await api('/plugins/dsh/configuration', { protocol: 'openai-responses', endpoint, model: 'fixture-responses-model', apiKey: 'fixture-responses-key', autoConnect: false, timeoutMs: 15000, maxTokens: 512 })
+    await api('/plugins/dsh/connect', {})
+    onebot.emitEvent({ post_type: 'message', message_type: 'private', sub_type: 'friend', message_id: 93001, user_id: 987654321, self_id: 123456789, raw_message: '测试 openai-responses', message: '测试 openai-responses', time: Math.floor(Date.now() / 1000), sender: { user_id: 987654321, nickname: '测试用户' } })
+
+    const sends = () => onebot.requests.filter(request => request.action === 'send_private_msg')
+    await until(() => sends().length === 1 && requests.length >= 4, 'openai-responses 主子调用完成', () => ({ requests: requests.length, sends: sends().length }))
+    expect(sends()[0]).toMatchObject({ action: 'send_private_msg', params: { user_id: 987654321, message: 'Responses 协议回复', auto_escape: true } })
+
+    const childRequest = requests.find(req => Array.isArray(req.tools) && (req.tools as JsonObject[]).some(t => t.name === 'mcp__qq__qq_send_private_message'))
+    expect(childRequest).toBeDefined()
+    const walkKeys = (value: unknown, keys: Set<string>) => {
+      if (!value || typeof value !== 'object') return
+      if (Array.isArray(value)) { for (const item of value) walkKeys(item, keys); return }
+      for (const [key, nested] of Object.entries(value)) { keys.add(key); walkKeys(nested, keys) }
+    }
+    for (const req of requests) {
+      const toolList = (req.tools as JsonObject[]) ?? []
+      expect(toolList.length).toBeGreaterThan(0)
+      for (const tool of toolList) {
+        if (tool.type === 'function') expect(tool.strict, String(tool.name)).toBe(false)
+        if (String(tool.name).startsWith('mcp__qq__')) {
+          const params = object(tool.parameters)
+          for (const rootCombinator of ['oneOf', 'allOf', 'anyOf', 'not', 'if', 'then', 'else']) expect(params).not.toHaveProperty(rootCombinator)
+          const nestedKeys = new Set<string>()
+          walkKeys(params, nestedKeys)
+          for (const forbidden of ['not', 'if', 'then', 'else']) expect(nestedKeys.has(forbidden)).toBe(false)
+        }
+      }
+    }
   }, 120000)
 })

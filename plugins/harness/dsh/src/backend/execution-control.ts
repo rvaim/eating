@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { composeAgentPrompt, isJsonObject, PlatformError } from '@eating/plugin-sdk'
-import type { HarnessHostServices, JsonObject, JsonValue } from '@eating/plugin-sdk'
+import type { HarnessHostServices, HarnessOwnerConfiguration, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { readRestrictedJson, writeRestrictedJson } from './config'
 import { settledTaskState } from './task-lifecycle'
 import type { TaskEndState } from './task-lifecycle'
@@ -78,6 +78,19 @@ export class ExecutionControl {
     return this.bindings.filter(b => b.parentId === rootId).flatMap(b => b.tasks.filter(t => taskId === undefined || t.taskId === taskId).map(t => ({ taskId: t.taskId, contextRef: t.contextRef, childId: b.agentId, agentTypeId: b.agentTypeId, status: t.state === 'pending' ? 'running' : t.state, summary: this.taskSummary(b.agentTypeId, t.state), actions: taskId === undefined ? [] : this.host.readTaskActions(b.agentId, t.taskId).actions as unknown as JsonValue[], kind: 'execution' })))
   }
   pending(): boolean { return this.bindings.some(b => b.tasks.some(t => t.state === 'pending')) }
+  activePrompts(owner: HarnessOwnerConfiguration, nonce: string, nowIso: string): Record<string, string> {
+    const result: Record<string, string> = {}
+    for (const binding of this.bindings) {
+      if (!binding.tasks.some(task => task.state === 'pending' && task.nonce === nonce)) continue
+      const type = owner.agentTypes.find(t => t.id === binding.agentTypeId && t.enabled && t.conversationKind === null)
+      if (!type) continue
+      try {
+        const preview = composeAgentPrompt(owner, type.id, { 当前时间: nowIso, 人格名称: owner.activePersona?.name ?? '', 平台: type.pluginId, 会话类型: 'execution', 会话编号: binding.agentId, 机器人账号: '', 目标编号: '' })
+        result[binding.agentId] = preview.systemPrompt
+      } catch { /* Keep the prepared prompt when an agent type cannot be recomposed transiently. */ }
+    }
+    return result
+  }
   summaries(): readonly { readonly sessionId: string; readonly parentId: string; readonly agentTypeId: string; readonly hasPendingTask: boolean }[] {
     return this.bindings.map(b => ({ sessionId: b.agentId, parentId: b.parentId, agentTypeId: b.agentTypeId, hasPendingTask: b.tasks.some(t => t.state === 'pending') }))
   }

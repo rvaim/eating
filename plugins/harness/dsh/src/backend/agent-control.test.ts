@@ -1161,4 +1161,20 @@ describe('trusted native Agent control boundary', () => {
     expect(updated.scope.messageIds).toContain('241960038')
     expect(updated.scope.messageIds).toContain('1174905866')
   })
+
+  it('recomposes fresh childPrompts for currently pending tasks when owner persona changes', async () => {
+    const f = fixture(); await f.control.start('fixture-runtime-nonce')
+    const binding = f.control.bind(f.batch, parentId)
+    const taskId = 'b'.repeat(64)
+    expect((await f.post('/prepare-task', { agentId: binding.scope.agentId, agentTypeId: 'qq.private', mode: 'reply', contextRef: f.batch.batchId, taskId })).status).toBe(200)
+    const nextOwner = {
+      ...f.owner,
+      revision: f.owner.revision + 1,
+      activePersona: { id: '00000000-0000-4000-8000-000000000099', name: 'NewPersona', body: 'UPDATED-LIVE-CHILD-PERSONA', revision: 1, createdAt: '2026-11-24T00:00:00.000Z', updatedAt: '2026-11-24T00:00:00.000Z' },
+    }
+    const prompts = f.control.activeChildPrompts(nextOwner)
+    expect(prompts[binding.scope.agentId]).toContain('UPDATED-LIVE-CHILD-PERSONA')
+    expect((await f.post('/finish-task', { agentId: binding.scope.agentId, contextRef: f.batch.batchId, taskId, status: 'completed' })).status).toBe(200)
+    expect(f.control.activeChildPrompts(nextOwner)).toEqual({})
+  })
 })

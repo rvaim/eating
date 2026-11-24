@@ -171,7 +171,7 @@ function expectError(response: { status: number; value: JsonObject }, status: nu
 }
 
 describe('DSH reset & live persona sync through actual Host HTTP', () => {
-  it.skipIf(!process.env.EATING_DSH_TEST_SYSTEM_BIN)('syncs persona/prompt live to running DSH, remounts on dual-appearance persona switch, and resets running/stopped DSH without PLUGIN_BUSY while preserving configs & profiles', async () => {
+  it.skipIf(!process.env.EATING_DSH_TEST_SYSTEM_BIN)('syncs persona/prompt live to running DSH, remounts on dual-appearance persona switch, and resets entire DSH working directory without PLUGIN_BUSY while preserving Eating configs', async () => {
     const current = await fixture(true)
     const personaA = object((await current.api.post('/api/personas', { name: '人格甲', body: 'PERSONA-ALPHA-BODY' })).persona)
     const afterA = object(await current.api.request('/api/authoring').then(r => r.value))
@@ -231,7 +231,6 @@ describe('DSH reset & live persona sync through actual Host HTTP', () => {
     await put(customProfilePlugin, JSON.stringify({ plugin: 'kept-native-plugin' }))
 
     const preservedConfig = await readFile(join(current.directory, 'config.json'))
-    const preservedProfiles = await snapshot(join(current.directory, 'dsh-home', 'profiles'))
     const preservedExternal = await Promise.all(protectedExternal.map(path => readFile(path)))
     const authoring = current.host.authoring.getSnapshot()
 
@@ -271,15 +270,16 @@ describe('DSH reset & live persona sync through actual Host HTTP', () => {
     await expect(lstat(workspaceFile)).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(lstat(attachment)).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(lstat(schedule)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(lstat(customProfilePlugin)).rejects.toMatchObject({ code: 'ENOENT' })
     expect(await readdir(join(current.directory, 'workspace'))).toEqual([])
     const newLogs = await nativeLogs(current.directory)
     expect(newLogs).toHaveLength(1)
     expect(newLogs[0]).toContain(newRootId)
     expect(JSON.parse(await readFile(policyPath, 'utf8')).systemPrompt).toContain('PERSONA-ALPHA-BODY')
 
-    // Configs, dsh-home/profiles, authoring, settings, action receipts, external capabilities all preserved!
+    // Eating DSH plugin config, regenerated clean profile, authoring, settings, action receipts, external capabilities all preserved!
     expect(await readFile(join(current.directory, 'config.json'))).toEqual(preservedConfig)
-    expect(await snapshot(join(current.directory, 'dsh-home', 'profiles'))).toEqual(preservedProfiles)
+    expect(await lstat(join(current.directory, 'dsh-home', 'profiles', 'sdk-minimal', 'cordis.patch.yml'))).toBeTruthy()
     expect(await Promise.all(protectedExternal.map(path => readFile(path)))).toEqual(preservedExternal)
     expect(current.host.authoring.getSnapshot()).toEqual(authoring)
     expect(current.host.store.getSetting('dsh-reset:protected-setting')).toBe('PROTECTED-SETTING')
@@ -364,20 +364,20 @@ describe('DSH reset & live persona sync through actual Host HTTP', () => {
     expect(await snapshot(current.directory)).toEqual(before)
     expect(current.host.store.getQueuedHarnessEvents()).toHaveLength(1)
 
-    // With queueAction='keep' -> resets DSH files, preserves profiles & keeps queued message!
+    // With queueAction='keep' -> resets entire DSH runtime directory & keeps queued message!
     const keepResult = await current.api.manage('reset-dsh', { previewId: queuePreview.previewId, requestId: randomUUID(), confirmed: true, queueAction: 'keep' })
     expect(keepResult).toMatchObject({ status: 'completed', deletedSessions: 1, clearedWorkspaceEntries: 1, clearedQueueCount: 0, queueAction: 'keep', wasRunning: false, restarted: false })
     expect(current.host.store.getQueuedHarnessEvents()).toHaveLength(1)
-    expect(JSON.parse(await readFile(join(current.directory, 'dsh-home', 'profiles', 'sdk-minimal', 'user-plugin.json'), 'utf8'))).toEqual({ kept: true })
+    await expect(lstat(join(current.directory, 'dsh-home'))).rejects.toMatchObject({ code: 'ENOENT' })
 
-    // Re-seed DSH data and reset with queueAction='clear' -> resets DSH AND clears queued message!
+    // Re-seed DSH data and reset with queueAction='clear' -> resets entire DSH runtime directory AND clears queued message!
     await seedHistory(current.directory, randomUUID())
     const clearPreview = await current.api.manage('preview-dsh-reset', {})
     expect(clearPreview).toMatchObject({ hasPendingQueue: true, pendingQueueCount: 1 })
     const clearResult = await current.api.manage('reset-dsh', { previewId: clearPreview.previewId, requestId: randomUUID(), confirmed: true, queueAction: 'clear' })
     expect(clearResult).toMatchObject({ status: 'completed', deletedSessions: 1, clearedWorkspaceEntries: 1, clearedQueueCount: 1, queueAction: 'clear', wasRunning: false, restarted: false })
     expect(current.host.store.getQueuedHarnessEvents()).toEqual([])
-    expect(JSON.parse(await readFile(join(current.directory, 'dsh-home', 'profiles', 'sdk-minimal', 'user-plugin.json'), 'utf8'))).toEqual({ kept: true })
+    await expect(lstat(join(current.directory, 'dsh-home'))).rejects.toMatchObject({ code: 'ENOENT' })
     expect(current.model.requests).toEqual([])
   }, 30000)
 

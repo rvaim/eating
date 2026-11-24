@@ -765,10 +765,11 @@ describe('DSH reliable single-batch handoff', () => {
     expect(stoppedReset).toMatchObject({ status: 'completed', clearedWorkspaceEntries: 1, queueAction: 'keep', wasRunning: false, restarted: false })
     expect(existsSync(join(setup.directory, 'session.json'))).toBe(false)
     expect(existsSync(join(setup.directory, 'workspace', 'temp.txt'))).toBe(false)
-    expect(existsSync(join(setup.directory, 'dsh-home', 'profiles', 'sdk-minimal', 'custom-plugin.json'))).toBe(true)
+    expect(existsSync(join(setup.directory, 'dsh-home'))).toBe(false)
+    expect(existsSync(join(setup.directory, 'config.json'))).toBe(true)
     expect(setup.plugin.getStatus().state).toBe('disconnected')
 
-    // Running DSH automatically stops, resets, and restarts with a fresh session.
+    // Running DSH automatically stops, resets the entire DSH runtime directory, and restarts cleanly.
     pendingCount = 0; uncertainCount = 0
     await setup.plugin.connect()
     const liveRootId = (setup.plugin.getPublicConfiguration().runtimeStatus as { sessionId: string }).sessionId
@@ -777,6 +778,7 @@ describe('DSH reliable single-batch handoff', () => {
     mkdirSync(rootFolder, { recursive: true })
     writeFileSync(join(rootFolder, 'session.v4.jsonl'), JSON.stringify({ type: 'session', version: 4, id: liveRootId, createdAt: 1_793_770_000_000, isSeeded: false, delegationDepth: 0 }) + '\n')
     writeFileSync(join(rootFolder, 'session.lock'), '')
+    writeFileSync(join(setup.directory, 'dsh-home', 'profiles', 'sdk-minimal', 'stale-profile-artifact.json'), '{"stale":true}')
 
     const runningPreview = await setup.plugin.manage('preview-dsh-reset', {}) as { previewId: string; runtimeRunning: boolean; sessionCount: number }
     expect(runningPreview).toMatchObject({ runtimeRunning: true, sessionCount: 1 })
@@ -786,7 +788,9 @@ describe('DSH reliable single-batch handoff', () => {
     expect(setup.clients).toHaveLength(2)
     expect(setup.plugin.getStatus().state).toBe('connected')
     expect((setup.plugin.getPublicConfiguration().runtimeStatus as { sessionId: string }).sessionId).not.toBe(liveRootId)
-    expect(existsSync(join(setup.directory, 'dsh-home', 'profiles', 'sdk-minimal', 'custom-plugin.json'))).toBe(true)
+    expect(existsSync(join(setup.directory, 'dsh-home', 'profiles', 'sdk-minimal', 'stale-profile-artifact.json'))).toBe(false)
+    expect(existsSync(join(setup.directory, 'dsh-home', 'profiles', 'sdk-minimal', 'cordis.patch.yml'))).toBe(true)
+    expect(existsSync(join(setup.directory, 'config.json'))).toBe(true)
   })
 
   it('republishes bridge/owner-policy.json immediately on onOwnerConfigurationChanged while running and skips when stopped', async () => {

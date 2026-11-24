@@ -125,9 +125,10 @@ export function apply(ctx) {
 
   function readValidatedOwnerPolicy() {
     let policy;
-    try { policy = readJson('owner-policy.json', false, 1024 * 1024); }
+    try { policy = readJson('owner-policy.json', false, 4 * 1024 * 1024); }
     catch { throw bridgeError('OWNER_POLICY_INVALID'); }
     if (!record(policy) || policy.schemaVersion !== 1 || !Number.isSafeInteger(policy.revision) || policy.revision < 0 || typeof policy.systemPrompt !== 'string' || policy.systemPrompt.length > 250000 || !Array.isArray(policy.agentTypes) || policy.agentTypes.length > 100) throw bridgeError('OWNER_POLICY_INVALID');
+    if (policy.childPrompts !== undefined && (!record(policy.childPrompts) || Object.keys(policy.childPrompts).length > 100 || Object.entries(policy.childPrompts).some(([key, value]) => !opaque(key) || typeof value !== 'string' || value.length > 250000))) throw bridgeError('OWNER_POLICY_INVALID');
     return policy;
   }
   function readExpected(batchId) {

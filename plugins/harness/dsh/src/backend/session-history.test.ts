@@ -71,6 +71,10 @@ function seed(root: string) {
     `dsh-home/storages/session_projcache/sessions/${ROOT}.json`,
     'dsh-home/attachments/v1/objects/nested/object',
     'dsh-home/cache/attachments/request-images/image',
+    'dsh-home/.credentials.yaml',
+    'dsh-home/profiles/sdk-minimal/package.json',
+    'dsh-home/profiles/sdk-minimal/cordis.patch.yml',
+    'dsh-home/profiles/sdk-minimal/node_modules/user-plugin/index.js',
     'workspace/scratch.txt',
     'workspace/nested/project.md',
     'agents-home/cache.json',
@@ -93,6 +97,10 @@ function seed(root: string) {
   write(root, `dsh-home/storages/session_projcache/sessions/${ROOT}.json`, { version: 7, record: { identity: { createdAt: 1 }, rows: {} } })
   write(root, 'dsh-home/attachments/v1/objects/nested/object', secret, true)
   write(root, 'dsh-home/cache/attachments/request-images/image', secret, true)
+  write(root, 'dsh-home/.credentials.yaml', 'cached: true\n', true)
+  write(root, 'dsh-home/profiles/sdk-minimal/package.json', { name: 'dsh-profile-sdk-minimal' })
+  write(root, 'dsh-home/profiles/sdk-minimal/cordis.patch.yml', '- id: stale\n', true)
+  write(root, 'dsh-home/profiles/sdk-minimal/node_modules/user-plugin/index.js', 'export default {}\n', true)
   write(root, 'workspace/scratch.txt', 'workspace file 1', true)
   write(root, 'workspace/nested/project.md', 'workspace file 2', true)
   write(root, 'agents-home/cache.json', { ok: true })
@@ -117,9 +125,6 @@ function seed(root: string) {
     'autonomy.json',
     'autonomy-agenda.json',
     'proactive-contact-policy.json',
-    'dsh-home/profiles/sdk-minimal/package.json',
-    'dsh-home/profiles/sdk-minimal/cordis.patch.yml',
-    'dsh-home/profiles/sdk-minimal/node_modules/user-plugin/index.js',
   ]
   for (const name of protectedNames) write(root, name, { retained: secret })
   return { removed, protectedFiles: new Map(protectedNames.map(name => [name, readFileSync(join(root, name))])) }
@@ -181,7 +186,7 @@ describe('DshResetEngine', () => {
     expect(existsSync(join(root, receiptName))).toBe(false)
   })
 
-  it('clears all DSH sessions, storages, workspace, bridge and bindings while strictly preserving Eating configs and dsh-home/profiles', async () => {
+  it('resets the entire isolated DSH runtime directory (including dsh-home/profiles, sessions, storages, workspace, bridge and bindings) while strictly preserving Eating DSH plugin configs', async () => {
     const root = fixture()
     const { removed, protectedFiles } = seed(root)
     const engine = new DshResetEngine(root)
@@ -205,6 +210,7 @@ describe('DshResetEngine', () => {
 
     for (const name of removed) expect(existsSync(join(root, name)), name).toBe(false)
     for (const [name, bytes] of protectedFiles) expect(readFileSync(join(root, name)).equals(bytes), name).toBe(true)
+    expect(existsSync(join(root, 'dsh-home'))).toBe(false)
     expect(existsSync(join(root, 'workspace'))).toBe(true)
     expect(readdirSync(join(root, 'workspace'))).toEqual([])
     expect(existsSync(join(root, 'bridge'))).toBe(true)
@@ -290,12 +296,10 @@ describe('DshResetEngine', () => {
     const prepared = engine.inspectResetRequest({ previewId: preview.previewId, requestId: randomUUID(), confirmed: true }).prepared!
     const result = engine.executeReset(prepared)
     expect(result.status).toBe('completed')
-    expect(existsSync(join(root, 'dsh-home/sessions'))).toBe(false)
-    expect(existsSync(join(root, 'dsh-home/storages'))).toBe(false)
-    expect(json(root, 'dsh-home/profiles/sdk-minimal/package.json')).toEqual({ kept: true })
+    expect(existsSync(join(root, 'dsh-home'))).toBe(false)
   })
 
-  it.skipIf(process.platform === 'win32')('blocks symlink escape in root/dsh-home/session metadata while safely unlinking workspace symlinks without touching outside data', async () => {
+  it.skipIf(process.platform === 'win32')('blocks symlink escape in root/dsh-home/profiles-root/session metadata while safely unlinking workspace and profile node_modules symlinks without touching outside data', async () => {
     const root = fixture()
     const outside = fixture()
     const outsideData = write(outside, 'plugin/outside.txt', secret, true)
@@ -309,15 +313,23 @@ describe('DshResetEngine', () => {
     await expect(new DshResetEngine(badHome).preview()).rejects.toMatchObject({ code: 'DSH_RESET_PATH_UNSAFE', outcome: 'not-sent' })
     expect(readFileSync(outsideData, 'utf8')).toBe(secret)
 
+    const badProfilesRoot = fixture()
+    mkdirSync(join(badProfilesRoot, 'dsh-home'), { recursive: true })
+    symlinkSync(join(outside, 'plugin'), join(badProfilesRoot, 'dsh-home', 'profiles'))
+    await expect(new DshResetEngine(badProfilesRoot).preview()).rejects.toMatchObject({ code: 'DSH_RESET_PATH_UNSAFE', outcome: 'not-sent' })
+    expect(readFileSync(outsideData, 'utf8')).toBe(secret)
+
     const badMeta = fixture()
     symlinkSync(outsideData, join(badMeta, 'session.json'))
     await expect(new DshResetEngine(badMeta).preview()).rejects.toMatchObject({ code: 'DSH_RESET_PATH_UNSAFE', outcome: 'not-sent' })
     expect(readFileSync(outsideData, 'utf8')).toBe(secret)
 
-    // Workspace symlinks (e.g., node_modules/.bin or python venv) are unlinked directly without touching outside targets.
+    // Workspace and profile node_modules symlinks are unlinked directly without touching outside targets.
     const workspaceRoot = fixture()
     mkdirSync(join(workspaceRoot, 'workspace'), { recursive: true })
+    mkdirSync(join(workspaceRoot, 'dsh-home', 'profiles', 'sdk-minimal', 'node_modules', '.bin'), { recursive: true })
     symlinkSync(join(outside, 'plugin'), join(workspaceRoot, 'workspace', 'external-link'))
+    symlinkSync(outsideData, join(workspaceRoot, 'dsh-home', 'profiles', 'sdk-minimal', 'node_modules', '.bin', 'tool'))
     const wsEngine = new DshResetEngine(workspaceRoot)
     const wsPreview = await wsEngine.preview()
     expect(wsPreview.workspaceEntryCount).toBe(1)
@@ -325,6 +337,7 @@ describe('DshResetEngine', () => {
     const wsResult = wsEngine.executeReset(wsPrepared)
     expect(wsResult.clearedWorkspaceEntries).toBe(1)
     expect(readdirSync(join(workspaceRoot, 'workspace'))).toEqual([])
+    expect(existsSync(join(workspaceRoot, 'dsh-home'))).toBe(false)
     expect(readFileSync(outsideData, 'utf8')).toBe(secret)
   })
 

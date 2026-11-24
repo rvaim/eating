@@ -734,4 +734,21 @@ describe('self-contained published-API DSH runtime bridge', () => {
     expect(registered!.text()).toContain('切换后的新人格策略')
     expect(registered!.text()).not.toContain('主人策略')
   })
+
+  it('refreshes active child subagent systemPrompt dynamically when owner-policy.json publishes updated childPrompts', async () => {
+    const d = await conversationFixture('private')
+    const basePolicy = d.read('owner-policy.json')
+    await d.execute('eating_handle_conversation', { context_ref: d.binding.contextRef, mode: 'reply' })
+    expect(d.childSection.current).toBeDefined()
+    expect(d.childSection.current!.text()).toContain('OWNER-CHILD-OVERRIDE')
+
+    d.write('owner-policy.json', {
+      ...basePolicy,
+      revision: Number(basePolicy.revision ?? 1) + 1,
+      systemPrompt: 'MAIN-BETA',
+      childPrompts: { [d.binding.agentId]: 'CHILD-PERSONA-BETA-LIVE' },
+    })
+    expect(d.childSection.current!.text()).toContain('CHILD-PERSONA-BETA-LIVE')
+    expect(d.childSection.current!.text()).not.toContain('OWNER-CHILD-OVERRIDE')
+  })
 })

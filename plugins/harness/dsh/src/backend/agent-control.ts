@@ -4,7 +4,7 @@ import type { Server } from 'node:http'
 import { statSync } from 'node:fs'
 import { join } from 'node:path'
 import { composeAgentPrompt, groupHarnessEvents, isJsonObject, PlatformError } from '@eating/plugin-sdk'
-import type { AgentInvocationScope, HarnessDeliveryBatch, HarnessEvent, HarnessHostServices, JsonObject, JsonValue } from '@eating/plugin-sdk'
+import type { AgentInvocationScope, HarnessDeliveryBatch, HarnessEvent, HarnessHostServices, HarnessOwnerConfiguration, JsonObject, JsonValue } from '@eating/plugin-sdk'
 import { readRestrictedJson, writeRestrictedJson } from './config'
 import type { DshAutonomy } from './autonomy'
 import type { ProactiveTarget } from '@eating/plugin-sdk'
@@ -311,6 +311,32 @@ export class DshAgentControl {
   setDeliveryRetirement(retire: (batchIds: readonly string[]) => void): void { this.retireDeliveries = retire }
   hasPendingTasks(): boolean { return this.executions.pending() || this.hasPendingConversationTasks() }
   hasPendingConversationTasks(): boolean { return this.bindings.some(binding => binding.task?.state === 'pending') || this.proactiveBindings.some(binding => binding.task.state === 'pending') }
+  activeChildPrompts(owner: HarnessOwnerConfiguration): Record<string, string> {
+    if (!this.nonce) return {}
+    const nowIso = new Date().toISOString()
+    const result: Record<string, string> = this.executions.activePrompts(owner, this.nonce, nowIso)
+    for (const binding of this.bindings) {
+      if (binding.task?.state !== 'pending' || binding.task.nonce !== this.nonce) continue
+      const scope = this.taskScopes.get(binding.task.taskId) ?? binding.scope
+      const type = owner.agentTypes.find(entry => entry.id === scope.agentTypeId && entry.enabled && entry.pluginId === scope.pluginId)
+      if (!type) continue
+      try {
+        const preview = composeAgentPrompt(owner, type.id, { 当前时间: nowIso, 人格名称: owner.activePersona?.name ?? '', 平台: scope.pluginId, 机器人账号: scope.accountId, 会话编号: scope.conversationId, 会话类型: scope.kind, 目标编号: scope.targetId })
+        result[scope.agentId] = preview.systemPrompt
+      } catch { /* Keep the prepared prompt when an agent type cannot be recomposed transiently. */ }
+    }
+    for (const binding of this.proactiveBindings) {
+      if (binding.task.state !== 'pending' || binding.task.nonce !== this.nonce) continue
+      const scope = this.taskScopes.get(binding.task.taskId)
+      const type = owner.agentTypes.find(entry => entry.id === binding.target.agentTypeId && entry.enabled && entry.pluginId === binding.target.pluginId)
+      if (!scope || !type) continue
+      try {
+        const preview = composeAgentPrompt(owner, type.id, { 当前时间: nowIso, 人格名称: owner.activePersona?.name ?? '', 平台: scope.pluginId, 机器人账号: scope.accountId, 会话编号: scope.conversationId, 会话类型: scope.kind, 目标编号: scope.targetId })
+        result[binding.agentId] = preview.systemPrompt
+      } catch { /* Keep the prepared prompt when an agent type cannot be recomposed transiently. */ }
+    }
+    return result
+  }
   sessionSummaries(): readonly { readonly sessionId: string; readonly role: 'conversation' | 'proactive' | 'execution'; readonly agentTypeId: string; readonly label: string; readonly platform?: string; readonly kind?: string; readonly targetId?: string; readonly hasPendingTask: boolean }[] {
     const ownerTypes = this.host.readOwnerConfiguration().agentTypes
     const proactiveByAgent = new Map(this.proactiveBindings.map(entry => [entry.agentId, entry]))

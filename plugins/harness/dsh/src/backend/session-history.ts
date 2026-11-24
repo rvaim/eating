@@ -100,7 +100,7 @@ const RESET_ROOT_FILES = new Set([
   'session-history-receipt.json',
   'session-history-lock.json',
 ])
-const DSH_HOME_PRESERVED_ENTRIES = new Set(['profiles'])
+const DSH_HOME_SYMLINK_SUBDIRS = new Set(['profiles'])
 const RESET_CLEAN_DIRS = ['agents-home', 'runtime-home', 'native-management'] as const
 const heldLocks = new Set<string>()
 
@@ -455,7 +455,8 @@ export class DshResetEngine {
 
   private validateAllTargets(): void {
     this.guard.rootValid()
-    validateTree(this.guard, 'dsh-home', false, DSH_HOME_PRESERVED_ENTRIES)
+    validateTree(this.guard, 'dsh-home', false, DSH_HOME_SYMLINK_SUBDIRS)
+    validateTree(this.guard, join('dsh-home', 'profiles'), true)
     validateTree(this.guard, 'workspace', true)
     validateTree(this.guard, 'bridge', true)
     for (const directory of RESET_CLEAN_DIRS) validateTree(this.guard, directory, true)
@@ -521,7 +522,7 @@ export class DshResetEngine {
     try { dshHomeStat = this.guard.inspect('dsh-home', false) } catch (error) { if (!missing(error)) throw error }
     if (dshHomeStat?.isDirectory()) {
       for (const entry of readdirSync(this.guard.absolute('dsh-home'))) {
-        if (DSH_HOME_PRESERVED_ENTRIES.has(entry) || entry === 'sessions') continue
+        if (entry === 'sessions') continue
         residualStateCount += 1
       }
     }
@@ -705,7 +706,8 @@ export class DshResetEngine {
       accepted = true
       this.current = null
 
-      clearTree(this.guard, 'dsh-home', { keepDirectory: true, allowSymlinkEntries: false, skipNames: DSH_HOME_PRESERVED_ENTRIES })
+      clearTree(this.guard, join('dsh-home', 'profiles'), { keepDirectory: false, allowSymlinkEntries: true })
+      clearTree(this.guard, 'dsh-home', { keepDirectory: false, allowSymlinkEntries: false })
       const clearedWorkspaceEntries = clearTree(this.guard, 'workspace', { keepDirectory: true, allowSymlinkEntries: true })
       clearTree(this.guard, 'bridge', { keepDirectory: true, allowSymlinkEntries: true })
       for (const directory of RESET_CLEAN_DIRS) {

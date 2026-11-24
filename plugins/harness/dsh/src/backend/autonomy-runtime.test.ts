@@ -131,6 +131,88 @@ describe('native autonomous driver publication lifecycle', () => {
       expect(agent.followup).toHaveBeenCalledOnce()
     } finally { for (const release of releases) release(); initialization.abort(); vi.useRealTimers() }
   })
+  it('wakes queued external inbox messages stranded by an autonomy timeout cancel without sending a sentinel when empty', async () => {
+    vi.useFakeTimers()
+    const releases: (() => void)[] = [], initialization = new AbortController(), settlements: unknown[] = []
+    try {
+      const listeners = new Map<string, ((...args: unknown[]) => unknown)[]>()
+      const emit = (event: string, ...args: unknown[]) => { for (const fn of listeners.get(event) ?? []) fn(...args) }
+      const nextStep: { id: string; source?: { kind: string } }[] = []
+      const nextTurn: { id: string; source?: { kind: string } }[] = []
+      const removed: string[] = []
+      const sent: { message: { id: string; source?: { kind: string } }; target: string; wakeup: boolean }[] = []
+      let valid = true
+      const cycle = { id: 'fixture-timeout-cycle', deadline: Date.now() + 1500, budgetLimited: false }
+      const agent = {
+        id: 'root', status: 'idle', session: { id: 'root' },
+        inbox: {
+          nextTurn, nextStep,
+          remove: (id: string) => {
+            removed.push(id)
+            for (const list of [nextTurn, nextStep]) {
+              const idx = list.findIndex(item => item.id === id)
+              if (idx >= 0) { list.splice(idx, 1); return true }
+            }
+            return false
+          },
+        },
+        followup: (message: { id: string; source?: { kind: string } }) => {
+          nextTurn.push(message)
+          agent.status = 'running'
+        },
+        send: (message: { id: string; source?: { kind: string } }, target: string, wakeup: boolean) => {
+          sent.push({ message, target, wakeup })
+          nextStep.push(message)
+          if (wakeup) agent.status = 'running'
+        },
+        cancel: () => {
+          // Simulate DSH turn/end (aborted) followed by kick() returning agent to idle with wakeRequested=false.
+          emit('session/event', agent.session, { type: 'turn/end', data: { reason: { kind: 'aborted', reason: { kind: 'user' } } } })
+          agent.status = 'idle'
+          emit('agent/status', { agent, status: 'idle' })
+        },
+        ctx: { tools: { register: () => {} } },
+      }
+      const context = { process: { env: { EATING_DSH_AUTONOMY: 'true' } }, sessionId: 'root', taskFlights: new Map(), waitForAutonomyTasks: async () => {}, nonce: 'fixture-runtime', releases, initialization,
+        ctx: {
+          agents: { get: () => agent },
+          sessions: { flush: async () => true },
+          on: (event: string, fn: (...args: unknown[]) => unknown) => {
+            const list = listeners.get(event) ?? []; list.push(fn); listeners.set(event, list)
+            return () => { const idx = list.indexOf(fn); if (idx >= 0) list.splice(idx, 1) }
+          },
+          get: () => undefined,
+        },
+        loadModule: async () => ({
+          createUserMessage: (spec: { source?: { kind: string } }) => ({ id: spec.source?.kind === 'plugin:eating-recovery' ? 'fixture-recovery-sentinel' : 'fixture-auto-msg', ...spec }),
+        }),
+        record: (value: unknown) => value !== null && typeof value === 'object', opaque: () => true,
+        control: async (operation: string, body: unknown) => {
+          if (operation === 'autonomy-snapshot') return { ready: true, configuration: { enabled: true }, state: { ownerPaused: false, errorCode: null, active: null } }
+          if (operation === 'autonomy-claim') return { admitted: true, cycle, activity: {}, limits: {} }
+          if (operation === 'autonomy-valid') return { valid }
+          if (operation === 'autonomy-finish') settlements.push(body)
+          return {}
+        },
+      }
+      await new Function(...Object.keys(context), getAutonomyRuntimeSource() + '\nreturn mountAutonomy;')(...Object.values(context))(agent)
+      // Tick 1: admit autonomy cycle.
+      await vi.advanceTimersByTimeAsync(1000)
+      // Simulate pre-step admitting the autonomy message, then a real external QQ batch arriving in nextStep.
+      const preStep = listeners.get('agent/pre-step')![0]!
+      const own = nextTurn.splice(0, 1)[0]!
+      await preStep({ agent, messages: [own], turn: 1, signal: new AbortController().signal }, async () => ({ kind: 'enter', messages: [own] }))
+      nextStep.push({ id: 'real-qq-batch-msg', source: { kind: 'user' } })
+      // Tick 2: cycle hits deadline -> cancelFlight aborts autonomy turn -> stranded QQ message must be woken immediately.
+      valid = false
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(settlements).toEqual([expect.objectContaining({ cycleId: cycle.id, outcome: 'failed', code: 'AUTONOMY_CYCLE_TIMEOUT' })])
+      expect(sent).toEqual([expect.objectContaining({ target: 'next-step', wakeup: true, message: expect.objectContaining({ id: 'fixture-recovery-sentinel', source: { kind: 'plugin:eating-recovery' } }) })])
+      expect(removed).toContain('fixture-recovery-sentinel')
+      expect(nextStep.map(item => item.id)).toEqual(['real-qq-batch-msg'])
+      expect(agent.status).toBe('running')
+    } finally { for (const release of releases) release(); initialization.abort(); vi.useRealTimers() }
+  })
   it('publishes Chinese tools and policy while preserving the admitted opportunity context and trusted source', async () => {
     vi.useFakeTimers()
     const releases: (() => void)[] = []

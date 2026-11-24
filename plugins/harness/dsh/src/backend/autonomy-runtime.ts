@@ -12,9 +12,21 @@ export function getAutonomyRuntimeSource(): string {
     }
     const Llm = await loadModule('@deepseek-ai/dsh-llm');
     if (typeof Llm.createUserMessage !== 'function' || typeof agent.followup !== 'function' || typeof agent.cancel !== 'function' || typeof agent.inbox.remove !== 'function') throw new Error('Native autonomous admission APIs are unavailable');
-    const state = { agent, flight: null, timer: null, stopped: false, polling: false, settling: false, pendingSettlement: null };
+    const state = { agent, flight: null, timer: null, stopped: false, polling: false, settling: false, pendingSettlement: null, resumeInbox: false };
     autonomyDriver = state;
     const auto = (operation, body = {}, signal) => control('autonomy-' + operation, { agentId: sessionId, ...body }, AbortSignal.any([initialization.signal, AbortSignal.timeout(5000), ...(signal ? [signal] : [])]));
+    const wakeStrandedInbox = () => {
+      if (!state.resumeInbox || state.stopped || initialization.signal.aborted) return;
+      if (ctx.agents.get(sessionId) !== agent || agent.status !== 'idle') return;
+      state.resumeInbox = false;
+      for (const pending of [...agent.inbox.nextTurn, ...agent.inbox.nextStep]) {
+        if (pending.source?.kind === 'eating-autonomy') agent.inbox.remove(pending.id);
+      }
+      if ((!agent.inbox.nextTurn.length && !agent.inbox.nextStep.length) || typeof agent.send !== 'function') return;
+      const sentinel = Llm.createUserMessage({ content: [{ type: 'text', text: 'Resume the verified unclaimed inbox.' }], source: { kind: 'plugin:eating-recovery' } });
+      agent.send(sentinel, 'next-step', true);
+      agent.inbox.remove(sentinel.id);
+    };
     const finish = async (flight, outcome, code = null) => {
       if (flight.settling) return;
       flight.settling = true;
@@ -28,6 +40,7 @@ export function getAutonomyRuntimeSource(): string {
       const settlement = { cycleId: flight.cycle.id, outcome, code };
       try { await auto('finish', settlement); state.settling = false; }
       catch { state.pendingSettlement = settlement; }
+      queueMicrotask(wakeStrandedInbox);
     };
     const cancelFlight = async (outcome, code) => {
       const flight = state.flight;
@@ -35,7 +48,11 @@ export function getAutonomyRuntimeSource(): string {
       if (!flight.forced || (outcome === 'unknown' && flight.forced.outcome !== 'unknown')) flight.forced = { outcome, code };
       if (!flight.entered && agent.inbox.remove(flight.messageId)) { await finish(flight, flight.forced.outcome, flight.forced.code); return; }
       for (const task of taskFlights.values()) if (task.autonomyCycleId === flight.cycle.id) task.deadline.abort();
-      if (!flight.settling) agent.cancel({ kind: 'user' }, { keepInbox: true });
+      if (!flight.settling) {
+        state.resumeInbox = true;
+        agent.cancel({ kind: 'user' }, { keepInbox: true });
+        queueMicrotask(wakeStrandedInbox);
+      }
     };
     for (const pending of [...agent.inbox.nextTurn, ...agent.inbox.nextStep]) if (pending.source?.kind === 'eating-autonomy') agent.inbox.remove(pending.id);
     const render = (_, value) => [{ type: 'text', text: JSON.stringify(value) }];
@@ -93,6 +110,11 @@ export function getAutonomyRuntimeSource(): string {
       if (own.length) flight.turn = turn;
       flight.entered = true;
       return decision;
+    }));
+    releases.push(ctx.on('agent/status', ({ agent: caller, status }) => {
+      if (caller !== agent) return;
+      if (status === 'idle') queueMicrotask(wakeStrandedInbox);
+      else if (status === 'running' && !state.flight) state.resumeInbox = false;
     }));
     releases.push(ctx.on('session/event', (session, event) => {
       if (session.id !== sessionId || event.type !== 'turn/end') return;
